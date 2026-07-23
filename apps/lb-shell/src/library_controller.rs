@@ -942,6 +942,10 @@ use lb_integrations::retroarch::{
     discover_retroarch_saves, inspect_saturn_save_set, is_retroarch_emulator,
     is_saturn_companion_path, retroarch_save_signature, saturn_group_id, RetroArchContent,
 };
+use lb_integrations::retroarch_bios::{
+    audit_retroarch_bios, default_retroarch_configuration_paths, RetroArchBiosAudit,
+    RetroArchBiosTarget,
+};
 use lb_integrations::xemu_bios::{
     audit_xemu_bios, default_xemu_data_directories, XemuBiosAudit, XemuBiosGroupKind,
 };
@@ -2033,7 +2037,7 @@ const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
-const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 2;
+const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 3;
 const EMULATOR_RELEASE_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION: u32 = 1;
 const MAX_PCSX2_MACOS_TAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -2151,7 +2155,7 @@ struct EmulatorEditPayload {
 
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]
 struct EmulatorBiosFilePayload {
-    group_id: &'static str,
+    group_id: String,
     file_name: String,
     required: bool,
     description: String,
@@ -2163,9 +2167,10 @@ struct EmulatorBiosFilePayload {
 
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]
 struct EmulatorBiosGroupPayload {
-    id: &'static str,
-    description: &'static str,
+    id: String,
+    description: String,
     required: bool,
+    rule: &'static str,
     all_items_required: bool,
     satisfied: bool,
     valid_count: usize,
@@ -2173,6 +2178,13 @@ struct EmulatorBiosGroupPayload {
     unsafe_count: usize,
     unreadable_count: usize,
     missing_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct EmulatorBiosTargetPayload {
+    platform: String,
+    core: String,
+    requirement_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]
@@ -2190,6 +2202,7 @@ struct EmulatorBiosAuditPayload {
     unsafe_count: usize,
     unreadable_count: usize,
     missing_count: usize,
+    targets: Vec<EmulatorBiosTargetPayload>,
     groups: Vec<EmulatorBiosGroupPayload>,
     files: Vec<EmulatorBiosFilePayload>,
 }
@@ -2197,6 +2210,7 @@ struct EmulatorBiosAuditPayload {
 #[derive(Clone, Debug)]
 enum EmulatorBiosAudit {
     Pcsx2(Pcsx2BiosAudit),
+    RetroArch(RetroArchBiosAudit),
     Xemu(XemuBiosAudit),
 }
 
@@ -2204,6 +2218,7 @@ impl EmulatorBiosAudit {
     const fn adapter(&self) -> &'static str {
         match self {
             Self::Pcsx2(_) => "pcsx2",
+            Self::RetroArch(_) => "retroarch",
             Self::Xemu(_) => "xemu",
         }
     }
@@ -2211,6 +2226,7 @@ impl EmulatorBiosAudit {
     fn search_root(&self) -> &Path {
         match self {
             Self::Pcsx2(audit) => &audit.bios_directory,
+            Self::RetroArch(audit) => &audit.system_directory,
             Self::Xemu(audit) => &audit.application_directory,
         }
     }
@@ -2218,6 +2234,7 @@ impl EmulatorBiosAudit {
     fn configuration_path(&self) -> Option<&Path> {
         match self {
             Self::Pcsx2(audit) => audit.configuration_path.as_deref(),
+            Self::RetroArch(audit) => audit.configuration_path.as_deref(),
             Self::Xemu(audit) => audit.configuration_path.as_deref(),
         }
     }
@@ -2225,6 +2242,7 @@ impl EmulatorBiosAudit {
     const fn location_source(&self) -> &'static str {
         match self {
             Self::Pcsx2(audit) => audit.location_source.label(),
+            Self::RetroArch(audit) => audit.location_source.label(),
             Self::Xemu(audit) => audit.location_source.label(),
         }
     }
@@ -2232,6 +2250,7 @@ impl EmulatorBiosAudit {
     fn ready(&self) -> bool {
         match self {
             Self::Pcsx2(audit) => audit.group_satisfied(),
+            Self::RetroArch(audit) => audit.ready(),
             Self::Xemu(audit) => audit.ready(),
         }
     }
@@ -2239,6 +2258,7 @@ impl EmulatorBiosAudit {
     fn valid_count(&self) -> usize {
         match self {
             Self::Pcsx2(audit) => audit.valid_count(),
+            Self::RetroArch(audit) => audit.valid_count(),
             Self::Xemu(audit) => audit.valid_count(),
         }
     }
@@ -2246,6 +2266,7 @@ impl EmulatorBiosAudit {
     fn mismatch_count(&self) -> usize {
         match self {
             Self::Pcsx2(audit) => audit.mismatch_count(),
+            Self::RetroArch(audit) => audit.mismatch_count(),
             Self::Xemu(audit) => audit.mismatch_count(),
         }
     }
@@ -2253,6 +2274,7 @@ impl EmulatorBiosAudit {
     fn unsafe_count(&self) -> usize {
         match self {
             Self::Pcsx2(audit) => audit.unsafe_count(),
+            Self::RetroArch(audit) => audit.unsafe_count(),
             Self::Xemu(audit) => audit.unsafe_count(),
         }
     }
@@ -2260,6 +2282,7 @@ impl EmulatorBiosAudit {
     fn unreadable_count(&self) -> usize {
         match self {
             Self::Pcsx2(audit) => audit.unreadable_count(),
+            Self::RetroArch(audit) => audit.unreadable_count(),
             Self::Xemu(audit) => audit.unreadable_count(),
         }
     }
@@ -2267,6 +2290,7 @@ impl EmulatorBiosAudit {
     fn missing_count(&self) -> usize {
         match self {
             Self::Pcsx2(audit) => audit.missing_count(),
+            Self::RetroArch(audit) => audit.missing_count(),
             Self::Xemu(audit) => audit.missing_count(),
         }
     }
@@ -7236,12 +7260,13 @@ fn emulator_bios_audit_payload(
     emulator_title: &str,
     audit: &EmulatorBiosAudit,
 ) -> Result<String, serde_json::Error> {
-    let (groups, files) = match audit {
+    let (targets, groups, files) = match audit {
         EmulatorBiosAudit::Pcsx2(audit) => {
             let groups = vec![EmulatorBiosGroupPayload {
-                id: audit.group_id(),
-                description: audit.group_description(),
+                id: audit.group_id().to_string(),
+                description: audit.group_description().to_string(),
                 required: audit.group_required(),
+                rule: "any",
                 all_items_required: audit.all_items_required(),
                 satisfied: audit.group_satisfied(),
                 valid_count: audit.valid_count(),
@@ -7254,7 +7279,7 @@ fn emulator_bios_audit_payload(
                 .files
                 .iter()
                 .map(|file| EmulatorBiosFilePayload {
-                    group_id: audit.group_id(),
+                    group_id: audit.group_id().to_string(),
                     file_name: file.requirement.file_name.clone(),
                     required: false,
                     description: file.requirement.description.clone(),
@@ -7264,7 +7289,56 @@ fn emulator_bios_audit_payload(
                     actual_md5: file.actual_md5.clone(),
                 })
                 .collect();
-            (groups, files)
+            (Vec::new(), groups, files)
+        }
+        EmulatorBiosAudit::RetroArch(audit) => {
+            let targets = audit
+                .targets
+                .iter()
+                .map(|target| EmulatorBiosTargetPayload {
+                    platform: target.platform.clone(),
+                    core: target.core.clone(),
+                    requirement_count: target.requirement_count,
+                })
+                .collect();
+            let groups = audit
+                .groups
+                .iter()
+                .map(|group| {
+                    let states = audit
+                        .files_for_group(&group.id)
+                        .map(|file| file.state)
+                        .collect::<Vec<_>>();
+                    EmulatorBiosGroupPayload {
+                        id: group.id.clone(),
+                        description: group.description.clone(),
+                        required: group.required,
+                        rule: group.rule.id(),
+                        all_items_required: group.rule.all_items_required(),
+                        satisfied: audit.group_satisfied(group),
+                        valid_count: count_bios_state(&states, BiosFileState::Valid),
+                        mismatch_count: count_bios_state(&states, BiosFileState::HashMismatch),
+                        unsafe_count: count_bios_state(&states, BiosFileState::UnsafeEntry),
+                        unreadable_count: count_bios_state(&states, BiosFileState::Unreadable),
+                        missing_count: count_bios_state(&states, BiosFileState::Missing),
+                    }
+                })
+                .collect();
+            let files = audit
+                .files
+                .iter()
+                .map(|file| EmulatorBiosFilePayload {
+                    group_id: file.group_id.clone(),
+                    file_name: file.requirement.relative_path.clone(),
+                    required: file.requirement.required,
+                    description: file.requirement.description.clone(),
+                    path: file.path.to_string_lossy().into_owned(),
+                    state: file.state.id(),
+                    expected_md5: file.requirement.md5.clone(),
+                    actual_md5: file.actual_md5.clone(),
+                })
+                .collect();
+            (targets, groups, files)
         }
         EmulatorBiosAudit::Xemu(audit) => {
             let groups = XemuBiosGroupKind::ALL
@@ -7275,9 +7349,10 @@ fn emulator_bios_audit_payload(
                         .map(|file| file.state)
                         .collect::<Vec<_>>();
                     EmulatorBiosGroupPayload {
-                        id: group.id(),
-                        description: group.description(),
+                        id: group.id().to_string(),
+                        description: group.description().to_string(),
                         required: group.required(),
+                        rule: "any",
                         all_items_required: group.all_items_required(),
                         satisfied: audit.group_satisfied(group),
                         valid_count: count_bios_state(&states, BiosFileState::Valid),
@@ -7292,7 +7367,7 @@ fn emulator_bios_audit_payload(
                 .files
                 .iter()
                 .map(|file| EmulatorBiosFilePayload {
-                    group_id: file.requirement.group.id(),
+                    group_id: file.requirement.group.id().to_string(),
                     file_name: file.requirement.file_name.clone(),
                     required: file.requirement.file_required,
                     description: file.requirement.description.clone(),
@@ -7302,7 +7377,7 @@ fn emulator_bios_audit_payload(
                     actual_md5: file.actual_md5.clone(),
                 })
                 .collect();
-            (groups, files)
+            (Vec::new(), groups, files)
         }
     };
     serde_json::to_string(&EmulatorBiosAuditPayload {
@@ -7321,6 +7396,7 @@ fn emulator_bios_audit_payload(
         unsafe_count: audit.unsafe_count(),
         unreadable_count: audit.unreadable_count(),
         missing_count: audit.missing_count(),
+        targets,
         groups,
         files,
     })
@@ -7788,6 +7864,7 @@ fn emulator_release_transport_from_command_line(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EmulatorBiosAdapter {
     Pcsx2,
+    RetroArch,
     Xemu,
 }
 
@@ -7795,6 +7872,7 @@ impl EmulatorBiosAdapter {
     const fn name(self) -> &'static str {
         match self {
             Self::Pcsx2 => "PCSX2",
+            Self::RetroArch => "RetroArch",
             Self::Xemu => "Xemu",
         }
     }
@@ -7806,6 +7884,9 @@ fn emulator_bios_adapter_for_application(
 ) -> Option<EmulatorBiosAdapter> {
     if is_pcsx2_emulator(emulator_title, application_path) {
         return Some(EmulatorBiosAdapter::Pcsx2);
+    }
+    if is_retroarch_emulator(emulator_title, application_path) {
+        return Some(EmulatorBiosAdapter::RetroArch);
     }
     let xemu_file_name = application_path
         .file_name()
@@ -7821,6 +7902,7 @@ fn emulator_supports_bios(
     resolver: &HostPathResolver,
 ) -> bool {
     if emulator.title.trim().eq_ignore_ascii_case("pcsx2")
+        || emulator.title.trim().eq_ignore_ascii_case("retroarch")
         || emulator.title.trim().eq_ignore_ascii_case("xemu")
     {
         return true;
@@ -7847,6 +7929,27 @@ fn emulator_supports_pcsx2_bios(
             emulator_bios_adapter_for_application(&emulator.title, &application_path)
         })
         == Some(EmulatorBiosAdapter::Pcsx2)
+}
+
+fn configured_retroarch_bios_targets(
+    configuration: &EmulatorConfiguration,
+    emulator: &Emulator,
+) -> Vec<RetroArchBiosTarget> {
+    configuration
+        .platforms
+        .iter()
+        .filter(|mapping| mapping.emulator_id.eq_ignore_ascii_case(&emulator.id))
+        .filter_map(|mapping| {
+            mapping
+                .command_line
+                .as_ref()
+                .or(emulator.command_line.as_ref())
+                .map(|command_line| RetroArchBiosTarget {
+                    platform: mapping.platform.clone(),
+                    command_line: command_line.clone(),
+                })
+        })
+        .collect()
 }
 
 fn load_emulator_edit_payload(
@@ -14949,6 +15052,13 @@ impl qobject::LibraryController {
             ));
             return;
         };
+        let retroarch_targets = self
+            .as_ref()
+            .rust()
+            .emulator_configuration
+            .as_ref()
+            .map(|configuration| configured_retroarch_bios_targets(configuration, &emulator))
+            .unwrap_or_default();
         let path_resolver = self.as_ref().rust().path_resolver.clone();
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_emulator_bios_scanning(true);
@@ -14970,6 +15080,14 @@ impl qobject::LibraryController {
                         &default_pcsx2_data_directories(&application_path),
                     )
                     .map(EmulatorBiosAudit::Pcsx2)
+                    .map_err(|error| error.to_string()),
+                    EmulatorBiosAdapter::RetroArch => audit_retroarch_bios(
+                        &application_path,
+                        &retroarch_targets,
+                        &default_retroarch_configuration_paths(&application_path),
+                        &path_resolver,
+                    )
+                    .map(EmulatorBiosAudit::RetroArch)
                     .map_err(|error| error.to_string()),
                     EmulatorBiosAdapter::Xemu => audit_xemu_bios(
                         &application_path,
@@ -16938,6 +17056,12 @@ impl qobject::LibraryController {
                 let unreadable = audit.unreadable_count();
                 let missing = audit.missing_count();
                 let search_root = audit.search_root().to_path_buf();
+                let adapter_name = match adapter {
+                    "pcsx2" => "PCSX2",
+                    "retroarch" => "RetroArch",
+                    "xemu" => "Xemu",
+                    _ => "Emulator",
+                };
                 {
                     let mut rust = self.as_mut().rust_mut();
                     rust.emulator_bios_audit = Some(audit);
@@ -16950,7 +17074,7 @@ impl qobject::LibraryController {
                 self.as_mut().set_emulator_bios_revision(revision);
                 self.as_mut().set_status_message(qstring(format!(
                     "{} BIOS audit {} at {}: {valid} valid, {mismatch} hash mismatch, {unsafe_count} unsafe, {unreadable} unreadable, {missing} missing. No files or configuration were changed.",
-                    if adapter == "pcsx2" { "PCSX2" } else { "Xemu" },
+                    adapter_name,
                     if ready { "ready" } else { "needs required firmware" },
                     search_root.display()
                 )));
@@ -18970,6 +19094,11 @@ mod tests {
     use lb_integrations::pcsx2_bios::{
         Pcsx2BiosFileAudit, Pcsx2BiosLocationSource, Pcsx2BiosRequirement,
     };
+    use lb_integrations::retroarch_bios::{
+        RetroArchBiosFileAudit, RetroArchBiosGroup, RetroArchBiosGroupAudit,
+        RetroArchBiosGroupRule, RetroArchBiosLocationSource, RetroArchBiosRequirement,
+        RetroArchBiosTargetAudit,
+    };
     use lb_storage::FileRevision;
     use std::fs;
     use std::process::Command;
@@ -19873,6 +20002,134 @@ mod tests {
         assert_eq!(hdd["group_id"], "xemu hdd");
         assert!(hdd["expected_md5"].is_null());
         assert_eq!(hdd["state"], "valid");
+    }
+
+    #[test]
+    fn retroarch_bios_payload_preserves_mapping_context_and_any_group_semantics() {
+        let group_id = "Sega CD|genesis_plus_gx_libretro|group:0".to_string();
+        let requirement_group = RetroArchBiosGroup {
+            id: "0".into(),
+            description: "Sega CD BIOS".into(),
+            required: true,
+            rule: RetroArchBiosGroupRule::Any,
+        };
+        let audit = RetroArchBiosAudit {
+            application_directory: PathBuf::from("/library/Emulators/RetroArch"),
+            system_directory: PathBuf::from("/native/retroarch/system"),
+            configuration_path: Some(PathBuf::from("/native/retroarch/retroarch.cfg")),
+            location_source: RetroArchBiosLocationSource::NativeConfiguration,
+            targets: vec![RetroArchBiosTargetAudit {
+                platform: "Sega CD".into(),
+                core: "genesis_plus_gx_libretro".into(),
+                requirement_count: 2,
+            }],
+            groups: vec![RetroArchBiosGroupAudit {
+                id: group_id.clone(),
+                description: "Sega CD · genesis_plus_gx_libretro · Sega CD BIOS".into(),
+                required: true,
+                rule: RetroArchBiosGroupRule::Any,
+            }],
+            files: vec![
+                RetroArchBiosFileAudit {
+                    group_id: group_id.clone(),
+                    requirement: RetroArchBiosRequirement {
+                        core: "genesis_plus_gx_libretro".into(),
+                        platform: Some("Sega CD".into()),
+                        description: "US BIOS".into(),
+                        relative_path: "bios_CD_U.bin".into(),
+                        md5: Some("2efd74e3232ff260e371b99f84024f7f".into()),
+                        required: false,
+                        group: Some(requirement_group.clone()),
+                    },
+                    path: PathBuf::from("/native/retroarch/system/bios_CD_U.bin"),
+                    state: BiosFileState::Valid,
+                    actual_md5: Some("2efd74e3232ff260e371b99f84024f7f".into()),
+                },
+                RetroArchBiosFileAudit {
+                    group_id,
+                    requirement: RetroArchBiosRequirement {
+                        core: "genesis_plus_gx_libretro".into(),
+                        platform: Some("Sega CD".into()),
+                        description: "EU BIOS".into(),
+                        relative_path: "bios_CD_E.bin".into(),
+                        md5: Some("e66fa1dc5820d254611fdcdba0662372".into()),
+                        required: false,
+                        group: Some(requirement_group),
+                    },
+                    path: PathBuf::from("/native/retroarch/system/bios_CD_E.bin"),
+                    state: BiosFileState::Missing,
+                    actual_md5: None,
+                },
+            ],
+        };
+
+        let serialized = emulator_bios_audit_payload(
+            "retroarch",
+            "RetroArch",
+            &EmulatorBiosAudit::RetroArch(audit),
+        )
+        .expect("RetroArch BIOS payload");
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("typed JSON payload");
+
+        assert_eq!(payload["version"], EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION);
+        assert_eq!(payload["adapter"], "retroarch");
+        assert_eq!(payload["search_root"], "/native/retroarch/system");
+        assert_eq!(payload["ready"], true);
+        assert_eq!(payload["targets"][0]["platform"], "Sega CD");
+        assert_eq!(payload["targets"][0]["core"], "genesis_plus_gx_libretro");
+        assert_eq!(payload["targets"][0]["requirement_count"], 2);
+        assert_eq!(payload["groups"][0]["rule"], "any");
+        assert_eq!(payload["groups"][0]["all_items_required"], false);
+        assert_eq!(payload["groups"][0]["satisfied"], true);
+        assert_eq!(payload["files"][0]["file_name"], "bios_CD_U.bin");
+        assert_eq!(payload["files"][1]["state"], "missing");
+    }
+
+    #[test]
+    fn retroarch_bios_targets_use_platform_override_then_emulator_default() {
+        let emulator = Emulator {
+            id: "retroarch".into(),
+            title: "RetroArch".into(),
+            command_line: Some("-L cores/default_libretro.so".into()),
+            ..Emulator::default()
+        };
+        let configuration = EmulatorConfiguration {
+            emulators: vec![emulator.clone()],
+            platforms: vec![
+                EmulatorPlatform {
+                    emulator_id: emulator.id.clone(),
+                    platform: "Sega CD".into(),
+                    command_line: Some("-L cores/genesis_plus_gx_libretro.dll".into()),
+                    ..EmulatorPlatform::default()
+                },
+                EmulatorPlatform {
+                    emulator_id: emulator.id.clone(),
+                    platform: "Arcade".into(),
+                    ..EmulatorPlatform::default()
+                },
+            ],
+            ..EmulatorConfiguration::default()
+        };
+
+        assert_eq!(
+            configured_retroarch_bios_targets(&configuration, &emulator),
+            vec![
+                RetroArchBiosTarget {
+                    platform: "Sega CD".into(),
+                    command_line: "-L cores/genesis_plus_gx_libretro.dll".into(),
+                },
+                RetroArchBiosTarget {
+                    platform: "Arcade".into(),
+                    command_line: "-L cores/default_libretro.so".into(),
+                },
+            ]
+        );
+        assert!(emulator_supports_bios(
+            &emulator,
+            None,
+            &HostPathResolver::default()
+        ));
     }
 
     #[test]

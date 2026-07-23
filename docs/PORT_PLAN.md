@@ -278,14 +278,19 @@ implemented with exact digest checks, fresh emulator-reference refusal, one
 recoverable file/XML transaction, and explicit preservation of settings,
 unrelated files, and directories. Other emulator providers, dependencies,
 cores, automatic update policy, and native macOS runtime validation remain open
-under `RUN-003`. The first two `RUN-004` adapters audit the complete recovered
-PCSX2 BIOS group of 73 alternatives and Xemu's three required boot-ROM, HDD,
-and flash-BIOS groups without executing either emulator or mutating
-configuration or firmware. PCSX2 honors its portable marker and
+under `RUN-003`. The first three `RUN-004` adapters audit the complete recovered
+PCSX2 BIOS group of 73 alternatives, Xemu's three required boot-ROM/HDD/
+flash-BIOS groups, and RetroArch's complete 630-row/103-core requirement
+resource without executing an emulator or mutating configuration or firmware.
+PCSX2 honors its portable marker and
 portable/native `PCSX2.ini` roots. Xemu prefers portable `xemu.toml`, then its
 host-native data root; values from an older Windows installation cross the
-explicit drive/UNC mapping boundary. Both adapters stream hashes, refuse
-symlink entries, and expose every result in one generalized read-only Qt
+explicit drive/UNC mapping boundary. RetroArch selects rows from every
+configured platform/core mapping, preserves `None`/`Any`/`All` groups, checks
+application-local and host-native configuration candidates, and resolves
+portable/native/home/mapped-Windows `system_directory` values while refusing
+dynamic content roots, symlink traversal, and case ambiguity. All three
+adapters stream hashes and expose every result in one generalized read-only Qt
 manager. Remaining emulator adapters, firmware acquisition, configuration
 changes, and mutation remain open under `RUN-004`. The ROM importer now resolves
 primary and alternate filenames through the local database, combines matching

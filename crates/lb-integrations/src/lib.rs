@@ -11,6 +11,7 @@ pub mod emulator_lifecycle;
 pub mod pcsx2;
 pub mod pcsx2_bios;
 pub mod retroarch;
+pub mod retroarch_bios;
 pub mod xemu_bios;
 
 use std::path::PathBuf;

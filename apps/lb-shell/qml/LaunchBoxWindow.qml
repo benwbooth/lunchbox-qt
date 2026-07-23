@@ -2022,9 +2022,10 @@ ApplicationWindow {
                 }
                 const group = payload !== null && payload.groups.length > 0
                             ? payload.groups[0] : null
-                if (payload === null || payload.version !== 2
+                if (payload === null || payload.version !== 3
                         || payload.emulator_id !== emulatorId
                         || payload.adapter !== "pcsx2"
+                        || payload.targets.length !== 0
                         || !payload.search_root.endsWith(
                             "/Emulators/PCSX2/custom-bios")
                         || payload.configuration_path === null
@@ -2035,6 +2036,7 @@ ApplicationWindow {
                         || group === null
                         || group.id !== "ps2 bios"
                         || !group.required
+                        || group.rule !== "any"
                         || group.all_items_required
                         || group.satisfied
                         || group.valid_count !== 0
@@ -5725,14 +5727,41 @@ ApplicationWindow {
         function groupSummary() {
             if (audit === null)
                 return ""
-            const summaries = []
+            let required = 0
+            let satisfied = 0
             for (let index = 0; index < audit.groups.length; ++index) {
                 const group = audit.groups[index]
-                summaries.push(group.description + " "
-                               + (group.satisfied ? "READY" : "MISSING")
-                               + " (" + group.valid_count + " valid)")
+                if (group.required) {
+                    ++required
+                    if (group.satisfied)
+                        ++satisfied
+                }
+            }
+            return audit.groups.length + " requirement group(s) · "
+                   + satisfied + "/" + required
+                   + " required group(s) ready"
+        }
+
+        function targetSummary() {
+            if (audit === null || audit.targets.length === 0)
+                return ""
+            const summaries = []
+            for (let index = 0; index < audit.targets.length; ++index) {
+                const target = audit.targets[index]
+                summaries.push(target.platform + " (" + target.core + ", "
+                               + target.requirement_count + " file(s))")
             }
             return summaries.join(" · ")
+        }
+
+        function groupDescription(groupId) {
+            if (audit === null)
+                return groupId
+            for (let index = 0; index < audit.groups.length; ++index) {
+                if (audit.groups[index].id === groupId)
+                    return audit.groups[index].description
+            }
+            return groupId
         }
 
         Connections {
@@ -5806,6 +5835,15 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 visible: biosManager.audit !== null
+                         && biosManager.audit.targets.length > 0
+                text: biosManager.targetSummary()
+                color: "#7fbfff"
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: biosManager.audit !== null
                 text: {
                     if (biosManager.audit === null)
                         return ""
@@ -5830,6 +5868,35 @@ ApplicationWindow {
                 color: "white"
             }
             ListView {
+                id: biosGroupList
+                Layout.fillWidth: true
+                Layout.preferredHeight: biosManager.audit === null ? 0
+                    : Math.min(150, biosManager.audit.groups.length * 34)
+                visible: biosManager.audit !== null
+                         && biosManager.audit.groups.length > 0
+                clip: true
+                model: biosManager.audit === null ? [] : biosManager.audit.groups
+                delegate: ItemDelegate {
+                    required property var modelData
+                    width: biosGroupList.width
+                    contentItem: RowLayout {
+                        Label {
+                            Layout.fillWidth: true
+                            text: modelData.description
+                                  + (modelData.required ? " · REQUIRED" : " · OPTIONAL")
+                                  + " · " + modelData.rule.toUpperCase()
+                            color: "white"
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            text: modelData.satisfied ? "READY" : "MISSING"
+                            color: modelData.satisfied ? "#3fb950" : "#d29922"
+                            font.bold: true
+                        }
+                    }
+                }
+            }
+            ListView {
                 id: biosFileList
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -5843,7 +5910,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Label {
                                 Layout.fillWidth: true
-                                text: modelData.group_id + " · "
+                                text: biosManager.groupDescription(modelData.group_id) + " · "
                                       + modelData.file_name + " · "
                                       + modelData.description
                                 color: "white"

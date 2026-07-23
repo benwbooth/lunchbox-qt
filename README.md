@@ -201,8 +201,18 @@ host-native data location, maps legacy Windows drive/UNC values through the
 shared host-path service, and audits the recovered required boot-ROM, HDD, and
 flash-BIOS groups. The HDD requires a readable regular file; firmware requires
 an exact recovered MD5. It never downloads Xemu's dashboard HDD, creates
-`bios`/`saves`, starts Xemu, or rewrites configuration. Other-emulator BIOS
-adapters and all firmware acquisition or mutation remain open.
+`bios`/`saves`, starts Xemu, or rewrites configuration. Configured RetroArch
+entries use the third adapter. It parses every one of the
+630 core/platform BIOS rows embedded in LaunchBox 13.27, derives the selected
+cores from the configured per-platform command lines, and preserves required
+files plus `None`/`Any`/`All` group rules. Application-local and host-native
+`retroarch.cfg` locations are checked without starting RetroArch;
+`system_directory` supports portable, native, home-relative, and explicitly
+mapped Windows paths. Nested catalog paths are resolved case-insensitively
+without trusting ambiguous names or symlinks. RetroArch's dynamic
+`system_directory = "default"` is reported rather than guessed because it
+depends on the launched content directory. Other-emulator BIOS adapters and
+all firmware acquisition or mutation remain open.
 The same sidebar now renders recovered category/platform nesting from
 `Parents.xml`, including multiple placements, recursive category game counts,
 and descendant filtering. Its category dialog edits the recovered mutable
