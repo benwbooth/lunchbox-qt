@@ -58,8 +58,13 @@ if [[ -z "$binary_dir" ]]; then
   echo "Shell binaries are missing; run cargo build -p lb-shell first." >&2
   exit 1
 fi
+process_fixture="$binary_dir/lb-process-fixture"
+if [[ ! -x "$process_fixture" ]]; then
+  echo "Portable process fixture is missing; run cargo build --workspace first." >&2
+  exit 1
+fi
 stale_source=$(
-  find apps/lb-shell crates -type f \
+  find apps/lb-shell crates tools -type f \
     \( -name '*.rs' -o -name '*.qml' -o -name Cargo.toml -o -name build.rs \) \
     -newer "$binary_dir/launchbox" -print -quit
 )
@@ -68,6 +73,12 @@ if [[ -n "$stale_source" || Cargo.toml -nt "$binary_dir/launchbox" \
   echo "Shell binaries are older than the checked source; run cargo build -p lb-shell first." >&2
   exit 1
 fi
+
+install_process_fixture() {
+  local destination=$1
+  cp "$process_fixture" "$destination"
+  chmod +x "$destination"
+}
 
 test_config_root=$(mktemp -d)
 empty_path_mappings="$test_config_root/empty-path-mappings.json"
@@ -147,8 +158,7 @@ trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_applicat
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
-cp fixtures/runtime/argument-recorder.sh "$edit_root/Runtime/edited-recorder"
-chmod +x "$edit_root/Runtime/edited-recorder"
+install_process_fixture "$edit_root/Runtime/edited-recorder"
 
 edit_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
@@ -1960,8 +1970,7 @@ emulator_discovery_original="$emulator_discovery_root/original-emulators.xml"
 cp "$emulator_discovery_document" "$emulator_discovery_original"
 mkdir -p "$emulator_discovery_root/Emulators/PCSX2"
 emulator_discovery_candidate="$emulator_discovery_root/Emulators/PCSX2/pcsx2-qt"
-cp fixtures/runtime/noop.sh "$emulator_discovery_candidate"
-chmod +x "$emulator_discovery_candidate"
+install_process_fixture "$emulator_discovery_candidate"
 emulator_discovery_candidate_sha=$(
   sha256sum "$emulator_discovery_candidate" | awk '{print $1}'
 )
@@ -2050,8 +2059,7 @@ mkdir -p \
   "$emulator_bios_root/Emulators/PCSX2/inis" \
   "$emulator_bios_root/Emulators/PCSX2/custom-bios"
 emulator_bios_application="$emulator_bios_root/Emulators/PCSX2/pcsx2-qt"
-cp fixtures/runtime/noop.sh "$emulator_bios_application"
-chmod +x "$emulator_bios_application"
+install_process_fixture "$emulator_bios_application"
 printf '' > "$emulator_bios_root/Emulators/PCSX2/portable.ini"
 printf '[Folders]\nBios = custom-bios\n' \
   > "$emulator_bios_root/Emulators/PCSX2/inis/PCSX2.ini"
@@ -2129,10 +2137,7 @@ cp "$emulator_install_document" "$emulator_install_original_document"
 emulator_install_asset_name=pcsx2-v2.7.492-linux-appimage-x64-Qt.AppImage
 emulator_install_asset="$emulator_release_fixture_root/$emulator_install_asset_name"
 emulator_install_execution_marker="$emulator_install_root/installer-executed-artifact"
-printf '%s\n' \
-  '#!/bin/sh' \
-  "printf 'artifact was executed\\n' > '$emulator_install_execution_marker'" \
-  'exit 91' > "$emulator_install_asset"
+install_process_fixture "$emulator_install_asset"
 emulator_install_asset_size=$(stat -c '%s' "$emulator_install_asset")
 emulator_install_asset_sha256=$(sha256sum "$emulator_install_asset" | awk '{print $1}')
 printf '%s\n' \
@@ -2155,7 +2160,8 @@ printf '%s\n' \
   ']' > "$emulator_release_fixture_root/releases.json"
 
 emulator_install_output=$(
-  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+  LBPORT_UNEXPECTED_EXECUTION_MARKER="$emulator_install_execution_marker" \
+    QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
     --library "$emulator_install_root" --emulator-install-smoke-test \
     --emulator-release-fixture "$emulator_release_fixture_root" \
     --path-mappings-file "$empty_path_mappings" 2>&1
@@ -2462,30 +2468,22 @@ echo "LaunchBox dialog-driven playlist lifecycle, stable identity, auto/manual m
 
 cp -R fixtures/launchbox/Data "$emulator_launch_root/Data"
 mkdir -p "$emulator_launch_root/Emulators"
-cp fixtures/runtime/argument-recorder.sh \
-  "$emulator_launch_root/Emulators/fixture-emulator"
-chmod +x "$emulator_launch_root/Emulators/fixture-emulator"
+install_process_fixture "$emulator_launch_root/Emulators/fixture-emulator"
 
 cp -R fixtures/launchbox/Data "$disabled_lifecycle_root/Data"
 mkdir -p "$disabled_lifecycle_root/Emulators"
-cp fixtures/runtime/argument-recorder.sh \
-  "$disabled_lifecycle_root/Emulators/fixture-emulator"
-chmod +x "$disabled_lifecycle_root/Emulators/fixture-emulator"
+install_process_fixture "$disabled_lifecycle_root/Emulators/fixture-emulator"
 sed -i \
   's#<UseStartupScreen>true</UseStartupScreen>#<UseStartupScreen>false</UseStartupScreen>#' \
   "$disabled_lifecycle_root/Data/Settings.xml"
 
 cp -R fixtures/launchbox/Data "$short_lifecycle_root/Data"
 mkdir -p "$short_lifecycle_root/Emulators"
-cp fixtures/runtime/argument-recorder.sh \
-  "$short_lifecycle_root/Emulators/fixture-emulator"
-chmod +x "$short_lifecycle_root/Emulators/fixture-emulator"
+install_process_fixture "$short_lifecycle_root/Emulators/fixture-emulator"
 
 cp -R fixtures/launchbox-direct/Data "$direct_launch_root/Data"
 mkdir -p "$direct_launch_root/LaunchTargets"
-cp fixtures/runtime/argument-recorder.sh \
-  "$direct_launch_root/LaunchTargets/argument-recorder"
-chmod +x "$direct_launch_root/LaunchTargets/argument-recorder"
+install_process_fixture "$direct_launch_root/LaunchTargets/argument-recorder"
 
 cp -R fixtures/launchbox-archive/Data "$archive_launch_root/Data"
 mkdir -p \
@@ -2493,14 +2491,10 @@ mkdir -p \
   "$archive_launch_root/Games/Archive Fixture" \
   "$archive_launch_root/Runtime" \
   "$archive_launch_root/archive-source"
-cp fixtures/runtime/archive-recorder.sh \
-  "$archive_launch_root/Emulators/archive-recorder"
-cp fixtures/runtime/noop.sh "$archive_launch_root/Runtime/archive-after"
-cp fixtures/runtime/argument-recorder.sh \
-  "$archive_launch_root/archive-source/Archive Racer.rom"
-chmod +x \
-  "$archive_launch_root/Emulators/archive-recorder" \
-  "$archive_launch_root/Runtime/archive-after"
+install_process_fixture "$archive_launch_root/Emulators/archive-recorder"
+install_process_fixture "$archive_launch_root/Runtime/archive-after"
+printf 'portable archive ROM fixture\n' \
+  > "$archive_launch_root/archive-source/Archive Racer.rom"
 (
   cd "$archive_launch_root/archive-source"
   7z a -tzip \
@@ -2515,9 +2509,7 @@ mkdir -p \
   "$dosbox_launch_root/Games/DOS Fixture/BIN" \
   "$dosbox_launch_root/Media/CD Files" \
   "$dosbox_launch_root/Media"
-cp fixtures/runtime/dosbox-recorder.sh \
-  "$dosbox_launch_root/Runtime/dosbox-recorder"
-chmod +x "$dosbox_launch_root/Runtime/dosbox-recorder"
+install_process_fixture "$dosbox_launch_root/Runtime/dosbox-recorder"
 touch \
   "$dosbox_launch_root/Config/dosbox.conf" \
   "$dosbox_launch_root/Games/DOS Fixture/BIN/PLAY.BAT" \
@@ -2528,9 +2520,7 @@ cp -R fixtures/launchbox-scummvm/Data "$scummvm_launch_root/Data"
 mkdir -p \
   "$scummvm_launch_root/Runtime" \
   "$scummvm_launch_root/Games/Monkey Island 2"
-cp fixtures/runtime/scummvm-recorder.sh \
-  "$scummvm_launch_root/Runtime/scummvm"
-chmod +x "$scummvm_launch_root/Runtime/scummvm"
+install_process_fixture "$scummvm_launch_root/Runtime/scummvm"
 
 cp -R fixtures/launchbox-m3u/Data "$m3u_launch_root/Data"
 mkdir -p \
@@ -2538,18 +2528,14 @@ mkdir -p \
   "$m3u_launch_root/Games/M3U Fixture" \
   "$m3u_launch_root/Runtime" \
   "$m3u_launch_root/m3u-source"
-cp fixtures/runtime/m3u-recorder.sh \
-  "$m3u_launch_root/Emulators/m3u-recorder"
-cp fixtures/runtime/noop.sh "$m3u_launch_root/Runtime/m3u-after"
-cp fixtures/runtime/noop.sh \
-  "$m3u_launch_root/Games/M3U Fixture/Multi Disc Racer (Disc 1).chd"
-cp fixtures/runtime/noop.sh \
-  "$m3u_launch_root/Games/M3U Fixture/Multi Disc Racer (Disc 3).chd"
-cp fixtures/runtime/noop.sh \
-  "$m3u_launch_root/m3u-source/Multi Disc Racer (Disc 2).chd"
-chmod +x \
-  "$m3u_launch_root/Emulators/m3u-recorder" \
-  "$m3u_launch_root/Runtime/m3u-after"
+install_process_fixture "$m3u_launch_root/Emulators/m3u-recorder"
+install_process_fixture "$m3u_launch_root/Runtime/m3u-after"
+printf 'portable disc one fixture\n' \
+  > "$m3u_launch_root/Games/M3U Fixture/Multi Disc Racer (Disc 1).chd"
+printf 'portable disc three fixture\n' \
+  > "$m3u_launch_root/Games/M3U Fixture/Multi Disc Racer (Disc 3).chd"
+printf 'portable disc two fixture\n' \
+  > "$m3u_launch_root/m3u-source/Multi Disc Racer (Disc 2).chd"
 (
   cd "$m3u_launch_root/m3u-source"
   7z a -tzip \
@@ -2739,6 +2725,7 @@ run_launch_pause_smoke() {
   output=$(
     LBPORT_LAUNCH_SMOKE_LOG="$pause_log" \
       LBPORT_LAUNCH_SMOKE_SLEEP=1.6 \
+      LBPORT_LAUNCH_SMOKE_DELEGATE=1 \
       QT_QPA_PLATFORM=offscreen \
       "$binary_dir/$shell_name" "${arguments[@]}" 2>&1
   ) || {
@@ -2746,7 +2733,7 @@ run_launch_pause_smoke() {
     exit 1
   }
   if ! rg -q -F \
-    "LAUNCH_PAUSE_SMOKE_COMPLETE id=fixture-racer presentations=1 suspensions=1 resumptions=1 theme=\"$theme\" source=\"emulator default\"" \
+    "LAUNCH_PAUSE_SMOKE_COMPLETE id=fixture-racer presentations=1 suspensions=1 resumptions=1 delegated=1 theme=\"$theme\" source=\"emulator default\"" \
     <<< "$output"; then
     printf '%s\n' "$output" >&2
     echo "$shell_name did not validate its pause/resume process lifecycle." >&2
@@ -2772,7 +2759,7 @@ run_launch_pause_smoke() {
 
 run_launch_pause_smoke launchbox
 run_launch_pause_smoke bigbox
-echo "LaunchBox and BigBox frontend-global pause policy, emulator-default inheritance, direct-child suspension/resumption, shared rendered overlay, exact argv, and session persistence validated."
+echo "LaunchBox and BigBox frontend-global pause policy, emulator-default inheritance, delegated process-group suspension/resumption, shared rendered overlay, exact argv, and session persistence validated."
 
 direct_log="$direct_launch_root/direct-arguments.txt"
 run_launch_smoke launchbox "$direct_launch_root" fixture-direct "$direct_log" \
@@ -3150,9 +3137,7 @@ fi
 
 cp -R fixtures/launchbox-sequence/Data "$sequence_launch_root/Data"
 mkdir -p "$sequence_launch_root/Runtime"
-cp fixtures/runtime/sequence-recorder.sh \
-  "$sequence_launch_root/Runtime/sequence-recorder"
-chmod +x "$sequence_launch_root/Runtime/sequence-recorder"
+install_process_fixture "$sequence_launch_root/Runtime/sequence-recorder"
 
 sequence_log="$sequence_launch_root/sequence-order.txt"
 sequence_output=$(
@@ -3434,4 +3419,4 @@ if find "$game_grouping_root" -type f \
   exit 1
 fi
 
-echo "Persisted host mappings, direct/emulator/archive/M3U/DOSBox/ScummVM argv, folder/image mounts, leased resource cleanup, launch ordering, selected additional apps, transactional play statistics, and the combine/expand game-grouping lifecycle validated."
+echo "The portable Rust fixture validated persisted host mappings, direct/emulator/archive/M3U/DOSBox/ScummVM argv, delegated leased-resource cleanup, launch ordering, selected additional apps, transactional play statistics, and the combine/expand game-grouping lifecycle."

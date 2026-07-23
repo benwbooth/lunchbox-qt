@@ -120,11 +120,6 @@
             }"
           ];
 
-          postPatch = ''
-            chmod +x fixtures/runtime/*.sh
-            patchShebangs fixtures/runtime
-          '';
-
           preBuild = ''
             export QMAKE="${qtEnv}/bin/qmake"
             export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
@@ -132,19 +127,19 @@
             export QT_LIBEXEC_PATH="${qtEnv}/libexec"
           '';
 
-          cargoBuildFlags = [ "--workspace" ];
+          cargoBuildFlags = [
+            "--package"
+            "lb-shell"
+          ];
           doCheck = true;
           checkPhase = ''
             runHook preCheck
             cargo test --workspace --all-targets --release
+            cargo build --package lb-process-fixture --release \
+              --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget}
             bash ./scripts/check_qml.sh
             runHook postCheck
           '';
-          cargoInstallFlags = [
-            "--path"
-            "apps/lb-shell"
-          ];
-
           postFixup = ''
             for frontend in launchbox bigbox; do
               if ! grep -a -F '${pkgs.p7zip}/bin' "$out/bin/$frontend" >/dev/null; then

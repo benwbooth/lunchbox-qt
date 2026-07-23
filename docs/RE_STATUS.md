@@ -271,8 +271,11 @@ sampled launches, LaunchBox incremented `Game.PlayCount` and saved immediately
 after process start, persisted `LastPlayedDate` at the launch instant using a
 local UTC offset and seven fractional digits, then added the returned elapsed
 whole seconds to `PlayTime` after the launch session ended. The port mirrors
-that ordering for the directly spawned primary child; process-tree and
-focus-based timing still require a live Windows oracle.
+that ordering for an isolated launch session. Descendants that remain in its
+Unix process group or Windows Job Object extend the observed runtime after the
+direct child exits. That supervision is an explicit cross-platform safety
+extension, not a recovered 13.27 parity claim; deliberately escaped processes
+and focus-based timing still require a live Windows oracle.
 
 The recovered `StartupViewModelBase` constructor independently carries
 `minimumStartupScreenDisplayTime` and `loadDelay`, while
@@ -294,10 +297,14 @@ BigBox each persist `UsePauseScreen`, `PauseTheme`, `PauseScreenMuting`, and
 `PauseScreenFading`, while emulator plugin defaults independently set
 `UsePauseScreen`, `SuspendProcessOnPause`, and
 `ForcefulPauseScreenActivation`. The port therefore resolves pause policy
-separately from startup/shutdown policy. Protected bodies still prevent a
+separately from startup/shutdown policy. The recovered
+`ProcessSuspender` imports `NtSuspendProcess`, `NtResumeProcess`, and
+`OpenProcess`, but its protected method bodies do not establish target
+selection or process-tree behavior. The port's isolated process-group/Job
+Object suspension is therefore an explicit safety design rather than a claim
+that LaunchBox 13.27 uses the same boundary. Protected bodies still prevent a
 claim about exact AutoHotkey script order, cross-window forceful activation,
-mute/fade timing, or controller/global-key behavior; those remain oracle
-tasks.
+mute/fade timing, or controller/global-key behavior; those remain oracle tasks.
 
 The port keeps these stored Windows paths lexical in LaunchBox XML. A separate
 versioned host-mapping document translates drive and UNC roots only at the

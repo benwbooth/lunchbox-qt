@@ -298,8 +298,8 @@ and play-statistics persistence through both shells. A legacy ScummVM fixture
 likewise proves
 native game/save/extras paths, target and display flags, and transactional
 session updates through both shells. The launch boundary now increments
-PlayCount and records LastPlayed at primary spawn, adds directly observed
-whole-second child runtime to PlayTime on exit, retains exact backups, and
+PlayCount and records LastPlayed at primary spawn, adds the isolated launch
+session's observed whole-second runtime to PlayTime on exit, retains exact backups, and
 surfaces transaction failures. The `RUN-009` slice and first `RUN-011` subset
 now resolve effective startup/shutdown settings from the actual primary target,
 then combine them with the selected frontend's separate global settings.
@@ -313,10 +313,13 @@ compare exact arguments, and verify statistics. The first `RUN-010` subset now
 resolves game-override/emulator-default/direct-game pause policy, combines it
 with separate LaunchBox/BigBox global enable/theme settings, and sends typed
 pause/resume commands to the supervising worker. Unix controls the exact
-primary PID; Windows controls its current threads. Both shells render and
-verify the shared pause overlay. Theme/media asset selection, pause scripts,
-global input/focus behavior, mute/fade behavior, detached descendants, and
-pause-excluded play time remain open.
+process group; Windows controls all processes in a private Job Object. The
+direct child can delegate while supervision, pause/resume, temporary-resource
+leases, and session accounting continue. Both shells render and verify the
+shared pause overlay with the same portable Rust fixture used by platform
+integration tests. Theme/media asset selection, pause scripts, global
+input/focus behavior, mute/fade behavior, processes that deliberately escape
+the supervised session, and pause-excluded play time remain open.
 Source-indexed alternate names and custom fields
 now edit through the same real Qt dialog and transaction; retained rows keep
 unknown XML, new rows survive reload, and the custom-field fixture is explicitly
@@ -417,10 +420,10 @@ Phase 0/1 evidence and product-safety gates:
 5. Extend the launcher beyond the now-working direct/default-emulator, Launch
    With, automatic additional-app, persisted host-mapping, archive
    auto-extraction, multi-disc/M3U, DOSBox mount, legacy ScummVM, and inherited
-   frontend-specific startup/shutdown-overlay and direct-child pause/resume
-   paths into scripts, theme/media selection, global/controller pause input,
-   focus/window handling, descendant-process supervision, and focus-aware
-   pause-excluded play-time parity.
+   frontend-specific startup/shutdown-overlay and supervised process-group/job
+   pause/resume paths into scripts, theme/media selection, global/controller
+   pause input, focus/window handling, deliberate session-escape handling, and
+   focus-aware pause-excluded play-time parity.
 6. Run the native Qt shell and transaction scenarios on Windows as well as
    Linux; the current Windows gate covers the non-Qt core crates.
 

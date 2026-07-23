@@ -9,6 +9,7 @@ members = [
     "crates/lb-platform",
     "crates/lb-query",
     "crates/lb-storage",
+    "tools/lb-process-fixture",
 ]
 
 [workspace.package]
@@ -47,8 +48,10 @@ ureq = "3.3"
 uuid = { version = "1.0", features = ["v4"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
 xmltree = "0.11"

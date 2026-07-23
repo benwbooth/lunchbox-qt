@@ -1,0 +1,10 @@
+[package]
+name = "lb-process-fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+lb-platform.workspace = true
+tempfile.workspace = true

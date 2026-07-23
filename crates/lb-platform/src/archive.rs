@@ -481,12 +481,6 @@ struct TemporaryLaunchResource {
     directory: TempDir,
 }
 
-#[cfg(test)]
-pub(crate) fn temporary_launch_resource_for_test() -> LaunchResourceLease {
-    LaunchResourceLease::temporary("launchbox-port-resource-test-")
-        .expect("create temporary launch resource")
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ArchiveEntry {
     path: String,

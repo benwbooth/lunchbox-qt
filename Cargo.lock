@@ -658,6 +658,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lb-process-fixture"
+version = "0.1.0"
+dependencies = [
+ "lb-platform",
+ "tempfile",
+]
+
+[[package]]
 name = "lb-query"
 version = "0.1.0"
 dependencies = [

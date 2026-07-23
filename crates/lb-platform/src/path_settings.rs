@@ -465,6 +465,7 @@ pub enum HostPathMappingsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
     use crate::LaunchPathResolver;
 
     #[test]
@@ -482,9 +483,9 @@ mod tests {
 
         let loaded = HostPathMappings::load(&path).expect("reload mappings");
         assert_eq!(loaded, mappings);
-        let resolver = loaded.resolver().expect("build resolver");
         #[cfg(not(windows))]
         {
+            let resolver = loaded.resolver().expect("build resolver");
             assert_eq!(
                 resolver
                     .resolve(Path::new("/launchbox"), r"E:\Console\game.rom")

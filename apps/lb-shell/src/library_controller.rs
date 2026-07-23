@@ -1221,6 +1221,7 @@ pub struct LibraryControllerRust {
     pause_screen_presentations: u64,
     pause_process_suspensions: u64,
     pause_process_resumptions: u64,
+    delegated_session_completions: u64,
     session_stats_writes: u64,
     session_stats_error: Option<String>,
     pending_post_reload_message: Option<String>,
@@ -11180,6 +11181,7 @@ impl qobject::LibraryController {
             rust.pause_screen_presentations = 0;
             rust.pause_process_suspensions = 0;
             rust.pause_process_resumptions = 0;
+            rust.delegated_session_completions = 0;
             rust.pending_shutdown_screen = None;
         }
         let (launch_control_sender, launch_control_receiver) = mpsc::channel();
@@ -12913,6 +12915,7 @@ impl qobject::LibraryController {
             && rust.pause_screen_presentations == 1
             && rust.pause_process_suspensions == 1
             && rust.pause_process_resumptions == 1
+            && rust.delegated_session_completions == 1
             && pause_visible_seen
             && process_suspended_seen
             && resume_seen
@@ -12930,10 +12933,11 @@ impl qobject::LibraryController {
             && !*self.pause_screen_process_suspended();
         if success {
             eprintln!(
-                "LAUNCH_PAUSE_SMOKE_COMPLETE id={game_id} presentations={} suspensions={} resumptions={} theme=\"{}\" source=\"{}\"",
+                "LAUNCH_PAUSE_SMOKE_COMPLETE id={game_id} presentations={} suspensions={} resumptions={} delegated={} theme=\"{}\" source=\"{}\"",
                 rust.pause_screen_presentations,
                 rust.pause_process_suspensions,
                 rust.pause_process_resumptions,
+                rust.delegated_session_completions,
                 self.frontend_pause_theme(),
                 self.pause_screen_settings_source(),
             );
@@ -14975,6 +14979,13 @@ impl qobject::LibraryController {
         }
         match result {
             Ok(report) => {
+                if report.delegated_descendant_observed {
+                    self.as_mut().rust_mut().delegated_session_completions = self
+                        .as_ref()
+                        .rust()
+                        .delegated_session_completions
+                        .saturating_add(1);
+                }
                 let target = match &report.primary_target {
                     LaunchTarget::MainGame => report.game_title.clone(),
                     LaunchTarget::AdditionalApplication {
@@ -14990,6 +15001,11 @@ impl qobject::LibraryController {
                     "Session for {target} ended {exit} after {} second(s).",
                     report.primary_runtime.as_secs()
                 );
+                if report.delegated_descendant_observed {
+                    message.push_str(
+                        " The directly started launcher delegated to another supervised process.",
+                    );
+                }
                 if report.automatic_before_started > 0
                     || report.automatic_after_started > 0
                     || report.before_wait_timeouts > 0
@@ -16236,6 +16252,7 @@ impl qobject::LibraryController {
             rust.pause_screen_presentations = 0;
             rust.pause_process_suspensions = 0;
             rust.pause_process_resumptions = 0;
+            rust.delegated_session_completions = 0;
             rust.pending_shutdown_screen = None;
             rust.emulator_write_notifications = 0;
             rust.emulator_bios_scan_notifications = 0;

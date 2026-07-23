@@ -1578,14 +1578,43 @@ pub trait LaunchProcess: Send + 'static {
     fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>>;
     fn suspend(&mut self) -> std::io::Result<()>;
     fn resume(&mut self) -> std::io::Result<()>;
+
+    /// Reports whether a process in this launch session remained alive after
+    /// the directly spawned primary process exited.
+    fn delegated_descendant_observed(&self) -> bool {
+        false
+    }
 }
 
 pub struct SystemLaunchProcess {
     child: Child,
+    primary_status: Option<ExitStatus>,
+    delegated_descendant_observed: bool,
+    #[cfg(unix)]
+    process_group: libc::pid_t,
     #[cfg(unix)]
     suspended: bool,
     #[cfg(windows)]
-    suspended_threads: Vec<u32>,
+    job: std::os::windows::io::OwnedHandle,
+    #[cfg(windows)]
+    suspended_threads: Vec<(u32, u32)>,
+}
+
+impl SystemLaunchProcess {
+    fn session_has_active_processes(&self) -> std::io::Result<bool> {
+        #[cfg(unix)]
+        {
+            process_group_has_members(self.process_group)
+        }
+        #[cfg(windows)]
+        {
+            windows_job_active_processes(&self.job).map(|count| count > 0)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Ok(false)
+        }
+    }
 }
 
 impl LaunchProcess for SystemLaunchProcess {
@@ -1594,11 +1623,26 @@ impl LaunchProcess for SystemLaunchProcess {
     }
 
     fn wait(&mut self) -> std::io::Result<ExitStatus> {
-        self.child.wait()
+        loop {
+            if let Some(status) = self.try_wait()? {
+                return Ok(status);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
+        if self.primary_status.is_none() {
+            self.primary_status = self.child.try_wait()?;
+        }
+        let Some(status) = self.primary_status else {
+            return Ok(None);
+        };
+        if self.session_has_active_processes()? {
+            self.delegated_descendant_observed = true;
+            return Ok(None);
+        }
+        Ok(Some(status))
     }
 
     #[cfg(unix)]
@@ -1606,7 +1650,7 @@ impl LaunchProcess for SystemLaunchProcess {
         if self.suspended {
             return Ok(());
         }
-        signal_process(self.child.id(), libc::SIGSTOP)?;
+        signal_process_group(self.process_group, libc::SIGSTOP)?;
         self.suspended = true;
         Ok(())
     }
@@ -1616,7 +1660,7 @@ impl LaunchProcess for SystemLaunchProcess {
         if !self.suspended {
             return Ok(());
         }
-        signal_process(self.child.id(), libc::SIGCONT)?;
+        signal_process_group(self.process_group, libc::SIGCONT)?;
         self.suspended = false;
         Ok(())
     }
@@ -1626,20 +1670,23 @@ impl LaunchProcess for SystemLaunchProcess {
         if !self.suspended_threads.is_empty() {
             return Ok(());
         }
-        let thread_ids = windows_process_thread_ids(self.child.id())?;
-        let mut suspended = Vec::with_capacity(thread_ids.len());
-        for thread_id in thread_ids {
+        let threads = windows_job_thread_ids(&self.job)?;
+        let mut suspended = Vec::with_capacity(threads.len());
+        for (process_id, thread_id) in threads {
             if let Err(error) = windows_adjust_thread(thread_id, true) {
                 self.suspended_threads = suspended;
                 let _ = self.resume();
                 return Err(error);
             }
-            suspended.push(thread_id);
+            suspended.push((process_id, thread_id));
         }
         if suspended.is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("process {} has no controllable threads", self.child.id()),
+                format!(
+                    "launch session for process {} has no controllable threads",
+                    self.child.id()
+                ),
             ));
         }
         self.suspended_threads = suspended;
@@ -1651,15 +1698,16 @@ impl LaunchProcess for SystemLaunchProcess {
         if self.suspended_threads.is_empty() {
             return Ok(());
         }
-        let live_threads = windows_process_thread_ids(self.child.id())?;
+        let live_threads = windows_job_thread_ids(&self.job)?;
         let mut remaining = Vec::new();
         let mut first_error = None;
-        for thread_id in std::mem::take(&mut self.suspended_threads) {
-            if !live_threads.contains(&thread_id) {
+        for thread in std::mem::take(&mut self.suspended_threads) {
+            if !live_threads.contains(&thread) {
                 continue;
             }
+            let (_, thread_id) = thread;
             if let Err(error) = windows_adjust_thread(thread_id, false) {
-                remaining.push(thread_id);
+                remaining.push(thread);
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
@@ -1681,6 +1729,10 @@ impl LaunchProcess for SystemLaunchProcess {
     fn resume(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+
+    fn delegated_descendant_observed(&self) -> bool {
+        self.delegated_descendant_observed
+    }
 }
 
 impl Drop for SystemLaunchProcess {
@@ -1690,19 +1742,162 @@ impl Drop for SystemLaunchProcess {
 }
 
 #[cfg(unix)]
-fn signal_process(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
-    let pid = libc::pid_t::try_from(pid).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("process identifier {pid} does not fit pid_t"),
-        )
-    })?;
-    // SAFETY: `pid` came from a live `std::process::Child`, and `signal` is
-    // restricted by callers to SIGSTOP or SIGCONT.
-    if unsafe { libc::kill(pid, signal) } == 0 {
+fn process_group_has_members(process_group: libc::pid_t) -> std::io::Result<bool> {
+    // SAFETY: the negated process-group identifier was created specifically
+    // for this launch. Signal zero performs existence/permission checking
+    // without changing any process state.
+    if unsafe { libc::kill(-process_group, 0) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_group: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: `process_group` is a positive, isolated group created for this
+    // launch, so its negation targets only that group. Callers restrict
+    // `signal` to SIGSTOP or SIGCONT.
+    if unsafe { libc::kill(-process_group, signal) } == 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn windows_create_job() -> std::io::Result<std::os::windows::io::OwnedHandle> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+
+    // SAFETY: null security attributes and name request a private job. The
+    // checked handle is transferred into OwnedHandle exactly once.
+    unsafe {
+        let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if handle.is_null() {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(std::os::windows::io::OwnedHandle::from_raw_handle(handle))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_assign_process_to_job(
+    job: &std::os::windows::io::OwnedHandle,
+    child: &Child,
+) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+    // SAFETY: both raw handles are borrowed from live owned objects for the
+    // duration of the call.
+    if unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn windows_job_active_processes(job: &std::os::windows::io::OwnedHandle) -> std::io::Result<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectBasicAccountingInformation, QueryInformationJobObject,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    };
+
+    let mut information = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+    // SAFETY: the output pointer and byte length describe the initialized
+    // accounting structure, and the job handle remains live.
+    if unsafe {
+        QueryInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectBasicAccountingInformation,
+            std::ptr::from_mut(&mut information).cast(),
+            std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+            std::ptr::null_mut(),
+        )
+    } != 0
+    {
+        Ok(information.ActiveProcesses)
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn windows_job_process_ids(job: &std::os::windows::io::OwnedHandle) -> std::io::Result<Vec<u32>> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectBasicProcessIdList, QueryInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    };
+
+    const ERROR_MORE_DATA: i32 = 234;
+    const MAX_SESSION_PROCESSES: usize = 16_384;
+    let mut capacity = 16usize;
+    loop {
+        let byte_length = std::mem::size_of::<u32>() * 2 + std::mem::size_of::<usize>() * capacity;
+        let words = byte_length.div_ceil(std::mem::size_of::<usize>());
+        let mut storage = vec![0usize; words];
+        let information = storage
+            .as_mut_ptr()
+            .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+        // SAFETY: `storage` is usize-aligned and large enough for the fixed
+        // header plus `capacity` process identifiers. The returned count is
+        // checked against that capacity before the flexible array is read.
+        let success = unsafe {
+            QueryInformationJobObject(
+                job.as_raw_handle(),
+                JobObjectBasicProcessIdList,
+                information.cast(),
+                u32::try_from(byte_length).expect("bounded job buffer fits u32"),
+                std::ptr::null_mut(),
+            )
+        };
+        if success != 0 {
+            // SAFETY: successful query initialized the header.
+            let count = unsafe { (*information).NumberOfProcessIdsInList as usize };
+            if count > capacity {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Windows returned more job process identifiers than fit the query buffer",
+                ));
+            }
+            // SAFETY: the successful query initialized exactly `count`
+            // entries in the flexible ProcessIdList array.
+            let identifiers =
+                unsafe { std::slice::from_raw_parts((*information).ProcessIdList.as_ptr(), count) };
+            return identifiers
+                .iter()
+                .copied()
+                .map(|identifier| {
+                    u32::try_from(identifier).map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Windows process identifier {identifier} does not fit u32"),
+                        )
+                    })
+                })
+                .collect();
+        }
+
+        let error = std::io::Error::last_os_error();
+        // SAFETY: even ERROR_MORE_DATA initializes the fixed header with the
+        // assigned-process count documented by QueryInformationJobObject.
+        let assigned = unsafe { (*information).NumberOfAssignedProcesses as usize };
+        if error.raw_os_error() == Some(ERROR_MORE_DATA)
+            && assigned > capacity
+            && assigned <= MAX_SESSION_PROCESSES
+        {
+            capacity = assigned;
+            continue;
+        }
+        return Err(error);
     }
 }
 
@@ -1741,6 +1936,22 @@ fn windows_process_thread_ids(pid: u32) -> std::io::Result<Vec<u32>> {
 }
 
 #[cfg(windows)]
+fn windows_job_thread_ids(
+    job: &std::os::windows::io::OwnedHandle,
+) -> std::io::Result<Vec<(u32, u32)>> {
+    let process_ids = windows_job_process_ids(job)?;
+    let mut threads = Vec::new();
+    for process_id in process_ids {
+        threads.extend(
+            windows_process_thread_ids(process_id)?
+                .into_iter()
+                .map(|thread_id| (process_id, thread_id)),
+        );
+    }
+    Ok(threads)
+}
+
+#[cfg(windows)]
 fn windows_adjust_thread(thread_id: u32, suspend: bool) -> std::io::Result<()> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
@@ -1767,6 +1978,21 @@ fn windows_adjust_thread(thread_id: u32, suspend: bool) -> std::io::Result<()> {
         CloseHandle(thread);
         result
     }
+}
+
+#[cfg(windows)]
+fn windows_resume_created_process(pid: u32) -> std::io::Result<()> {
+    let threads = windows_process_thread_ids(pid)?;
+    if threads.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("new process {pid} has no resumable primary thread"),
+        ));
+    }
+    for thread_id in threads {
+        windows_adjust_thread(thread_id, false)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1803,20 +2029,70 @@ impl ProcessLauncher for SystemProcessLauncher {
             command.stdout(Stdio::null());
             command.stderr(Stdio::null());
         }
-        #[cfg(windows)]
-        if request.hide_console {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
         }
-        let child = command.spawn().map_err(|source| LaunchError::Spawn {
+        #[cfg(windows)]
+        let job = windows_create_job().map_err(|source| LaunchError::Supervise {
             executable: request.executable.clone(),
             source,
         })?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            const CREATE_SUSPENDED: u32 = 0x0000_0004;
+            let mut flags = CREATE_SUSPENDED;
+            if request.hide_console {
+                flags |= CREATE_NO_WINDOW;
+            }
+            command.creation_flags(flags);
+        }
+        let mut child = command.spawn().map_err(|source| LaunchError::Spawn {
+            executable: request.executable.clone(),
+            source,
+        })?;
+        #[cfg(unix)]
+        let process_group = match libc::pid_t::try_from(child.id()) {
+            Ok(process_group) if process_group > 0 => process_group,
+            _ => {
+                let source = std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("process identifier {} does not fit pid_t", child.id()),
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(LaunchError::Supervise {
+                    executable: request.executable.clone(),
+                    source,
+                });
+            }
+        };
+        #[cfg(windows)]
+        {
+            let supervision = windows_assign_process_to_job(&job, &child)
+                .and_then(|()| windows_resume_created_process(child.id()));
+            if let Err(source) = supervision {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(LaunchError::Supervise {
+                    executable: request.executable.clone(),
+                    source,
+                });
+            }
+        }
         Ok(SystemLaunchProcess {
             child,
+            primary_status: None,
+            delegated_descendant_observed: false,
+            #[cfg(unix)]
+            process_group,
             #[cfg(unix)]
             suspended: false,
+            #[cfg(windows)]
+            job,
             #[cfg(windows)]
             suspended_threads: Vec::new(),
         })
@@ -1827,6 +2103,12 @@ impl ProcessLauncher for SystemProcessLauncher {
 pub enum LaunchError {
     #[error("failed to launch {executable}: {source}")]
     Spawn {
+        executable: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to establish supervision for {executable}: {source}")]
+    Supervise {
         executable: PathBuf,
         #[source]
         source: std::io::Error,
@@ -1879,6 +2161,7 @@ pub struct LaunchSequenceReport {
     pub primary_started_at: SystemTime,
     pub primary_runtime: Duration,
     pub primary_exit_success: bool,
+    pub delegated_descendant_observed: bool,
     pub automatic_before_started: usize,
     pub automatic_after_started: usize,
     pub before_wait_timeouts: usize,
@@ -2035,6 +2318,7 @@ where
                 status,
             });
             if step.role.is_primary() {
+                let delegated_descendant_observed = process.delegated_descendant_observed();
                 primary = Some((
                     step.plan.target.clone(),
                     step.plan.request.executable.clone(),
@@ -2042,6 +2326,7 @@ where
                     started_at,
                     runtime_started.elapsed(),
                     status.success(),
+                    delegated_descendant_observed,
                 ));
             }
         } else {
@@ -2061,6 +2346,7 @@ where
         primary_started_at,
         primary_runtime,
         primary_exit_success,
+        delegated_descendant_observed,
     ) = primary.expect("primary count was validated before spawning");
     Ok(LaunchSequenceReport {
         game_id: sequence.game_id.clone(),
@@ -2071,6 +2357,7 @@ where
         primary_started_at,
         primary_runtime,
         primary_exit_success,
+        delegated_descendant_observed,
         automatic_before_started,
         automatic_after_started,
         before_wait_timeouts,
@@ -2977,340 +3264,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn controlled_executor_stops_and_resumes_the_real_primary_pid() {
-        let sequence = LaunchSequence {
-            game_id: "game-id".into(),
-            game_title: "Game Title".into(),
-            startup: LaunchStartupPolicy::disabled(),
-            shutdown: LaunchShutdownPolicy::disabled(),
-            pause: LaunchPausePolicy {
-                enabled: true,
-                suspend_process: true,
-                forceful_activation: false,
-                source: LaunchStartupSettingsSource::DirectGame,
-            },
-            steps: vec![LaunchStep {
-                role: LaunchStepRole::MainGame,
-                wait_for_exit: false,
-                plan: LaunchPlan {
-                    game_id: "game-id".into(),
-                    game_title: "Game Title".into(),
-                    target: LaunchTarget::MainGame,
-                    kind: LaunchKind::Direct,
-                    request: LaunchRequest::new("/bin/sh").arg("-c").arg("exec sleep 30"),
-                    resource_leases: Vec::new(),
-                },
-            }],
-        };
-        let (command_tx, command_rx) = std::sync::mpsc::channel();
-        let (event_tx, event_rx) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            execute_launch_sequence_controlled(&sequence, &command_rx, |event| {
-                event_tx.send(event).expect("send launch event");
-            })
-        });
-
-        let pid = loop {
-            match event_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("primary process start event")
-            {
-                LaunchSequenceEvent::StepStarted { role, pid, .. } if role.is_primary() => {
-                    break pid;
-                }
-                _ => {}
-            }
-        };
-        command_tx
-            .send(LaunchControlCommand::Pause)
-            .expect("request pause");
-        loop {
-            if matches!(
-                event_rx
-                    .recv_timeout(Duration::from_secs(2))
-                    .expect("primary pause event"),
-                LaunchSequenceEvent::PrimaryPaused {
-                    process_suspended: true
-                }
-            ) {
-                break;
-            }
-        }
-        let stopped_status =
-            std::fs::read_to_string(format!("/proc/{pid}/status")).expect("read stopped status");
-
-        command_tx
-            .send(LaunchControlCommand::Resume)
-            .expect("request resume");
-        loop {
-            if matches!(
-                event_rx
-                    .recv_timeout(Duration::from_secs(2))
-                    .expect("primary resume event"),
-                LaunchSequenceEvent::PrimaryResumed {
-                    process_resumed: true
-                }
-            ) {
-                break;
-            }
-        }
-        let resume_started = Instant::now();
-        let resumed_status = loop {
-            let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
-                .expect("read resumed status");
-            if status
-                .lines()
-                .any(|line| line.starts_with("State:") && !line.contains("T (stopped)"))
-            {
-                break status;
-            }
-            assert!(
-                resume_started.elapsed() < Duration::from_secs(2),
-                "primary did not resume:\n{status}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        };
-
-        command_tx
-            .send(LaunchControlCommand::Pause)
-            .expect("request second pause");
-        loop {
-            if matches!(
-                event_rx
-                    .recv_timeout(Duration::from_secs(2))
-                    .expect("second primary pause event"),
-                LaunchSequenceEvent::PrimaryPaused {
-                    process_suspended: true
-                }
-            ) {
-                break;
-            }
-        }
-        drop(command_tx);
-        let disconnect_started = Instant::now();
-        let disconnected_status = loop {
-            let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
-                .expect("read disconnect-resumed status");
-            if status
-                .lines()
-                .any(|line| line.starts_with("State:") && !line.contains("T (stopped)"))
-            {
-                break status;
-            }
-            assert!(
-                disconnect_started.elapsed() < Duration::from_secs(2),
-                "sender loss did not resume the primary:\n{status}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        };
-
-        let native_pid = libc::pid_t::try_from(pid).expect("test PID fits pid_t");
-        // SAFETY: `pid` is the exact child reported by the executor and is
-        // terminated only after the resume event.
-        assert_eq!(unsafe { libc::kill(native_pid, libc::SIGTERM) }, 0);
-        let report = worker
-            .join()
-            .expect("join controlled launch worker")
-            .expect("supervise terminated primary");
-
-        assert!(
-            stopped_status
-                .lines()
-                .any(|line| line.starts_with("State:") && line.contains("T (stopped)")),
-            "primary was not stopped:\n{stopped_status}"
-        );
-        assert!(
-            resumed_status
-                .lines()
-                .any(|line| line.starts_with("State:") && !line.contains("T (stopped)")),
-            "primary did not resume:\n{resumed_status}"
-        );
-        assert!(
-            disconnected_status
-                .lines()
-                .any(|line| line.starts_with("State:") && !line.contains("T (stopped)")),
-            "primary remained stopped after sender loss:\n{disconnected_status}"
-        );
-        assert_eq!(report.primary_pid, pid);
-        assert!(!report.primary_exit_success);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sequence_executor_runs_waited_before_main_and_after_in_order() {
-        let log = std::env::temp_dir().join(format!(
-            "launchbox-sequence-order-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        let _ = std::fs::remove_file(&log);
-        let append = |value: &str| {
-            LaunchRequest::new("/bin/sh")
-                .arg("-c")
-                .arg(format!("printf '%s\\n' {value} >> {}", log.display()))
-        };
-        let step = |role, wait_for_exit, name: &str| LaunchStep {
-            role,
-            wait_for_exit,
-            plan: LaunchPlan {
-                game_id: "game-id".into(),
-                game_title: "Game Title".into(),
-                target: if role == LaunchStepRole::MainGame {
-                    LaunchTarget::MainGame
-                } else {
-                    LaunchTarget::AdditionalApplication {
-                        application_id: name.into(),
-                        application_name: name.into(),
-                    }
-                },
-                kind: LaunchKind::Direct,
-                request: append(name),
-                resource_leases: Vec::new(),
-            },
-        };
-        let sequence = LaunchSequence {
-            game_id: "game-id".into(),
-            game_title: "Game Title".into(),
-            startup: LaunchStartupPolicy::disabled(),
-            shutdown: LaunchShutdownPolicy::disabled(),
-            pause: LaunchPausePolicy::disabled(),
-            steps: vec![
-                step(LaunchStepRole::AutomaticBefore, true, "before"),
-                step(LaunchStepRole::MainGame, true, "main"),
-                step(LaunchStepRole::AutomaticAfter, false, "after"),
-            ],
-        };
-        let mut events = Vec::new();
-        let report = execute_launch_sequence_with(
-            &sequence,
-            &SystemProcessLauncher,
-            Duration::from_millis(100),
-            |event| events.push(event),
-        )
-        .expect("execute sequence");
-        assert_eq!(report.automatic_before_started, 1);
-        assert_eq!(report.automatic_after_started, 1);
-        assert_eq!(report.before_wait_timeouts, 0);
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event, LaunchSequenceEvent::StepStarted { .. }))
-                .count(),
-            3
-        );
-
-        let started = Instant::now();
-        let contents = loop {
-            let contents = std::fs::read_to_string(&log).unwrap_or_default();
-            if contents.lines().count() == 3 {
-                break contents;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(1),
-                "after-app did not finish: {contents:?}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        assert_eq!(
-            contents.lines().collect::<Vec<_>>(),
-            ["before", "main", "after"]
-        );
-        std::fs::remove_file(log).expect("remove sequence log");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn before_wait_timeout_does_not_prevent_the_main_process() {
-        let before = LaunchStep {
-            role: LaunchStepRole::AutomaticBefore,
-            wait_for_exit: true,
-            plan: LaunchPlan {
-                game_id: "game-id".into(),
-                game_title: "Game Title".into(),
-                target: LaunchTarget::AdditionalApplication {
-                    application_id: "slow-before".into(),
-                    application_name: "Slow Before".into(),
-                },
-                kind: LaunchKind::Direct,
-                request: LaunchRequest::new("/bin/sh").arg("-c").arg("sleep 0.05"),
-                resource_leases: Vec::new(),
-            },
-        };
-        let main = LaunchStep {
-            role: LaunchStepRole::MainGame,
-            wait_for_exit: false,
-            plan: LaunchPlan {
-                game_id: "game-id".into(),
-                game_title: "Game Title".into(),
-                target: LaunchTarget::MainGame,
-                kind: LaunchKind::Direct,
-                request: LaunchRequest::new("/bin/sh").arg("-c").arg("exit 0"),
-                resource_leases: Vec::new(),
-            },
-        };
-        let sequence = LaunchSequence {
-            game_id: "game-id".into(),
-            game_title: "Game Title".into(),
-            startup: LaunchStartupPolicy::disabled(),
-            shutdown: LaunchShutdownPolicy::disabled(),
-            pause: LaunchPausePolicy::disabled(),
-            steps: vec![before, main],
-        };
-        let mut timed_out = false;
-        let report = execute_launch_sequence_with(
-            &sequence,
-            &SystemProcessLauncher,
-            Duration::from_millis(1),
-            |event| timed_out |= matches!(event, LaunchSequenceEvent::BeforeWaitTimedOut { .. }),
-        )
-        .expect("timeout is non-fatal");
-        assert!(timed_out);
-        assert_eq!(report.before_wait_timeouts, 1);
-        assert_ne!(report.primary_pid, 0);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn primary_exit_is_observed_before_temporary_resources_are_released() {
-        let lease = crate::archive::temporary_launch_resource_for_test();
-        let resource_path = lease.path().to_path_buf();
-        std::fs::write(resource_path.join("rom.bin"), b"fixture")
-            .expect("write temporary ROM fixture");
-        let sequence = LaunchSequence {
-            game_id: "game-id".into(),
-            game_title: "Game Title".into(),
-            startup: LaunchStartupPolicy::disabled(),
-            shutdown: LaunchShutdownPolicy::disabled(),
-            pause: LaunchPausePolicy::disabled(),
-            steps: vec![LaunchStep {
-                role: LaunchStepRole::MainGame,
-                wait_for_exit: false,
-                plan: LaunchPlan {
-                    game_id: "game-id".into(),
-                    game_title: "Game Title".into(),
-                    target: LaunchTarget::MainGame,
-                    kind: LaunchKind::Direct,
-                    request: LaunchRequest::new("/bin/sh").arg("-c").arg("sleep 0.15"),
-                    resource_leases: vec![lease],
-                },
-            }],
-        };
-
-        let started = Instant::now();
-        let report =
-            execute_launch_sequence(&sequence, |_| {}).expect("launch observed primary process");
-        assert!(report.primary_exit_success);
-        assert!(report.primary_runtime >= Duration::from_millis(100));
-        assert!(started.elapsed() >= Duration::from_millis(100));
-        drop(sequence);
-        assert!(
-            !resource_path.exists(),
-            "the completed primary session retained its temporary resource"
-        );
-    }
-
     #[test]
     fn filename_only_and_no_space_modes_are_preserved_semantically() {
         let mut configuration = configuration();
@@ -3475,15 +3428,6 @@ mod tests {
                 game_id: "game-id".into(),
             })
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn system_launcher_runs_without_a_shell() {
-        let mut child = SystemProcessLauncher
-            .launch(&LaunchRequest::new("/bin/sh").arg("-c").arg("exit 0"))
-            .expect("launch test process");
-        assert!(child.wait().expect("wait for test process").success());
     }
 
     #[cfg(target_os = "linux")]

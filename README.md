@@ -102,8 +102,14 @@ pre-launch and minimum-display intervals, proves that a short-lived primary
 completes the startup minimum before shutdown, and proves global disable
 bypass, exact arguments, continued supervision, and LaunchBox-compatible
 statistics writes.
-Theme/media asset rendering, window/focus handling, delegated process trees,
-and pause screens remain open.
+Every spawned primary starts in an isolated Unix process group or Windows Job
+Object. Supervision, temporary-resource leases, shutdown presentation,
+play-time accounting, and pause/resume continue through descendants that remain
+in that launch session after the direct child exits. A portable Rust process
+fixture proves both direct and delegated lifecycles without `/bin/sh` or
+platform-specific test payloads. Theme/media asset rendering, window/focus
+handling, pause scripts, global/controller pause input, and processes that
+explicitly escape the supervised session remain open.
 
 The complete read index covers all 107 `Game` fields observed in the 13.24
 installation plus every other platform record, playlist, emulator mapping,
@@ -414,8 +420,10 @@ BigBox restart, extraction lifetime and cleanup, before/main/after order, and a
 selected BigBox additional-app launch. It also verifies transactional
 PlayCount, PlayTime, and LastPlayed persistence for every launch backend,
 backup retention, completed-manifest cleanup, and unknown XML preservation.
-Elapsed time currently follows the directly spawned primary child; detached
-descendant and focus-based accounting remain later lifecycle work.
+Elapsed time follows the isolated launch session, including descendants that
+remain in its Unix process group or Windows Job Object after the direct child
+exits. Focus-based accounting and processes that explicitly create a new
+session or break away from the job remain later lifecycle work.
 
 The current QML library browser and launcher are an early functional vertical slice, not a
 claim of LaunchBox/BigBox parity. See the implementation status for the exact
