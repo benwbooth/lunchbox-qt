@@ -126,6 +126,8 @@ platform_crud_root=$(mktemp -d)
 emulator_crud_root=$(mktemp -d)
 emulator_discovery_root=$(mktemp -d)
 emulator_bios_root=$(mktemp -d)
+emulator_install_root=$(mktemp -d)
+emulator_release_fixture_root=$(mktemp -d)
 category_crud_root=$(mktemp -d)
 playlist_crud_root=$(mktemp -d)
 game_grouping_root=$(mktemp -d)
@@ -136,7 +138,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$emulator_bios_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -2110,6 +2112,118 @@ if find "$emulator_bios_root" -type f \
 fi
 
 echo "LaunchBox complete 73-alternative PCSX2 BIOS group, portable configuration resolution, streamed hash mismatch, symlink refusal, Qt status report, and whole-tree immutability validated."
+
+cp -R fixtures/launchbox/Data "$emulator_install_root/Data"
+find "$emulator_install_root/Data" -type f -name '*.xml' -exec \
+  sed -i 's/Fixture Console/Sony PlayStation 2/g' {} +
+emulator_install_document="$emulator_install_root/Data/Emulators.xml"
+sed -i 's#<Default>true</Default>#<Default>false</Default>#' \
+  "$emulator_install_document"
+emulator_install_original_document="$emulator_install_root/original-emulators.xml"
+cp "$emulator_install_document" "$emulator_install_original_document"
+emulator_install_asset_name=pcsx2-v2.7.492-linux-appimage-x64-Qt.AppImage
+emulator_install_asset="$emulator_release_fixture_root/$emulator_install_asset_name"
+emulator_install_execution_marker="$emulator_install_root/installer-executed-artifact"
+printf '%s\n' \
+  '#!/bin/sh' \
+  "printf 'artifact was executed\\n' > '$emulator_install_execution_marker'" \
+  'exit 91' > "$emulator_install_asset"
+emulator_install_asset_size=$(stat -c '%s' "$emulator_install_asset")
+emulator_install_asset_sha256=$(sha256sum "$emulator_install_asset" | awk '{print $1}')
+printf '%s\n' \
+  '[' \
+  '  {' \
+  '    "tag_name": "v2.7.492",' \
+  '    "name": "PCSX2 v2.7.492",' \
+  '    "html_url": "https://github.com/PCSX2/pcsx2/releases/tag/v2.7.492",' \
+  '    "draft": false,' \
+  '    "prerelease": true,' \
+  '    "assets": [' \
+  '      {' \
+  "        \"name\": \"$emulator_install_asset_name\"," \
+  "        \"browser_download_url\": \"https://github.com/PCSX2/pcsx2/releases/download/v2.7.492/$emulator_install_asset_name\"," \
+  "        \"size\": $emulator_install_asset_size," \
+  "        \"digest\": \"sha256:$emulator_install_asset_sha256\"" \
+  '      }' \
+  '    ]' \
+  '  }' \
+  ']' > "$emulator_release_fixture_root/releases.json"
+
+emulator_install_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$emulator_install_root" --emulator-install-smoke-test \
+    --emulator-release-fixture "$emulator_release_fixture_root" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$emulator_install_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'EMULATOR_INSTALL_SMOKE_COMPLETE emulator=PCSX2 version=2.7.492 files=3 installs=1 revision=[0-9]+' \
+  <<< "$emulator_install_output"; then
+  printf '%s\n' "$emulator_install_output" >&2
+  echo "LaunchBox did not validate the managed PCSX2 install contract." >&2
+  exit 1
+fi
+emulator_install_directory="$emulator_install_root/Emulators/PCSX2"
+emulator_install_executable="$emulator_install_directory/pcsx2-qt.AppImage"
+emulator_install_manifest="$emulator_install_directory/.launchbox-port-install.json"
+if ! cmp -s "$emulator_install_asset" "$emulator_install_executable" \
+  || [[ ! -x "$emulator_install_executable" ]] \
+  || [[ ! -f "$emulator_install_directory/portable.ini" ]] \
+  || [[ -s "$emulator_install_directory/portable.ini" ]]; then
+  echo "Managed PCSX2 install did not retain exact executable bytes, execute permission, and empty portable marker." >&2
+  exit 1
+fi
+for expected in \
+  '"schema_version": 1' \
+  '"profile_id": "pcsx2"' \
+  '"provider": "github:PCSX2/pcsx2"' \
+  '"version": "2.7.492"' \
+  "\"asset_byte_len\": $emulator_install_asset_size" \
+  "\"asset_sha256\": \"$emulator_install_asset_sha256\"" \
+  '"executable_name": "pcsx2-qt.AppImage"'; do
+  if ! rg -q -F "$expected" "$emulator_install_manifest"; then
+    echo "Managed PCSX2 ownership manifest is missing: $expected" >&2
+    exit 1
+  fi
+done
+for expected in \
+  '<Title>PCSX2</Title>' \
+  '<ApplicationPath>Emulators\PCSX2\pcsx2-qt.AppImage</ApplicationPath>' \
+  '<Platform>Sony PlayStation 2</Platform>' \
+  '<Default>true</Default>'; do
+  if ! rg -q -F "$expected" "$emulator_install_document"; then
+    echo "Managed PCSX2 install did not persist expected emulator XML: $expected" >&2
+    exit 1
+  fi
+done
+if [[ $(find "$emulator_install_directory" -type f | wc -l) -ne 3 ]] \
+  || [[ -e "$emulator_install_execution_marker" ]]; then
+  echo "Managed PCSX2 install created unexpected files or executed the downloaded artifact." >&2
+  exit 1
+fi
+emulator_install_backup_count=0
+while IFS= read -r backup; do
+  emulator_install_backup_count=$((emulator_install_backup_count + 1))
+  if ! cmp -s "$emulator_install_original_document" "$backup"; then
+    echo "Managed PCSX2 install retained an inexact Emulators.xml backup." >&2
+    exit 1
+  fi
+done < <(
+  find "$emulator_install_root/Data" -maxdepth 1 -type f \
+    -name 'Emulators.xml.lbport-transaction-backup-*' | sort
+)
+if [[ "$emulator_install_backup_count" -ne 1 ]] \
+  || find "$emulator_install_root" -type f \
+    -name '.lbport-transaction-*.json' -print -quit | rg -q . \
+  || find "$emulator_install_root" -type d \
+    -name '.lbport-pcsx2-download-*' -print -quit | rg -q .; then
+  echo "Managed PCSX2 install did not retain one exact XML backup or left staging/recovery state behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox official-shaped PCSX2 release review, streamed size/SHA-256 verification, non-executing AppImage install, executable permission, portable path storage, ownership manifest, exact XML backup, and transactional cleanup validated."
 
 cp -R fixtures/launchbox/Data "$category_crud_root/Data"
 category_crud_catalog="$category_crud_root/Data/Platforms.xml"

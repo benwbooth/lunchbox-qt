@@ -9,9 +9,12 @@ chrono.workspace = true
 encoding_rs.workspace = true
 lb-platform.workspace = true
 md-5.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 unicode-normalization.workspace = true
+ureq.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

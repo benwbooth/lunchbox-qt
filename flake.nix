@@ -51,17 +51,20 @@
         # merged view instead of exposing unrelated package store paths.
         qtEnv = pkgs.qt6.env "launchbox-port-qt-env" qtModules;
 
-        nativeBuildInputs = with pkgs; [
-          rustToolchain
-          cmake
-          ninja
-          pkg-config
-          dosbox-staging
-          p7zip
-          ripgrep
-          scummvm
-          sqlite
-        ];
+        nativeBuildInputs =
+          with pkgs;
+          [
+            rustToolchain
+            cmake
+            ninja
+            pkg-config
+            dosbox-staging
+            p7zip
+            ripgrep
+            scummvm
+            sqlite
+          ]
+          ++ lib.optionals pkgs.stdenv.isLinux [ appimage-run ];
 
         buildInputs = qtModules ++ [ pkgs.libGL ];
 
@@ -113,6 +116,7 @@
                 pkgs.p7zip
                 pkgs.scummvm
               ]
+              + lib.optionalString pkgs.stdenv.isLinux ":${lib.makeBinPath [ pkgs.appimage-run ]}"
             }"
           ];
 
@@ -155,6 +159,12 @@
                 echo "$frontend wrapper is missing the packaged ScummVM PATH" >&2
                 exit 1
               fi
+              ${lib.optionalString pkgs.stdenv.isLinux ''
+                if ! grep -a -F '${pkgs.appimage-run}/bin' "$out/bin/$frontend" >/dev/null; then
+                  echo "$frontend wrapper is missing the packaged appimage-run PATH" >&2
+                  exit 1
+                fi
+              ''}
             done
           '';
 

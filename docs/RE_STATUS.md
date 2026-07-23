@@ -198,6 +198,29 @@ recovery copies, and cleanup. Those regular rows then use the existing
 revision-checked backup-first restore and active-delete paths. The adapter
 recognizes `dolphin:wii:` as the explicit directory boundary and never claims
 Wii directories or other unrecognized directories as ordinary files.
+
+The recovered 13.27 PCSX2 installer implements `GetCurrentVersion`,
+`GetInstallableVersions`, `InstallEmulator`, and update checking through the
+emulator-plugin contract. It queries GitHub releases, chooses the first
+compatible Windows Qt 7z asset, downloads with progress/cancellation, extracts
+into an existing emulator directory or `Emulators/PCSX2`, creates the portable
+marker, runs the first-time wizard, and returns either the repointed existing
+definition or a new definition with recovered defaults and platform mappings.
+The port keeps that first-compatible-release policy but moves provider I/O and
+host artifact selection behind a platform-neutral Rust boundary. The official
+PCSX2 documentation identifies AppImage/Flatpak as Linux distribution paths,
+`portable.ini` or `portable.txt` as portable-mode markers, and `-version` as a
+supported command-line option
+([running](https://pcsx2.net/docs/setup/running/),
+[configuration](https://pcsx2.net/docs/configuration/general/),
+[CLI](https://pcsx2.net/docs/advanced/cli/)). The official GitHub release API
+supplies an asset `digest` used as a required SHA-256 oracle. The port selects
+the exact x86-64 Linux AppImage or Windows Qt 7z suffix, checks the official
+release URL/name/size/digest, and commits the artifact, marker, port-owned
+manifest, and emulator XML together without executing the downloaded program.
+The Linux Nix runtime supplies `appimage-run`; macOS bundle installation and
+the recovered first-time wizard remain open.
+
 The recovered 13.27 PCSX2 plugin uses the exact
 `SERIAL (CRC).NN.p2s`/`.p2z` contract for ordinary state files, but treats each
 logical memory-card save as a named member inside a `.ps2` card. The port's

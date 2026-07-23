@@ -135,6 +135,11 @@ ApplicationWindow {
     property int emulatorBiosSmokePhase: 0
     property int emulatorBiosInitialRevision: -1
     property bool emulatorBiosSmokeFinished: false
+    property bool emulatorInstallSmokeTest:
+        Qt.application.arguments.indexOf("--emulator-install-smoke-test") >= 0
+    property int emulatorInstallSmokePhase: 0
+    property int emulatorInstallInitialRevision: -1
+    property bool emulatorInstallSmokeFinished: false
     property int categoryCrudSmokePhase: 0
     property bool categoryCrudSmokeFinished: false
     property int playlistCrudSmokePhase: 0
@@ -1753,6 +1758,71 @@ ApplicationWindow {
                           + window.emulatorBiosSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(49)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.emulatorInstallSmokeTest
+                 && !window.emulatorInstallSmokeFinished
+        onTriggered: {
+            if (window.emulatorInstallSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0) {
+                window.emulatorInstallInitialRevision =
+                    controller.emulator_install_revision
+                window.emulatorInstallSmokePhase = 1
+                pcsx2InstallManager.smokeCheck()
+            } else if (window.emulatorInstallSmokePhase === 1
+                       && !controller.emulator_release_checking
+                       && controller.emulator_release_json.length > 0) {
+                const payload = JSON.parse(controller.emulator_release_json)
+                if (payload.version !== 1 || payload.profile_id !== "pcsx2"
+                        || payload.release.version !== "2.7.492"
+                        || payload.release.tag !== "v2.7.492"
+                        || !payload.release.prerelease
+                        || payload.release.artifact_kind
+                           !== "linux_app_image_x64"
+                        || payload.release.asset_sha256.length !== 64
+                        || payload.action !== "install" || !payload.can_install
+                        || payload.managed_install !== null
+                        || !payload.read_only_check) {
+                    console.error(
+                        "EMULATOR_INSTALL_SMOKE_RELEASE_CONTRACT_FAILED payload="
+                        + controller.emulator_release_json)
+                    Qt.exit(50)
+                    return
+                }
+                window.emulatorInstallSmokePhase = 2
+                controller.install_pcsx2_release()
+            } else if (window.emulatorInstallSmokePhase === 2
+                       && !controller.emulator_installing
+                       && controller.emulator_install_revision
+                          === window.emulatorInstallInitialRevision + 2) {
+                if (!controller.report_emulator_install_smoke_success(
+                        window.emulatorInstallInitialRevision)) {
+                    console.error(
+                        "EMULATOR_INSTALL_SMOKE_MODEL_CONTRACT_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(50)
+                    return
+                }
+                window.emulatorInstallSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 30000
+        running: window.emulatorInstallSmokeTest
+                 && !window.emulatorInstallSmokeFinished
+        onTriggered: {
+            console.error("EMULATOR_INSTALL_SMOKE_TIMEOUT phase="
+                          + window.emulatorInstallSmokePhase
+                          + " revision=" + controller.emulator_install_revision
+                          + " status=" + controller.status_message)
+            Qt.exit(50)
         }
     }
 
@@ -4610,7 +4680,7 @@ ApplicationWindow {
 
             Label {
                 Layout.fillWidth: true
-                text: "Emulator definitions and per-platform mappings are stored in Data/Emulators.xml. Application paths stay lexical LaunchBox values; this editor never creates, installs, updates, or deletes emulator binaries."
+                text: "Emulator definitions and per-platform mappings are stored in Data/Emulators.xml. Manual edits keep application paths as lexical LaunchBox values. The reviewed PCSX2 workflow below can separately install or update a verified official portable build."
                 wrapMode: Text.Wrap
                 color: "#7fbfff"
             }
@@ -4660,14 +4730,34 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Button {
                     text: "Add"
-                    enabled: !controller.writing && !controller.write_conflict
+                    enabled: !controller.writing && !controller.emulator_installing
+                             && !controller.emulator_release_checking
+                             && !controller.write_conflict
                              && controller.pending_recovery_count === 0
                     onClicked: emulatorEditor.prepareCreate()
                 }
                 Button {
+                    text: controller.emulator_installing
+                          ? "Installing PCSX2…"
+                          : controller.emulator_release_checking
+                            ? "Checking PCSX2…" : "Install / Update PCSX2"
+                    enabled: !controller.loading && !controller.import_scanning
+                             && !controller.emulator_discovery_scanning
+                             && !controller.emulator_bios_scanning
+                             && !controller.emulator_release_checking
+                             && !controller.emulator_installing
+                             && !controller.writing && !controller.launching
+                             && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: pcsx2InstallManager.prepare()
+                }
+                Button {
                     text: "Edit"
                     enabled: emulatorManager.selectedIndex >= 0
-                             && !controller.writing && !controller.write_conflict
+                             && !controller.writing
+                             && !controller.emulator_installing
+                             && !controller.emulator_release_checking
+                             && !controller.write_conflict
                              && controller.pending_recovery_count === 0
                     onClicked: emulatorEditor.prepareEdit(emulatorManager.selectedId())
                 }
@@ -4679,6 +4769,8 @@ ApplicationWindow {
                                  emulatorManager.selectedId())
                              && !controller.emulator_bios_scanning
                              && !controller.emulator_discovery_scanning
+                             && !controller.emulator_release_checking
+                             && !controller.emulator_installing
                              && !controller.writing && !controller.launching
                     onClicked: biosManager.prepare(
                                    emulatorManager.selectedId(),
@@ -4687,7 +4779,10 @@ ApplicationWindow {
                 Button {
                     text: "Delete"
                     enabled: emulatorManager.selectedIndex >= 0
-                             && !controller.writing && !controller.write_conflict
+                             && !controller.writing
+                             && !controller.emulator_installing
+                             && !controller.emulator_release_checking
+                             && !controller.write_conflict
                              && controller.pending_recovery_count === 0
                     onClicked: deleteEmulatorConfirmation.prepare(
                                    emulatorManager.selectedId(),
@@ -4718,6 +4813,9 @@ ApplicationWindow {
                           ? "Scanning…" : "Scan Installed"
                     enabled: !controller.loading && !controller.import_scanning
                              && !controller.emulator_discovery_scanning
+                             && !controller.emulator_bios_scanning
+                             && !controller.emulator_release_checking
+                             && !controller.emulator_installing
                              && !controller.writing && !controller.launching
                     onClicked: controller.scan_installed_emulators()
                 }
@@ -4795,7 +4893,10 @@ ApplicationWindow {
                     enabled: emulatorManager.selectedDiscoveryIndex >= 0
                              && !controller.discovered_emulator_registered_at(
                                  emulatorManager.selectedDiscoveryIndex)
-                             && !controller.writing && !controller.write_conflict
+                             && !controller.writing
+                             && !controller.emulator_installing
+                             && !controller.emulator_release_checking
+                             && !controller.write_conflict
                              && controller.pending_recovery_count === 0
                     onClicked: emulatorEditor.prepareDiscovered(
                                    emulatorManager.selectedDiscoveryIndex)
@@ -4804,6 +4905,202 @@ ApplicationWindow {
                 Label {
                     text: controller.discovered_emulator_count()
                           + " candidate(s)"
+                    color: "#7d8590"
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: pcsx2InstallManager
+        anchors.centerIn: parent
+        modal: true
+        title: "Managed PCSX2"
+        standardButtons: Dialog.Close
+        property var review: null
+
+        function loadReview() {
+            review = controller.emulator_release_json.length > 0
+                     ? JSON.parse(controller.emulator_release_json) : null
+        }
+
+        function prepare() {
+            review = null
+            open()
+            controller.check_pcsx2_release()
+        }
+
+        function smokeCheck() {
+            prepare()
+        }
+
+        function actionLabel() {
+            if (review === null)
+                return "Install"
+            if (review.action === "update")
+                return "Update"
+            if (review.action === "repair")
+                return "Repair"
+            if (review.action === "current")
+                return "Current"
+            if (review.action === "blocked")
+                return "Blocked"
+            return "Install"
+        }
+
+        Connections {
+            target: controller
+            function onEmulatorInstallRevisionChanged() {
+                pcsx2InstallManager.loadReview()
+            }
+        }
+
+        contentItem: ColumnLayout {
+            implicitWidth: 760
+            implicitHeight: 470
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: "This provider checks PCSX2/pcsx2 on GitHub, selects the exact native artifact, verifies GitHub's SHA-256 digest and byte count, then commits the portable binary, portable.ini, ownership manifest, and Data/Emulators.xml together. It never runs the downloaded artifact during installation."
+                wrapMode: Text.Wrap
+                color: "#7fbfff"
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                BusyIndicator {
+                    running: controller.emulator_release_checking
+                    visible: running
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: {
+                        if (controller.emulator_release_checking)
+                            return "Checking official releases…"
+                        if (pcsx2InstallManager.review === null)
+                            return "No reviewed release"
+                        const release = pcsx2InstallManager.review.release
+                        return "PCSX2 " + release.version
+                               + (release.prerelease ? " · nightly" : " · stable")
+                               + " · " + pcsx2InstallManager.actionLabel()
+                    }
+                    color: pcsx2InstallManager.review !== null
+                           && pcsx2InstallManager.review.action === "blocked"
+                           ? "#f85149" : "#ffffff"
+                    font.bold: true
+                }
+                Button {
+                    text: "Check Again"
+                    enabled: !controller.emulator_release_checking
+                             && !controller.emulator_installing
+                    onClicked: controller.check_pcsx2_release()
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                text: pcsx2InstallManager.review === null ? ""
+                      : "Install target: "
+                        + pcsx2InstallManager.review.install_directory
+                color: "white"
+                elide: Text.ElideMiddle
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                text: pcsx2InstallManager.review === null ? ""
+                      : "Artifact: "
+                        + pcsx2InstallManager.review.release.asset_name
+                        + " · "
+                        + pcsx2InstallManager.review.release.asset_byte_len
+                        + " bytes"
+                color: "#c9d1d9"
+                elide: Text.ElideMiddle
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                text: pcsx2InstallManager.review === null ? ""
+                      : "SHA-256: "
+                        + pcsx2InstallManager.review.release.asset_sha256
+                color: "#7d8590"
+                font.family: "monospace"
+                font.pixelSize: 11
+                elide: Text.ElideMiddle
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                text: pcsx2InstallManager.review === null ? ""
+                      : "Official source: "
+                        + pcsx2InstallManager.review.release.asset_url
+                color: "#7d8590"
+                font.pixelSize: 11
+                elide: Text.ElideMiddle
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                         && pcsx2InstallManager.review.managed_install !== null
+                text: {
+                    if (pcsx2InstallManager.review === null
+                            || pcsx2InstallManager.review.managed_install === null)
+                        return ""
+                    const installed =
+                        pcsx2InstallManager.review.managed_install
+                    return "Managed version "
+                           + installed.manifest.version
+                           + " · executable "
+                           + installed.executable_state
+                }
+                color: "#c9d1d9"
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                         && pcsx2InstallManager.review.blocked_reason !== null
+                text: pcsx2InstallManager.review === null ? ""
+                      : pcsx2InstallManager.review.blocked_reason || ""
+                wrapMode: Text.Wrap
+                color: "#f85149"
+            }
+            Label {
+                Layout.fillWidth: true
+                text: "Existing PCSX2 settings and other files in the portable directory are retained. A managed update replaces only artifact-owned paths and keeps exact recovery copies for overwritten files."
+                wrapMode: Text.Wrap
+                color: "#d29922"
+            }
+            ProgressBar {
+                Layout.fillWidth: true
+                visible: controller.emulator_installing
+                from: 0
+                to: 1
+                value: controller.emulator_install_progress
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    text: pcsx2InstallManager.actionLabel()
+                    enabled: pcsx2InstallManager.review !== null
+                             && pcsx2InstallManager.review.can_install
+                             && !controller.emulator_release_checking
+                             && !controller.emulator_installing
+                             && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: controller.install_pcsx2_release()
+                }
+                Button {
+                    text: "Cancel Download"
+                    visible: controller.emulator_installing
+                    enabled: controller.emulator_installing
+                    onClicked: controller.cancel_emulator_install()
+                }
+                Item { Layout.fillWidth: true }
+                Label {
+                    visible: controller.emulator_installing
+                    text: Math.round(
+                              controller.emulator_install_progress * 100)
+                          + "%"
                     color: "#7d8590"
                 }
             }

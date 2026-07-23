@@ -85,6 +85,7 @@ enum PendingCandidate {
     SourceFile {
         path: PathBuf,
         expected: Option<FileRevision>,
+        preserve_permissions: bool,
     },
 }
 
@@ -287,6 +288,7 @@ impl LibraryTransaction {
             candidate: Some(PendingCandidate::SourceFile {
                 path: source,
                 expected: None,
+                preserve_permissions: false,
             }),
             expected: None,
         })
@@ -325,9 +327,71 @@ impl LibraryTransaction {
             candidate: Some(PendingCandidate::SourceFile {
                 path: source,
                 expected: Some(expected),
+                preserve_permissions: false,
             }),
             expected: None,
         })
+    }
+
+    /// Stages a streamed file creation while preserving the inspected source
+    /// permissions on the new target. This is reserved for native executable
+    /// artifacts; ordinary imported content uses the platform's normal
+    /// creation permissions.
+    pub fn stage_file_copy_with_revision_preserving_permissions(
+        &mut self,
+        source: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+        expected: FileRevision,
+    ) -> Result<(), TransactionError> {
+        let supplied_source = source.as_ref();
+        let metadata =
+            fs::symlink_metadata(supplied_source).map_err(|source| TransactionError::Io {
+                path: supplied_source.to_path_buf(),
+                source,
+            })?;
+        if !metadata.file_type().is_file() {
+            return Err(TransactionError::SourceNotFile {
+                path: supplied_source.to_path_buf(),
+            });
+        }
+        let source = fs::canonicalize(supplied_source).map_err(|source| TransactionError::Io {
+            path: supplied_source.to_path_buf(),
+            source,
+        })?;
+        let target = self.checked_new_target(target.as_ref())?;
+        self.push_change(PendingChange {
+            target,
+            operation: TransactionOperation::Create,
+            candidate: Some(PendingCandidate::SourceFile {
+                path: source,
+                expected: Some(expected),
+                preserve_permissions: true,
+            }),
+            expected: None,
+        })
+    }
+
+    /// Stages a small in-memory file creation under the library root.
+    ///
+    /// This is appropriate for validated manifests and marker files. Large
+    /// emulator artifacts, ROMs, and media must use the streamed copy APIs.
+    pub fn stage_new_file_bytes(
+        &mut self,
+        target: impl AsRef<Path>,
+        candidate: Vec<u8>,
+    ) -> Result<(), TransactionError> {
+        self.stage_create(target.as_ref(), candidate)
+    }
+
+    /// Stages replacement of one small regular file from validated bytes while
+    /// requiring the caller's exact inspected target revision.
+    pub fn stage_file_bytes_replace_with_revision(
+        &mut self,
+        target: impl AsRef<Path>,
+        candidate: Vec<u8>,
+        expected: FileRevision,
+    ) -> Result<(), TransactionError> {
+        self.stage_replace(target.as_ref(), candidate, expected)
     }
 
     /// Stages a streamed replacement from one exact regular-file snapshot to
@@ -369,6 +433,7 @@ impl LibraryTransaction {
             candidate: Some(PendingCandidate::SourceFile {
                 path: source,
                 expected: Some(source_expected),
+                preserve_permissions: false,
             }),
             expected: Some(target_expected),
         })
@@ -840,6 +905,16 @@ fn prepare_staged_candidate(
             }
         };
         staged.flush()?;
+        let permissions = permissions.or_else(|| match candidate {
+            PendingCandidate::SourceFile {
+                path,
+                preserve_permissions: true,
+                ..
+            } => fs::metadata(path)
+                .ok()
+                .map(|metadata| metadata.permissions()),
+            _ => None,
+        });
         if let Some(permissions) = permissions {
             staged.set_permissions(permissions)?;
         }
@@ -859,6 +934,7 @@ fn prepare_staged_candidate(
     if let PendingCandidate::SourceFile {
         path,
         expected: Some(expected),
+        ..
     } = candidate
     {
         if revision != *expected {
@@ -1898,6 +1974,70 @@ mod tests {
                 .title,
             "Imported Adventure"
         );
+    }
+
+    #[test]
+    fn commits_small_metadata_and_permission_preserving_executable_creation_together() {
+        let (directory, _, _) = fixture_tree();
+        let data_directory = directory.path().join("Data");
+        let install_directory = directory.path().join("Emulators/PCSX2");
+        fs::create_dir_all(&install_directory).unwrap();
+        let existing_manifest = data_directory.join("managed.json");
+        let portable_marker = install_directory.join("portable.ini");
+        let executable = install_directory.join("pcsx2-qt.AppImage");
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("verified.AppImage");
+        fs::write(&existing_manifest, b"old manifest\n").unwrap();
+        fs::write(&source, b"verified executable bytes\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o751)).unwrap();
+        }
+
+        let mut transaction = LibraryTransaction::new(directory.path()).unwrap();
+        transaction
+            .stage_file_bytes_replace_with_revision(
+                &existing_manifest,
+                b"new manifest\n".to_vec(),
+                FileRevision::read(&existing_manifest).unwrap(),
+            )
+            .unwrap();
+        transaction
+            .stage_new_file_bytes(&portable_marker, Vec::new())
+            .unwrap();
+        transaction
+            .stage_file_copy_with_revision_preserving_permissions(
+                &source,
+                &executable,
+                FileRevision::read(&source).unwrap(),
+            )
+            .unwrap();
+        let report = transaction.commit().unwrap();
+
+        assert_eq!(fs::read(&existing_manifest).unwrap(), b"new manifest\n");
+        assert_eq!(fs::read(&portable_marker).unwrap(), b"");
+        assert_eq!(
+            fs::read(&executable).unwrap(),
+            b"verified executable bytes\n"
+        );
+        assert_eq!(report.writes.len(), 1);
+        assert_eq!(
+            fs::read(&report.writes[0].backup).unwrap(),
+            b"old manifest\n"
+        );
+        assert_eq!(
+            report.created_targets.into_iter().collect::<BTreeSet<_>>(),
+            [portable_marker, executable.clone()].into_iter().collect()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&executable).unwrap().permissions().mode() & 0o777,
+                0o751
+            );
+        }
     }
 
     #[test]

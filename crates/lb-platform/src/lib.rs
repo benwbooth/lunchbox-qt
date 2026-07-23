@@ -1273,12 +1273,29 @@ impl LaunchProcess for Child {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemProcessLauncher;
 
+fn system_process_command(request: &LaunchRequest) -> (PathBuf, Vec<OsString>) {
+    #[cfg(target_os = "linux")]
+    if request
+        .executable
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".appimage"))
+    {
+        let arguments = std::iter::once(request.executable.as_os_str().to_os_string())
+            .chain(request.arguments.iter().cloned())
+            .collect();
+        return (PathBuf::from("appimage-run"), arguments);
+    }
+    (request.executable.clone(), request.arguments.clone())
+}
+
 impl ProcessLauncher for SystemProcessLauncher {
     type Handle = Child;
 
     fn launch(&self, request: &LaunchRequest) -> Result<Self::Handle, LaunchError> {
-        let mut command = Command::new(&request.executable);
-        command.args(&request.arguments);
+        let (executable, arguments) = system_process_command(request);
+        let mut command = Command::new(executable);
+        command.args(arguments);
         if let Some(directory) = &request.working_directory {
             command.current_dir(directory);
         }
@@ -2327,5 +2344,23 @@ mod tests {
             .launch(&LaunchRequest::new("/bin/sh").arg("-c").arg("exit 0"))
             .expect("launch test process");
         assert!(child.wait().expect("wait for test process").success());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn system_launcher_routes_appimages_through_packaged_appimage_run_without_a_shell() {
+        let request = LaunchRequest::new("/launchbox/Emulators/PCSX2/pcsx2-qt.AppImage")
+            .arg("-fullscreen")
+            .arg("/launchbox/Games/game.iso");
+        let (executable, arguments) = system_process_command(&request);
+        assert_eq!(executable, Path::new("appimage-run"));
+        assert_eq!(
+            arguments,
+            [
+                OsString::from("/launchbox/Emulators/PCSX2/pcsx2-qt.AppImage"),
+                OsString::from("-fullscreen"),
+                OsString::from("/launchbox/Games/game.iso"),
+            ]
+        );
     }
 }

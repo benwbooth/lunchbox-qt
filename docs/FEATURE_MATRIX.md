@@ -54,13 +54,19 @@ generates immutable UUID identities, validates mapping/default uniqueness,
 hands off a platform default atomically, blocks deletion while a game or
 additional application references the emulator, preserves unknown XML and
 stored Windows path syntax, and never installs, updates, or deletes emulator
-binaries. The first `RUN-003` subset discovers reviewed RetroArch, Dolphin,
+binaries through the ordinary definition editor. The first `RUN-003` subset
+discovers reviewed RetroArch, Dolphin,
 PCSX2, and ScummVM executables from the portable emulator tree, native
 application locations, and `PATH`, shows provenance and registration state,
 and routes a selected candidate through the full editor with recovered defaults
 and cross-platform reverse path conversion. It never starts or modifies a
-candidate. Downloads, installation, updates, dependencies, cores, and binary
-deletion remain open. The first `RUN-004` subset validates configured PCSX2
+candidate. A separate managed PCSX2 provider now selects and verifies official
+GitHub artifacts, installs or repairs the portable executable, marker,
+ownership manifest, and XML registration in one recoverable transaction,
+updates only an audited managed target, and routes the Linux AppImage through
+packaged `appimage-run`. Other providers, dependencies, cores, managed macOS
+bundles, automatic policy, and binary deletion remain open. The first
+`RUN-004` subset validates configured PCSX2
 against the complete recovered 73-alternative BIOS group. It reads portable or
 host-native PCSX2 configuration, streams MD5 checks, refuses firmware symlinks,
 and reports the complete group through Qt without executing PCSX2 or changing
@@ -87,7 +93,7 @@ parsing recovers `Version` and normalized `Region` through separator-neutral
 lexical handling. Copy/move also implements the recovered
 same-filename/different-extension option as an atomic companion-file bundle,
 including per-disc companions and collision refusal. Metadata and media
-downloads, emulator installation and remaining BIOS handling,
+downloads, remaining managed emulator providers and BIOS handling,
 descriptor-content dependency copying, broader naming grammars, cancellation,
 and runtime-oracle edge-case
 parity remain open, so `IMP-001` is not complete.
@@ -173,7 +179,7 @@ parity remain open.
 |---|---|---|
 | RUN-001 | Add/edit/remove emulators and per-platform mappings | DV emulator editor/platform page; PA `IEmulator`, `IEmulatorPlatform`; port configuration subset implements all 31 recovered emulator fields and all six mapping fields with immutable generated IDs, source-indexed lossless XML edits, default handoff, game/additional-app reference gating, exact backups, unknown-field retention, lexical paths, and real-dialog Linux coverage; emulator binary lifecycle stays under `RUN-003` |
 | RUN-002 | Command lines, quoting/spacing, console hiding, and launch-with overrides | PA emulator fields; DM/BV launch-with actions |
-| RUN-003 | Emulator/core discovery, install, update, and dependency handling | DV install-emulator/dependencies pages; PA emulator plugin install/update contracts; port subset implements read-only, deterministic discovery and reviewed registration for native RetroArch, Dolphin, PCSX2, and ScummVM identities across a bounded portable tree, OS-native locations, and `PATH`, with provenance, canonical deduplication, Unix collision isolation, shared reverse path conversion, recovered 13.27 defaults, and real-dialog candidate-immutability coverage; downloads, installation, updates, dependencies, cores, and binary deletion remain open |
+| RUN-003 | Emulator/core discovery, install, update, and dependency handling | DV install-emulator/dependencies pages; PA emulator plugin install/update contracts; port discovery implements read-only, deterministic reviewed registration for native RetroArch, Dolphin, PCSX2, and ScummVM identities across a bounded portable tree, OS-native locations, and `PATH`, with provenance, canonical deduplication, Unix collision isolation, shared reverse path conversion, recovered 13.27 defaults, and real-dialog candidate-immutability coverage. The first managed provider implements PCSX2 official-GitHub release selection, exact Linux AppImage/Windows Qt 7z asset matching, required GitHub SHA-256 and byte-count verification, bounded streamed progress/cancellation, unsafe/unmanaged-target refusal, portable ownership audit, install/update/repair, and one recoverable artifact/marker/manifest/`Emulators.xml` commit. Linux preserves execute mode and uses packaged shell-free `appimage-run`; an offscreen official-shaped fixture proves the artifact is not executed during install. Managed macOS bundles, other emulator providers, dependencies, cores, automatic policy, and binary deletion remain open |
 | RUN-004 | BIOS discovery and validation | DV BIOS wizard; PA BIOS groups/files; first port subset implements the complete recovered PCSX2 required group with 73 filename/MD5/description alternatives and any-one-valid semantics, portable/native configuration resolution, foreign-path rejection, streamed hashing, symlink refusal, a versioned read-only Qt manager, and whole-tree-immutable real-dialog coverage; other-emulator adapters, acquisition, configuration changes, and firmware mutation remain open |
 | RUN-005 | Archive auto-extraction and cleanup | PA auto-extract fields; bundled 7-Zip |
 | RUN-006 | Multi-disc/M3U handling | PA emulator-platform `M3uDiscLoadEnabled` |

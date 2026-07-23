@@ -31,6 +31,9 @@ pub mod qobject {
         #[qproperty(bool, import_scanning)]
         #[qproperty(bool, emulator_discovery_scanning)]
         #[qproperty(bool, emulator_bios_scanning)]
+        #[qproperty(bool, emulator_release_checking)]
+        #[qproperty(bool, emulator_installing)]
+        #[qproperty(f64, emulator_install_progress)]
         #[qproperty(bool, writing)]
         #[qproperty(bool, launching)]
         #[qproperty(bool, launch_session_active)]
@@ -48,6 +51,8 @@ pub mod qobject {
         #[qproperty(i32, emulator_discovery_revision)]
         #[qproperty(i32, emulator_bios_revision)]
         #[qproperty(QString, emulator_bios_audit_json)]
+        #[qproperty(i32, emulator_install_revision)]
+        #[qproperty(QString, emulator_release_json)]
         #[qproperty(i32, additional_application_revision)]
         #[qproperty(i32, game_save_revision)]
         #[qproperty(i32, game_grouping_revision)]
@@ -179,6 +184,15 @@ pub mod qobject {
 
         #[qinvokable]
         fn scan_emulator_bios(self: Pin<&mut LibraryController>, emulator_id: QString);
+
+        #[qinvokable]
+        fn check_pcsx2_release(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn install_pcsx2_release(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn cancel_emulator_install(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
         fn add_emulator(self: Pin<&mut LibraryController>, edit_payload: QString);
@@ -648,6 +662,12 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_emulator_install_smoke_success(
+            self: &LibraryController,
+            initial_revision: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_category_crud_smoke_success(
             self: &LibraryController,
             category_name: QString,
@@ -831,6 +851,12 @@ use lb_integrations::emulator_discovery::{
     discover_emulator_executables, DiscoveredEmulatorExecutable, EmulatorDiscoveryProfile,
     EmulatorDiscoveryRequest, EmulatorDiscoverySource,
 };
+use lb_integrations::emulator_lifecycle::{
+    download_pcsx2_release, fetch_latest_pcsx2_release, file_receipt, read_managed_pcsx2_install,
+    EmulatorLifecycleError, FileReleaseTransport, GithubReleaseTransport, ManagedEmulatorInstall,
+    ManagedExecutableState, ManagedInstallAudit, Pcsx2ArtifactKind, Pcsx2ReleaseOffer,
+    ReleaseTransport, MANAGED_INSTALL_MANIFEST_NAME,
+};
 use lb_integrations::pcsx2::{
     default_pcsx2_data_directories, discover_pcsx2_saves, extract_pcsx2_memory_card_save,
     folder_manifest_signature, is_pcsx2_emulator, prepare_pcsx2_memory_card_deletion,
@@ -870,6 +896,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant, SystemTime};
 use uuid::Uuid;
 
@@ -1018,6 +1048,9 @@ pub struct LibraryControllerRust {
     import_scanning: bool,
     emulator_discovery_scanning: bool,
     emulator_bios_scanning: bool,
+    emulator_release_checking: bool,
+    emulator_installing: bool,
+    emulator_install_progress: f64,
     writing: bool,
     launching: bool,
     launch_session_active: bool,
@@ -1035,6 +1068,8 @@ pub struct LibraryControllerRust {
     emulator_discovery_revision: i32,
     emulator_bios_revision: i32,
     emulator_bios_audit_json: QString,
+    emulator_install_revision: i32,
+    emulator_release_json: QString,
     additional_application_revision: i32,
     game_save_revision: i32,
     game_grouping_revision: i32,
@@ -1082,6 +1117,8 @@ pub struct LibraryControllerRust {
     discovered_emulators: Vec<DiscoveredEmulatorExecutable>,
     emulator_bios_audit: Option<Pcsx2BiosAudit>,
     emulator_bios_emulator_id: Option<String>,
+    pcsx2_release_state: Option<Pcsx2ReleaseState>,
+    emulator_install_cancel: Option<Arc<AtomicBool>>,
     path_mapping_settings_file: Option<PathBuf>,
     path_mappings: HostPathMappings,
     path_mappings_initialized: bool,
@@ -1097,6 +1134,7 @@ pub struct LibraryControllerRust {
     pending_post_reload_message: Option<String>,
     emulator_write_notifications: u64,
     emulator_bios_scan_notifications: u64,
+    emulator_install_notifications: u64,
     additional_application_write_notifications: u64,
     game_save_write_notifications: u64,
     category_write_notifications: u64,
@@ -1699,6 +1737,16 @@ struct EmulatorWriteSuccess {
     mapping_count: usize,
 }
 
+struct Pcsx2InstallSuccess {
+    emulator_write: EmulatorWriteSuccess,
+    manifest: ManagedEmulatorInstall,
+    executable: PathBuf,
+    installed_file_count: usize,
+    created_file_count: usize,
+    replaced_file_count: usize,
+    recovery_files: Vec<PathBuf>,
+}
+
 struct CategoryWriteSuccess {
     name: String,
     categories: Vec<PlatformCategory>,
@@ -1829,6 +1877,7 @@ const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 1;
+const EMULATOR_RELEASE_PAYLOAD_VERSION: u32 = 1;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
 
@@ -1976,6 +2025,51 @@ struct EmulatorBiosAuditPayload {
     location_source: &'static str,
     group: EmulatorBiosGroupPayload,
     files: Vec<EmulatorBiosFilePayload>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Pcsx2InstallAction {
+    Install,
+    Update,
+    Repair,
+    Current,
+    Blocked,
+}
+
+impl Pcsx2InstallAction {
+    const fn can_install(self) -> bool {
+        matches!(self, Self::Install | Self::Update | Self::Repair)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Pcsx2ReleaseState {
+    offer: Pcsx2ReleaseOffer,
+    install_directory: PathBuf,
+    executable_path: PathBuf,
+    existing_emulator_id: Option<String>,
+    existing_emulator_title: Option<String>,
+    managed_install: Option<ManagedInstallAudit>,
+    action: Pcsx2InstallAction,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct Pcsx2ReleasePayload {
+    version: u32,
+    profile_id: &'static str,
+    emulator_name: &'static str,
+    release: Pcsx2ReleaseOffer,
+    install_directory: String,
+    executable_path: String,
+    existing_emulator_id: Option<String>,
+    existing_emulator_title: Option<String>,
+    managed_install: Option<ManagedInstallAudit>,
+    action: Pcsx2InstallAction,
+    can_install: bool,
+    blocked_reason: Option<String>,
+    read_only_check: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -6266,6 +6360,142 @@ fn emulator_bios_audit_payload(
     serde_json::to_string(&payload)
 }
 
+fn pcsx2_release_payload(state: &Pcsx2ReleaseState) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&Pcsx2ReleasePayload {
+        version: EMULATOR_RELEASE_PAYLOAD_VERSION,
+        profile_id: "pcsx2",
+        emulator_name: "PCSX2",
+        release: state.offer.clone(),
+        install_directory: state.install_directory.to_string_lossy().into_owned(),
+        executable_path: state.executable_path.to_string_lossy().into_owned(),
+        existing_emulator_id: state.existing_emulator_id.clone(),
+        existing_emulator_title: state.existing_emulator_title.clone(),
+        managed_install: state.managed_install.clone(),
+        action: state.action,
+        can_install: state.action.can_install(),
+        blocked_reason: state.blocked_reason.clone(),
+        read_only_check: true,
+    })
+}
+
+fn inspect_pcsx2_release_state(
+    root: &Path,
+    configuration: Option<&EmulatorConfiguration>,
+    resolver: &HostPathResolver,
+    offer: Pcsx2ReleaseOffer,
+) -> Result<Pcsx2ReleaseState, EmulatorLifecycleError> {
+    let configured = configuration
+        .into_iter()
+        .flat_map(|configuration| &configuration.emulators)
+        .filter(|emulator| emulator_supports_pcsx2_bios(emulator, Some(root), resolver))
+        .collect::<Vec<_>>();
+    if configured.len() > 1 {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message: format!(
+                "found {} configured PCSX2 entries; choose one explicitly before managed installation",
+                configured.len()
+            ),
+        });
+    }
+    let existing_emulator_id = configured.first().map(|emulator| emulator.id.clone());
+    let existing_emulator_title = configured.first().map(|emulator| emulator.title.clone());
+    let install_directory = root.join("Emulators/PCSX2");
+    let executable_path = install_directory.join(offer.artifact_kind.executable_name());
+    let managed_install = read_managed_pcsx2_install(&install_directory)?;
+
+    let unsafe_install_directory = match fs::symlink_metadata(&install_directory) {
+        Ok(metadata) => !metadata.file_type().is_dir() || metadata.file_type().is_symlink(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(source) => {
+            return Err(EmulatorLifecycleError::Io {
+                path: install_directory,
+                source,
+            })
+        }
+    };
+    let (action, blocked_reason) = if unsafe_install_directory {
+        (
+            Pcsx2InstallAction::Blocked,
+            Some("The portable PCSX2 install path is a symlink or non-directory entry.".into()),
+        )
+    } else if let Some(audit) = managed_install.as_ref() {
+        match audit.executable_state {
+            ManagedExecutableState::Unsafe => (
+                Pcsx2InstallAction::Blocked,
+                Some("The managed PCSX2 executable is a symlink or non-regular entry.".into()),
+            ),
+            ManagedExecutableState::Unreadable => (
+                Pcsx2InstallAction::Blocked,
+                Some("The managed PCSX2 executable cannot be read safely.".into()),
+            ),
+            ManagedExecutableState::Missing | ManagedExecutableState::Modified => {
+                (Pcsx2InstallAction::Repair, None)
+            }
+            ManagedExecutableState::Valid if audit.update_available(&offer) => {
+                (Pcsx2InstallAction::Update, None)
+            }
+            ManagedExecutableState::Valid => (Pcsx2InstallAction::Current, None),
+        }
+    } else {
+        match fs::symlink_metadata(&executable_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (Pcsx2InstallAction::Install, None)
+            }
+            Ok(_) => (
+                Pcsx2InstallAction::Blocked,
+                Some(
+                    "The managed executable target already exists without a port-owned manifest."
+                        .into(),
+                ),
+            ),
+            Err(source) => {
+                return Err(EmulatorLifecycleError::Io {
+                    path: executable_path,
+                    source,
+                })
+            }
+        }
+    };
+    Ok(Pcsx2ReleaseState {
+        offer,
+        install_directory,
+        executable_path,
+        existing_emulator_id,
+        existing_emulator_title,
+        managed_install,
+        action,
+        blocked_reason,
+    })
+}
+
+fn emulator_release_transport_from_command_line(
+) -> Result<Box<dyn ReleaseTransport>, EmulatorLifecycleError> {
+    let mut arguments = std::env::args_os();
+    let mut fixture = None;
+    while let Some(argument) = arguments.next() {
+        if argument != "--emulator-release-fixture" {
+            continue;
+        }
+        let path = arguments
+            .next()
+            .ok_or_else(|| EmulatorLifecycleError::InvalidCatalog {
+                message: "--emulator-release-fixture requires a directory".into(),
+            })?;
+        if fixture.replace(PathBuf::from(path)).is_some() {
+            return Err(EmulatorLifecycleError::InvalidCatalog {
+                message: "--emulator-release-fixture may only be supplied once".into(),
+            });
+        }
+    }
+    match fixture {
+        Some(path) if path.is_absolute() => Ok(Box::new(FileReleaseTransport::new(path))),
+        Some(_) => Err(EmulatorLifecycleError::InvalidCatalog {
+            message: "--emulator-release-fixture requires an absolute directory".into(),
+        }),
+        None => Ok(Box::new(GithubReleaseTransport)),
+    }
+}
+
 fn emulator_supports_pcsx2_bios(
     emulator: &Emulator,
     launchbox_root: Option<&Path>,
@@ -6339,6 +6569,537 @@ fn emulator_platform_records(
             },
         })
         .collect()
+}
+
+fn managed_pcsx2_emulator_payload(
+    root: &Path,
+    resolver: &HostPathResolver,
+    platform_names: &[String],
+    existing_emulator_id: Option<&str>,
+    executable_path: &Path,
+) -> Result<EmulatorEditPayload, EmulatorWriteFailure> {
+    let stored_path = resolver
+        .stored_path_for_host_path(root, executable_path)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if let Some(emulator_id) = existing_emulator_id {
+        let serialized = load_emulator_edit_payload(root, emulator_id, platform_names)?;
+        let mut payload =
+            parse_emulator_edit_payload(Some(emulator_id), &serialized, platform_names)
+                .map_err(EmulatorWriteFailure::Other)?;
+        payload.emulator.application_path = stored_path;
+        return Ok(payload);
+    }
+
+    let source = emulator_document_path(root)?;
+    let document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let candidate = DiscoveredEmulatorExecutable {
+        profile: EmulatorDiscoveryProfile::Pcsx2,
+        executable: executable_path.to_path_buf(),
+        source: EmulatorDiscoverySource::PortableLibrary,
+    };
+    let serialized = discovered_emulator_payload(
+        &candidate,
+        root,
+        resolver,
+        platform_names,
+        Some(&configuration),
+    )?;
+    let mut payload = parse_emulator_edit_payload(None, &serialized, platform_names)
+        .map_err(EmulatorWriteFailure::Other)?;
+    payload.emulator.application_path = stored_path;
+    Ok(payload)
+}
+
+fn install_managed_pcsx2(
+    root: PathBuf,
+    resolver: HostPathResolver,
+    platform_names: Vec<String>,
+    state: Pcsx2ReleaseState,
+    transport: Box<dyn ReleaseTransport>,
+    cancel: Arc<AtomicBool>,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<Pcsx2InstallSuccess, EmulatorWriteFailure> {
+    if !state.action.can_install() {
+        return Err(EmulatorWriteFailure::Other(
+            state
+                .blocked_reason
+                .unwrap_or_else(|| "PCSX2 has no install or update action to apply.".into()),
+        ));
+    }
+    let temporary = tempfile::Builder::new()
+        .prefix(".lbport-pcsx2-download-")
+        .tempdir_in(&root)
+        .map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "could not create a private PCSX2 download directory: {error}"
+            ))
+        })?;
+    let artifact = temporary.path().join(&state.offer.asset_name);
+    let _download = download_pcsx2_release(
+        transport.as_ref(),
+        &state.offer,
+        &artifact,
+        &mut progress,
+        &|| cancel.load(Ordering::Relaxed),
+    )
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EmulatorWriteFailure::Other(
+            EmulatorLifecycleError::Cancelled.to_string(),
+        ));
+    }
+
+    let mut install_sources = match state.offer.artifact_kind {
+        Pcsx2ArtifactKind::LinuxAppImageX64 => {
+            make_file_executable(&artifact).map_err(|error| {
+                EmulatorWriteFailure::Other(format!(
+                    "could not make the downloaded PCSX2 AppImage executable: {error}"
+                ))
+            })?;
+            vec![PreparedInstallFile {
+                source: artifact.clone(),
+                relative_target: PathBuf::from(state.offer.artifact_kind.executable_name()),
+                preserve_permissions: true,
+            }]
+        }
+        Pcsx2ArtifactKind::WindowsQt7zX64 => {
+            prepare_pcsx2_windows_archive(&root, &artifact, temporary.path())?
+        }
+        Pcsx2ArtifactKind::MacosQtTarXz => {
+            return Err(EmulatorWriteFailure::Other(
+                "Managed PCSX2 macOS bundle installation is not implemented yet.".into(),
+            ));
+        }
+    };
+    install_sources.sort_by(|left, right| left.relative_target.cmp(&right.relative_target));
+    if install_sources.is_empty() {
+        return Err(EmulatorWriteFailure::Other(
+            "The verified PCSX2 artifact contained no installable files.".into(),
+        ));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EmulatorWriteFailure::Other(
+            EmulatorLifecycleError::Cancelled.to_string(),
+        ));
+    }
+
+    revalidate_pcsx2_install_precondition(&state)?;
+    let executable_source = install_sources
+        .iter()
+        .find(|file| file.relative_target == Path::new(state.offer.artifact_kind.executable_name()))
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(format!(
+                "The verified PCSX2 artifact did not contain {}.",
+                state.offer.artifact_kind.executable_name()
+            ))
+        })?;
+    let executable_receipt = file_receipt(&executable_source.source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let manifest = ManagedEmulatorInstall::from_offer(&state.offer, &executable_receipt)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let manifest_bytes = manifest
+        .to_json_bytes()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let payload = managed_pcsx2_emulator_payload(
+        &root,
+        &resolver,
+        &platform_names,
+        state.existing_emulator_id.as_deref(),
+        &state.executable_path,
+    )?;
+
+    let source = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let operation = if let Some(existing_id) = state.existing_emulator_id.as_deref() {
+        let emulator = payload.emulator.clone();
+        let platform_edits = emulator_platform_records(&emulator.id, payload.platforms);
+        document
+            .set_emulator(existing_id, emulator, platform_edits)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        EmulatorWriteOperation::Edit
+    } else {
+        let emulator = payload.emulator.clone();
+        let platforms = emulator_platform_records(&emulator.id, payload.platforms)
+            .into_iter()
+            .map(|edit| edit.record)
+            .collect();
+        document
+            .add_emulator(emulator, platforms)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        EmulatorWriteOperation::Create
+    };
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulator = configuration
+        .emulators
+        .iter()
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(&payload.emulator.id))
+        .cloned()
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "PCSX2 disappeared from the candidate Emulators.xml document.".into(),
+            )
+        })?;
+    let mapping_count = configuration
+        .platforms
+        .iter()
+        .filter(|mapping| mapping.emulator_id.eq_ignore_ascii_case(&emulator.id))
+        .count();
+
+    let mut created_directories = Vec::new();
+    if let Err(error) = prepare_install_directories(
+        &root,
+        &state.install_directory,
+        &install_sources,
+        &mut created_directories,
+    ) {
+        remove_created_empty_directories(&created_directories);
+        return Err(error);
+    }
+    let commit = (|| {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EmulatorWriteFailure::Other(
+                EmulatorLifecycleError::Cancelled.to_string(),
+            ));
+        }
+        let mut transaction =
+            LibraryTransaction::new(&root).map_err(classify_emulator_transaction_error)?;
+        transaction
+            .stage_auxiliary(&document)
+            .map_err(classify_emulator_transaction_error)?;
+        for file in &install_sources {
+            let target = state.install_directory.join(&file.relative_target);
+            let source_revision = FileRevision::read(&file.source)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+            match fs::symlink_metadata(&target) {
+                Ok(metadata)
+                    if metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
+                {
+                    let target_revision = FileRevision::read(&target)
+                        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                    transaction
+                        .stage_file_replace_with_revisions(
+                            &file.source,
+                            &target,
+                            source_revision,
+                            target_revision,
+                        )
+                        .map_err(classify_emulator_transaction_error)?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if file.preserve_permissions {
+                        transaction
+                            .stage_file_copy_with_revision_preserving_permissions(
+                                &file.source,
+                                &target,
+                                source_revision,
+                            )
+                            .map_err(classify_emulator_transaction_error)?;
+                    } else {
+                        transaction
+                            .stage_file_copy_with_revision(&file.source, &target, source_revision)
+                            .map_err(classify_emulator_transaction_error)?;
+                    }
+                }
+                Ok(_) => {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing unsafe PCSX2 install target {}.",
+                        target.display()
+                    )));
+                }
+                Err(error) => {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Could not inspect PCSX2 install target {}: {error}",
+                        target.display()
+                    )));
+                }
+            }
+        }
+        let portable_marker = state.install_directory.join("portable.ini");
+        stage_small_install_file(&mut transaction, &portable_marker, Vec::new())?;
+        let manifest_path = state.install_directory.join(MANAGED_INSTALL_MANIFEST_NAME);
+        stage_small_install_file(&mut transaction, &manifest_path, manifest_bytes)?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EmulatorWriteFailure::Other(
+                EmulatorLifecycleError::Cancelled.to_string(),
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(classify_emulator_transaction_error)
+    })();
+    let report = match commit {
+        Ok(report) => report,
+        Err(error) => {
+            remove_created_empty_directories(&created_directories);
+            return Err(error);
+        }
+    };
+    let backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "PCSX2 install transaction reported no Emulators.xml backup.".into(),
+            )
+        })?;
+    let recovery_files = report
+        .writes
+        .iter()
+        .filter(|write| write.target != source)
+        .map(|write| write.backup.clone())
+        .chain(
+            report
+                .deleted_targets
+                .iter()
+                .map(|write| write.backup.clone()),
+        )
+        .collect::<Vec<_>>();
+    let created_file_count = report.created_targets.len();
+    let replaced_file_count = report
+        .writes
+        .iter()
+        .filter(|write| write.target != source)
+        .count();
+    Ok(Pcsx2InstallSuccess {
+        emulator_write: EmulatorWriteSuccess {
+            operation,
+            emulator,
+            configuration,
+            source,
+            backup,
+            mapping_count,
+        },
+        manifest,
+        executable: state.executable_path,
+        installed_file_count: install_sources.len().saturating_add(2),
+        created_file_count,
+        replaced_file_count,
+        recovery_files,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct PreparedInstallFile {
+    source: PathBuf,
+    relative_target: PathBuf,
+    preserve_permissions: bool,
+}
+
+fn prepare_pcsx2_windows_archive(
+    root: &Path,
+    artifact: &Path,
+    temporary_root: &Path,
+) -> Result<Vec<PreparedInstallFile>, EmulatorWriteFailure> {
+    let extraction = temporary_root.join("extracted");
+    fs::create_dir(&extraction).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not create the PCSX2 extraction directory: {error}"
+        ))
+    })?;
+    let files = ArchiveExtractor::for_launchbox_root(root)
+        .extract_to_directory(artifact, &extraction)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let executables = files
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("pcsx2-qt.exe"))
+        })
+        .collect::<Vec<_>>();
+    let [executable] = executables.as_slice() else {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "Expected exactly one pcsx2-qt.exe in the verified archive, found {}.",
+            executables.len()
+        )));
+    };
+    let executable = (*executable).clone();
+    let payload_root = executable
+        .parent()
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other("PCSX2 archive executable has no parent directory.".into())
+        })?
+        .to_path_buf();
+    files
+        .into_iter()
+        .map(|source| {
+            let mut relative_target = source
+                .strip_prefix(&payload_root)
+                .map_err(|_| {
+                    EmulatorWriteFailure::Other(format!(
+                        "PCSX2 archive member is outside its executable root: {}",
+                        source.display()
+                    ))
+                })?
+                .to_path_buf();
+            if relative_target.as_os_str().is_empty() {
+                return Err(EmulatorWriteFailure::Other(
+                    "PCSX2 archive produced an empty member path.".into(),
+                ));
+            }
+            if source == executable {
+                relative_target = PathBuf::from("pcsx2-qt.exe");
+            }
+            if relative_target == Path::new(MANAGED_INSTALL_MANIFEST_NAME)
+                || relative_target == Path::new("portable.ini")
+            {
+                return Err(EmulatorWriteFailure::Other(format!(
+                    "PCSX2 archive attempts to own reserved install metadata {}.",
+                    relative_target.display()
+                )));
+            }
+            Ok(PreparedInstallFile {
+                source,
+                relative_target,
+                preserve_permissions: false,
+            })
+        })
+        .collect()
+}
+
+fn prepare_install_directories(
+    root: &Path,
+    install_directory: &Path,
+    sources: &[PreparedInstallFile],
+    created: &mut Vec<PathBuf>,
+) -> Result<(), EmulatorWriteFailure> {
+    let root =
+        fs::canonicalize(root).map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulators = root.join("Emulators");
+    ensure_real_install_directory(&root, &emulators, created)?;
+    ensure_real_install_directory(&root, install_directory, created)?;
+    let mut directories = sources
+        .iter()
+        .filter_map(|file| file.relative_target.parent())
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| install_directory.join(parent))
+        .collect::<Vec<_>>();
+    directories.sort_by_key(|path| path.components().count());
+    directories.dedup();
+    for directory in directories {
+        ensure_real_install_directory(&root, &directory, created)?;
+    }
+    Ok(())
+}
+
+fn ensure_real_install_directory(
+    root: &Path,
+    directory: &Path,
+    created: &mut Vec<PathBuf>,
+) -> Result<(), EmulatorWriteFailure> {
+    match fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "Refusing unsafe PCSX2 install directory {}.",
+                directory.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(directory).map_err(|error| {
+                EmulatorWriteFailure::Other(format!(
+                    "Could not create PCSX2 install directory {}: {error}",
+                    directory.display()
+                ))
+            })?;
+            created.push(directory.to_path_buf());
+        }
+        Err(error) => {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "Could not inspect PCSX2 install directory {}: {error}",
+                directory.display()
+            )));
+        }
+    }
+    let canonical = fs::canonicalize(directory).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not resolve PCSX2 install directory {}: {error}",
+            directory.display()
+        ))
+    })?;
+    if !canonical.starts_with(root) {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "PCSX2 install directory escapes the LaunchBox root: {}.",
+            directory.display()
+        )));
+    }
+    Ok(())
+}
+
+fn stage_small_install_file(
+    transaction: &mut LibraryTransaction,
+    target: &Path,
+    bytes: Vec<u8>,
+) -> Result<(), EmulatorWriteFailure> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
+            let expected = FileRevision::read(target)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+            transaction
+                .stage_file_bytes_replace_with_revision(target, bytes, expected)
+                .map_err(classify_emulator_transaction_error)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => transaction
+            .stage_new_file_bytes(target, bytes)
+            .map_err(classify_emulator_transaction_error),
+        Ok(_) => Err(EmulatorWriteFailure::Other(format!(
+            "Refusing unsafe PCSX2 install metadata target {}.",
+            target.display()
+        ))),
+        Err(error) => Err(EmulatorWriteFailure::Other(format!(
+            "Could not inspect PCSX2 install metadata target {}: {error}",
+            target.display()
+        ))),
+    }
+}
+
+fn revalidate_pcsx2_install_precondition(
+    state: &Pcsx2ReleaseState,
+) -> Result<(), EmulatorWriteFailure> {
+    let current = read_managed_pcsx2_install(&state.install_directory)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if current != state.managed_install {
+        return Err(EmulatorWriteFailure::Conflict(
+            "PCSX2 install contents changed after the release check.".into(),
+        ));
+    }
+    if current.is_none() && fs::symlink_metadata(&state.executable_path).is_ok() {
+        return Err(EmulatorWriteFailure::Conflict(
+            "The managed PCSX2 executable target appeared after the release check.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn remove_created_empty_directories(created: &[PathBuf]) {
+    for directory in created.iter().rev() {
+        let _ = fs::remove_dir(directory);
+    }
+}
+
+fn make_file_executable(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(path)?;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(permissions.mode() | 0o755);
+        fs::set_permissions(path, permissions)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 fn commit_emulator_document(
@@ -8074,12 +8835,7 @@ impl qobject::LibraryController {
     }
 
     pub fn load_library(mut self: Pin<&mut Self>, path: QString) {
-        if *self.as_ref().import_scanning()
-            || *self.as_ref().emulator_discovery_scanning()
-            || *self.as_ref().emulator_bios_scanning()
-            || *self.as_ref().writing()
-            || *self.as_ref().launching()
-        {
+        if self.as_ref().library_operation_active() {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return;
@@ -8131,13 +8887,7 @@ impl qobject::LibraryController {
     }
 
     pub fn preview_rom_import(mut self: Pin<&mut Self>, request_payload: QString) {
-        if *self.as_ref().loading()
-            || *self.as_ref().import_scanning()
-            || *self.as_ref().emulator_discovery_scanning()
-            || *self.as_ref().emulator_bios_scanning()
-            || *self.as_ref().writing()
-            || *self.as_ref().launching()
-        {
+        if self.as_ref().library_operation_active() {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return;
@@ -8327,7 +9077,7 @@ impl qobject::LibraryController {
     }
 
     pub fn save_game(mut self: Pin<&mut Self>, row: i32, game_id: QString, edit_payload: QString) {
-        if *self.as_ref().loading() || *self.as_ref().writing() || *self.as_ref().launching() {
+        if self.as_ref().library_operation_active() {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return;
@@ -10083,11 +10833,7 @@ impl qobject::LibraryController {
     }
 
     pub fn launch_game(mut self: Pin<&mut Self>, row: i32, game_id: QString) {
-        if *self.as_ref().loading()
-            || *self.as_ref().writing()
-            || *self.as_ref().launching()
-            || *self.as_ref().launch_session_active()
-        {
+        if self.as_ref().library_operation_active() || *self.as_ref().launch_session_active() {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return;
@@ -10132,11 +10878,7 @@ impl qobject::LibraryController {
         game_id: QString,
         application_id: QString,
     ) {
-        if *self.as_ref().loading()
-            || *self.as_ref().writing()
-            || *self.as_ref().launching()
-            || *self.as_ref().launch_session_active()
-        {
+        if self.as_ref().library_operation_active() || *self.as_ref().launch_session_active() {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current launch operation to finish."));
             return;
@@ -10371,7 +11113,7 @@ impl qobject::LibraryController {
     }
 
     pub fn recover_pending_changes(mut self: Pin<&mut Self>) {
-        if *self.as_ref().loading() || *self.as_ref().writing() || *self.as_ref().launching() {
+        if self.as_ref().library_operation_active() {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return;
@@ -11279,6 +12021,77 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_emulator_install_smoke_success(&self, initial_revision: i32) -> bool {
+        let rust = self.rust();
+        let Some(root) = rust.launchbox_root.as_deref() else {
+            return false;
+        };
+        let install_directory = root.join("Emulators/PCSX2");
+        let Ok(Some(audit)) = read_managed_pcsx2_install(&install_directory) else {
+            return false;
+        };
+        let emulator = rust
+            .emulator_configuration
+            .as_ref()
+            .and_then(|configuration| {
+                configuration.emulators.iter().find(|emulator| {
+                    emulator.id == self.last_added_emulator_id().to_string()
+                        && emulator.title == "PCSX2"
+                })
+            });
+        let mapping = emulator.and_then(|emulator| {
+            rust.emulator_configuration
+                .as_ref()?
+                .platforms
+                .iter()
+                .find(|mapping| {
+                    mapping.emulator_id == emulator.id
+                        && mapping.platform.eq_ignore_ascii_case("Sony PlayStation 2")
+                        && mapping.default
+                })
+        });
+        let executable_mode_is_safe = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::metadata(&audit.executable_path)
+                    .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        };
+        let success = audit.executable_state == ManagedExecutableState::Valid
+            && executable_mode_is_safe
+            && emulator.is_some_and(|emulator| {
+                rust.path_resolver
+                    .resolve(root, &emulator.application_path)
+                    .is_ok_and(|path| path == audit.executable_path)
+            })
+            && mapping.is_some()
+            && install_directory.join("portable.ini").is_file()
+            && rust.pcsx2_release_state.is_none()
+            && self.emulator_release_json().is_empty()
+            && rust.emulator_install_notifications == 1
+            && *self.emulator_install_revision() == initial_revision.saturating_add(2)
+            && (*self.emulator_install_progress() - 1.0).abs() < f64::EPSILON
+            && !*self.emulator_release_checking()
+            && !*self.emulator_installing()
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "EMULATOR_INSTALL_SMOKE_COMPLETE emulator=PCSX2 version={} files=3 installs={} revision={}",
+                audit.manifest.version,
+                rust.emulator_install_notifications,
+                self.emulator_install_revision()
+            );
+        }
+        success
+    }
+
     pub fn report_category_crud_smoke_success(
         &self,
         category_name: QString,
@@ -11856,13 +12669,7 @@ impl qobject::LibraryController {
     }
 
     pub fn scan_emulator_bios(mut self: Pin<&mut Self>, emulator_id: QString) {
-        if *self.as_ref().loading()
-            || *self.as_ref().import_scanning()
-            || *self.as_ref().emulator_discovery_scanning()
-            || *self.as_ref().emulator_bios_scanning()
-            || *self.as_ref().writing()
-            || *self.as_ref().launching()
-        {
+        if self.as_ref().library_operation_active() {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return;
@@ -11943,14 +12750,189 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn check_pcsx2_release(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator installation requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let artifact_kind = match Pcsx2ArtifactKind::current_host() {
+            Ok(artifact_kind) => artifact_kind,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not check PCSX2 releases: {error}"
+                )));
+                return;
+            }
+        };
+        let transport = match emulator_release_transport_from_command_line() {
+            Ok(transport) => transport,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not initialize the PCSX2 release provider: {error}"
+                )));
+                return;
+            }
+        };
+        let configuration = self.as_ref().rust().emulator_configuration.clone();
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().rust_mut().pcsx2_release_state = None;
+        self.as_mut().set_emulator_release_json(QString::default());
+        self.as_mut().set_emulator_release_checking(true);
+        self.as_mut().set_status_message(qstring(
+            "Checking the official PCSX2 GitHub release catalog without changing the library...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-pcsx2-release-check".to_string())
+            .spawn(move || {
+                let result = fetch_latest_pcsx2_release(transport.as_ref(), artifact_kind)
+                    .and_then(|offer| {
+                        inspect_pcsx2_release_state(&root, configuration.as_ref(), &resolver, offer)
+                    });
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_pcsx2_release_check(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_release_checking(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the PCSX2 release check: {error}"
+            )));
+        }
+    }
+
+    pub fn install_pcsx2_release(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        if *self.as_ref().pending_recovery_count() > 0 {
+            self.as_mut().set_status_message(qstring(
+                "Recover the interrupted transaction before installing PCSX2.",
+            ));
+            return;
+        }
+        if *self.as_ref().write_conflict() {
+            self.as_mut().set_status_message(qstring(
+                "Reload the library before installing PCSX2 after a write conflict.",
+            ));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator installation requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let Some(state) = self.as_ref().rust().pcsx2_release_state.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Check the official PCSX2 release before installing or updating it.",
+            ));
+            return;
+        };
+        if !state.action.can_install() {
+            self.as_mut().set_status_message(qstring(
+                state
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("The checked PCSX2 release has no action to apply."),
+            ));
+            return;
+        }
+        let transport = match emulator_release_transport_from_command_line() {
+            Ok(transport) => transport,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not initialize the PCSX2 release provider: {error}"
+                )));
+                return;
+            }
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let platform_names = self.as_ref().rust().platform_names.clone();
+        let generation = self.as_ref().rust().request_generation;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.as_mut().rust_mut().emulator_install_cancel = Some(cancel.clone());
+        self.as_mut().set_emulator_install_progress(0.0);
+        self.as_mut().set_emulator_installing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Downloading and verifying PCSX2 {} before one transactional library update...",
+            state.offer.version
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let progress_thread = qt_thread.clone();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-pcsx2-install".to_string())
+            .spawn(move || {
+                let mut last_percent = None;
+                let result = install_managed_pcsx2(
+                    root,
+                    resolver,
+                    platform_names,
+                    state,
+                    transport,
+                    cancel,
+                    |received, total| {
+                        let percent = if total == 0 {
+                            0
+                        } else {
+                            received.saturating_mul(100).saturating_div(total).min(100)
+                        };
+                        if last_percent == Some(percent) {
+                            return;
+                        }
+                        last_percent = Some(percent);
+                        let progress = percent as f64 / 100.0;
+                        progress_thread
+                            .queue(move |mut controller| {
+                                controller
+                                    .as_mut()
+                                    .finish_emulator_install_progress(generation, progress);
+                            })
+                            .ok();
+                    },
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_pcsx2_install(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_installing(false);
+            self.as_mut().rust_mut().emulator_install_cancel = None;
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the PCSX2 installer: {error}"
+            )));
+        }
+    }
+
+    pub fn cancel_emulator_install(mut self: Pin<&mut Self>) {
+        let Some(cancel) = self.as_ref().rust().emulator_install_cancel.clone() else {
+            return;
+        };
+        cancel.store(true, Ordering::Relaxed);
+        self.as_mut().set_status_message(qstring(
+            "Cancelling the PCSX2 download before any library changes are committed...",
+        ));
+    }
+
     pub fn scan_installed_emulators(mut self: Pin<&mut Self>) {
-        if *self.as_ref().loading()
-            || *self.as_ref().import_scanning()
-            || *self.as_ref().emulator_discovery_scanning()
-            || *self.as_ref().emulator_bios_scanning()
-            || *self.as_ref().writing()
-            || *self.as_ref().launching()
-        {
+        if self.as_ref().library_operation_active() {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return;
@@ -12397,11 +13379,16 @@ impl qobject::LibraryController {
         self.as_mut().rust_mut().path_resolver = resolver;
         self.as_mut().rust_mut().emulator_bios_audit = None;
         self.as_mut().rust_mut().emulator_bios_emulator_id = None;
+        self.as_mut().rust_mut().pcsx2_release_state = None;
         self.as_mut().set_path_mapping_count(count);
         self.as_mut()
             .set_emulator_bios_audit_json(QString::default());
+        self.as_mut().set_emulator_release_json(QString::default());
         let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
         self.as_mut().set_emulator_bios_revision(bios_revision);
+        let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+        self.as_mut()
+            .set_emulator_install_revision(install_revision);
         self.as_mut().set_status_message(qstring(success_message));
         true
     }
@@ -12412,14 +13399,19 @@ impl qobject::LibraryController {
         rust.request_generation
     }
 
+    fn library_operation_active(&self) -> bool {
+        *self.loading()
+            || *self.import_scanning()
+            || *self.emulator_discovery_scanning()
+            || *self.emulator_bios_scanning()
+            || *self.emulator_release_checking()
+            || *self.emulator_installing()
+            || *self.writing()
+            || *self.launching()
+    }
+
     fn begin_library_mutation(mut self: Pin<&mut Self>) -> bool {
-        if *self.as_ref().loading()
-            || *self.as_ref().import_scanning()
-            || *self.as_ref().emulator_discovery_scanning()
-            || *self.as_ref().emulator_bios_scanning()
-            || *self.as_ref().writing()
-            || *self.as_ref().launching()
-        {
+        if self.as_ref().library_operation_active() {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return false;
@@ -13558,6 +14550,182 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_pcsx2_release_check(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<Pcsx2ReleaseState, EmulatorLifecycleError>,
+    ) {
+        self.as_mut().set_emulator_release_checking(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(state) => {
+                let payload = match pcsx2_release_payload(&state) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.as_mut().set_status_message(qstring(format!(
+                            "Could not serialize the PCSX2 release review: {error}"
+                        )));
+                        return;
+                    }
+                };
+                let action = state.action;
+                let version = state.offer.version.clone();
+                let prerelease = state.offer.prerelease;
+                let blocked_reason = state.blocked_reason.clone();
+                self.as_mut().rust_mut().pcsx2_release_state = Some(state);
+                self.as_mut().set_emulator_release_json(qstring(payload));
+                let revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut().set_emulator_install_revision(revision);
+                let release_kind = if prerelease { "nightly" } else { "stable" };
+                let message = match action {
+                    Pcsx2InstallAction::Install => format!(
+                        "Official PCSX2 {release_kind} {version} is ready for a reviewed portable install."
+                    ),
+                    Pcsx2InstallAction::Update => format!(
+                        "Official PCSX2 {release_kind} {version} is ready to update the managed portable install."
+                    ),
+                    Pcsx2InstallAction::Repair => format!(
+                        "Official PCSX2 {release_kind} {version} is ready to repair the managed portable install."
+                    ),
+                    Pcsx2InstallAction::Current => format!(
+                        "The managed portable PCSX2 install is current at {version}."
+                    ),
+                    Pcsx2InstallAction::Blocked => format!(
+                        "Managed PCSX2 installation is blocked: {}",
+                        blocked_reason.unwrap_or_else(|| "unsafe existing install state".into())
+                    ),
+                };
+                self.as_mut().set_status_message(qstring(message));
+            }
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not check PCSX2 releases: {error}"
+                )));
+            }
+        }
+    }
+
+    fn finish_emulator_install_progress(mut self: Pin<&mut Self>, generation: u64, progress: f64) {
+        if self.as_ref().rust().request_generation == generation
+            && *self.as_ref().emulator_installing()
+        {
+            self.as_mut()
+                .set_emulator_install_progress(progress.clamp(0.0, 1.0));
+        }
+    }
+
+    fn finish_pcsx2_install(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<Pcsx2InstallSuccess, EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_emulator_installing(false);
+        self.as_mut().rust_mut().emulator_install_cancel = None;
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let Pcsx2InstallSuccess {
+                    emulator_write,
+                    manifest,
+                    executable,
+                    installed_file_count,
+                    created_file_count,
+                    replaced_file_count,
+                    recovery_files,
+                } = success;
+                let operation = emulator_write.operation;
+                let emulator_id = emulator_write.emulator.id.clone();
+                let emulator_title = emulator_write.emulator.title.clone();
+                let mapping_count = emulator_write.mapping_count;
+                let source = emulator_write.source.clone();
+                let backup = emulator_write.backup.clone();
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_configuration = Some(emulator_write.configuration);
+                    rust.discovered_emulators.clear();
+                    rust.emulator_bios_audit = None;
+                    rust.emulator_bios_emulator_id = None;
+                    rust.pcsx2_release_state = None;
+                    rust.emulator_write_notifications =
+                        rust.emulator_write_notifications.saturating_add(1);
+                    rust.emulator_install_notifications =
+                        rust.emulator_install_notifications.saturating_add(1);
+                }
+                self.as_mut().set_emulator_install_progress(1.0);
+                self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut()
+                    .set_emulator_bios_audit_json(QString::default());
+                let emulator_revision = self.as_ref().emulator_revision().saturating_add(1);
+                self.as_mut().set_emulator_revision(emulator_revision);
+                let discovery_revision = self
+                    .as_ref()
+                    .emulator_discovery_revision()
+                    .saturating_add(1);
+                self.as_mut()
+                    .set_emulator_discovery_revision(discovery_revision);
+                let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(bios_revision);
+                let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut()
+                    .set_emulator_install_revision(install_revision);
+                if operation == EmulatorWriteOperation::Create {
+                    self.as_mut()
+                        .set_last_added_emulator_id(qstring(&emulator_id));
+                }
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_pending_recovery_count(0);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Installed verified PCSX2 {} at {} and {} platform mapping(s) in one transaction: {} managed file(s), {} created, {} replaced. Emulators.xml: {}; exact XML backup: {}; binary recovery copies: {}. Recheck releases to refresh status.",
+                    manifest.version,
+                    executable.display(),
+                    mapping_count,
+                    installed_file_count,
+                    created_file_count,
+                    replaced_file_count,
+                    source.display(),
+                    backup.display(),
+                    recovery_files.len()
+                )));
+                eprintln!(
+                    "PCSX2 managed install committed: emulator={emulator_title} id={emulator_id} version={} sha256={} files={installed_file_count}",
+                    manifest.version, manifest.asset_sha256
+                );
+            }
+            Err(EmulatorWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "PCSX2 install stopped on a write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted PCSX2 transaction requires recovery: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "PCSX2 install stopped on an unexpected reference result ({} records).",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Other(message)) if message == "download was cancelled" => {
+                self.as_mut().set_status_message(qstring(
+                    "PCSX2 installation cancelled; no library changes were committed.",
+                ));
+            }
+            Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not install PCSX2: {message}")));
+            }
+        }
+    }
+
     fn finish_emulator_write(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -13580,6 +14748,7 @@ impl qobject::LibraryController {
                     rust.emulator_configuration = Some(success.configuration);
                     rust.emulator_bios_audit = None;
                     rust.emulator_bios_emulator_id = None;
+                    rust.pcsx2_release_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                 }
@@ -13593,8 +14762,12 @@ impl qobject::LibraryController {
                     .set_emulator_discovery_revision(discovery_revision);
                 self.as_mut()
                     .set_emulator_bios_audit_json(QString::default());
+                self.as_mut().set_emulator_release_json(QString::default());
                 let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
                 self.as_mut().set_emulator_bios_revision(bios_revision);
+                let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut()
+                    .set_emulator_install_revision(install_revision);
                 if operation == EmulatorWriteOperation::Create {
                     self.as_mut()
                         .set_last_added_emulator_id(qstring(&success.emulator.id));
@@ -14357,6 +15530,10 @@ impl qobject::LibraryController {
             rust.discovered_emulators.clear();
             rust.emulator_bios_audit = None;
             rust.emulator_bios_emulator_id = None;
+            rust.pcsx2_release_state = None;
+            if let Some(cancel) = rust.emulator_install_cancel.take() {
+                cancel.store(true, Ordering::Relaxed);
+            }
             rust.model_reset_notifications = 1;
             rust.data_change_notifications = 0;
             rust.row_insert_notifications = 0;
@@ -14364,6 +15541,7 @@ impl qobject::LibraryController {
             rust.launch_notifications = 0;
             rust.emulator_write_notifications = 0;
             rust.emulator_bios_scan_notifications = 0;
+            rust.emulator_install_notifications = 0;
             rust.additional_application_write_notifications = 0;
             rust.game_save_write_notifications = 0;
             rust.category_write_notifications = 0;
@@ -14377,8 +15555,12 @@ impl qobject::LibraryController {
         self.as_mut().set_status_message(qstring(message));
         self.as_mut().set_emulator_discovery_scanning(false);
         self.as_mut().set_emulator_bios_scanning(false);
+        self.as_mut().set_emulator_release_checking(false);
+        self.as_mut().set_emulator_installing(false);
+        self.as_mut().set_emulator_install_progress(0.0);
         self.as_mut()
             .set_emulator_bios_audit_json(QString::default());
+        self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_filtered_count(game_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
@@ -14400,6 +15582,13 @@ impl qobject::LibraryController {
         let emulator_bios_revision = self.as_ref().rust().emulator_bios_revision.wrapping_add(1);
         self.as_mut()
             .set_emulator_bios_revision(emulator_bios_revision);
+        let emulator_install_revision = self
+            .as_ref()
+            .rust()
+            .emulator_install_revision
+            .wrapping_add(1);
+        self.as_mut()
+            .set_emulator_install_revision(emulator_install_revision);
         self.as_mut()
             .set_pending_recovery_count(saturating_i32(pending_recovery_count));
         self.as_mut().set_delete_blocker_count(0);
@@ -15298,6 +16487,168 @@ mod tests {
             Some(&registered)
         )
         .is_err());
+    }
+
+    fn pcsx2_test_offer(fixture: &Path, version: &str, bytes: &[u8]) -> Pcsx2ReleaseOffer {
+        let asset_name = format!("pcsx2-v{version}-linux-appimage-x64-Qt.AppImage");
+        let asset = fixture.join(&asset_name);
+        fs::write(&asset, bytes).expect("write release fixture asset");
+        let receipt = file_receipt(&asset).expect("hash release fixture asset");
+        Pcsx2ReleaseOffer {
+            version: version.into(),
+            tag: format!("v{version}"),
+            release_name: format!("PCSX2 v{version}"),
+            release_url: format!("https://github.com/PCSX2/pcsx2/releases/tag/v{version}"),
+            prerelease: true,
+            artifact_kind: Pcsx2ArtifactKind::LinuxAppImageX64,
+            asset_name: asset_name.clone(),
+            asset_url: format!(
+                "https://github.com/PCSX2/pcsx2/releases/download/v{version}/{asset_name}"
+            ),
+            asset_byte_len: receipt.byte_len,
+            asset_sha256: receipt.sha256,
+        }
+    }
+
+    #[test]
+    fn managed_pcsx2_install_and_update_preserve_user_files_and_exact_recovery_copies() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let fixture = tempfile::tempdir().expect("release fixture");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data");
+        let emulator_source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/launchbox/Data/Emulators.xml");
+        let emulator_document = data.join("Emulators.xml");
+        fs::copy(&emulator_source, &emulator_document).expect("copy Emulators.xml");
+        let original_xml = fs::read(&emulator_document).expect("read original XML");
+        let resolver = HostPathResolver::default();
+        let platforms = vec!["Sony PlayStation 2".into()];
+        let first_offer = pcsx2_test_offer(fixture.path(), "2.7.492", b"first appimage\n");
+        let first_state = inspect_pcsx2_release_state(
+            directory.path(),
+            Some(
+                &AuxiliaryDocument::load(&emulator_document)
+                    .unwrap()
+                    .emulator_configuration()
+                    .unwrap(),
+            ),
+            &resolver,
+            first_offer,
+        )
+        .expect("inspect initial install");
+        assert_eq!(first_state.action, Pcsx2InstallAction::Install);
+
+        let first = install_managed_pcsx2(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            platforms.clone(),
+            first_state,
+            Box::new(FileReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("install managed PCSX2");
+        assert_eq!(first.manifest.version, "2.7.492");
+        assert_eq!(
+            fs::read(&first.emulator_write.backup).unwrap(),
+            original_xml
+        );
+        assert_eq!(fs::read(&first.executable).unwrap(), b"first appimage\n");
+        let user_configuration = directory.path().join("Emulators/PCSX2/inis/PCSX2.ini");
+        fs::create_dir_all(user_configuration.parent().unwrap()).unwrap();
+        fs::write(&user_configuration, b"[UI]\nTheme=UserChoice\n").unwrap();
+
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let before_update_xml = fs::read(&emulator_document).unwrap();
+        let second_offer = pcsx2_test_offer(fixture.path(), "2.7.493", b"second appimage\n");
+        let second_state = inspect_pcsx2_release_state(
+            directory.path(),
+            Some(&configuration),
+            &resolver,
+            second_offer,
+        )
+        .expect("inspect managed update");
+        assert_eq!(second_state.action, Pcsx2InstallAction::Update);
+        let second = install_managed_pcsx2(
+            directory.path().to_path_buf(),
+            resolver,
+            platforms,
+            second_state,
+            Box::new(FileReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("update managed PCSX2");
+
+        assert_eq!(second.manifest.version, "2.7.493");
+        assert_eq!(fs::read(&second.executable).unwrap(), b"second appimage\n");
+        assert_eq!(
+            fs::read(&user_configuration).unwrap(),
+            b"[UI]\nTheme=UserChoice\n"
+        );
+        assert_eq!(
+            fs::read(&second.emulator_write.backup).unwrap(),
+            before_update_xml
+        );
+        assert!(second
+            .recovery_files
+            .iter()
+            .any(|path| fs::read(path).is_ok_and(|bytes| bytes == b"first appimage\n")));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn cancelled_pcsx2_install_removes_staging_without_mutating_the_library() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let fixture = tempfile::tempdir().expect("release fixture");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data");
+        let emulator_source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/launchbox/Data/Emulators.xml");
+        let emulator_document = data.join("Emulators.xml");
+        fs::copy(&emulator_source, &emulator_document).expect("copy Emulators.xml");
+        let original_xml = fs::read(&emulator_document).expect("read original XML");
+        let resolver = HostPathResolver::default();
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let offer = pcsx2_test_offer(fixture.path(), "2.7.492", b"cancelled appimage\n");
+        let state =
+            inspect_pcsx2_release_state(directory.path(), Some(&configuration), &resolver, offer)
+                .expect("inspect initial install");
+        let cancel = Arc::new(AtomicBool::new(true));
+        let result = install_managed_pcsx2(
+            directory.path().to_path_buf(),
+            resolver,
+            vec!["Sony PlayStation 2".into()],
+            state,
+            Box::new(FileReleaseTransport::new(fixture.path())),
+            cancel,
+            |_, _| {},
+        );
+
+        assert!(matches!(
+            result,
+            Err(EmulatorWriteFailure::Other(message)) if message == "download was cancelled"
+        ));
+        assert_eq!(fs::read(&emulator_document).unwrap(), original_xml);
+        assert!(!directory.path().join("Emulators/PCSX2").exists());
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+        assert!(fs::read_dir(directory.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".lbport-pcsx2-download-")));
     }
 
     #[test]

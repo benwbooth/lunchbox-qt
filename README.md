@@ -142,9 +142,21 @@ native path and provenance, never execute a candidate, and require review in
 the complete editor before transactional registration. Portable paths are
 stored with LaunchBox backslashes while mapped and external paths use the
 shared cross-platform host-path boundary. Configuration and discovery never
-create, install, update, modify, run, or delete emulator binaries. Downloads,
-installation, updates, dependencies, and cores remain open. A configured
-PCSX2 entry also exposes a read-only BIOS audit using the complete recovered
+modify, run, or delete candidate binaries. The first managed binary lifecycle
+is available separately for PCSX2: it reads the official `PCSX2/pcsx2` GitHub
+release catalog, selects the exact host artifact, requires GitHub's SHA-256
+digest and byte count, streams the download with progress and cancellation,
+and installs it under `Emulators\PCSX2`. The native artifact, empty
+`portable.ini`, port-owned manifest, and `Data/Emulators.xml` registration
+commit under one recoverable transaction. Existing PCSX2 user files are
+retained; updates and repairs require a valid ownership manifest, recheck the
+managed executable before writing, and keep exact recovery copies. Linux uses
+the official AppImage, preserves its executable mode, and the Nix package
+routes `.AppImage` launches through packaged `appimage-run` without a command
+shell. Windows selects the official Qt x64 7z and uses the safe archive
+boundary; managed macOS bundle installation, other emulators, dependencies,
+cores, and binary deletion remain open. A configured PCSX2 entry also exposes
+a read-only BIOS audit using the complete recovered
 13.27 group of 73 filename-and-MD5 alternatives. It resolves `portable.ini`
 and `inis/PCSX2.ini` or the host-native PCSX2 configuration root, streams
 hashes without loading firmware into memory, requires any one valid alternative

@@ -262,7 +262,16 @@ then sends a selected candidate through the full typed editor with recovered
 13.27 defaults and shared reverse host-path conversion. Deterministic
 deduplication, the Unix `dolphin` name collision, existing platform defaults,
 candidate immutability, exact XML backup, and binary-directory isolation are
-tested. Downloads, installation, updating, dependencies, and cores remain open
+tested. The next `RUN-003` slice implements PCSX2 as the first managed provider:
+the recovered first-compatible-release policy drives exact official GitHub
+asset selection; size, URL, name, and SHA-256 are checked during a bounded
+streamed download; cancellation precedes all mutation; and the verified
+artifact, portable marker, ownership manifest, and emulator configuration
+commit together. Existing managed state is audited for current/update/repair
+classification, unsafe or unmanaged executable targets are blocked, and Linux
+AppImages keep execute permission and launch through packaged `appimage-run`
+without a shell. Managed macOS bundles, other emulator providers,
+dependencies, cores, automatic update policy, and binary deletion remain open
 under `RUN-003`. The first `RUN-004` subset audits the complete recovered
 PCSX2 BIOS group of 73 alternatives without executing PCSX2 or mutating its
 configuration or firmware. It honors the portable marker and portable/native
