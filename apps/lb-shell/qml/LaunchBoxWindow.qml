@@ -27,6 +27,8 @@ ApplicationWindow {
     property bool crudSmokeTest: Qt.application.arguments.indexOf("--crud-smoke-test") >= 0
     property bool platformCrudSmokeTest:
         Qt.application.arguments.indexOf("--platform-crud-smoke-test") >= 0
+    property bool emulatorCrudSmokeTest:
+        Qt.application.arguments.indexOf("--emulator-crud-smoke-test") >= 0
     property bool categoryCrudSmokeTest:
         Qt.application.arguments.indexOf("--category-crud-smoke-test") >= 0
     property bool playlistCrudSmokeTest:
@@ -116,6 +118,11 @@ ApplicationWindow {
     property int platformCrudBlockedReferences: 0
     property string platformCrudAddedGameId: ""
     property bool platformCrudSmokeFinished: false
+    property int emulatorCrudSmokePhase: 0
+    property int emulatorCrudBlockedReferences: 0
+    property string emulatorCrudAddedId: ""
+    property int emulatorCrudInitialRevision: -1
+    property bool emulatorCrudSmokeFinished: false
     property int categoryCrudSmokePhase: 0
     property bool categoryCrudSmokeFinished: false
     property int playlistCrudSmokePhase: 0
@@ -1480,6 +1487,88 @@ ApplicationWindow {
     Timer {
         interval: 25
         repeat: true
+        running: window.emulatorCrudSmokeTest && !window.emulatorCrudSmokeFinished
+        onTriggered: {
+            const fixtureId = "fixture-emulator"
+            if (window.emulatorCrudSmokePhase === 0 && !controller.loading
+                    && !controller.writing && controller.library_path.length > 0
+                    && controller.emulator_entry_count() === 3) {
+                window.emulatorCrudInitialRevision = controller.emulator_revision
+                window.emulatorCrudSmokePhase = 1
+                emulatorEditor.smokeEdit(fixtureId)
+            } else if (window.emulatorCrudSmokePhase === 1
+                       && !controller.writing
+                       && controller.emulator_revision
+                          === window.emulatorCrudInitialRevision + 1) {
+                const serialized = controller.emulator_edit_payload(fixtureId)
+                const payload = serialized.length > 0 ? JSON.parse(serialized) : null
+                if (payload === null
+                        || payload.emulator.title !== "Edited Fixture Emulator"
+                        || payload.emulator.application_path
+                           !== "Emulators\\Edited Fixture\\fixture.exe"
+                        || payload.emulator.auto_hotkey_script
+                           !== "Smoke launch script"
+                        || payload.platforms.length !== 1
+                        || payload.platforms[0].command_line !== "--edited-mapping"
+                        || !payload.platforms[0].default
+                        || payload.platforms[0].auto_extract !== false
+                        || !payload.platforms[0].m3u_disc_load_enabled) {
+                    console.error("EMULATOR_CRUD_SMOKE_EDIT_NOT_PERSISTED payload="
+                                  + serialized)
+                    Qt.exit(35)
+                    return
+                }
+                window.emulatorCrudSmokePhase = 2
+                emulatorEditor.smokeCreate()
+            } else if (window.emulatorCrudSmokePhase === 2
+                       && !controller.writing
+                       && controller.emulator_revision
+                          === window.emulatorCrudInitialRevision + 2
+                       && controller.last_added_emulator_id.length > 0) {
+                window.emulatorCrudAddedId = controller.last_added_emulator_id
+                window.emulatorCrudSmokePhase = 3
+                deleteEmulatorConfirmation.smokeDelete(
+                            fixtureId, "Edited Fixture Emulator")
+            } else if (window.emulatorCrudSmokePhase === 3
+                       && !controller.writing
+                       && controller.delete_blocker_count > 0) {
+                window.emulatorCrudBlockedReferences =
+                    controller.delete_blocker_count
+                window.emulatorCrudSmokePhase = 4
+                deleteEmulatorConfirmation.smokeDelete(
+                            window.emulatorCrudAddedId, "Temporary Qt Emulator")
+            } else if (window.emulatorCrudSmokePhase === 4
+                       && !controller.writing
+                       && controller.emulator_revision
+                          === window.emulatorCrudInitialRevision + 3) {
+                if (!controller.report_emulator_crud_smoke_success(
+                        window.emulatorCrudAddedId,
+                        window.emulatorCrudBlockedReferences,
+                        window.emulatorCrudInitialRevision)) {
+                    console.error("EMULATOR_CRUD_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(35)
+                    return
+                }
+                window.emulatorCrudSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.emulatorCrudSmokeTest && !window.emulatorCrudSmokeFinished
+        onTriggered: {
+            console.error("EMULATOR_CRUD_SMOKE_TIMEOUT phase="
+                          + window.emulatorCrudSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(35)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
         running: window.categoryCrudSmokeTest && !window.categoryCrudSmokeFinished
         onTriggered: {
             const categoryName = "Portable Collections"
@@ -2046,6 +2135,15 @@ ApplicationWindow {
                     Label {
                         text: controller.filtered_count + " shown / " + controller.game_count + " total"
                         color: "#8b949e"
+                    }
+                    Button {
+                        text: "Emulators…"
+                        enabled: controller.library_path.length > 0
+                                 && !controller.loading && !controller.writing
+                                 && !controller.launching
+                                 && !controller.write_conflict
+                                 && controller.pending_recovery_count === 0
+                        onClicked: emulatorManager.openManager()
                     }
                     Button {
                         text: "Import ROMs"
@@ -3378,7 +3476,10 @@ ApplicationWindow {
                     ComboBox {
                         id: additionalApplicationEmulatorChoice
                         Layout.fillWidth: true
-                        model: controller.emulator_entry_count()
+                        model: {
+                            const revision = controller.emulator_revision
+                            return controller.emulator_entry_count()
+                        }
                         displayText: currentIndex >= 0
                                      ? controller.emulator_title_at(currentIndex)
                                      : "Unavailable stored emulator"
@@ -3995,7 +4096,10 @@ ApplicationWindow {
                     ComboBox {
                         id: emulatorChoice
                         Layout.fillWidth: true
-                        model: controller.emulator_entry_count()
+                        model: {
+                            const revision = controller.emulator_revision
+                            return controller.emulator_entry_count()
+                        }
                         displayText: currentIndex >= 0
                                      ? controller.emulator_title_at(currentIndex)
                                      : "Custom or unavailable emulator ID"
@@ -4256,6 +4360,676 @@ ApplicationWindow {
         contentItem: Label {
             width: 620
             text: "Each launchable version becomes a standalone game. The default-version representative is consumed without duplicating the retained game; documents and automatic helper applications stay attached. Exact XML backup is created, and no ROM or media files are moved or deleted."
+            wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: emulatorManager
+        anchors.centerIn: parent
+        modal: true
+        title: "Manage Emulators"
+        standardButtons: Dialog.Close
+        property int selectedIndex: -1
+
+        function selectedId() {
+            return selectedIndex >= 0
+                   ? controller.emulator_id_at(selectedIndex + 2) : ""
+        }
+
+        function selectedTitle() {
+            return selectedIndex >= 0
+                   ? controller.emulator_title_at(selectedIndex + 2) : ""
+        }
+
+        function openManager() {
+            selectedIndex = controller.emulator_entry_count() > 2 ? 0 : -1
+            open()
+        }
+
+        Connections {
+            target: controller
+            function onEmulatorRevisionChanged() {
+                const count = Math.max(
+                                0, controller.emulator_entry_count() - 2)
+                if (count === 0)
+                    emulatorManager.selectedIndex = -1
+                else if (emulatorManager.selectedIndex < 0)
+                    emulatorManager.selectedIndex = 0
+                else if (emulatorManager.selectedIndex >= count)
+                    emulatorManager.selectedIndex = count - 1
+            }
+        }
+
+        contentItem: ColumnLayout {
+            implicitWidth: 680
+            implicitHeight: 460
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: "Emulator definitions and per-platform mappings are stored in Data/Emulators.xml. Application paths stay lexical LaunchBox values; this editor never creates, installs, updates, or deletes emulator binaries."
+                wrapMode: Text.Wrap
+                color: "#7fbfff"
+            }
+            ListView {
+                id: emulatorList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: {
+                    const revision = controller.emulator_revision
+                    return Math.max(0, controller.emulator_entry_count() - 2)
+                }
+                delegate: ItemDelegate {
+                    id: emulatorDelegate
+                    required property int index
+                    width: emulatorList.width
+                    property string emulatorId: controller.emulator_id_at(index + 2)
+                    property string emulatorTitle: controller.emulator_title_at(index + 2)
+                    highlighted: emulatorManager.selectedIndex === index
+                    contentItem: ColumnLayout {
+                        Label {
+                            Layout.fillWidth: true
+                            text: emulatorDelegate.emulatorTitle
+                            color: "white"
+                            font.bold: true
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: emulatorDelegate.emulatorId
+                            color: "#7d8590"
+                            font.pixelSize: 11
+                            elide: Text.ElideMiddle
+                        }
+                    }
+                    onClicked: emulatorManager.selectedIndex = index
+                    onDoubleClicked: emulatorEditor.prepareEdit(emulatorId)
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    text: "Add"
+                    enabled: !controller.writing && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: emulatorEditor.prepareCreate()
+                }
+                Button {
+                    text: "Edit"
+                    enabled: emulatorManager.selectedIndex >= 0
+                             && !controller.writing && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: emulatorEditor.prepareEdit(emulatorManager.selectedId())
+                }
+                Button {
+                    text: "Delete"
+                    enabled: emulatorManager.selectedIndex >= 0
+                             && !controller.writing && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: deleteEmulatorConfirmation.prepare(
+                                   emulatorManager.selectedId(),
+                                   emulatorManager.selectedTitle())
+                }
+                Item { Layout.fillWidth: true }
+                Label {
+                    text: Math.max(0, controller.emulator_entry_count() - 2)
+                          + " configured"
+                    color: "#7d8590"
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: emulatorEditor
+        anchors.centerIn: parent
+        modal: true
+        title: createMode ? "Add Emulator" : "Edit " + emulatorTitleField.text
+        standardButtons: Dialog.Save | Dialog.Cancel
+        property bool createMode: false
+        property string originalId: ""
+        property var draft: null
+
+        ListModel { id: emulatorPlatformEditorModel }
+
+        function storedText(value) {
+            return value === null || value === undefined ? "" : value
+        }
+
+        function optionalText(value) {
+            return value.trim().length > 0 ? value : null
+        }
+
+        function platformIndex(name) {
+            if (draft === null)
+                return -1
+            for (let index = 0; index < draft.available_platforms.length; ++index) {
+                if (draft.available_platforms[index].toLowerCase()
+                        === name.toLowerCase())
+                    return index
+            }
+            return -1
+        }
+
+        function defaultPlatformOptions() {
+            if (draft === null)
+                return ["Platform default"]
+            return ["Platform default"].concat(draft.available_platforms)
+        }
+
+        function loadPayload(serialized, creating) {
+            if (serialized.length === 0)
+                return
+            createMode = creating
+            draft = JSON.parse(serialized)
+            originalId = creating ? "" : draft.emulator.id
+            const emulator = draft.emulator
+            emulatorDefinitionIdField.text = emulator.id
+            emulatorTitleField.text = emulator.title
+            emulatorApplicationPathField.text = emulator.application_path
+            emulatorCommandLineField.text = storedText(emulator.command_line)
+            const defaultIndex = emulator.default_platform === null
+                                 ? -1 : platformIndex(emulator.default_platform)
+            emulatorDefaultPlatform.currentIndex = defaultIndex + 1
+            emulatorStartupLoadDelayField.text = String(emulator.startup_load_delay)
+            emulatorAutoExtractCheck.checked = emulator.auto_extract
+            emulatorAggressiveWindowHidingCheck.checked =
+                emulator.aggressive_window_hiding
+            emulatorDefaultPauseSettingsPushedCheck.checked =
+                emulator.default_pause_settings_pushed
+            emulatorDisableShutdownScreenCheck.checked =
+                emulator.disable_shutdown_screen
+            emulatorHardcoreAchievementsCheck.checked =
+                emulator.enable_hardcore_achievements
+            emulatorFileNameOnlyCheck.checked =
+                emulator.file_name_without_extension_and_path
+            emulatorForcefulPauseCheck.checked =
+                emulator.forceful_pause_screen_activation
+            emulatorHideFullscreenWindowsCheck.checked =
+                emulator.hide_all_non_exclusive_fullscreen_windows
+            emulatorHideConsoleCheck.checked = emulator.hide_console
+            emulatorHideMouseCheck.checked = emulator.hide_mouse_cursor_in_game
+            emulatorCheevoLoginCheck.checked =
+                emulator.login_to_cheevo_on_game_launch
+            emulatorNoQuotesCheck.checked = emulator.no_quotes
+            emulatorNoSpaceCheck.checked = emulator.no_space
+            emulatorSkipVersionCheck.checked = emulator.skip_version_check
+            emulatorSuspendOnPauseCheck.checked = emulator.suspend_process_on_pause
+            emulatorUsePauseScreenCheck.checked = emulator.use_pause_screen
+            emulatorUseStartupScreenCheck.checked = emulator.use_startup_screen
+            emulatorAutoHotkeyScript.text = storedText(emulator.auto_hotkey_script)
+            emulatorExitAutoHotkeyScript.text =
+                storedText(emulator.exit_auto_hotkey_script)
+            emulatorLoadStateAutoHotkeyScript.text =
+                storedText(emulator.load_state_auto_hotkey_script)
+            emulatorPauseAutoHotkeyScript.text =
+                storedText(emulator.pause_auto_hotkey_script)
+            emulatorResetAutoHotkeyScript.text =
+                storedText(emulator.reset_auto_hotkey_script)
+            emulatorResumeAutoHotkeyScript.text =
+                storedText(emulator.resume_auto_hotkey_script)
+            emulatorSaveStateAutoHotkeyScript.text =
+                storedText(emulator.save_state_auto_hotkey_script)
+            emulatorSwapDiscsAutoHotkeyScript.text =
+                storedText(emulator.swap_discs_auto_hotkey_script)
+            emulatorPlatformEditorModel.clear()
+            for (let index = 0; index < draft.platforms.length; ++index) {
+                const mapping = draft.platforms[index]
+                emulatorPlatformEditorModel.append({
+                    sourceIndex: mapping.source_index === null
+                                 ? -1 : mapping.source_index,
+                    platformName: mapping.platform,
+                    commandLine: storedText(mapping.command_line),
+                    isDefault: mapping.default,
+                    autoExtractMode: mapping.auto_extract === null
+                                     ? 0 : (mapping.auto_extract ? 1 : 2),
+                    m3uEnabled: mapping.m3u_disc_load_enabled
+                })
+            }
+            open()
+        }
+
+        function prepareCreate() {
+            loadPayload(controller.new_emulator_edit_payload(), true)
+        }
+
+        function prepareEdit(emulatorId) {
+            loadPayload(controller.emulator_edit_payload(emulatorId), false)
+        }
+
+        function editPayload() {
+            const emulator = draft.emulator
+            emulator.title = emulatorTitleField.text
+            emulator.application_path = emulatorApplicationPathField.text
+            emulator.command_line = optionalText(emulatorCommandLineField.text)
+            emulator.default_platform = emulatorDefaultPlatform.currentIndex <= 0
+                                        ? null
+                                        : draft.available_platforms[
+                                              emulatorDefaultPlatform.currentIndex - 1]
+            emulator.startup_load_delay =
+                Number(emulatorStartupLoadDelayField.text)
+            emulator.auto_extract = emulatorAutoExtractCheck.checked
+            emulator.aggressive_window_hiding =
+                emulatorAggressiveWindowHidingCheck.checked
+            emulator.default_pause_settings_pushed =
+                emulatorDefaultPauseSettingsPushedCheck.checked
+            emulator.disable_shutdown_screen =
+                emulatorDisableShutdownScreenCheck.checked
+            emulator.enable_hardcore_achievements =
+                emulatorHardcoreAchievementsCheck.checked
+            emulator.file_name_without_extension_and_path =
+                emulatorFileNameOnlyCheck.checked
+            emulator.forceful_pause_screen_activation =
+                emulatorForcefulPauseCheck.checked
+            emulator.hide_all_non_exclusive_fullscreen_windows =
+                emulatorHideFullscreenWindowsCheck.checked
+            emulator.hide_console = emulatorHideConsoleCheck.checked
+            emulator.hide_mouse_cursor_in_game = emulatorHideMouseCheck.checked
+            emulator.login_to_cheevo_on_game_launch =
+                emulatorCheevoLoginCheck.checked
+            emulator.no_quotes = emulatorNoQuotesCheck.checked
+            emulator.no_space = emulatorNoSpaceCheck.checked
+            emulator.skip_version_check = emulatorSkipVersionCheck.checked
+            emulator.suspend_process_on_pause =
+                emulatorSuspendOnPauseCheck.checked
+            emulator.use_pause_screen = emulatorUsePauseScreenCheck.checked
+            emulator.use_startup_screen = emulatorUseStartupScreenCheck.checked
+            emulator.auto_hotkey_script =
+                optionalText(emulatorAutoHotkeyScript.text)
+            emulator.exit_auto_hotkey_script =
+                optionalText(emulatorExitAutoHotkeyScript.text)
+            emulator.load_state_auto_hotkey_script =
+                optionalText(emulatorLoadStateAutoHotkeyScript.text)
+            emulator.pause_auto_hotkey_script =
+                optionalText(emulatorPauseAutoHotkeyScript.text)
+            emulator.reset_auto_hotkey_script =
+                optionalText(emulatorResetAutoHotkeyScript.text)
+            emulator.resume_auto_hotkey_script =
+                optionalText(emulatorResumeAutoHotkeyScript.text)
+            emulator.save_state_auto_hotkey_script =
+                optionalText(emulatorSaveStateAutoHotkeyScript.text)
+            emulator.swap_discs_auto_hotkey_script =
+                optionalText(emulatorSwapDiscsAutoHotkeyScript.text)
+            const mappings = []
+            for (let index = 0; index < emulatorPlatformEditorModel.count; ++index) {
+                const mapping = emulatorPlatformEditorModel.get(index)
+                mappings.push({
+                    source_index: mapping.sourceIndex < 0
+                                  ? null : mapping.sourceIndex,
+                    platform: mapping.platformName,
+                    command_line: optionalText(mapping.commandLine),
+                    default: mapping.isDefault,
+                    auto_extract: mapping.autoExtractMode === 0
+                                  ? null : mapping.autoExtractMode === 1,
+                    m3u_disc_load_enabled: mapping.m3uEnabled
+                })
+            }
+            draft.platforms = mappings
+            return JSON.stringify(draft)
+        }
+
+        function addMapping() {
+            if (draft === null || draft.available_platforms.length === 0)
+                return
+            let platform = draft.available_platforms[0]
+            for (let available = 0;
+                    available < draft.available_platforms.length; ++available) {
+                let used = false
+                for (let index = 0; index < emulatorPlatformEditorModel.count; ++index) {
+                    if (emulatorPlatformEditorModel.get(index).platformName
+                            === draft.available_platforms[available]) {
+                        used = true
+                        break
+                    }
+                }
+                if (!used) {
+                    platform = draft.available_platforms[available]
+                    break
+                }
+            }
+            emulatorPlatformEditorModel.append({
+                sourceIndex: -1,
+                platformName: platform,
+                commandLine: "",
+                isDefault: false,
+                autoExtractMode: 0,
+                m3uEnabled: false
+            })
+        }
+
+        function smokeEdit(emulatorId) {
+            prepareEdit(emulatorId)
+            emulatorTitleField.text = "Edited Fixture Emulator"
+            emulatorApplicationPathField.text =
+                "Emulators\\Edited Fixture\\fixture.exe"
+            emulatorAutoHotkeyScript.text = "Smoke launch script"
+            emulatorUseStartupScreenCheck.checked = true
+            emulatorUsePauseScreenCheck.checked = true
+            if (emulatorPlatformEditorModel.count > 0) {
+                emulatorPlatformEditorModel.setProperty(
+                            0, "commandLine", "--edited-mapping")
+                emulatorPlatformEditorModel.setProperty(0, "isDefault", true)
+                emulatorPlatformEditorModel.setProperty(0, "autoExtractMode", 2)
+                emulatorPlatformEditorModel.setProperty(0, "m3uEnabled", true)
+            }
+            Qt.callLater(function() { emulatorEditor.accept() })
+        }
+
+        function smokeCreate() {
+            prepareCreate()
+            emulatorTitleField.text = "Temporary Qt Emulator"
+            emulatorApplicationPathField.text =
+                "C:\\Portable\\Temporary Qt\\temp.exe"
+            emulatorUseStartupScreenCheck.checked = true
+            emulatorUsePauseScreenCheck.checked = true
+            addMapping()
+            Qt.callLater(function() { emulatorEditor.accept() })
+        }
+
+        onAccepted: {
+            const payload = editPayload()
+            if (createMode)
+                controller.add_emulator(payload)
+            else
+                controller.save_emulator(originalId, payload)
+        }
+
+        contentItem: ScrollView {
+            id: emulatorEditorScroll
+            implicitWidth: 850
+            implicitHeight: Math.min(700, window.height - 120)
+            contentWidth: availableWidth
+            clip: true
+
+            ColumnLayout {
+                width: emulatorEditorScroll.availableWidth
+                spacing: 12
+
+                Label {
+                    Layout.fillWidth: true
+                    text: "The generated emulator ID is immutable. Paths and scripts are persisted exactly as LaunchBox data; host path translation happens only when a game is launched."
+                    wrapMode: Text.Wrap
+                    color: "#d29922"
+                }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+                    Label { text: "ID" }
+                    TextField {
+                        id: emulatorDefinitionIdField
+                        Layout.fillWidth: true
+                        readOnly: true
+                    }
+                    Label { text: "Title" }
+                    TextField { id: emulatorTitleField; Layout.fillWidth: true }
+                    Label { text: "Application path" }
+                    TextField {
+                        id: emulatorApplicationPathField
+                        Layout.fillWidth: true
+                        placeholderText: "Stored LaunchBox executable path"
+                    }
+                    Label { text: "Command line" }
+                    TextField {
+                        id: emulatorCommandLineField
+                        Layout.fillWidth: true
+                    }
+                    Label { text: "Default platform" }
+                    ComboBox {
+                        id: emulatorDefaultPlatform
+                        Layout.fillWidth: true
+                        model: emulatorEditor.defaultPlatformOptions()
+                    }
+                    Label { text: "Startup delay (ms)" }
+                    TextField {
+                        id: emulatorStartupLoadDelayField
+                        Layout.fillWidth: true
+                        validator: IntValidator { bottom: 0 }
+                    }
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    CheckBox { id: emulatorAutoExtractCheck; text: "Extract archives" }
+                    CheckBox {
+                        id: emulatorAggressiveWindowHidingCheck
+                        text: "Aggressive window hiding"
+                    }
+                    CheckBox {
+                        id: emulatorDefaultPauseSettingsPushedCheck
+                        text: "Default pause settings pushed"
+                    }
+                    CheckBox {
+                        id: emulatorDisableShutdownScreenCheck
+                        text: "Disable shutdown screen"
+                    }
+                    CheckBox {
+                        id: emulatorHardcoreAchievementsCheck
+                        text: "Hardcore achievements"
+                    }
+                    CheckBox {
+                        id: emulatorFileNameOnlyCheck
+                        text: "ROM filename only"
+                    }
+                    CheckBox {
+                        id: emulatorForcefulPauseCheck
+                        text: "Forceful pause activation"
+                    }
+                    CheckBox {
+                        id: emulatorHideFullscreenWindowsCheck
+                        text: "Hide non-exclusive fullscreen windows"
+                    }
+                    CheckBox { id: emulatorHideConsoleCheck; text: "Hide console" }
+                    CheckBox {
+                        id: emulatorHideMouseCheck
+                        text: "Hide mouse cursor in game"
+                    }
+                    CheckBox {
+                        id: emulatorCheevoLoginCheck
+                        text: "Log in to achievements on launch"
+                    }
+                    CheckBox { id: emulatorNoQuotesCheck; text: "Do not quote ROM path" }
+                    CheckBox { id: emulatorNoSpaceCheck; text: "No space before ROM path" }
+                    CheckBox {
+                        id: emulatorSkipVersionCheck
+                        text: "Skip version check"
+                    }
+                    CheckBox {
+                        id: emulatorSuspendOnPauseCheck
+                        text: "Suspend process on pause"
+                    }
+                    CheckBox {
+                        id: emulatorUsePauseScreenCheck
+                        text: "Use pause screen"
+                    }
+                    CheckBox {
+                        id: emulatorUseStartupScreenCheck
+                        text: "Use startup screen"
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: "#30363d"
+                }
+                Label { text: "AutoHotkey scripts"; font.pixelSize: 18; font.bold: true }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+                    Label { text: "Launch" }
+                    TextArea {
+                        id: emulatorAutoHotkeyScript
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 60
+                        wrapMode: TextEdit.Wrap
+                    }
+                    Label { text: "Exit" }
+                    TextArea {
+                        id: emulatorExitAutoHotkeyScript
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 60
+                        wrapMode: TextEdit.Wrap
+                    }
+                    Label { text: "Load state" }
+                    TextArea {
+                        id: emulatorLoadStateAutoHotkeyScript
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 60
+                        wrapMode: TextEdit.Wrap
+                    }
+                    Label { text: "Pause" }
+                    TextArea {
+                        id: emulatorPauseAutoHotkeyScript
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 60
+                        wrapMode: TextEdit.Wrap
+                    }
+                    Label { text: "Reset" }
+                    TextArea {
+                        id: emulatorResetAutoHotkeyScript
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 60
+                        wrapMode: TextEdit.Wrap
+                    }
+                    Label { text: "Resume" }
+                    TextArea {
+                        id: emulatorResumeAutoHotkeyScript
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 60
+                        wrapMode: TextEdit.Wrap
+                    }
+                    Label { text: "Save state" }
+                    TextArea {
+                        id: emulatorSaveStateAutoHotkeyScript
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 60
+                        wrapMode: TextEdit.Wrap
+                    }
+                    Label { text: "Swap discs" }
+                    TextArea {
+                        id: emulatorSwapDiscsAutoHotkeyScript
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 60
+                        wrapMode: TextEdit.Wrap
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: "#30363d"
+                }
+                Label { text: "Platform mappings"; font.pixelSize: 18; font.bold: true }
+                Label {
+                    Layout.fillWidth: true
+                    text: "A platform can have one mapping per emulator and one default emulator. Selecting Default here atomically clears the former default mapping for that platform."
+                    wrapMode: Text.Wrap
+                    color: "#7d8590"
+                }
+                Repeater {
+                    model: emulatorPlatformEditorModel
+                    delegate: ColumnLayout {
+                        required property int index
+                        required property int sourceIndex
+                        required property string platformName
+                        required property string commandLine
+                        required property bool isDefault
+                        required property int autoExtractMode
+                        required property bool m3uEnabled
+                        Layout.fillWidth: true
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            ComboBox {
+                                Layout.preferredWidth: 190
+                                model: emulatorEditor.draft === null
+                                       ? [] : emulatorEditor.draft.available_platforms
+                                currentIndex: emulatorEditor.platformIndex(platformName)
+                                onActivated: emulatorPlatformEditorModel.setProperty(
+                                                 index, "platformName",
+                                                 emulatorEditor.draft
+                                                 .available_platforms[currentIndex])
+                            }
+                            TextField {
+                                Layout.fillWidth: true
+                                text: commandLine
+                                placeholderText: "Per-platform command line"
+                                onTextEdited: emulatorPlatformEditorModel.setProperty(
+                                                  index, "commandLine", text)
+                            }
+                            ComboBox {
+                                Layout.preferredWidth: 135
+                                model: ["Inherit extract", "Extract", "Do not extract"]
+                                currentIndex: autoExtractMode
+                                onActivated: emulatorPlatformEditorModel.setProperty(
+                                                 index, "autoExtractMode", currentIndex)
+                            }
+                            Button {
+                                text: "Remove"
+                                onClicked: emulatorPlatformEditorModel.remove(index)
+                            }
+                        }
+                        RowLayout {
+                            CheckBox {
+                                text: "Default emulator"
+                                checked: isDefault
+                                onToggled: emulatorPlatformEditorModel.setProperty(
+                                               index, "isDefault", checked)
+                            }
+                            CheckBox {
+                                text: "M3U multi-disc loading"
+                                checked: m3uEnabled
+                                onToggled: emulatorPlatformEditorModel.setProperty(
+                                               index, "m3uEnabled", checked)
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 1
+                            color: "#30363d"
+                        }
+                    }
+                }
+                Button {
+                    text: "Add Platform Mapping"
+                    enabled: emulatorEditor.draft !== null
+                             && emulatorEditor.draft.available_platforms.length > 0
+                    onClicked: emulatorEditor.addMapping()
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: deleteEmulatorConfirmation
+        anchors.centerIn: parent
+        modal: true
+        title: "Delete " + emulatorTitle + "?"
+        standardButtons: Dialog.Yes | Dialog.No
+        property string emulatorId: ""
+        property string emulatorTitle: ""
+
+        function prepare(id, title) {
+            emulatorId = id
+            emulatorTitle = title
+            open()
+        }
+
+        function smokeDelete(id, title) {
+            prepare(id, title)
+            Qt.callLater(function() { deleteEmulatorConfirmation.accept() })
+        }
+
+        onAccepted: controller.delete_emulator(emulatorId)
+
+        contentItem: Label {
+            width: 600
+            text: "The emulator definition and mappings it owns will be removed only if no game or additional application pins this emulator ID. An exact Emulators.xml backup is created. Emulator binaries, directories, ROMs, and media are never deleted."
             wrapMode: Text.Wrap
         }
     }
@@ -5876,7 +6650,10 @@ ApplicationWindow {
                     ComboBox {
                         id: importEmulator
                         Layout.fillWidth: true
-                        model: controller.emulator_entry_count()
+                        model: {
+                            const revision = controller.emulator_revision
+                            return controller.emulator_entry_count()
+                        }
                         displayText: currentIndex >= 0
                                      ? controller.emulator_title_at(currentIndex) : ""
                         delegate: ItemDelegate {

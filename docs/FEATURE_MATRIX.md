@@ -46,6 +46,16 @@ and detach-to-root deletion all pass real-dialog and storage gates. Unique-name
 and ID rename remain gated by the getter-only 13.27 contract. The `BB-002`
 subset now provides keyboard-first category/platform/playlist navigation,
 exact membership filtering, active-filter state, and `HideInBigBox` handling.
+The filesystem-safe `RUN-001` configuration subset is implemented: a LaunchBox
+manager creates, edits, and deletes emulator definitions and source-indexed
+per-platform mappings through a typed, lossless `Emulators.xml` transaction.
+It covers all 31 recovered emulator fields and all six mapping fields,
+generates immutable UUID identities, validates mapping/default uniqueness,
+hands off a platform default atomically, blocks deletion while a game or
+additional application references the emulator, preserves unknown XML and
+stored Windows path syntax, and never installs, updates, or deletes emulator
+binaries. Emulator discovery/installation and dependency handling remain
+separate open work under `RUN-003`.
 The first `IMP-001` vertical is also implemented: the LaunchBox shell accepts
 multiple files or folders, recursively discovers candidates, applies an
 optional extension filter, derives editable file- or folder-based titles,
@@ -150,7 +160,7 @@ parity remain open.
 
 | ID | Feature family | Static evidence |
 |---|---|---|
-| RUN-001 | Add/edit/remove emulators and per-platform mappings | DV emulator editor/platform page; PA `IEmulator`, `IEmulatorPlatform` |
+| RUN-001 | Add/edit/remove emulators and per-platform mappings | DV emulator editor/platform page; PA `IEmulator`, `IEmulatorPlatform`; port configuration subset implements all 31 recovered emulator fields and all six mapping fields with immutable generated IDs, source-indexed lossless XML edits, default handoff, game/additional-app reference gating, exact backups, unknown-field retention, lexical paths, and real-dialog Linux coverage; emulator binary lifecycle stays under `RUN-003` |
 | RUN-002 | Command lines, quoting/spacing, console hiding, and launch-with overrides | PA emulator fields; DM/BV launch-with actions |
 | RUN-003 | Emulator/core discovery, install, update, and dependency handling | DV install-emulator/dependencies pages; PA emulator plugin install/update contracts |
 | RUN-004 | BIOS discovery and validation | DV BIOS wizard; PA BIOS groups/files |

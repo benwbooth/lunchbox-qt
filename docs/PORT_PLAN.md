@@ -244,7 +244,18 @@ now covers the recovered metadata surface and source-indexed folder rows in the
 real dialog; retained records keep unknown XML, and the create/edit/delete
 backup chain is verified without creating media directories. Identity remains
 read-only until a Windows runtime oracle resolves the getter-only 13.27 name
-contract and cross-document rename behavior. The ROM importer now resolves
+contract and cross-document rename behavior. The first `RUN-001` configuration
+vertical now manages `Emulators.xml` through a typed LaunchBox dialog and Rust
+worker. It covers all 31 recovered emulator fields and all six per-platform
+mapping fields, creates immutable UUIDs, validates mapping ownership, rejects
+duplicate platforms/defaults, transfers a platform default in the same
+lossless transaction, and blocks deletion when any freshly scanned game or
+additional application pins the emulator. The Linux offscreen scenario proves
+edit/create/blocked-delete/delete, three exact backup states, unknown XML
+retention, optimistic revision notification, and that Windows-style executable
+paths neither become host paths nor create or delete emulator directories.
+Binary discovery, installation, updating, dependencies, and BIOS management
+remain open under `RUN-003` and `RUN-004`. The ROM importer now resolves
 primary and alternate filenames through the local database, combines matching
 stable IDs into one deterministic game, recovers separator-neutral
 version/region qualifiers, and retains every ROM including the primary as an
@@ -350,8 +361,9 @@ Phase 0/1 evidence and product-safety gates:
 2. Capture first-run and edit/import/launch diffs for the fixture.
 3. Convert the first ten critical runtime scenarios into structured fixtures
    and map them to feature-matrix IDs.
-4. Expand desktop editing beyond the now-working additional-application,
-   platform, nested-category, playlist, save-group metadata, and manual
+4. Expand desktop editing beyond the now-working emulator-configuration,
+   additional-application, platform, nested-category, playlist, save-group
+   metadata, and manual
    combine/expand workflows into the remaining filesystem-safe save
    backup/restore/delete adapters and reviewed cascade/remediation choices for
    dependencies. Category and playlist deletion now follow

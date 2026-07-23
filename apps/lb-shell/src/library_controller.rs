@@ -42,6 +42,7 @@ pub mod qobject {
         #[qproperty(QString, navigation_filter_kind)]
         #[qproperty(QString, navigation_filter_key)]
         #[qproperty(i32, platform_revision)]
+        #[qproperty(i32, emulator_revision)]
         #[qproperty(i32, additional_application_revision)]
         #[qproperty(i32, game_save_revision)]
         #[qproperty(i32, game_grouping_revision)]
@@ -53,6 +54,7 @@ pub mod qobject {
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
         #[qproperty(QString, last_added_game_id)]
+        #[qproperty(QString, last_added_emulator_id)]
         #[qproperty(QString, last_added_additional_application_id)]
         #[qproperty(QString, last_default_additional_application_id)]
         #[qproperty(QString, import_preview_json)]
@@ -136,6 +138,25 @@ pub mod qobject {
 
         #[qinvokable]
         fn emulator_title_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn new_emulator_edit_payload(self: &LibraryController) -> QString;
+
+        #[qinvokable]
+        fn emulator_edit_payload(self: &LibraryController, emulator_id: QString) -> QString;
+
+        #[qinvokable]
+        fn add_emulator(self: Pin<&mut LibraryController>, edit_payload: QString);
+
+        #[qinvokable]
+        fn save_emulator(
+            self: Pin<&mut LibraryController>,
+            emulator_id: QString,
+            edit_payload: QString,
+        );
+
+        #[qinvokable]
+        fn delete_emulator(self: Pin<&mut LibraryController>, emulator_id: QString);
 
         #[qinvokable]
         fn apply_filters(
@@ -569,6 +590,14 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_emulator_crud_smoke_success(
+            self: &LibraryController,
+            emulator_id: QString,
+            blocked_references: i32,
+            initial_revision: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_category_crud_smoke_success(
             self: &LibraryController,
             category_name: QString,
@@ -735,8 +764,8 @@ use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QUrl, QVariant,
 };
 use lb_domain::{
-    AdditionalApplication, AdditionalApplicationEdit, AlternateName, CustomField,
-    EmulatorConfiguration, Game, GameLaunchConfiguration, GameMetadata, GameSave,
+    AdditionalApplication, AdditionalApplicationEdit, AlternateName, CustomField, Emulator,
+    EmulatorConfiguration, EmulatorPlatform, Game, GameLaunchConfiguration, GameMetadata, GameSave,
     GameSaveMetadataEdit, Mount, NavigationMetadata, ParentRelationship, PlatformCategory,
     PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
     UNASSIGNED_EMULATOR_ID,
@@ -769,12 +798,13 @@ use lb_platform::{
 };
 use lb_query::{filter_game_indices, GameFilter};
 use lb_storage::{
-    delete_regular_files_if_revisions, find_game_references, find_platform_references,
-    pending_transaction_manifests, recover_pending_transactions,
+    delete_regular_files_if_revisions, find_emulator_references, find_game_references,
+    find_platform_references, pending_transaction_manifests, recover_pending_transactions,
     replace_directory_from_source_if_revisions, replace_regular_file_from_source_if_revisions,
-    AuxiliaryDocument, DirectoryRevision, FileRevision, GameReference, IndexedGameSaveMetadataEdit,
-    IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame,
-    NewGameMetadata, PlatformDocument, PlatformReference, StorageError, TransactionError,
+    AuxiliaryDocument, DirectoryRevision, EmulatorReference, FileRevision, GameReference,
+    IndexedGameSaveMetadataEdit, IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex,
+    LibraryTransaction, NewGame, NewGameMetadata, PlatformDocument, PlatformReference,
+    StorageError, TransactionError,
 };
 use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
@@ -942,6 +972,7 @@ pub struct LibraryControllerRust {
     navigation_filter_kind: QString,
     navigation_filter_key: QString,
     platform_revision: i32,
+    emulator_revision: i32,
     additional_application_revision: i32,
     game_save_revision: i32,
     game_grouping_revision: i32,
@@ -953,6 +984,7 @@ pub struct LibraryControllerRust {
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
     last_added_game_id: QString,
+    last_added_emulator_id: QString,
     last_added_additional_application_id: QString,
     last_default_additional_application_id: QString,
     import_preview_json: QString,
@@ -998,6 +1030,7 @@ pub struct LibraryControllerRust {
     session_stats_writes: u64,
     session_stats_error: Option<String>,
     pending_post_reload_message: Option<String>,
+    emulator_write_notifications: u64,
     additional_application_write_notifications: u64,
     game_save_write_notifications: u64,
     category_write_notifications: u64,
@@ -1584,6 +1617,22 @@ struct PlatformDeleteSuccess {
     folder_count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EmulatorWriteOperation {
+    Create,
+    Edit,
+    Delete,
+}
+
+struct EmulatorWriteSuccess {
+    operation: EmulatorWriteOperation,
+    emulator: Emulator,
+    configuration: EmulatorConfiguration,
+    source: PathBuf,
+    backup: PathBuf,
+    mapping_count: usize,
+}
+
 struct CategoryWriteSuccess {
     name: String,
     categories: Vec<PlatformCategory>,
@@ -1700,10 +1749,19 @@ enum PlatformWriteFailure {
     Other(String),
 }
 
+#[derive(Debug)]
+enum EmulatorWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Referenced(Vec<EmulatorReference>),
+    Other(String),
+}
+
 const GAME_EDIT_PAYLOAD_VERSION: u32 = 3;
 const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
+const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
 
@@ -1794,6 +1852,26 @@ struct PlatformEditPayload {
     version: u32,
     platform: PlatformDefinition,
     folders: Vec<PlatformFolderEditPayload>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct EmulatorPlatformEditPayload {
+    source_index: Option<usize>,
+    platform: String,
+    command_line: Option<String>,
+    default: bool,
+    auto_extract: Option<bool>,
+    m3u_disc_load_enabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct EmulatorEditPayload {
+    version: u32,
+    emulator: Emulator,
+    platforms: Vec<EmulatorPlatformEditPayload>,
+    available_platforms: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -2096,6 +2174,92 @@ fn parse_platform_edit_payload(
         .validate()
         .map_err(|error| error.to_string())?;
     }
+    Ok(payload)
+}
+
+fn parse_emulator_edit_payload(
+    original_id: Option<&str>,
+    payload: &str,
+    available_platforms: &[String],
+) -> Result<EmulatorEditPayload, String> {
+    let mut payload: EmulatorEditPayload = serde_json::from_str(payload)
+        .map_err(|error| format!("invalid emulator editor payload: {error}"))?;
+    if payload.version != EMULATOR_EDIT_PAYLOAD_VERSION {
+        return Err(format!(
+            "unsupported emulator editor payload version {}; expected {}",
+            payload.version, EMULATOR_EDIT_PAYLOAD_VERSION
+        ));
+    }
+    if let Some(original_id) = original_id {
+        if payload.emulator.id != original_id {
+            return Err(format!(
+                "emulator identity cannot be changed from {original_id} to {}",
+                payload.emulator.id
+            ));
+        }
+    } else if Uuid::parse_str(&payload.emulator.id).is_err() {
+        return Err("new emulator ID was not generated by this editor".into());
+    }
+    if payload.emulator.title.trim().is_empty() {
+        return Err("an emulator title is required".into());
+    }
+    if payload.emulator.application_path.trim().is_empty() {
+        return Err("an emulator application path is required".into());
+    }
+    payload.emulator.command_line = canonical_optional_text(payload.emulator.command_line.take());
+    payload.emulator.default_platform =
+        canonical_optional_text(payload.emulator.default_platform.take());
+    payload.emulator.auto_hotkey_script =
+        canonical_optional_text(payload.emulator.auto_hotkey_script.take());
+    payload.emulator.exit_auto_hotkey_script =
+        canonical_optional_text(payload.emulator.exit_auto_hotkey_script.take());
+    payload.emulator.load_state_auto_hotkey_script =
+        canonical_optional_text(payload.emulator.load_state_auto_hotkey_script.take());
+    payload.emulator.pause_auto_hotkey_script =
+        canonical_optional_text(payload.emulator.pause_auto_hotkey_script.take());
+    payload.emulator.reset_auto_hotkey_script =
+        canonical_optional_text(payload.emulator.reset_auto_hotkey_script.take());
+    payload.emulator.resume_auto_hotkey_script =
+        canonical_optional_text(payload.emulator.resume_auto_hotkey_script.take());
+    payload.emulator.save_state_auto_hotkey_script =
+        canonical_optional_text(payload.emulator.save_state_auto_hotkey_script.take());
+    payload.emulator.swap_discs_auto_hotkey_script =
+        canonical_optional_text(payload.emulator.swap_discs_auto_hotkey_script.take());
+    if let Some(default_platform) = payload.emulator.default_platform.as_deref() {
+        payload.emulator.default_platform = Some(
+            available_platforms
+                .iter()
+                .find(|platform| platform.eq_ignore_ascii_case(default_platform))
+                .cloned()
+                .ok_or_else(|| {
+                    format!("emulator default platform is not in the library: {default_platform}")
+                })?,
+        );
+    }
+    payload
+        .emulator
+        .validate()
+        .map_err(|error| error.to_string())?;
+
+    let mut mapping_platforms = BTreeSet::new();
+    for mapping in &mut payload.platforms {
+        mapping.command_line = canonical_optional_text(mapping.command_line.take());
+        let requested = mapping.platform.trim();
+        let canonical = available_platforms
+            .iter()
+            .find(|platform| platform.eq_ignore_ascii_case(requested))
+            .cloned()
+            .ok_or_else(|| {
+                format!("emulator mapping platform is not in the library: {requested}")
+            })?;
+        if !mapping_platforms.insert(canonical.to_lowercase()) {
+            return Err(format!(
+                "emulator contains more than one mapping for platform {canonical}"
+            ));
+        }
+        mapping.platform = canonical;
+    }
+    payload.available_platforms = available_platforms.to_vec();
     Ok(payload)
 }
 
@@ -2979,6 +3143,20 @@ fn describe_platform_write_failure(error: &PlatformWriteFailure) -> String {
             references.len()
         ),
         PlatformWriteFailure::Other(message) => message.clone(),
+    }
+}
+
+fn describe_emulator_write_failure(error: &EmulatorWriteFailure) -> String {
+    match error {
+        EmulatorWriteFailure::Conflict(message) => format!("write conflict: {message}"),
+        EmulatorWriteFailure::PendingRecovery { message, .. } => {
+            format!("interrupted transaction requires recovery: {message}")
+        }
+        EmulatorWriteFailure::Referenced(references) => format!(
+            "{} dependent records prevent emulator deletion",
+            references.len()
+        ),
+        EmulatorWriteFailure::Other(message) => message.clone(),
     }
 }
 
@@ -5823,6 +6001,212 @@ fn write_game_save_restore(
     Ok(result)
 }
 
+fn emulator_document_path(root: &Path) -> Result<PathBuf, EmulatorWriteFailure> {
+    [root.join("Data/Emulators.xml"), root.join("Emulators.xml")]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(format!(
+                "could not find a writable Emulators.xml under {}",
+                root.display()
+            ))
+        })
+}
+
+fn new_emulator_payload(platform_names: &[String]) -> Result<String, EmulatorWriteFailure> {
+    serde_json::to_string(&EmulatorEditPayload {
+        version: EMULATOR_EDIT_PAYLOAD_VERSION,
+        emulator: Emulator {
+            id: Uuid::new_v4().to_string(),
+            use_startup_screen: true,
+            use_pause_screen: true,
+            hide_mouse_cursor_in_game: true,
+            suspend_process_on_pause: true,
+            ..Emulator::default()
+        },
+        platforms: Vec::new(),
+        available_platforms: platform_names.to_vec(),
+    })
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+}
+
+fn load_emulator_edit_payload(
+    root: &Path,
+    emulator_id: &str,
+    platform_names: &[String],
+) -> Result<String, EmulatorWriteFailure> {
+    let path = emulator_document_path(root)?;
+    let document = AuxiliaryDocument::load(&path)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulator = configuration
+        .emulators
+        .iter()
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(emulator_id))
+        .cloned()
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(format!("emulator was not found: {emulator_id}"))
+        })?;
+    let platforms = configuration
+        .platforms
+        .iter()
+        .filter(|mapping| mapping.emulator_id.eq_ignore_ascii_case(&emulator.id))
+        .enumerate()
+        .map(|(source_index, mapping)| EmulatorPlatformEditPayload {
+            source_index: Some(source_index),
+            platform: mapping.platform.clone(),
+            command_line: mapping.command_line.clone(),
+            default: mapping.default,
+            auto_extract: mapping.auto_extract,
+            m3u_disc_load_enabled: mapping.m3u_disc_load_enabled,
+        })
+        .collect();
+    serde_json::to_string(&EmulatorEditPayload {
+        version: EMULATOR_EDIT_PAYLOAD_VERSION,
+        emulator,
+        platforms,
+        available_platforms: platform_names.to_vec(),
+    })
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+}
+
+fn emulator_platform_records(
+    emulator_id: &str,
+    platforms: Vec<EmulatorPlatformEditPayload>,
+) -> Vec<IndexedPlatformRecordEdit<EmulatorPlatform>> {
+    platforms
+        .into_iter()
+        .map(|mapping| IndexedPlatformRecordEdit {
+            source_index: mapping.source_index,
+            record: EmulatorPlatform {
+                emulator_id: emulator_id.to_string(),
+                platform: mapping.platform,
+                command_line: mapping.command_line,
+                default: mapping.default,
+                auto_extract: mapping.auto_extract,
+                m3u_disc_load_enabled: mapping.m3u_disc_load_enabled,
+            },
+        })
+        .collect()
+}
+
+fn commit_emulator_document(
+    root: &Path,
+    source: PathBuf,
+    document: AuxiliaryDocument,
+    operation: EmulatorWriteOperation,
+    emulator: Emulator,
+    mapping_count: usize,
+) -> Result<EmulatorWriteSuccess, EmulatorWriteFailure> {
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let mut transaction =
+        LibraryTransaction::new(root).map_err(classify_emulator_transaction_error)?;
+    transaction
+        .stage_auxiliary(&document)
+        .map_err(classify_emulator_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_emulator_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "emulator transaction reported no Emulators.xml write".into(),
+            )
+        })?;
+    Ok(EmulatorWriteSuccess {
+        operation,
+        emulator,
+        configuration,
+        source,
+        backup,
+        mapping_count,
+    })
+}
+
+fn create_emulator_in_library(
+    root: PathBuf,
+    payload: EmulatorEditPayload,
+) -> Result<EmulatorWriteSuccess, EmulatorWriteFailure> {
+    let source = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulator = payload.emulator;
+    let platforms = emulator_platform_records(&emulator.id, payload.platforms)
+        .into_iter()
+        .map(|edit| edit.record)
+        .collect::<Vec<_>>();
+    let mapping_count = platforms.len();
+    document
+        .add_emulator(emulator.clone(), platforms)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    commit_emulator_document(
+        &root,
+        source,
+        document,
+        EmulatorWriteOperation::Create,
+        emulator,
+        mapping_count,
+    )
+}
+
+fn write_emulator_in_library(
+    root: PathBuf,
+    emulator_id: String,
+    payload: EmulatorEditPayload,
+) -> Result<EmulatorWriteSuccess, EmulatorWriteFailure> {
+    let source = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulator = payload.emulator;
+    let platform_edits = emulator_platform_records(&emulator.id, payload.platforms);
+    let mapping_count = platform_edits.len();
+    document
+        .set_emulator(&emulator_id, emulator.clone(), platform_edits)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    commit_emulator_document(
+        &root,
+        source,
+        document,
+        EmulatorWriteOperation::Edit,
+        emulator,
+        mapping_count,
+    )
+}
+
+fn delete_emulator_from_library(
+    root: PathBuf,
+    emulator_id: String,
+) -> Result<EmulatorWriteSuccess, EmulatorWriteFailure> {
+    let references = find_emulator_references(&root, &emulator_id)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if !references.is_empty() {
+        return Err(EmulatorWriteFailure::Referenced(references));
+    }
+    let source = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let removed = document
+        .remove_emulator(&emulator_id)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let mapping_count = removed.platforms.len();
+    commit_emulator_document(
+        &root,
+        source,
+        document,
+        EmulatorWriteOperation::Delete,
+        removed.emulator,
+        mapping_count,
+    )
+}
+
 fn platform_catalog_path(root: &Path) -> Result<PathBuf, PlatformWriteFailure> {
     [root.join("Data/Platforms.xml"), root.join("Platforms.xml")]
         .into_iter()
@@ -7052,6 +7436,26 @@ fn classify_platform_transaction_error(error: TransactionError) -> PlatformWrite
             PlatformWriteFailure::PendingRecovery { count: 1, message }
         }
         _ => PlatformWriteFailure::Other(message),
+    }
+}
+
+fn classify_emulator_transaction_error(error: TransactionError) -> EmulatorWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            EmulatorWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            EmulatorWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            EmulatorWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => EmulatorWriteFailure::Other(message),
     }
 }
 
@@ -10451,6 +10855,59 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_emulator_crud_smoke_success(
+        &self,
+        emulator_id: QString,
+        blocked_references: i32,
+        initial_revision: i32,
+    ) -> bool {
+        let emulator_id = emulator_id.to_string();
+        let rust = self.rust();
+        let configuration = rust.emulator_configuration.as_ref();
+        let fixture = configuration.and_then(|configuration| {
+            configuration
+                .emulators
+                .iter()
+                .find(|emulator| emulator.id == "fixture-emulator")
+        });
+        let mapping = configuration.and_then(|configuration| {
+            configuration.platforms.iter().find(|mapping| {
+                mapping.emulator_id == "fixture-emulator" && mapping.platform == "Fixture Console"
+            })
+        });
+        let success = configuration.is_some_and(|configuration| {
+            configuration.emulators.len() == 1
+                && !configuration
+                    .emulators
+                    .iter()
+                    .any(|emulator| emulator.id == emulator_id)
+        }) && fixture.is_some_and(|emulator| {
+            emulator.title == "Edited Fixture Emulator"
+                && emulator.application_path == r"Emulators\Edited Fixture\fixture.exe"
+                && emulator.auto_hotkey_script.as_deref() == Some("Smoke launch script")
+                && emulator.use_startup_screen
+                && emulator.use_pause_screen
+        }) && mapping.is_some_and(|mapping| {
+            mapping.command_line.as_deref() == Some("--edited-mapping")
+                && mapping.default
+                && mapping.auto_extract == Some(false)
+                && mapping.m3u_disc_load_enabled
+        }) && rust.emulator_write_notifications == 3
+            && *self.emulator_revision() == initial_revision.saturating_add(3)
+            && blocked_references >= 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "EMULATOR_CRUD_SMOKE_COMPLETE emulator={emulator_id} blocked={blocked_references} writes={} revision={}",
+                rust.emulator_write_notifications,
+                self.emulator_revision()
+            );
+        }
+        success
+    }
+
     pub fn report_category_crud_smoke_success(
         &self,
         category_name: QString,
@@ -11002,6 +11459,175 @@ impl qobject::LibraryController {
                 })
                 .map(|emulator| qstring(&emulator.title))
                 .unwrap_or_default(),
+        }
+    }
+
+    pub fn new_emulator_edit_payload(&self) -> QString {
+        match new_emulator_payload(&self.rust().platform_names) {
+            Ok(payload) => qstring(payload),
+            Err(error) => {
+                eprintln!(
+                    "Could not prepare new emulator editor: {}",
+                    describe_emulator_write_failure(&error)
+                );
+                QString::default()
+            }
+        }
+    }
+
+    pub fn emulator_edit_payload(&self, emulator_id: QString) -> QString {
+        let Some(root) = self.rust().launchbox_root.as_deref() else {
+            return QString::default();
+        };
+        match load_emulator_edit_payload(
+            root,
+            emulator_id.to_string().trim(),
+            &self.rust().platform_names,
+        ) {
+            Ok(payload) => qstring(payload),
+            Err(error) => {
+                eprintln!(
+                    "Could not prepare emulator editor: {}",
+                    describe_emulator_write_failure(&error)
+                );
+                QString::default()
+            }
+        }
+    }
+
+    pub fn add_emulator(mut self: Pin<&mut Self>, edit_payload: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let payload = match parse_emulator_edit_payload(
+            None,
+            &edit_payload.to_string(),
+            &self.as_ref().rust().platform_names,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not add emulator: {error}.")));
+                return;
+            }
+        };
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Emulator creation requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let title = payload.emulator.title.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_delete_blocker_count(0);
+        self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Creating emulator {title}...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-emulator-create".to_string())
+            .spawn(move || {
+                let result = create_emulator_in_library(root, payload);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_emulator_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start emulator creation: {error}"
+            )));
+        }
+    }
+
+    pub fn save_emulator(mut self: Pin<&mut Self>, emulator_id: QString, edit_payload: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let emulator_id = emulator_id.to_string().trim().to_string();
+        let payload = match parse_emulator_edit_payload(
+            Some(&emulator_id),
+            &edit_payload.to_string(),
+            &self.as_ref().rust().platform_names,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not save emulator: {error}.")));
+                return;
+            }
+        };
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Emulator editing requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let title = payload.emulator.title.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Saving emulator {title}...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-emulator-edit".to_string())
+            .spawn(move || {
+                let result = write_emulator_in_library(root, emulator_id, payload);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_emulator_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not start emulator writer: {error}")));
+        }
+    }
+
+    pub fn delete_emulator(mut self: Pin<&mut Self>, emulator_id: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let emulator_id = emulator_id.to_string().trim().to_string();
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Emulator deletion requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_delete_blocker_count(0);
+        self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Checking emulator references before deletion..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-emulator-delete".to_string())
+            .spawn(move || {
+                let result = delete_emulator_from_library(root, emulator_id);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_emulator_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start emulator deletion: {error}"
+            )));
         }
     }
 
@@ -12244,6 +12870,73 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_emulator_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<EmulatorWriteSuccess, EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let operation = success.operation;
+                let operation_label = match operation {
+                    EmulatorWriteOperation::Create => "Created",
+                    EmulatorWriteOperation::Edit => "Saved",
+                    EmulatorWriteOperation::Delete => "Deleted",
+                };
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_configuration = Some(success.configuration);
+                    rust.emulator_write_notifications =
+                        rust.emulator_write_notifications.saturating_add(1);
+                }
+                let revision = self.as_ref().emulator_revision().saturating_add(1);
+                self.as_mut().set_emulator_revision(revision);
+                if operation == EmulatorWriteOperation::Create {
+                    self.as_mut()
+                        .set_last_added_emulator_id(qstring(&success.emulator.id));
+                }
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "{operation_label} {} with {} platform mapping(s) in {}. Exact backup: {}. Stored application paths were not interpreted and no emulator directories or binaries were created or deleted.",
+                    success.emulator.title,
+                    success.mapping_count,
+                    success.source.display(),
+                    success.backup.display()
+                )));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                let summary = summarize_emulator_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Emulator delete blocked by {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict while changing emulator configuration: {message}. Reload before retrying."
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::Other(message)) => self.as_mut().set_status_message(qstring(
+                format!("Could not change emulator configuration: {message}"),
+            )),
+        }
+    }
+
     fn finish_platform_edit(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -12966,6 +13659,7 @@ impl qobject::LibraryController {
             rust.row_insert_notifications = 0;
             rust.row_remove_notifications = 0;
             rust.launch_notifications = 0;
+            rust.emulator_write_notifications = 0;
             rust.additional_application_write_notifications = 0;
             rust.game_save_write_notifications = 0;
             rust.category_write_notifications = 0;
@@ -12986,11 +13680,14 @@ impl qobject::LibraryController {
             .set_big_box_navigation_entry_count(big_box_navigation_entry_count);
         let revision = self.as_ref().rust().platform_revision.wrapping_add(1);
         self.as_mut().set_platform_revision(revision);
+        let emulator_revision = self.as_ref().rust().emulator_revision.wrapping_add(1);
+        self.as_mut().set_emulator_revision(emulator_revision);
         self.as_mut()
             .set_pending_recovery_count(saturating_i32(pending_recovery_count));
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
         self.as_mut().set_last_added_game_id(QString::default());
+        self.as_mut().set_last_added_emulator_id(QString::default());
         self.as_mut()
             .set_last_added_additional_application_id(QString::default());
         self.as_mut()
@@ -13692,6 +14389,18 @@ fn summarize_game_references(references: &[GameReference]) -> String {
 }
 
 fn summarize_platform_references(references: &[PlatformReference]) -> String {
+    let mut counts = BTreeMap::new();
+    for reference in references {
+        *counts.entry(reference.kind).or_insert(0usize) += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(kind, count)| format!("{count} {kind}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn summarize_emulator_references(references: &[EmulatorReference]) -> String {
     let mut counts = BTreeMap::new();
     for reference in references {
         *counts.entry(reference.kind).or_insert(0usize) += 1;
@@ -14832,6 +15541,171 @@ mod tests {
         assert!(parse_platform_edit_payload(
             "Fixture Console",
             &valid.replacen("\"folders\":", "\"future\":true,\"folders\":", 1)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn emulator_lifecycle_is_transactional_reference_safe_and_path_opaque() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data_directory = directory.path().join("Data");
+        let platform_directory = data_directory.join("Platforms");
+        fs::create_dir_all(&platform_directory).unwrap();
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        fs::copy(
+            fixture_root.join("Platforms/Fixture Console.xml"),
+            platform_directory.join("Fixture Console.xml"),
+        )
+        .unwrap();
+        let emulators_path = data_directory.join("Emulators.xml");
+        let original = fs::read_to_string(fixture_root.join("Emulators.xml"))
+            .unwrap()
+            .replace(
+                "</Emulator>",
+                "<FutureEmulatorField>keep-emulator</FutureEmulatorField></Emulator>",
+            )
+            .replace(
+                "</EmulatorPlatform>",
+                "<FutureMappingField>keep-mapping</FutureMappingField></EmulatorPlatform>",
+            );
+        fs::write(&emulators_path, original.as_bytes()).unwrap();
+
+        let platforms = vec!["Fixture Console".to_string()];
+        let serialized =
+            load_emulator_edit_payload(directory.path(), "fixture-emulator", &platforms).unwrap();
+        let mut edit =
+            parse_emulator_edit_payload(Some("fixture-emulator"), &serialized, &platforms).unwrap();
+        assert_eq!(edit.platforms[0].source_index, Some(0));
+        edit.emulator.title = "Edited Fixture Emulator".into();
+        edit.emulator.application_path = r"Emulators\Edited Fixture\fixture.exe".into();
+        edit.emulator.command_line = Some("   ".into());
+        edit.emulator.auto_hotkey_script = Some("Smoke launch script".into());
+        edit.emulator.use_startup_screen = true;
+        edit.emulator.use_pause_screen = true;
+        edit.platforms[0].command_line = Some("--edited-mapping".into());
+        edit.platforms[0].default = true;
+        edit.platforms[0].auto_extract = Some(false);
+        edit.platforms[0].m3u_disc_load_enabled = true;
+        let edit = parse_emulator_edit_payload(
+            Some("fixture-emulator"),
+            &serde_json::to_string(&edit).unwrap(),
+            &platforms,
+        )
+        .unwrap();
+        let edited = write_emulator_in_library(
+            directory.path().to_path_buf(),
+            "fixture-emulator".into(),
+            edit,
+        )
+        .unwrap();
+        assert_eq!(edited.operation, EmulatorWriteOperation::Edit);
+        assert_eq!(fs::read(&edited.backup).unwrap(), original.as_bytes());
+        assert!(!directory.path().join("Emulators/Edited Fixture").exists());
+        let edited_bytes = fs::read(&emulators_path).unwrap();
+        let edited_xml = String::from_utf8_lossy(&edited_bytes);
+        assert!(edited_xml.contains("FutureEmulatorField"));
+        assert!(edited_xml.contains("FutureMappingField"));
+        assert!(edited_xml
+            .contains(r"<ApplicationPath>Emulators\Edited Fixture\fixture.exe</ApplicationPath>"));
+
+        let mut create: EmulatorEditPayload =
+            serde_json::from_str(&new_emulator_payload(&platforms).unwrap()).unwrap();
+        create.emulator.title = "Temporary Emulator".into();
+        create.emulator.application_path = r"C:\Portable\Temp Emulator\temp.exe".into();
+        create.platforms.push(EmulatorPlatformEditPayload {
+            source_index: None,
+            platform: "fixture console".into(),
+            command_line: Some("--temp".into()),
+            default: true,
+            auto_extract: None,
+            m3u_disc_load_enabled: false,
+        });
+        let create =
+            parse_emulator_edit_payload(None, &serde_json::to_string(&create).unwrap(), &platforms)
+                .unwrap();
+        let temporary_id = create.emulator.id.clone();
+        let created = create_emulator_in_library(directory.path().to_path_buf(), create).unwrap();
+        assert_eq!(created.operation, EmulatorWriteOperation::Create);
+        assert_eq!(fs::read(&created.backup).unwrap(), edited_bytes);
+        let created_bytes = fs::read(&emulators_path).unwrap();
+        let configuration = AuxiliaryDocument::load(&emulators_path)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        assert!(!configuration.platforms[0].default);
+        assert!(configuration.platforms[1].default);
+        assert!(!directory.path().join(r"C:\Portable\Temp Emulator").exists());
+
+        let blocked =
+            delete_emulator_from_library(directory.path().to_path_buf(), "fixture-emulator".into());
+        assert!(matches!(
+            blocked,
+            Err(EmulatorWriteFailure::Referenced(references))
+                if references.iter().any(|reference| {
+                    reference.kind == lb_storage::EmulatorReferenceKind::Game
+                })
+        ));
+        assert_eq!(fs::read(&emulators_path).unwrap(), created_bytes);
+
+        let deleted =
+            delete_emulator_from_library(directory.path().to_path_buf(), temporary_id.clone())
+                .unwrap();
+        assert_eq!(deleted.operation, EmulatorWriteOperation::Delete);
+        assert_eq!(deleted.mapping_count, 1);
+        assert_eq!(fs::read(&deleted.backup).unwrap(), created_bytes);
+        let final_configuration = AuxiliaryDocument::load(&emulators_path)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        assert_eq!(final_configuration.emulators.len(), 1);
+        assert_eq!(final_configuration.emulators[0].id, "fixture-emulator");
+        assert!(final_configuration
+            .emulators
+            .iter()
+            .all(|emulator| emulator.id != temporary_id));
+        assert!(fs::read_to_string(&emulators_path)
+            .unwrap()
+            .contains("FutureEmulatorField"));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn emulator_payload_rejects_identity_unknown_fields_and_unknown_platforms() {
+        let platforms = vec!["Fixture Console".to_string()];
+        let mut payload: EmulatorEditPayload =
+            serde_json::from_str(&new_emulator_payload(&platforms).unwrap()).unwrap();
+        payload.emulator.title = "Fixture".into();
+        payload.emulator.application_path = r"Emulators\Fixture\fixture.exe".into();
+        let valid = serde_json::to_string(&payload).unwrap();
+        assert!(parse_emulator_edit_payload(None, &valid, &platforms).is_ok());
+        assert!(parse_emulator_edit_payload(Some("different-id"), &valid, &platforms).is_err());
+        assert!(parse_emulator_edit_payload(
+            None,
+            &valid.replace("\"version\":1", "\"version\":2"),
+            &platforms
+        )
+        .is_err());
+        assert!(parse_emulator_edit_payload(
+            None,
+            &valid.replacen("\"platforms\":", "\"future\":true,\"platforms\":", 1),
+            &platforms
+        )
+        .is_err());
+        payload.platforms.push(EmulatorPlatformEditPayload {
+            source_index: None,
+            platform: "Missing Console".into(),
+            command_line: None,
+            default: false,
+            auto_extract: None,
+            m3u_disc_load_enabled: false,
+        });
+        assert!(parse_emulator_edit_payload(
+            None,
+            &serde_json::to_string(&payload).unwrap(),
+            &platforms
         )
         .is_err());
     }

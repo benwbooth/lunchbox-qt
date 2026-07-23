@@ -260,7 +260,10 @@ fn load_emulators(path: &Path) -> Result<Option<EmulatorConfiguration>, StorageE
     parse_emulators(path, &root).map(Some)
 }
 
-fn parse_emulators(path: &Path, root: &Element) -> Result<EmulatorConfiguration, StorageError> {
+pub(crate) fn parse_emulators(
+    path: &Path,
+    root: &Element,
+) -> Result<EmulatorConfiguration, StorageError> {
     let emulators = elements_named(root, "Emulator")
         .map(parse_emulator)
         .collect::<Result<Vec<_>, _>>()?;

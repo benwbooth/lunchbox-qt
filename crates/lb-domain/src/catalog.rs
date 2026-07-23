@@ -245,6 +245,42 @@ pub struct Emulator {
     pub swap_discs_auto_hotkey_script: Option<String>,
 }
 
+/// Canonical LaunchBox 13.24/13.27 `<Emulator>` field inventory. The storage
+/// layer uses XML spelling so schema census comparisons do not inspect values.
+pub const EMULATOR_XML_FIELDS: &[&str] = &[
+    "AggressiveWindowHiding",
+    "ApplicationPath",
+    "AutoExtract",
+    "AutoHotkeyScript",
+    "CommandLine",
+    "DefaultPauseSettingsPushed",
+    "DefaultPlatform",
+    "DisableShutdownScreen",
+    "EnableHardcoreAchievements",
+    "ExitAutoHotkeyScript",
+    "FileNameWithoutExtensionAndPath",
+    "ForcefulPauseScreenActivation",
+    "HideAllNonExclusiveFullscreenWindows",
+    "HideConsole",
+    "HideMouseCursorInGame",
+    "ID",
+    "LoadStateAutoHotkeyScript",
+    "LoginToCheevoOnGameLaunch",
+    "NoQuotes",
+    "NoSpace",
+    "PauseAutoHotkeyScript",
+    "ResetAutoHotkeyScript",
+    "ResumeAutoHotkeyScript",
+    "SaveStateAutoHotkeyScript",
+    "SkipVersionCheck",
+    "StartupLoadDelay",
+    "SuspendProcessOnPause",
+    "SwapDiscsAutoHotkeyScript",
+    "Title",
+    "UsePauseScreen",
+    "UseStartupScreen",
+];
+
 impl Emulator {
     pub fn validate(&self) -> Result<(), CatalogValidationError> {
         require_field("Emulator", "ID", &self.id)?;
@@ -263,6 +299,16 @@ pub struct EmulatorPlatform {
     pub m3u_disc_load_enabled: bool,
 }
 
+/// Canonical LaunchBox 13.24/13.27 `<EmulatorPlatform>` field inventory.
+pub const EMULATOR_PLATFORM_XML_FIELDS: &[&str] = &[
+    "AutoExtract",
+    "CommandLine",
+    "Default",
+    "Emulator",
+    "M3uDiscLoadEnabled",
+    "Platform",
+];
+
 impl EmulatorPlatform {
     pub fn validate(&self) -> Result<(), CatalogValidationError> {
         require_field("EmulatorPlatform", "Emulator", &self.emulator_id)?;
@@ -279,11 +325,40 @@ pub struct EmulatorConfiguration {
 
 impl EmulatorConfiguration {
     pub fn validate(&self) -> Result<(), CatalogValidationError> {
+        let mut emulator_ids = BTreeSet::new();
         for emulator in &self.emulators {
             emulator.validate()?;
+            if !emulator_ids.insert(emulator.id.to_lowercase()) {
+                return Err(CatalogValidationError::DuplicateName {
+                    record: "Emulator ID",
+                    name: emulator.id.clone(),
+                });
+            }
         }
+        let mut mappings = BTreeSet::new();
+        let mut defaults = BTreeSet::new();
         for platform in &self.platforms {
             platform.validate()?;
+            if !emulator_ids.contains(&platform.emulator_id.to_lowercase()) {
+                return Err(CatalogValidationError::UnknownEmulatorMapping {
+                    id: platform.emulator_id.clone(),
+                    platform: platform.platform.clone(),
+                });
+            }
+            if !mappings.insert((
+                platform.emulator_id.to_lowercase(),
+                platform.platform.to_lowercase(),
+            )) {
+                return Err(CatalogValidationError::DuplicateEmulatorMapping {
+                    id: platform.emulator_id.clone(),
+                    platform: platform.platform.clone(),
+                });
+            }
+            if platform.default && !defaults.insert(platform.platform.to_lowercase()) {
+                return Err(CatalogValidationError::DuplicateDefaultEmulator {
+                    platform: platform.platform.clone(),
+                });
+            }
         }
         Ok(())
     }
@@ -452,6 +527,12 @@ pub enum CatalogValidationError {
     },
     #[error("{record} name occurs more than once: {name}")]
     DuplicateName { record: &'static str, name: String },
+    #[error("emulator platform mapping for {platform} refers to unknown emulator {id}")]
+    UnknownEmulatorMapping { id: String, platform: String },
+    #[error("emulator {id} contains more than one mapping for platform {platform}")]
+    DuplicateEmulatorMapping { id: String, platform: String },
+    #[error("platform {platform} has more than one default emulator")]
+    DuplicateDefaultEmulator { platform: String },
     #[error("Parent must identify exactly one child, found {actual}")]
     InvalidParentChildCount { actual: usize },
     #[error("Parent identifies more than one parent target, found {actual}")]

@@ -43,13 +43,26 @@ for candidate in \
   "$target_root/$target_triple/debug" \
   "$target_root/debug"; do
   if [[ -x "$candidate/launchbox" && -x "$candidate/bigbox" ]]; then
-    binary_dir=$candidate
-    break
+    if [[ -z "$binary_dir" ]] \
+      || { [[ "$candidate/launchbox" -nt "$binary_dir/launchbox" ]] \
+        && [[ "$candidate/bigbox" -nt "$binary_dir/bigbox" ]]; }; then
+      binary_dir=$candidate
+    fi
   fi
 done
 
 if [[ -z "$binary_dir" ]]; then
   echo "Shell binaries are missing; run cargo build -p lb-shell first." >&2
+  exit 1
+fi
+stale_source=$(
+  find apps/lb-shell crates -type f \
+    \( -name '*.rs' -o -name '*.qml' -o -name Cargo.toml -o -name build.rs \) \
+    -newer "$binary_dir/launchbox" -print -quit
+)
+if [[ -n "$stale_source" || Cargo.toml -nt "$binary_dir/launchbox" \
+  || Cargo.lock -nt "$binary_dir/launchbox" ]]; then
+  echo "Shell binaries are older than the checked source; run cargo build -p lb-shell first." >&2
   exit 1
 fi
 
@@ -110,6 +123,7 @@ game_save_saturn_restore_root=$(mktemp -d)
 import_root=$(mktemp -d)
 import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
+emulator_crud_root=$(mktemp -d)
 category_crud_root=$(mktemp -d)
 playlist_crud_root=$(mktemp -d)
 game_grouping_root=$(mktemp -d)
@@ -120,7 +134,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -1824,6 +1838,106 @@ if find "$platform_crud_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox dialog-driven platform lifecycle and metadata/folder editing, portable filenames, lexical Windows paths, reference gating, exact backups, and media isolation validated."
+
+cp -R fixtures/launchbox/Data "$emulator_crud_root/Data"
+emulator_crud_document="$emulator_crud_root/Data/Emulators.xml"
+sed -i \
+  '/<Title>Fixture Emulator<\/Title>/a\    <FutureEmulatorField>keep-emulator-data</FutureEmulatorField>' \
+  "$emulator_crud_document"
+sed -i \
+  '/<M3uDiscLoadEnabled>false<\/M3uDiscLoadEnabled>/a\    <FutureMappingField>keep-mapping-data</FutureMappingField>' \
+  "$emulator_crud_document"
+emulator_crud_original="$emulator_crud_root/original-emulators.xml"
+cp "$emulator_crud_document" "$emulator_crud_original"
+
+emulator_crud_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$emulator_crud_root" --emulator-crud-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$emulator_crud_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'EMULATOR_CRUD_SMOKE_COMPLETE emulator=.* blocked=1 writes=3 revision=[0-9]+' \
+  <<< "$emulator_crud_output"; then
+  printf '%s\n' "$emulator_crud_output" >&2
+  echo "LaunchBox did not validate dialog-driven emulator management." >&2
+  exit 1
+fi
+for expected in \
+  '<Title>Edited Fixture Emulator</Title>' \
+  '<ApplicationPath>Emulators\Edited Fixture\fixture.exe</ApplicationPath>' \
+  '<AutoHotkeyScript>Smoke launch script</AutoHotkeyScript>' \
+  '<UsePauseScreen>true</UsePauseScreen>' \
+  '<UseStartupScreen>true</UseStartupScreen>' \
+  '<CommandLine>--edited-mapping</CommandLine>' \
+  '<Default>true</Default>' \
+  '<AutoExtract>false</AutoExtract>' \
+  '<M3uDiscLoadEnabled>true</M3uDiscLoadEnabled>' \
+  '<FutureEmulatorField>keep-emulator-data</FutureEmulatorField>' \
+  '<FutureMappingField>keep-mapping-data</FutureMappingField>'; do
+  if ! rg -q -F "$expected" "$emulator_crud_document"; then
+    echo "Emulator CRUD did not retain expected XML: $expected" >&2
+    exit 1
+  fi
+done
+if rg -q -F 'Temporary Qt Emulator' "$emulator_crud_document" \
+  || [[ $(rg -c '^  <Emulator>$' "$emulator_crud_document") -ne 1 ]] \
+  || [[ $(rg -c '^  <EmulatorPlatform>$' "$emulator_crud_document") -ne 1 ]]; then
+  echo "Emulator CRUD retained the deleted temporary emulator or mapping." >&2
+  exit 1
+fi
+if [[ -e "$emulator_crud_root/Emulators/Edited Fixture" ]] \
+  || [[ -e "$emulator_crud_root/C:\Portable\Temporary Qt" ]]; then
+  echo "Emulator CRUD interpreted a stored executable path as a host directory." >&2
+  exit 1
+fi
+
+mapfile -t emulator_crud_backups < <(
+  find "$emulator_crud_root/Data" -maxdepth 1 -type f \
+    -name 'Emulators.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#emulator_crud_backups[@]} -ne 3 ]]; then
+  echo "Emulator edit/create/delete did not retain exactly three XML backups." >&2
+  exit 1
+fi
+emulator_original_backups=0
+emulator_edited_backups=0
+emulator_created_backups=0
+for backup in "${emulator_crud_backups[@]}"; do
+  if cmp -s "$backup" "$emulator_crud_original"; then
+    ((emulator_original_backups += 1))
+  elif rg -q -F '<Title>Temporary Qt Emulator</Title>' "$backup" \
+    && rg -q -F \
+      '<ApplicationPath>C:\Portable\Temporary Qt\temp.exe</ApplicationPath>' \
+      "$backup"; then
+    ((emulator_created_backups += 1))
+  elif rg -q -F '<Title>Edited Fixture Emulator</Title>' "$backup" \
+    && ! rg -q -F '<Title>Temporary Qt Emulator</Title>' "$backup"; then
+    ((emulator_edited_backups += 1))
+  fi
+  if ! rg -q -F '<FutureEmulatorField>keep-emulator-data</FutureEmulatorField>' \
+    "$backup" \
+    || ! rg -q -F '<FutureMappingField>keep-mapping-data</FutureMappingField>' \
+      "$backup"; then
+    echo "An emulator lifecycle backup lost unknown XML." >&2
+    exit 1
+  fi
+done
+if [[ $emulator_original_backups -ne 1 \
+  || $emulator_edited_backups -ne 1 \
+  || $emulator_created_backups -ne 1 ]]; then
+  echo "Emulator backups do not prove the expected edit/create/delete chain." >&2
+  exit 1
+fi
+if find "$emulator_crud_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful emulator CRUD smoke left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-driven full emulator and platform-mapping editing, generated immutable IDs, default handoff, reference gating, lexical Windows paths, unknown XML, exact backups, and binary-directory isolation validated."
 
 cp -R fixtures/launchbox/Data "$category_crud_root/Data"
 category_crud_catalog="$category_crud_root/Data/Platforms.xml"

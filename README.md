@@ -128,6 +128,15 @@ mappings/defaults, parents, playlists/filters, navigation state, controller
 associations, and frontend settings, requires an empty platform document, and
 removes only the catalog/folder records and XML document—never media. Empty
 catalog platforms remain visible and can receive their first game.
+LaunchBox also exposes an Emulators manager backed by the same transaction
+boundary. Its typed editor covers all 31 recovered `Emulator` fields and every
+per-platform mapping field, creates immutable UUID identities, preserves
+source-indexed retained mappings and unknown XML, validates duplicate mappings
+and defaults, and transfers the default for a platform atomically. Delete
+freshly scans games and additional applications and refuses to orphan an
+explicit emulator reference. Application paths remain lexical LaunchBox
+strings on every host; configuration CRUD never creates, installs, updates, or
+deletes emulator binaries. Those binary/dependency workflows remain open.
 The same sidebar now renders recovered category/platform nesting from
 `Parents.xml`, including multiple placements, recursive category game counts,
 and descendant filtering. Its category dialog edits the recovered mutable

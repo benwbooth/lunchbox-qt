@@ -1,12 +1,15 @@
 use lb_domain::{
-    AdditionalApplication, AdditionalApplicationEdit, AlternateName, CatalogValidationError,
-    CustomField, Game, GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave,
-    GameSaveMetadataEdit, Mount, NavigationMetadata, ParentRelationship, PlatformCatalog,
-    PlatformCategory, PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist,
-    PlaylistDocument, PlaylistFilter, PlaylistGame, ValidationError,
+    is_unassigned_emulator_id, AdditionalApplication, AdditionalApplicationEdit, AlternateName,
+    CatalogValidationError, CustomField, Emulator, EmulatorConfiguration, EmulatorPlatform, Game,
+    GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit,
+    Mount, NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory,
+    PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument,
+    PlaylistFilter, PlaylistGame, ValidationError,
 };
 #[cfg(test)]
-use lb_domain::{GAME_SAVE_XML_FIELDS, GAME_XML_FIELDS};
+use lb_domain::{
+    EMULATOR_PLATFORM_XML_FIELDS, EMULATOR_XML_FIELDS, GAME_SAVE_XML_FIELDS, GAME_XML_FIELDS,
+};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -291,6 +294,12 @@ pub struct RemovedPlatformCatalogRecords {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemovedEmulatorConfigurationRecords {
+    pub emulator: Emulator,
+    pub platforms: Vec<EmulatorPlatform>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemovedPlatformCategoryRelationships {
     pub removed_placements: usize,
     pub detached_children: usize,
@@ -419,6 +428,28 @@ impl std::fmt::Display for PlatformReferenceKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformReference {
     pub kind: PlatformReferenceKind,
+    pub source_path: PathBuf,
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum EmulatorReferenceKind {
+    Game,
+    AdditionalApplication,
+}
+
+impl std::fmt::Display for EmulatorReferenceKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Game => "game",
+            Self::AdditionalApplication => "additional application",
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmulatorReference {
+    pub kind: EmulatorReferenceKind,
     pub source_path: PathBuf,
     pub detail: String,
 }
@@ -616,6 +647,62 @@ fn platform_game_platform_references(
                 })
         })
         .collect()
+}
+
+/// Freshly scans every modeled platform document for records that pin an
+/// emulator ID. Owned `<EmulatorPlatform>` rows are excluded because deleting
+/// an emulator removes those mappings in the same transaction.
+pub fn find_emulator_references(
+    scope: impl AsRef<Path>,
+    emulator_id: &str,
+) -> Result<Vec<EmulatorReference>, StorageError> {
+    let scope = scope.as_ref();
+    let library = if scope.is_file() {
+        LibraryIndex::load(scope)?
+    } else {
+        LaunchBoxDataIndex::load(scope)?.platforms().clone()
+    };
+    let mut references = Vec::new();
+    for platform in library.platforms() {
+        references.extend(
+            platform
+                .games
+                .iter()
+                .filter(|game| {
+                    game.emulator_id.as_deref().is_some_and(|id| {
+                        !is_unassigned_emulator_id(id) && id.eq_ignore_ascii_case(emulator_id)
+                    })
+                })
+                .map(|game| EmulatorReference {
+                    kind: EmulatorReferenceKind::Game,
+                    source_path: platform.source_path.clone(),
+                    detail: format!("{} ({})", game.title, game.id),
+                }),
+        );
+        references.extend(
+            platform
+                .additional_applications
+                .iter()
+                .filter(|application| {
+                    application
+                        .emulator_id
+                        .as_deref()
+                        .is_some_and(|id| id.eq_ignore_ascii_case(emulator_id))
+                })
+                .map(|application| EmulatorReference {
+                    kind: EmulatorReferenceKind::AdditionalApplication,
+                    source_path: platform.source_path.clone(),
+                    detail: format!("{} ({})", application.name, application.id),
+                }),
+        );
+    }
+    references.sort_by(|left, right| {
+        left.source_path
+            .cmp(&right.source_path)
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.detail.cmp(&right.detail))
+    });
+    Ok(references)
 }
 
 /// Freshly scans every modeled reference-bearing document in a library. A
@@ -861,6 +948,212 @@ impl AuxiliaryDocument {
     pub fn platform_catalog(&self) -> Result<PlatformCatalog, StorageError> {
         self.ensure_operation_kind("read platform catalog", AuxiliaryDocumentKind::Platforms)?;
         data_index::parse_platform_catalog(&self.source_path, &self.root)
+    }
+
+    pub fn emulator_configuration(&self) -> Result<EmulatorConfiguration, StorageError> {
+        self.ensure_operation_kind(
+            "read emulator configuration",
+            AuxiliaryDocumentKind::Emulators,
+        )?;
+        data_index::parse_emulators(&self.source_path, &self.root)
+    }
+
+    /// Adds one complete emulator and its per-platform mappings without
+    /// interpreting the stored executable path. A newly selected default
+    /// mapping clears the former default for that platform in the same DOM
+    /// mutation, matching LaunchBox's one-default-per-platform invariant.
+    pub fn add_emulator(
+        &mut self,
+        emulator: Emulator,
+        platforms: Vec<EmulatorPlatform>,
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind("add emulator", AuxiliaryDocumentKind::Emulators)?;
+        emulator.validate()?;
+        let configuration = self.emulator_configuration()?;
+        if configuration
+            .emulators
+            .iter()
+            .any(|existing| existing.id.eq_ignore_ascii_case(&emulator.id))
+        {
+            return Err(StorageError::DuplicateEmulatorId {
+                id: emulator.id.clone(),
+            });
+        }
+        validate_emulator_platform_records(&emulator.id, &platforms)?;
+        let default_platforms = platforms
+            .iter()
+            .filter(|mapping| mapping.default)
+            .map(|mapping| mapping.platform.to_lowercase())
+            .collect::<BTreeSet<_>>();
+
+        self.mutate(move |root| {
+            clear_peer_default_emulators(root, &emulator.id, &default_platforms);
+            let insertion = emulator_record_insertion_index(root, "Emulator");
+            root.children
+                .insert(insertion, XMLNode::Element(emulator_element(&emulator)));
+            for platform in platforms {
+                let insertion = emulator_record_insertion_index(root, "EmulatorPlatform");
+                root.children.insert(
+                    insertion,
+                    XMLNode::Element(emulator_platform_element(&platform)),
+                );
+            }
+            Ok(())
+        })
+    }
+
+    /// Replaces every mutable emulator field and its ordered, source-indexed
+    /// mappings. Retained mapping elements keep unknown children and original
+    /// document order; new rows follow retained rows.
+    pub fn set_emulator(
+        &mut self,
+        emulator_id: &str,
+        emulator: Emulator,
+        platform_edits: Vec<IndexedPlatformRecordEdit<EmulatorPlatform>>,
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind("edit emulator", AuxiliaryDocumentKind::Emulators)?;
+        emulator.validate()?;
+        let configuration = self.emulator_configuration()?;
+        let original = configuration
+            .emulators
+            .iter()
+            .find(|candidate| candidate.id.eq_ignore_ascii_case(emulator_id))
+            .cloned()
+            .ok_or_else(|| StorageError::EmulatorNotFound {
+                id: emulator_id.to_string(),
+            })?;
+        if emulator.id != original.id {
+            return Err(StorageError::ImmutableEmulatorId {
+                expected: original.id,
+                actual: emulator.id,
+            });
+        }
+        let exact_id = original.id.clone();
+        let original_platforms = configuration
+            .platforms
+            .iter()
+            .filter(|platform| platform.emulator_id.eq_ignore_ascii_case(&exact_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        validate_emulator_platform_edits(&exact_id, original_platforms.len(), &platform_edits)?;
+        let edited_platforms = platform_edits
+            .iter()
+            .map(|edit| edit.record.clone())
+            .collect::<Vec<_>>();
+        validate_emulator_platform_records(&exact_id, &edited_platforms)?;
+        let default_platforms = edited_platforms
+            .iter()
+            .filter(|mapping| mapping.default)
+            .map(|mapping| mapping.platform.to_lowercase())
+            .collect::<BTreeSet<_>>();
+
+        self.mutate(move |root| {
+            let emulator_indices = root
+                .children
+                .iter()
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    let element = node.as_element()?;
+                    (element.name == "Emulator"
+                        && child_text(element, "ID")
+                            .is_some_and(|id| id.eq_ignore_ascii_case(&exact_id)))
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let emulator_index = exactly_one_emulator_record(&exact_id, &emulator_indices)?;
+            let element = root.children[emulator_index]
+                .as_mut_element()
+                .expect("emulator index must identify an element");
+            update_emulator_element(element, &original, &emulator);
+
+            let root_indices = emulator_platform_indices(root, &exact_id);
+            if root_indices.len() != original_platforms.len() {
+                return Err(StorageError::InvalidEmulatorPlatformEdit {
+                    id: exact_id.clone(),
+                    reason: format!(
+                        "typed/XML source count mismatch ({} versus {})",
+                        original_platforms.len(),
+                        root_indices.len()
+                    ),
+                });
+            }
+            let mut retained = vec![false; original_platforms.len()];
+            for edit in &platform_edits {
+                let Some(source_index) = edit.source_index else {
+                    continue;
+                };
+                retained[source_index] = true;
+                let element = root.children[root_indices[source_index]]
+                    .as_mut_element()
+                    .expect("emulator platform index must identify an element");
+                update_emulator_platform_element(
+                    element,
+                    &original_platforms[source_index],
+                    &edit.record,
+                );
+            }
+            for source_index in (0..root_indices.len()).rev() {
+                if !retained[source_index] {
+                    root.children.remove(root_indices[source_index]);
+                }
+            }
+            for edit in platform_edits
+                .iter()
+                .filter(|edit| edit.source_index.is_none())
+            {
+                let insertion = emulator_record_insertion_index(root, "EmulatorPlatform");
+                root.children.insert(
+                    insertion,
+                    XMLNode::Element(emulator_platform_element(&edit.record)),
+                );
+            }
+            clear_peer_default_emulators(root, &exact_id, &default_platforms);
+            Ok(())
+        })
+    }
+
+    /// Removes an emulator and all mappings it owns. Callers must perform a
+    /// fresh external reference scan before committing the changed document.
+    pub fn remove_emulator(
+        &mut self,
+        emulator_id: &str,
+    ) -> Result<RemovedEmulatorConfigurationRecords, StorageError> {
+        self.ensure_operation_kind("remove emulator", AuxiliaryDocumentKind::Emulators)?;
+        let configuration = self.emulator_configuration()?;
+        let emulator = configuration
+            .emulators
+            .iter()
+            .find(|candidate| candidate.id.eq_ignore_ascii_case(emulator_id))
+            .cloned()
+            .ok_or_else(|| StorageError::EmulatorNotFound {
+                id: emulator_id.to_string(),
+            })?;
+        let exact_id = emulator.id.clone();
+        let platforms = configuration
+            .platforms
+            .iter()
+            .filter(|mapping| mapping.emulator_id.eq_ignore_ascii_case(&exact_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.mutate(|root| {
+            root.children.retain(|node| {
+                let Some(element) = node.as_element() else {
+                    return true;
+                };
+                match element.name.as_str() {
+                    "Emulator" => child_text(element, "ID")
+                        .is_none_or(|id| !id.eq_ignore_ascii_case(&exact_id)),
+                    "EmulatorPlatform" => child_text(element, "Emulator")
+                        .is_none_or(|id| !id.eq_ignore_ascii_case(&exact_id)),
+                    _ => true,
+                }
+            });
+            Ok(())
+        })?;
+        Ok(RemovedEmulatorConfigurationRecords {
+            emulator,
+            platforms,
+        })
     }
 
     pub fn new_playlist(
@@ -4258,6 +4551,72 @@ fn validate_playlist_source_indices<T>(
     Ok(())
 }
 
+fn validate_emulator_platform_edits(
+    emulator_id: &str,
+    original_count: usize,
+    edits: &[IndexedPlatformRecordEdit<EmulatorPlatform>],
+) -> Result<(), StorageError> {
+    let mut previous = None;
+    let mut saw_new = false;
+    for edit in edits {
+        match edit.source_index {
+            None => saw_new = true,
+            Some(index) => {
+                let reason = if saw_new {
+                    Some("new rows must follow retained source rows".to_string())
+                } else if index >= original_count {
+                    Some(format!(
+                        "source index {index} is outside 0..{original_count}"
+                    ))
+                } else if previous.is_some_and(|previous| previous >= index) {
+                    Some("source indices must be unique and remain in source order".to_string())
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    return Err(StorageError::InvalidEmulatorPlatformEdit {
+                        id: emulator_id.to_string(),
+                        reason,
+                    });
+                }
+                previous = Some(index);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_emulator_platform_records(
+    emulator_id: &str,
+    platforms: &[EmulatorPlatform],
+) -> Result<(), StorageError> {
+    let mut names = BTreeSet::new();
+    let mut defaults = BTreeSet::new();
+    for platform in platforms {
+        platform.validate()?;
+        if platform.emulator_id != emulator_id {
+            return Err(StorageError::EmulatorPlatformOwnerMismatch {
+                expected: emulator_id.to_string(),
+                actual: platform.emulator_id.clone(),
+            });
+        }
+        let key = platform.platform.to_lowercase();
+        if platform.default && !defaults.insert(key.clone()) {
+            return Err(StorageError::DuplicateEmulatorPlatformDefault {
+                id: emulator_id.to_string(),
+                platform: platform.platform.clone(),
+            });
+        }
+        if !names.insert(key) {
+            return Err(StorageError::DuplicateEmulatorPlatform {
+                id: emulator_id.to_string(),
+                platform: platform.platform.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn replace_playlist_filter_rows(
     root: &mut Element,
     original: &[PlaylistFilter],
@@ -4633,6 +4992,349 @@ fn update_expanded_game_element(element: &mut Element, game: &Game) {
         "HasCloudSynced",
         &game.has_cloud_synced.to_string(),
     );
+}
+
+fn emulator_element(emulator: &Emulator) -> Element {
+    let mut element = Element::new("Emulator");
+    set_child_text(&mut element, "ID", &emulator.id);
+    set_child_text(&mut element, "Title", &emulator.title);
+    set_child_text(&mut element, "ApplicationPath", &emulator.application_path);
+    set_optional_child_text(
+        &mut element,
+        "CommandLine",
+        emulator.command_line.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "DefaultPlatform",
+        emulator.default_platform.as_deref(),
+    );
+    set_child_text(
+        &mut element,
+        "AutoExtract",
+        &emulator.auto_extract.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "AggressiveWindowHiding",
+        &emulator.aggressive_window_hiding.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "DefaultPauseSettingsPushed",
+        &emulator.default_pause_settings_pushed.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "DisableShutdownScreen",
+        &emulator.disable_shutdown_screen.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "EnableHardcoreAchievements",
+        &emulator.enable_hardcore_achievements.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "FileNameWithoutExtensionAndPath",
+        &emulator.file_name_without_extension_and_path.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "ForcefulPauseScreenActivation",
+        &emulator.forceful_pause_screen_activation.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "HideAllNonExclusiveFullscreenWindows",
+        &emulator
+            .hide_all_non_exclusive_fullscreen_windows
+            .to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "HideConsole",
+        &emulator.hide_console.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "HideMouseCursorInGame",
+        &emulator.hide_mouse_cursor_in_game.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "LoginToCheevoOnGameLaunch",
+        &emulator.login_to_cheevo_on_game_launch.to_string(),
+    );
+    set_child_text(&mut element, "NoQuotes", &emulator.no_quotes.to_string());
+    set_child_text(&mut element, "NoSpace", &emulator.no_space.to_string());
+    set_child_text(
+        &mut element,
+        "SkipVersionCheck",
+        &emulator.skip_version_check.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "StartupLoadDelay",
+        &emulator.startup_load_delay.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "SuspendProcessOnPause",
+        &emulator.suspend_process_on_pause.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "UsePauseScreen",
+        &emulator.use_pause_screen.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "UseStartupScreen",
+        &emulator.use_startup_screen.to_string(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "AutoHotkeyScript",
+        emulator.auto_hotkey_script.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "ExitAutoHotkeyScript",
+        emulator.exit_auto_hotkey_script.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "LoadStateAutoHotkeyScript",
+        emulator.load_state_auto_hotkey_script.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "PauseAutoHotkeyScript",
+        emulator.pause_auto_hotkey_script.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "ResetAutoHotkeyScript",
+        emulator.reset_auto_hotkey_script.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "ResumeAutoHotkeyScript",
+        emulator.resume_auto_hotkey_script.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "SaveStateAutoHotkeyScript",
+        emulator.save_state_auto_hotkey_script.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "SwapDiscsAutoHotkeyScript",
+        emulator.swap_discs_auto_hotkey_script.as_deref(),
+    );
+    element
+}
+
+fn update_emulator_element(element: &mut Element, original: &Emulator, updated: &Emulator) {
+    macro_rules! update_text {
+        ($field:ident, $xml:literal) => {
+            if original.$field != updated.$field {
+                set_child_text(element, $xml, &updated.$field.to_string());
+            }
+        };
+    }
+    macro_rules! update_optional_text {
+        ($field:ident, $xml:literal) => {
+            if original.$field != updated.$field {
+                set_optional_child_text(element, $xml, updated.$field.as_deref());
+            }
+        };
+    }
+
+    update_text!(title, "Title");
+    update_text!(application_path, "ApplicationPath");
+    update_optional_text!(command_line, "CommandLine");
+    update_optional_text!(default_platform, "DefaultPlatform");
+    update_text!(auto_extract, "AutoExtract");
+    update_text!(aggressive_window_hiding, "AggressiveWindowHiding");
+    update_text!(default_pause_settings_pushed, "DefaultPauseSettingsPushed");
+    update_text!(disable_shutdown_screen, "DisableShutdownScreen");
+    update_text!(enable_hardcore_achievements, "EnableHardcoreAchievements");
+    update_text!(
+        file_name_without_extension_and_path,
+        "FileNameWithoutExtensionAndPath"
+    );
+    update_text!(
+        forceful_pause_screen_activation,
+        "ForcefulPauseScreenActivation"
+    );
+    update_text!(
+        hide_all_non_exclusive_fullscreen_windows,
+        "HideAllNonExclusiveFullscreenWindows"
+    );
+    update_text!(hide_console, "HideConsole");
+    update_text!(hide_mouse_cursor_in_game, "HideMouseCursorInGame");
+    update_text!(login_to_cheevo_on_game_launch, "LoginToCheevoOnGameLaunch");
+    update_text!(no_quotes, "NoQuotes");
+    update_text!(no_space, "NoSpace");
+    update_text!(skip_version_check, "SkipVersionCheck");
+    update_text!(startup_load_delay, "StartupLoadDelay");
+    update_text!(suspend_process_on_pause, "SuspendProcessOnPause");
+    update_text!(use_pause_screen, "UsePauseScreen");
+    update_text!(use_startup_screen, "UseStartupScreen");
+    update_optional_text!(auto_hotkey_script, "AutoHotkeyScript");
+    update_optional_text!(exit_auto_hotkey_script, "ExitAutoHotkeyScript");
+    update_optional_text!(load_state_auto_hotkey_script, "LoadStateAutoHotkeyScript");
+    update_optional_text!(pause_auto_hotkey_script, "PauseAutoHotkeyScript");
+    update_optional_text!(reset_auto_hotkey_script, "ResetAutoHotkeyScript");
+    update_optional_text!(resume_auto_hotkey_script, "ResumeAutoHotkeyScript");
+    update_optional_text!(save_state_auto_hotkey_script, "SaveStateAutoHotkeyScript");
+    update_optional_text!(swap_discs_auto_hotkey_script, "SwapDiscsAutoHotkeyScript");
+}
+
+fn emulator_platform_element(platform: &EmulatorPlatform) -> Element {
+    let mut element = Element::new("EmulatorPlatform");
+    set_child_text(&mut element, "Emulator", &platform.emulator_id);
+    set_child_text(&mut element, "Platform", &platform.platform);
+    set_optional_child_text(
+        &mut element,
+        "CommandLine",
+        platform.command_line.as_deref(),
+    );
+    set_child_text(&mut element, "Default", &platform.default.to_string());
+    set_optional_child_text(
+        &mut element,
+        "AutoExtract",
+        platform
+            .auto_extract
+            .map(|value| value.to_string())
+            .as_deref(),
+    );
+    set_child_text(
+        &mut element,
+        "M3uDiscLoadEnabled",
+        &platform.m3u_disc_load_enabled.to_string(),
+    );
+    element
+}
+
+fn update_emulator_platform_element(
+    element: &mut Element,
+    original: &EmulatorPlatform,
+    updated: &EmulatorPlatform,
+) {
+    if original.platform != updated.platform {
+        set_child_text(element, "Platform", &updated.platform);
+    }
+    if original.command_line != updated.command_line {
+        set_optional_child_text(element, "CommandLine", updated.command_line.as_deref());
+    }
+    if original.default != updated.default {
+        set_child_text(element, "Default", &updated.default.to_string());
+    }
+    if original.auto_extract != updated.auto_extract {
+        set_optional_child_text(
+            element,
+            "AutoExtract",
+            updated
+                .auto_extract
+                .map(|value| value.to_string())
+                .as_deref(),
+        );
+    }
+    if original.m3u_disc_load_enabled != updated.m3u_disc_load_enabled {
+        set_child_text(
+            element,
+            "M3uDiscLoadEnabled",
+            &updated.m3u_disc_load_enabled.to_string(),
+        );
+    }
+}
+
+fn emulator_platform_indices(root: &Element, emulator_id: &str) -> Vec<usize> {
+    root.children
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            let element = node.as_element()?;
+            (element.name == "EmulatorPlatform"
+                && child_text(element, "Emulator")
+                    .is_some_and(|id| id.eq_ignore_ascii_case(emulator_id)))
+            .then_some(index)
+        })
+        .collect()
+}
+
+fn exactly_one_emulator_record(
+    emulator_id: &str,
+    matches: &[usize],
+) -> Result<usize, StorageError> {
+    match matches {
+        [] => Err(StorageError::EmulatorNotFound {
+            id: emulator_id.to_string(),
+        }),
+        [index] => Ok(*index),
+        _ => Err(StorageError::DuplicateEmulatorId {
+            id: emulator_id.to_string(),
+        }),
+    }
+}
+
+fn clear_peer_default_emulators(
+    root: &mut Element,
+    retained_emulator_id: &str,
+    platforms: &BTreeSet<String>,
+) {
+    if platforms.is_empty() {
+        return;
+    }
+    for element in root.children.iter_mut().filter_map(XMLNode::as_mut_element) {
+        if element.name != "EmulatorPlatform"
+            || child_text(element, "Emulator")
+                .is_some_and(|id| id.eq_ignore_ascii_case(retained_emulator_id))
+        {
+            continue;
+        }
+        let is_target = child_text(element, "Platform")
+            .is_some_and(|platform| platforms.contains(&platform.to_lowercase()));
+        let is_default =
+            child_text(element, "Default").is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        if is_target && is_default {
+            set_child_text(element, "Default", "false");
+        }
+    }
+}
+
+fn emulator_record_insertion_index(root: &Element, record_name: &str) -> usize {
+    fn rank(name: &str) -> Option<usize> {
+        ["Emulator", "EmulatorPlatform"]
+            .iter()
+            .position(|candidate| *candidate == name)
+    }
+
+    let target_rank = rank(record_name).expect("editable emulator record family has a rank");
+    let after_existing = root
+        .children
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            let element = node.as_element()?;
+            rank(&element.name)
+                .filter(|rank| *rank <= target_rank)
+                .map(|_| index + 1)
+        })
+        .max();
+    after_existing.unwrap_or_else(|| {
+        root.children
+            .iter()
+            .position(|node| {
+                node.as_element()
+                    .and_then(|element| rank(&element.name))
+                    .is_some_and(|rank| rank > target_rank)
+            })
+            .unwrap_or(root.children.len())
+    })
 }
 
 fn platform_record_insertion_index(root: &Element, record_name: &str) -> usize {
@@ -6877,6 +7579,20 @@ pub enum StorageError {
     },
     #[error("invalid platform folder edit for {platform}: {reason}")]
     InvalidPlatformFolderEdit { platform: String, reason: String },
+    #[error("emulator ID already exists: {id}")]
+    DuplicateEmulatorId { id: String },
+    #[error("emulator was not found: {id}")]
+    EmulatorNotFound { id: String },
+    #[error("emulator ID is immutable; expected {expected}, got {actual}")]
+    ImmutableEmulatorId { expected: String, actual: String },
+    #[error("emulator platform owner {actual} does not match emulator {expected}")]
+    EmulatorPlatformOwnerMismatch { expected: String, actual: String },
+    #[error("emulator {id} contains more than one mapping for platform {platform}")]
+    DuplicateEmulatorPlatform { id: String, platform: String },
+    #[error("emulator {id} has more than one default mapping for platform {platform}")]
+    DuplicateEmulatorPlatformDefault { id: String, platform: String },
+    #[error("invalid emulator platform edit for {id}: {reason}")]
+    InvalidEmulatorPlatformEdit { id: String, reason: String },
     #[error("platform category name already exists: {name}")]
     DuplicatePlatformCategoryName { name: String },
     #[error("platform category was not found: {name}")]
@@ -8294,6 +9010,159 @@ mod tests {
         assert!(find_platform_references(directory.path(), "No References")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn modeled_emulator_fields_match_the_frozen_real_install_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../analysis/real-install-schema.json"))
+                .expect("parse value-free real-install schema");
+        let fields = &schema["document_groups"]["Emulators.xml"]["record_fields"];
+        let mut observed_emulators = fields["Emulator"]
+            .as_array()
+            .expect("Emulator field inventory")
+            .iter()
+            .map(|field| field.as_str().expect("field name"))
+            .collect::<Vec<_>>();
+        observed_emulators.sort_unstable();
+        let mut modeled_emulators = EMULATOR_XML_FIELDS.to_vec();
+        modeled_emulators.sort_unstable();
+        assert_eq!(modeled_emulators, observed_emulators);
+
+        let mut observed_platforms = fields["EmulatorPlatform"]
+            .as_array()
+            .expect("EmulatorPlatform field inventory")
+            .iter()
+            .map(|field| field.as_str().expect("field name"))
+            .collect::<Vec<_>>();
+        observed_platforms.sort_unstable();
+        let mut modeled_platforms = EMULATOR_PLATFORM_XML_FIELDS.to_vec();
+        modeled_platforms.sort_unstable();
+        assert_eq!(modeled_platforms, observed_platforms);
+    }
+
+    #[test]
+    fn emulator_crud_is_typed_source_indexed_lossless_and_keeps_paths_lexical() {
+        let fixture = include_str!("../../../fixtures/launchbox/Data/Emulators.xml")
+            .replace(
+                "  </Emulator>\n  <EmulatorPlatform>",
+                "    <FutureEmulatorField>keep-emulator-data</FutureEmulatorField>\n  </Emulator>\n  <EmulatorPlatform>",
+            )
+            .replace(
+                "  </EmulatorPlatform>\n</LaunchBox>",
+                "    <FutureMappingField>keep-mapping-data</FutureMappingField>\n  </EmulatorPlatform>\n</LaunchBox>",
+            );
+        let mut document = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Emulators,
+            "Emulators.xml",
+            fixture.as_bytes(),
+        )
+        .expect("load emulator fixture");
+        let original = document
+            .emulator_configuration()
+            .expect("typed configuration")
+            .emulators[0]
+            .clone();
+        let second = Emulator {
+            id: "second-emulator".into(),
+            title: "Second Emulator".into(),
+            application_path: r"C:\Portable\Second\second.exe".into(),
+            command_line: Some("--fullscreen".into()),
+            use_startup_screen: true,
+            ..Emulator::default()
+        };
+        document
+            .add_emulator(
+                second.clone(),
+                vec![EmulatorPlatform {
+                    emulator_id: second.id.clone(),
+                    platform: "Fixture Console".into(),
+                    command_line: Some("--second".into()),
+                    default: true,
+                    auto_extract: Some(false),
+                    m3u_disc_load_enabled: true,
+                }],
+            )
+            .expect("add emulator and swap default");
+        let configuration = document.emulator_configuration().unwrap();
+        assert_eq!(configuration.emulators.len(), 2);
+        assert!(!configuration.platforms[0].default);
+        assert!(configuration.platforms[1].default);
+
+        let edited = Emulator {
+            title: "Edited Fixture Emulator".into(),
+            application_path: r"Emulators\Fixture\fixture.exe".into(),
+            auto_hotkey_script: Some("Run lexical script".into()),
+            ..original.clone()
+        };
+        document
+            .set_emulator(
+                &original.id,
+                edited.clone(),
+                vec![IndexedPlatformRecordEdit {
+                    source_index: Some(0),
+                    record: EmulatorPlatform {
+                        emulator_id: original.id.clone(),
+                        platform: "Fixture Console".into(),
+                        command_line: Some("--edited-platform".into()),
+                        default: true,
+                        auto_extract: None,
+                        m3u_disc_load_enabled: true,
+                    },
+                }],
+            )
+            .expect("edit source-indexed mapping and restore default");
+        let configuration = document.emulator_configuration().unwrap();
+        assert_eq!(configuration.emulators[0], edited);
+        assert!(configuration.platforms[0].default);
+        assert!(!configuration.platforms[1].default);
+
+        let removed = document
+            .remove_emulator(&second.id)
+            .expect("remove emulator and owned mappings");
+        assert_eq!(removed.emulator, second);
+        assert_eq!(removed.platforms.len(), 1);
+        let xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(xml.contains("<FutureEmulatorField>keep-emulator-data</FutureEmulatorField>"));
+        assert!(xml.contains("<FutureMappingField>keep-mapping-data</FutureMappingField>"));
+        assert!(xml.contains(r"<ApplicationPath>Emulators\Fixture\fixture.exe</ApplicationPath>"));
+        assert!(!xml.contains(r"C:\Portable\Second\second.exe"));
+    }
+
+    #[test]
+    fn emulator_reference_scan_covers_games_and_additional_applications_only() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        let platforms = data.join("Platforms");
+        fs::create_dir_all(&platforms).unwrap();
+        let platform = FIXTURE.replace(
+            "<EmulatorId />",
+            "<EmulatorId>fixture-emulator</EmulatorId>",
+        );
+        fs::write(platforms.join("Fixture Console.xml"), platform).unwrap();
+        fs::write(
+            data.join("Emulators.xml"),
+            include_str!("../../../fixtures/launchbox/Data/Emulators.xml"),
+        )
+        .unwrap();
+
+        let references = find_emulator_references(directory.path(), "FIXTURE-EMULATOR")
+            .expect("scan emulator references");
+        assert_eq!(
+            references
+                .iter()
+                .map(|reference| reference.kind)
+                .collect::<Vec<_>>(),
+            [
+                EmulatorReferenceKind::Game,
+                EmulatorReferenceKind::AdditionalApplication,
+            ]
+        );
+        assert!(
+            find_emulator_references(directory.path(), "missing-emulator")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
