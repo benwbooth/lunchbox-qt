@@ -330,6 +330,17 @@ impl LibraryTransaction {
         })
     }
 
+    /// Stages deletion of one exact regular file under the library root.
+    /// Callers supply the already-inspected revision so a replaced vault file
+    /// is refused before any deletion is committed.
+    pub fn stage_file_delete_with_revision(
+        &mut self,
+        target: impl AsRef<Path>,
+        expected: FileRevision,
+    ) -> Result<(), TransactionError> {
+        self.stage_delete(target.as_ref(), expected)
+    }
+
     pub fn len(&self) -> usize {
         self.changes.len()
     }
@@ -1868,6 +1879,38 @@ mod tests {
             }) if path == fs::canonicalize(&source).unwrap() && actual_expected == expected
         ));
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn deletes_an_exact_vault_file_with_its_platform_row_in_one_transaction() {
+        let (directory, platform_path, _) = fixture_tree();
+        let vault_directory = directory.path().join("Saves/Fixture Console");
+        fs::create_dir_all(&vault_directory).unwrap();
+        let vault = vault_directory.join("fixture-adventure.sav");
+        fs::write(&vault, b"vault save bytes").unwrap();
+        let expected = FileRevision::read(&vault).unwrap();
+        let mut platform = PlatformDocument::load(&platform_path).unwrap();
+        platform.remove_game_save("fixture-adventure", 0).unwrap();
+
+        let mut transaction = LibraryTransaction::new(directory.path()).unwrap();
+        transaction
+            .stage_file_delete_with_revision(&vault, expected)
+            .unwrap();
+        transaction.stage_platform(&platform).unwrap();
+        let report = transaction.commit().unwrap();
+
+        assert!(!vault.exists());
+        assert_eq!(report.deleted_targets.len(), 1);
+        assert_eq!(report.deleted_targets[0].target, vault);
+        assert_eq!(
+            fs::read(&report.deleted_targets[0].backup).unwrap(),
+            b"vault save bytes"
+        );
+        assert!(PlatformDocument::load(&platform_path)
+            .unwrap()
+            .library()
+            .game_saves
+            .is_empty());
     }
 
     #[test]

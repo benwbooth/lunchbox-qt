@@ -1604,6 +1604,167 @@ pub fn restore_platform_backup(
     })
 }
 
+/// Atomically replaces one existing regular file from another regular file
+/// while requiring exact pre-inspected revisions for both paths.
+///
+/// This is the narrow filesystem primitive used by regular-file save
+/// adapters. It rejects symlinks and directories, streams through a sibling
+/// staging file, preserves target permissions, and retains the replaced target
+/// as an exact sibling backup.
+pub fn replace_regular_file_from_source_if_revisions(
+    source: impl AsRef<Path>,
+    source_expected: &FileRevision,
+    target: impl AsRef<Path>,
+    target_expected: &FileRevision,
+) -> Result<AtomicSaveReport, StorageError> {
+    let supplied_source = source.as_ref();
+    let source_metadata =
+        fs::symlink_metadata(supplied_source).map_err(|source| StorageError::Read {
+            path: supplied_source.to_path_buf(),
+            source,
+        })?;
+    if !source_metadata.file_type().is_file() {
+        return Err(StorageError::AtomicSourceNotFile {
+            path: supplied_source.to_path_buf(),
+        });
+    }
+    let source = fs::canonicalize(supplied_source).map_err(|source| StorageError::Read {
+        path: supplied_source.to_path_buf(),
+        source,
+    })?;
+
+    let supplied_target = target.as_ref();
+    let target_metadata =
+        fs::symlink_metadata(supplied_target).map_err(|source| StorageError::Write {
+            path: supplied_target.to_path_buf(),
+            source,
+        })?;
+    if !target_metadata.file_type().is_file() {
+        return Err(StorageError::AtomicTargetNotFile {
+            path: supplied_target.to_path_buf(),
+        });
+    }
+    let target = fs::canonicalize(supplied_target).map_err(|source| StorageError::Read {
+        path: supplied_target.to_path_buf(),
+        source,
+    })?;
+    if source == target {
+        return Err(StorageError::AtomicSourceEqualsTarget { path: target });
+    }
+
+    let source_actual = FileRevision::read(&source)?;
+    if source_actual != *source_expected {
+        return Err(StorageError::AtomicSourceConflict {
+            path: source,
+            expected: source_expected.clone(),
+            actual: source_actual,
+        });
+    }
+    let target_actual = FileRevision::read(&target)?;
+    if target_actual != *target_expected {
+        return Err(StorageError::WriteConflict {
+            path: target,
+            expected: target_expected.clone(),
+            actual: target_actual,
+        });
+    }
+
+    let (temporary_path, mut temporary) = create_unique_sibling(&target, "temporary", true)?;
+    let staged = fs::File::open(&source)
+        .and_then(|mut source_file| std::io::copy(&mut source_file, &mut temporary))
+        .and_then(|_| temporary.flush())
+        .and_then(|()| temporary.set_permissions(target_metadata.permissions()))
+        .and_then(|()| temporary.sync_all());
+    if let Err(source) = staged {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(StorageError::Write {
+            path: temporary_path,
+            source,
+        });
+    }
+    drop(temporary);
+    let staged_revision = FileRevision::read(&temporary_path)?;
+    if staged_revision != *source_expected {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(StorageError::AtomicSourceConflict {
+            path: source,
+            expected: source_expected.clone(),
+            actual: staged_revision,
+        });
+    }
+
+    let target_actual = FileRevision::read(&target)?;
+    if target_actual != *target_expected {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(StorageError::WriteConflict {
+            path: target,
+            expected: target_expected.clone(),
+            actual: target_actual,
+        });
+    }
+    let (backup_path, mut backup) = match create_unique_sibling(&target, "backup", false) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(error);
+        }
+    };
+    let backup_result = fs::File::open(&target)
+        .and_then(|mut original| std::io::copy(&mut original, &mut backup))
+        .and_then(|_| backup.flush())
+        .and_then(|()| backup.set_permissions(target_metadata.permissions()))
+        .and_then(|()| backup.sync_all());
+    if let Err(source) = backup_result {
+        let _ = fs::remove_file(&temporary_path);
+        let _ = fs::remove_file(&backup_path);
+        return Err(StorageError::Write {
+            path: backup_path,
+            source,
+        });
+    }
+    drop(backup);
+    let backup_revision = FileRevision::read(&backup_path)?;
+    if backup_revision != *target_expected {
+        let _ = fs::remove_file(&temporary_path);
+        let _ = fs::remove_file(&backup_path);
+        return Err(StorageError::WriteConflict {
+            path: target,
+            expected: target_expected.clone(),
+            actual: backup_revision,
+        });
+    }
+    let target_actual = FileRevision::read(&target)?;
+    if target_actual != *target_expected {
+        let _ = fs::remove_file(&temporary_path);
+        let _ = fs::remove_file(&backup_path);
+        return Err(StorageError::WriteConflict {
+            path: target,
+            expected: target_expected.clone(),
+            actual: target_actual,
+        });
+    }
+
+    if let Err(source) = replace_file(&temporary_path, &target) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(StorageError::AtomicReplace {
+            path: target,
+            backup: backup_path,
+            source,
+        });
+    }
+    if let Err(source) = sync_parent_directory(&target) {
+        return Err(StorageError::AtomicDirectorySync {
+            path: target,
+            backup: backup_path,
+            source,
+        });
+    }
+    Ok(AtomicSaveReport {
+        target,
+        backup: backup_path,
+    })
+}
+
 impl PlatformDocument {
     /// Constructs a semantically empty platform document at a native host
     /// path. The platform name remains domain data; callers should obtain the
@@ -2494,6 +2655,51 @@ impl PlatformDocument {
             .game_saves
             .iter()
             .filter(|record| record.game_id == game_id)
+            .cloned()
+            .collect())
+    }
+
+    /// Removes one persisted save row without interpreting or deleting its
+    /// filesystem path. Source indices are scoped to this game's
+    /// `<GameSave>` rows in document order.
+    ///
+    /// Callers that own a vault file must stage that file deletion in the
+    /// same transaction as this document.
+    pub fn remove_game_save(
+        &mut self,
+        id: &str,
+        source_index: usize,
+    ) -> Result<Vec<GameSave>, StorageError> {
+        self.require_game(id)?;
+        let originals = self
+            .library
+            .game_saves
+            .iter()
+            .filter(|record| record.game_id == id)
+            .collect::<Vec<_>>();
+        let root_indices = matching_record_indices(&self.root, "GameSave", "GameId", id);
+        ensure_record_index_alignment("game save", id, originals.len(), root_indices.len())?;
+        let root_index = root_indices.get(source_index).copied().ok_or_else(|| {
+            StorageError::InvalidGameRecordEdit {
+                record: "game save",
+                game_id: id.to_string(),
+                reason: format!(
+                    "source index {source_index} is outside the current {} rows",
+                    originals.len()
+                ),
+            }
+        })?;
+
+        self.root.children.remove(root_index);
+        self.library.game_saves = elements_named(&self.root, "GameSave")
+            .map(parse_game_save)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.library.validate()?;
+        Ok(self
+            .library
+            .game_saves
+            .iter()
+            .filter(|record| record.game_id == id)
             .cloned()
             .collect())
     }
@@ -5429,6 +5635,16 @@ pub enum StorageError {
     },
     #[error("atomic save target {path} is not a regular file")]
     AtomicTargetNotFile { path: PathBuf },
+    #[error("atomic save source {path} is not a regular file")]
+    AtomicSourceNotFile { path: PathBuf },
+    #[error("atomic save source and target resolve to the same file: {path}")]
+    AtomicSourceEqualsTarget { path: PathBuf },
+    #[error("refusing to copy {path} because it changed after inspection")]
+    AtomicSourceConflict {
+        path: PathBuf,
+        expected: FileRevision,
+        actual: FileRevision,
+    },
     #[error("refusing to overwrite {path} because it changed since this document was loaded")]
     WriteConflict {
         path: PathBuf,
@@ -5648,6 +5864,33 @@ mod tests {
         let reparsed =
             PlatformDocument::from_reader("Fixture Console.xml", xml.as_bytes()).unwrap();
         assert_eq!(reparsed.library().game_saves.last(), Some(&backup));
+    }
+
+    #[test]
+    fn removes_one_source_indexed_game_save_without_touching_peer_xml() {
+        let fixture = grouped_game_save_fixture();
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", fixture.as_bytes()).unwrap();
+        let retained = document.library().game_saves[0].clone();
+
+        let saves = document.remove_game_save("fixture-adventure", 1).unwrap();
+        assert_eq!(saves, vec![retained]);
+        let xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(xml.contains("<FutureGameSaveField>keep-save-data</FutureGameSaveField>"));
+        assert!(
+            !xml.contains("<FutureSecondSaveField>keep-second-save-data</FutureSecondSaveField>")
+        );
+        assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+
+        let before_invalid = document.to_xml_bytes().unwrap();
+        assert!(matches!(
+            document.remove_game_save("fixture-adventure", 1),
+            Err(StorageError::InvalidGameRecordEdit {
+                record: "game save",
+                ..
+            })
+        ));
+        assert_eq!(document.to_xml_bytes().unwrap(), before_invalid);
     }
 
     #[test]
@@ -6878,6 +7121,73 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains("temporary"))
             .count();
         assert_eq!(temporary_files, 0);
+    }
+
+    #[test]
+    fn revision_checked_regular_file_replace_streams_and_keeps_the_exact_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("vault.sav");
+        let target = directory.path().join("active.sav");
+        let source_bytes = vec![0x5a; 2 * 1024 * 1024 + 7];
+        fs::write(&source, &source_bytes).unwrap();
+        fs::write(&target, b"previous active save").unwrap();
+        let source_revision = FileRevision::read(&source).unwrap();
+        let target_revision = FileRevision::read(&target).unwrap();
+
+        let report = replace_regular_file_from_source_if_revisions(
+            &source,
+            &source_revision,
+            &target,
+            &target_revision,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), source_bytes);
+        assert_eq!(fs::read(&report.backup).unwrap(), b"previous active save");
+        assert_eq!(fs::read(&source).unwrap(), source_bytes);
+        assert_eq!(
+            fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains("temporary"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn revision_checked_regular_file_replace_refuses_changed_source_or_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("vault.sav");
+        let target = directory.path().join("active.sav");
+        fs::write(&source, b"selected vault save").unwrap();
+        fs::write(&target, b"active save").unwrap();
+        let source_revision = FileRevision::read(&source).unwrap();
+        let target_revision = FileRevision::read(&target).unwrap();
+
+        fs::write(&source, b"changed vault save").unwrap();
+        assert!(matches!(
+            replace_regular_file_from_source_if_revisions(
+                &source,
+                &source_revision,
+                &target,
+                &target_revision,
+            ),
+            Err(StorageError::AtomicSourceConflict { .. })
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"active save");
+
+        fs::write(&source, b"selected vault save").unwrap();
+        fs::write(&target, b"changed active save").unwrap();
+        assert!(matches!(
+            replace_regular_file_from_source_if_revisions(
+                &source,
+                &source_revision,
+                &target,
+                &target_revision,
+            ),
+            Err(StorageError::WriteConflict { .. })
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"changed active save");
     }
 
     #[test]

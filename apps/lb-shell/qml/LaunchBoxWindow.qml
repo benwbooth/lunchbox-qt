@@ -65,6 +65,16 @@ ApplicationWindow {
             "--game-save-backup-smoke-test") >= 0
     property int gameSaveBackupSmokePhase: 0
     property bool gameSaveBackupSmokeFinished: false
+    property bool gameSaveDeleteSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--game-save-delete-smoke-test") >= 0
+    property int gameSaveDeleteSmokePhase: 0
+    property bool gameSaveDeleteSmokeFinished: false
+    property bool gameSaveRestoreSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--game-save-restore-smoke-test") >= 0
+    property int gameSaveRestoreSmokePhase: 0
+    property bool gameSaveRestoreSmokeFinished: false
     property int platformCrudSmokePhase: 0
     property int platformCrudBlockedReferences: 0
     property string platformCrudAddedGameId: ""
@@ -759,6 +769,116 @@ ApplicationWindow {
                           + window.gameSaveBackupSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(17)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameSaveDeleteSmokeTest
+                 && !window.gameSaveDeleteSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-adventure"
+            if (window.gameSaveDeleteSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 2) {
+                    console.error("GAME_SAVE_DELETE_SMOKE_MISSING_FIXTURE")
+                    Qt.exit(18)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Adventure")
+                gameSaveManager.selectedVersionIndex = 1
+                const version = gameSaveManager.selectedVersion()
+                if (version === null || version.location_kind !== "vault") {
+                    console.error(
+                        "GAME_SAVE_DELETE_SMOKE_VAULT_NOT_RESOLVED")
+                    Qt.exit(18)
+                    return
+                }
+                window.gameSaveDeleteSmokePhase = 1
+                gameSaveDeleteDialog.smoke()
+            } else if (window.gameSaveDeleteSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_save_revision === 1) {
+                if (!controller.report_game_save_delete_smoke_success(gameId)) {
+                    console.error(
+                        "GAME_SAVE_DELETE_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(18)
+                    return
+                }
+                window.gameSaveDeleteSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.gameSaveDeleteSmokeTest
+                 && !window.gameSaveDeleteSmokeFinished
+        onTriggered: {
+            console.error("GAME_SAVE_DELETE_SMOKE_TIMEOUT phase="
+                          + window.gameSaveDeleteSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(18)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameSaveRestoreSmokeTest
+                 && !window.gameSaveRestoreSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-adventure"
+            if (window.gameSaveRestoreSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 2) {
+                    console.error("GAME_SAVE_RESTORE_SMOKE_MISSING_FIXTURE")
+                    Qt.exit(19)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Adventure")
+                gameSaveManager.selectedVersionIndex = 1
+                const version = gameSaveManager.selectedVersion()
+                if (version === null || version.location_kind !== "vault") {
+                    console.error(
+                        "GAME_SAVE_RESTORE_SMOKE_VAULT_NOT_RESOLVED")
+                    Qt.exit(19)
+                    return
+                }
+                window.gameSaveRestoreSmokePhase = 1
+                gameSaveRestoreDialog.smoke()
+            } else if (window.gameSaveRestoreSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_save_revision === 1) {
+                if (!controller.report_game_save_restore_smoke_success(gameId)) {
+                    console.error(
+                        "GAME_SAVE_RESTORE_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(19)
+                    return
+                }
+                window.gameSaveRestoreSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.gameSaveRestoreSmokeTest
+                 && !window.gameSaveRestoreSmokeFinished
+        onTriggered: {
+            console.error("GAME_SAVE_RESTORE_SMOKE_TIMEOUT phase="
+                          + window.gameSaveRestoreSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(19)
         }
     }
 
@@ -2049,7 +2169,7 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.preferredWidth: 820
-                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Manual backup copies one regular active save into the vault and records it atomically; emulator containers and companion-file sets require their emulator adapter."
+                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Manual backup copies one regular active save into the vault and records it atomically. Restore first backs up the current active regular file, then atomically replaces it from a compatible vault version. A regular vault backup can be deleted with its history row in one recoverable transaction; active deletion, Dolphin/PCSX2 containers, and RetroArch companion-file sets require their emulator adapter."
                 wrapMode: Text.Wrap
                 color: "#aeb8c5"
             }
@@ -2179,6 +2299,14 @@ ApplicationWindow {
                                            gameSaveManager.selectedVersion().source_index)
                         }
                         Button {
+                            text: "Restore…"
+                            enabled: gameSaveManager.selectedVersion() !== null
+                                     && gameSaveManager.selectedVersion().location_kind
+                                        === "vault"
+                                     && !controller.writing
+                            onClicked: gameSaveRestoreDialog.prepare()
+                        }
+                        Button {
                             text: "Rename Version"
                             enabled: gameSaveManager.selectedVersion() !== null
                                      && !controller.writing
@@ -2196,6 +2324,14 @@ ApplicationWindow {
                                            "split",
                                            gameSaveManager.selectedVersion().title
                                            + " (New Save)")
+                        }
+                        Button {
+                            text: "Delete Backup…"
+                            enabled: gameSaveManager.selectedVersion() !== null
+                                     && gameSaveManager.selectedVersion().location_kind
+                                        === "vault"
+                                     && !controller.writing
+                            onClicked: gameSaveDeleteDialog.prepare()
                         }
                         Item { Layout.fillWidth: true }
                         Label {
@@ -2310,6 +2446,82 @@ ApplicationWindow {
                 model: gameSaveManager.groups
                 textRole: "name"
             }
+        }
+    }
+
+    Dialog {
+        id: gameSaveDeleteDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Delete Save Backup"
+        standardButtons: Dialog.Yes | Dialog.No
+
+        function prepare() {
+            const version = gameSaveManager.selectedVersion()
+            if (version !== null && version.location_kind === "vault")
+                open()
+        }
+
+        function smoke() {
+            prepare()
+            Qt.callLater(function() { gameSaveDeleteDialog.accept() })
+        }
+
+        onAccepted: {
+            const version = gameSaveManager.selectedVersion()
+            if (version !== null && version.location_kind === "vault")
+                controller.delete_game_save_backup(
+                    gameSaveManager.modelRow, gameSaveManager.gameId,
+                    version.source_index)
+        }
+
+        contentItem: Label {
+            Layout.preferredWidth: 460
+            text: {
+                const version = gameSaveManager.selectedVersion()
+                return "Delete the vault file and its LaunchBox save-history row for “"
+                       + (version !== null ? version.title : "")
+                       + "”? The active emulator save is not touched. The transaction retains exact recovery copies."
+            }
+            wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: gameSaveRestoreDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Restore Save Backup"
+        standardButtons: Dialog.Yes | Dialog.No
+
+        function prepare() {
+            const version = gameSaveManager.selectedVersion()
+            if (version !== null && version.location_kind === "vault")
+                open()
+        }
+
+        function smoke() {
+            prepare()
+            Qt.callLater(function() { gameSaveRestoreDialog.accept() })
+        }
+
+        onAccepted: {
+            const version = gameSaveManager.selectedVersion()
+            if (version !== null && version.location_kind === "vault")
+                controller.restore_game_save_backup(
+                    gameSaveManager.modelRow, gameSaveManager.gameId,
+                    version.source_index)
+        }
+
+        contentItem: Label {
+            width: 460
+            text: {
+                const version = gameSaveManager.selectedVersion()
+                return "Restore “"
+                       + (version !== null ? version.title : "")
+                       + "” over the active regular-file save? The current active bytes are first committed as a new vault version. Dolphin, PCSX2, and RetroArch companion saves remain disabled until their adapters are available."
+            }
+            wrapMode: Text.Wrap
         }
     }
 

@@ -98,6 +98,8 @@ additional_application_crud_root=$(mktemp -d)
 additional_application_default_root=$(mktemp -d)
 game_save_metadata_root=$(mktemp -d)
 game_save_backup_root=$(mktemp -d)
+game_save_delete_root=$(mktemp -d)
+game_save_restore_root=$(mktemp -d)
 import_root=$(mktemp -d)
 import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
@@ -110,7 +112,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$game_save_backup_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -666,6 +668,175 @@ if find "$game_save_backup_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox manager-driven save backup, portable vault naming, exact bytes, full metadata, XML rollback backup, and cleanup validated."
+
+cp -R fixtures/launchbox/Data "$game_save_delete_root/Data"
+game_save_delete_platform="$game_save_delete_root/Data/Platforms/Fixture Console.xml"
+sed -i \
+  's|<FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>|<FilePath>Emulator\\Saves\\slot1.sav</FilePath>|' \
+  "$game_save_delete_platform"
+sed -i \
+  '/<Title>Before the Final Puzzle<\/Title>/a\    <SaveGroupName>Delete Smoke</SaveGroupName>\n    <SaveGroupId>delete-smoke-group</SaveGroupId>' \
+  "$game_save_delete_platform"
+sed -i \
+  '/<\/GameSave>/a\  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>fixture-emulator</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.sav</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Vault Backup</Title>\n    <SaveGroupName>Delete Smoke</SaveGroupName>\n    <SaveGroupId>delete-smoke-group</SaveGroupId>\n    <OriginalFileName>slot1.sav</OriginalFileName>\n    <ReportedFileSizeBytes>24</ReportedFileSizeBytes>\n    <Md5>00000000000000000000000000000000</Md5>\n  </GameSave>' \
+  "$game_save_delete_platform"
+mkdir -p \
+  "$game_save_delete_root/Emulator/Saves" \
+  "$game_save_delete_root/Saves/Fixture Console"
+game_save_delete_active="$game_save_delete_root/Emulator/Saves/slot1.sav"
+game_save_delete_vault="$game_save_delete_root/Saves/Fixture Console/adventure.sav"
+printf %s 'delete smoke active bytes' > "$game_save_delete_active"
+printf %s 'delete smoke vault bytes' > "$game_save_delete_vault"
+cp "$game_save_delete_platform" "$game_save_delete_root/original-platform.xml"
+game_save_delete_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$game_save_delete_root" \
+    --game-save-delete-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_save_delete_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_SAVE_DELETE_SMOKE_COMPLETE saves=1 writes=1 revision=1 data_changes=1' \
+  <<< "$game_save_delete_output"; then
+  printf '%s\n' "$game_save_delete_output" >&2
+  echo "LaunchBox did not validate dialog-confirmed vault save deletion." >&2
+  exit 1
+fi
+if [[ -e "$game_save_delete_vault" ]]; then
+  echo "Vault save deletion retained the selected vault file." >&2
+  exit 1
+fi
+if [[ $(rg -c '<GameSave>' "$game_save_delete_platform") -ne 1 ]] \
+  || ! rg -q -F '<FilePath>Emulator\Saves\slot1.sav</FilePath>' \
+    "$game_save_delete_platform" \
+  || rg -q -F '<Title>Vault Backup</Title>' "$game_save_delete_platform" \
+  || ! rg -q -F '<SaveGroupId>delete-smoke-group</SaveGroupId>' \
+    "$game_save_delete_platform" \
+  || ! rg -q -F '<FutureRootElement>preserve-me</FutureRootElement>' \
+    "$game_save_delete_platform"; then
+  echo "Vault save deletion removed the wrong row or lost retained XML." >&2
+  exit 1
+fi
+if [[ $(<"$game_save_delete_active") != 'delete smoke active bytes' ]]; then
+  echo "Vault save deletion changed the active emulator save." >&2
+  exit 1
+fi
+mapfile -t game_save_delete_xml_backups < <(
+  find "$game_save_delete_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#game_save_delete_xml_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${game_save_delete_xml_backups[0]}" \
+    "$game_save_delete_root/original-platform.xml"; then
+  echo "Vault save deletion did not retain one exact XML recovery copy." >&2
+  exit 1
+fi
+mapfile -t game_save_delete_file_backups < <(
+  find "$game_save_delete_root/Saves/Fixture Console" -maxdepth 1 -type f \
+    -name 'adventure.sav.lbport-transaction-backup-*' -print
+)
+if [[ ${#game_save_delete_file_backups[@]} -ne 1 ]] \
+  || [[ $(<"${game_save_delete_file_backups[0]}") != 'delete smoke vault bytes' ]]; then
+  echo "Vault save deletion did not retain one exact file recovery copy." >&2
+  exit 1
+fi
+if find "$game_save_delete_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful vault save deletion left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-confirmed vault save deletion, exact file/XML recovery copies, active isolation, targeted model refresh, and cleanup validated."
+
+cp -R fixtures/launchbox/Data "$game_save_restore_root/Data"
+game_save_restore_platform="$game_save_restore_root/Data/Platforms/Fixture Console.xml"
+sed -i \
+  's|<FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>|<FilePath>Emulator\\Saves\\slot1.sav</FilePath>|' \
+  "$game_save_restore_platform"
+sed -i \
+  '/<Title>Before the Final Puzzle<\/Title>/a\    <SaveGroupName>Restore Smoke</SaveGroupName>\n    <SaveGroupId>restore-smoke-group</SaveGroupId>' \
+  "$game_save_restore_platform"
+sed -i \
+  '/<\/GameSave>/a\  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>fixture-emulator</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.sav</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Slot>1</Slot>\n    <Title>Older Vault Version</Title>\n    <SaveGroupName>Restore Smoke</SaveGroupName>\n    <SaveGroupId>restore-smoke-group</SaveGroupId>\n    <OriginalFileName>slot1.sav</OriginalFileName>\n  </GameSave>' \
+  "$game_save_restore_platform"
+mkdir -p \
+  "$game_save_restore_root/Emulator/Saves" \
+  "$game_save_restore_root/Saves/Fixture Console"
+game_save_restore_active="$game_save_restore_root/Emulator/Saves/slot1.sav"
+game_save_restore_selected="$game_save_restore_root/Saves/Fixture Console/adventure.sav"
+game_save_restore_new_backup="$game_save_restore_root/Saves/Fixture Console/adventure-01.sav"
+game_save_restore_active_bytes='restore smoke current active bytes'
+game_save_restore_selected_bytes='restore smoke selected vault bytes'
+printf %s "$game_save_restore_active_bytes" > "$game_save_restore_active"
+printf %s "$game_save_restore_selected_bytes" > "$game_save_restore_selected"
+cp "$game_save_restore_platform" "$game_save_restore_root/original-platform.xml"
+game_save_restore_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$game_save_restore_root" \
+    --game-save-restore-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_save_restore_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_SAVE_RESTORE_SMOKE_COMPLETE saves=3 writes=1 revision=1 data_changes=1' \
+  <<< "$game_save_restore_output"; then
+  printf '%s\n' "$game_save_restore_output" >&2
+  echo "LaunchBox did not validate dialog-confirmed regular-file restore." >&2
+  exit 1
+fi
+if [[ $(<"$game_save_restore_active") != "$game_save_restore_selected_bytes" ]] \
+  || [[ $(<"$game_save_restore_selected") != "$game_save_restore_selected_bytes" ]] \
+  || [[ $(<"$game_save_restore_new_backup") != "$game_save_restore_active_bytes" ]]; then
+  echo "Regular-file restore did not preserve selected/current bytes in the expected destinations." >&2
+  exit 1
+fi
+game_save_restore_md5=$(
+  md5sum "$game_save_restore_new_backup" | cut -d ' ' -f 1 | tr '[:lower:]' '[:upper:]'
+)
+if [[ $(rg -c '<GameSave>' "$game_save_restore_platform") -ne 3 ]] \
+  || [[ $(rg -c -F '<SaveGroupId>restore-smoke-group</SaveGroupId>' \
+    "$game_save_restore_platform") -ne 3 ]] \
+  || ! rg -q -F \
+    '<FilePath>Saves\Fixture Console\adventure-01.sav</FilePath>' \
+    "$game_save_restore_platform" \
+  || ! rg -q -F "<Md5>$game_save_restore_md5</Md5>" \
+    "$game_save_restore_platform" \
+  || ! rg -q -F '<FutureRootElement>preserve-me</FutureRootElement>' \
+    "$game_save_restore_platform"; then
+  echo "Regular-file restore did not persist the exact pre-restore active version losslessly." >&2
+  exit 1
+fi
+mapfile -t game_save_restore_xml_backups < <(
+  find "$game_save_restore_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#game_save_restore_xml_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${game_save_restore_xml_backups[0]}" \
+    "$game_save_restore_root/original-platform.xml"; then
+  echo "Regular-file restore did not retain one exact pre-restore XML recovery copy." >&2
+  exit 1
+fi
+mapfile -t game_save_restore_active_backups < <(
+  find "$game_save_restore_root/Emulator/Saves" -maxdepth 1 -type f \
+    -name 'slot1.sav.lbport-backup-*' -print
+)
+if [[ ${#game_save_restore_active_backups[@]} -ne 1 ]] \
+  || [[ $(<"${game_save_restore_active_backups[0]}") \
+    != "$game_save_restore_active_bytes" ]]; then
+  echo "Regular-file restore did not retain one exact active-file recovery copy." >&2
+  exit 1
+fi
+if find "$game_save_restore_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful regular-file restore left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-confirmed regular-file restore, mandatory active backup, atomic replacement, exact recovery copies, targeted refresh, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$import_root/Data"
 mkdir -p "$import_root/Metadata"

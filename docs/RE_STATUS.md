@@ -132,9 +132,17 @@ backs up a resolved regular active file: it uses the documented
 `Saves\<Platform>\<ROM name>[-NN].<ext>` vault shape, captures exact
 size/seven-digit UTC modified time/MD5, and commits the revision-checked streamed
 copy and full new save row as one recoverable transaction. The active file is
-read-only. Directory/container and companion-file backup, restore, permanent
-deletion, scanning, automatic policy, repair, and RetroArch/Dolphin/PCSX2
-adapters remain open.
+read-only. The port can also delete one resolved regular-file vault copy and
+its source-indexed row in a single revision-checked transaction with exact file
+and XML recovery copies. Active saves are excluded, and the known RetroArch
+Saturn companion extensions/core are adapter-gated. Plain regular-file restore
+requires one compatible active row in the same stable group, first commits and
+verifies a new vault version of the active bytes, then revision-checks and
+atomically replaces the active path from the selected vault file while
+retaining an exact sibling recovery copy. Directory/container and companion-file
+backup, emulator-specific restore, active/container/companion-set deletion,
+scanning, automatic policy, repair, and RetroArch/Dolphin/PCSX2 adapters remain
+open.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

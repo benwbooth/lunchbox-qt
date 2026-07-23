@@ -363,6 +363,22 @@ pub mod qobject {
         );
 
         #[qinvokable]
+        fn delete_game_save_backup(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            source_index: i32,
+        );
+
+        #[qinvokable]
+        fn restore_game_save_backup(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            source_index: i32,
+        );
+
+        #[qinvokable]
         fn alternate_name_count(self: &LibraryController, row: i32, game_id: QString) -> i32;
 
         #[qinvokable]
@@ -458,6 +474,18 @@ pub mod qobject {
 
         #[qinvokable]
         fn report_game_save_backup_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_game_save_delete_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_game_save_restore_smoke_success(
             self: &LibraryController,
             game_id: QString,
         ) -> bool;
@@ -651,10 +679,10 @@ use lb_platform::{
 use lb_query::{filter_game_indices, GameFilter};
 use lb_storage::{
     find_game_references, find_platform_references, pending_transaction_manifests,
-    recover_pending_transactions, AuxiliaryDocument, FileRevision, GameReference,
-    IndexedGameSaveMetadataEdit, IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex,
-    LibraryTransaction, NewGame, NewGameMetadata, PlatformDocument, PlatformReference,
-    StorageError, TransactionError,
+    recover_pending_transactions, replace_regular_file_from_source_if_revisions, AuxiliaryDocument,
+    FileRevision, GameReference, IndexedGameSaveMetadataEdit, IndexedPlatformRecordEdit,
+    LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame, NewGameMetadata,
+    PlatformDocument, PlatformReference, StorageError, TransactionError,
 };
 use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
@@ -3443,6 +3471,325 @@ fn write_game_save_backup(
     })
 }
 
+fn save_requires_companion_adapter(save: &GameSave, path: &Path) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "bcr" | "bkr" | "smpc"
+    ) || save.emulator_core.to_ascii_lowercase().contains("saturn")
+}
+
+fn save_requires_emulator_restore_adapter(save: &GameSave, path: &Path) -> bool {
+    let emulator = save.emulator_file_name.to_ascii_lowercase();
+    let group = save
+        .save_group_id
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    save_requires_companion_adapter(save, path)
+        || emulator.contains("dolphin")
+        || emulator.contains("pcsx2")
+        || group.starts_with("pcsx2:")
+        || group.starts_with("pcsx2-state:")
+}
+
+fn write_game_save_backup_delete(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    source_index: usize,
+    expected: GameSave,
+    resolver: HostPathResolver,
+) -> Result<GameSaveWriteSuccess, GameWriteFailure> {
+    let root = fs::canonicalize(&root).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve LaunchBox root {}: {error}",
+            root.display()
+        ))
+    })?;
+    let mut document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let current = document
+        .library()
+        .game_saves
+        .iter()
+        .filter(|save| save.game_id == game_id)
+        .nth(source_index)
+        .cloned()
+        .ok_or_else(|| {
+            GameWriteFailure::Conflict(format!(
+                "game-save row {source_index} disappeared after the manager was opened"
+            ))
+        })?;
+    if current != expected {
+        return Err(GameWriteFailure::Conflict(format!(
+            "game-save row {source_index} changed after the manager was opened"
+        )));
+    }
+
+    let resolved = resolver
+        .resolve(&root, &expected.file_path)
+        .map_err(|error| {
+            GameWriteFailure::Other(format!("could not resolve vault backup: {error}"))
+        })?;
+    let inspected = inspect_save_file(&resolved)?;
+    let supplied_vault_root = root.join("Saves");
+    let vault_root = fs::canonicalize(&supplied_vault_root).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve save vault {}: {error}",
+            supplied_vault_root.display()
+        ))
+    })?;
+    if !vault_root.starts_with(&root) || !inspected.source.starts_with(&vault_root) {
+        return Err(GameWriteFailure::Other(
+            "only a resolved regular-file backup inside the LaunchBox save vault can be deleted"
+                .into(),
+        ));
+    }
+    if save_requires_companion_adapter(&expected, &inspected.source) {
+        return Err(GameWriteFailure::Other(
+            "this save may own RetroArch companion files and requires the emulator adapter before it can be deleted"
+                .into(),
+        ));
+    }
+
+    let saves = document
+        .remove_game_save(&game_id, source_index)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_file_delete_with_revision(&inspected.source, inspected.revision)
+        .map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&document)
+        .map_err(classify_transaction_error)?;
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let file_backup = report
+        .deleted_targets
+        .first()
+        .map(|deleted| deleted.backup.clone())
+        .ok_or_else(|| {
+            GameWriteFailure::Other("transaction reported no deleted save backup".into())
+        })?;
+    let backup = report
+        .writes
+        .first()
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| GameWriteFailure::Other("transaction reported no platform write".into()))?;
+    Ok(GameSaveWriteSuccess {
+        game_id,
+        saves,
+        source,
+        backup,
+        operation: format!(
+            "Deleted vault backup {}. File recovery copy: {}",
+            inspected.source.display(),
+            file_backup.display()
+        ),
+    })
+}
+
+fn write_game_save_restore(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    source_index: usize,
+    expected: GameSave,
+    resolver: HostPathResolver,
+) -> Result<GameSaveWriteSuccess, GameWriteFailure> {
+    let root = fs::canonicalize(&root).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve LaunchBox root {}: {error}",
+            root.display()
+        ))
+    })?;
+    let document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let saves = document
+        .library()
+        .game_saves
+        .iter()
+        .filter(|save| save.game_id == game_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let current = saves.get(source_index).cloned().ok_or_else(|| {
+        GameWriteFailure::Conflict(format!(
+            "game-save row {source_index} disappeared after the manager was opened"
+        ))
+    })?;
+    if current != expected {
+        return Err(GameWriteFailure::Conflict(format!(
+            "game-save row {source_index} changed after the manager was opened"
+        )));
+    }
+    let group_id = expected
+        .save_group_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| {
+            GameWriteFailure::Other(
+                "the selected backup has no stable save-group ID and cannot be paired with an active save"
+                    .into(),
+            )
+        })?;
+    let supplied_vault_root = root.join("Saves");
+    let vault_root = fs::canonicalize(&supplied_vault_root).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve save vault {}: {error}",
+            supplied_vault_root.display()
+        ))
+    })?;
+    if !vault_root.starts_with(&root) {
+        return Err(GameWriteFailure::Other(format!(
+            "save vault resolves outside the LaunchBox root: {}",
+            vault_root.display()
+        )));
+    }
+    let selected_path = resolver
+        .resolve(&root, &expected.file_path)
+        .map_err(|error| {
+            GameWriteFailure::Other(format!("could not resolve selected vault backup: {error}"))
+        })?;
+    let selected = inspect_save_file(&selected_path)?;
+    if !selected.source.starts_with(&vault_root) {
+        return Err(GameWriteFailure::Other(
+            "select a resolved regular-file version inside the LaunchBox save vault".into(),
+        ));
+    }
+
+    let mut active_candidates = Vec::new();
+    for (index, save) in saves.iter().enumerate() {
+        if index == source_index || save.save_group_id.as_deref() != Some(group_id) {
+            continue;
+        }
+        let Ok(path) = resolver.resolve(&root, &save.file_path) else {
+            continue;
+        };
+        let Ok(inspected) = inspect_save_file(&path) else {
+            continue;
+        };
+        if !inspected.source.starts_with(&vault_root) {
+            active_candidates.push((index, save.clone(), inspected));
+        }
+    }
+    let [(active_index, active_save, active)] = active_candidates.as_slice() else {
+        return Err(GameWriteFailure::Other(format!(
+            "restore requires exactly one resolved regular active save in group {group_id}; found {}",
+            active_candidates.len()
+        )));
+    };
+    if expected.additional_application_id != active_save.additional_application_id
+        || expected.slot != active_save.slot
+        || !expected
+            .emulator_file_name
+            .eq_ignore_ascii_case(&active_save.emulator_file_name)
+        || !expected
+            .emulator_core
+            .eq_ignore_ascii_case(&active_save.emulator_core)
+    {
+        return Err(GameWriteFailure::Other(
+            "the selected vault version and active save do not share the same owner, slot, emulator, and core"
+                .into(),
+        ));
+    }
+    if save_requires_emulator_restore_adapter(&expected, &selected.source)
+        || save_requires_emulator_restore_adapter(active_save, &active.source)
+    {
+        return Err(GameWriteFailure::Other(
+            "this save requires its RetroArch companion, Dolphin, or PCSX2 adapter before it can be restored"
+                .into(),
+        ));
+    }
+
+    let mut result = write_game_save_backup(
+        root.clone(),
+        source,
+        game_id,
+        *active_index,
+        active_save.clone(),
+        resolver.clone(),
+    )?;
+    let Some(new_backup) = result.saves.last() else {
+        result.operation =
+            "Restore stopped safely: the active save backup committed but no vault row was returned"
+                .into();
+        return Ok(result);
+    };
+    let new_backup_path = match resolver.resolve(&root, &new_backup.file_path) {
+        Ok(path) => path,
+        Err(error) => {
+            result.operation = format!(
+                "Restore stopped safely after backing up the active save; its new vault path could not be resolved: {error}"
+            );
+            return Ok(result);
+        }
+    };
+    let new_backup = match inspect_save_file(&new_backup_path) {
+        Ok(inspected) => inspected,
+        Err(error) => {
+            result.operation = format!(
+                "Restore stopped safely after backing up the active save; its new vault copy could not be verified: {}",
+                describe_game_write_failure(&error)
+            );
+            return Ok(result);
+        }
+    };
+    let active_now = match inspect_save_file(&active.source) {
+        Ok(inspected) => inspected,
+        Err(error) => {
+            result.operation = format!(
+                "Restore stopped safely after backing up the active save; the active path could not be rechecked: {}",
+                describe_game_write_failure(&error)
+            );
+            return Ok(result);
+        }
+    };
+    if new_backup.revision != active_now.revision {
+        result.operation = format!(
+            "Restore stopped safely after backing up the active save because {} changed before replacement",
+            active.source.display()
+        );
+        return Ok(result);
+    }
+
+    match replace_regular_file_from_source_if_revisions(
+        &selected.source,
+        &selected.revision,
+        &active_now.source,
+        &active_now.revision,
+    ) {
+        Ok(report) => {
+            result.operation = format!(
+                "Restored vault backup {} to active save {}. Active recovery copy: {}",
+                selected.source.display(),
+                active_now.source.display(),
+                report.backup.display()
+            );
+        }
+        Err(StorageError::AtomicDirectorySync {
+            backup,
+            source: error,
+            ..
+        }) => {
+            result.operation = format!(
+                "Restored vault backup {} to active save {}, but directory durability could not be confirmed: {error}. Active recovery copy: {}",
+                selected.source.display(),
+                active_now.source.display(),
+                backup.display()
+            );
+        }
+        Err(error) => {
+            result.operation = format!(
+                "Restore stopped after backing up the active save because replacement did not complete cleanly; inspect the active path before continuing: {error}"
+            );
+        }
+    }
+    Ok(result)
+}
+
 fn platform_catalog_path(root: &Path) -> Result<PathBuf, PlatformWriteFailure> {
     [root.join("Data/Platforms.xml"), root.join("Platforms.xml")]
         .into_iter()
@@ -5746,6 +6093,136 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn delete_game_save_backup(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        source_index: i32,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let Some(source_index) = usize::try_from(source_index).ok() else {
+            self.as_mut()
+                .set_status_message(qstring("The selected save version is invalid."));
+            return;
+        };
+        let Some(expected) = self
+            .as_ref()
+            .game_saves_for_model(row, &game_id)
+            .and_then(|saves| saves.get(source_index))
+            .cloned()
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The selected save version no longer exists; reload and try again.",
+            ));
+            return;
+        };
+        let Some((source, root)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Deleting vault backup in the background..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-game-save-delete".to_string())
+            .spawn(move || {
+                let result = write_game_save_backup_delete(
+                    root,
+                    source,
+                    game_id,
+                    source_index,
+                    expected,
+                    resolver,
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_game_save_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start game-save deletion: {error}"
+            )));
+        }
+    }
+
+    pub fn restore_game_save_backup(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        source_index: i32,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let Some(source_index) = usize::try_from(source_index).ok() else {
+            self.as_mut()
+                .set_status_message(qstring("The selected save version is invalid."));
+            return;
+        };
+        let Some(expected) = self
+            .as_ref()
+            .game_saves_for_model(row, &game_id)
+            .and_then(|saves| saves.get(source_index))
+            .cloned()
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The selected save version no longer exists; reload and try again.",
+            ));
+            return;
+        };
+        let Some((source, root)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Restoring vault backup in the background..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-game-save-restore".to_string())
+            .spawn(move || {
+                let result = write_game_save_restore(
+                    root,
+                    source,
+                    game_id,
+                    source_index,
+                    expected,
+                    resolver,
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_game_save_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start game-save restore: {error}"
+            )));
+        }
+    }
+
     fn start_game_save_write(
         mut self: Pin<&mut Self>,
         row: i32,
@@ -7151,6 +7628,58 @@ impl qobject::LibraryController {
         if success {
             eprintln!(
                 "GAME_SAVE_BACKUP_SMOKE_COMPLETE saves=2 writes={} revision={} data_changes={}",
+                rust.game_save_write_notifications,
+                self.game_save_revision(),
+                rust.data_change_notifications,
+            );
+        }
+        success
+    }
+
+    pub fn report_game_save_delete_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let saves = rust.game_saves_by_game.get(&game_id);
+        let success = saves.is_some_and(|saves| {
+            saves.len() == 1
+                && saves[0].file_path == r"Emulator\Saves\slot1.sav"
+                && saves[0].save_group_id.as_deref() == Some("delete-smoke-group")
+        }) && rust.game_save_write_notifications == 1
+            && *self.game_save_revision() == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "GAME_SAVE_DELETE_SMOKE_COMPLETE saves=1 writes={} revision={} data_changes={}",
+                rust.game_save_write_notifications,
+                self.game_save_revision(),
+                rust.data_change_notifications,
+            );
+        }
+        success
+    }
+
+    pub fn report_game_save_restore_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let saves = rust.game_saves_by_game.get(&game_id);
+        let success = saves.is_some_and(|saves| {
+            saves.len() == 3
+                && saves[0].file_path == r"Emulator\Saves\slot1.sav"
+                && saves[1].file_path == r"Saves\Fixture Console\adventure.sav"
+                && saves[2].file_path == r"Saves\Fixture Console\adventure-01.sav"
+                && saves
+                    .iter()
+                    .all(|save| save.save_group_id.as_deref() == Some("restore-smoke-group"))
+        }) && rust.game_save_write_notifications == 1
+            && *self.game_save_revision() == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "GAME_SAVE_RESTORE_SMOKE_COMPLETE saves=3 writes={} revision={} data_changes={}",
                 rust.game_save_write_notifications,
                 self.game_save_revision(),
                 rust.data_change_notifications,
@@ -11663,6 +12192,232 @@ mod tests {
         assert!(pending_transaction_manifests(directory.path())
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn vault_save_delete_removes_one_exact_file_and_row_transactionally() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        let vault_directory = directory.path().join("Saves/Fixture Console");
+        fs::create_dir_all(&platform_directory).unwrap();
+        fs::create_dir_all(&vault_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE
+            .replace(
+                r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+                r"<FilePath>Emulator\Saves\slot1.sav</FilePath>",
+            )
+            .replace(
+                "    <Title>Before the Final Puzzle</Title>",
+                "    <Title>Before the Final Puzzle</Title>\n    <SaveGroupName>Delete Smoke</SaveGroupName>\n    <SaveGroupId>delete-smoke-group</SaveGroupId>",
+            )
+            .replace(
+                "  <FutureRootElement>preserve-me</FutureRootElement>",
+                "  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>fixture-emulator</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.sav</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Vault Backup</Title>\n    <SaveGroupName>Delete Smoke</SaveGroupName>\n    <SaveGroupId>delete-smoke-group</SaveGroupId>\n    <OriginalFileName>slot1.sav</OriginalFileName>\n    <ReportedFileSizeBytes>16</ReportedFileSizeBytes>\n    <Md5>00000000000000000000000000000000</Md5>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
+            );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let active = directory.path().join("Emulator/Saves/slot1.sav");
+        fs::create_dir_all(active.parent().unwrap()).unwrap();
+        fs::write(&active, b"active save bytes").unwrap();
+        let vault = vault_directory.join("adventure.sav");
+        fs::write(&vault, b"vault save bytes").unwrap();
+
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let expected = document.library().game_saves[1].clone();
+        let result = write_game_save_backup_delete(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-adventure".into(),
+            1,
+            expected,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        assert_eq!(result.saves.len(), 1);
+        assert_eq!(result.saves[0].file_path, r"Emulator\Saves\slot1.sav");
+        assert!(!vault.exists());
+        assert_eq!(fs::read(&active).unwrap(), b"active save bytes");
+        assert_eq!(fs::read(&result.backup).unwrap(), platform_xml.as_bytes());
+        let file_backups = fs::read_dir(&vault_directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("adventure.sav.lbport-transaction-backup-")
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(file_backups.len(), 1);
+        assert_eq!(fs::read(&file_backups[0]).unwrap(), b"vault save bytes");
+        let xml = fs::read_to_string(&platform_path).unwrap();
+        assert_eq!(xml.matches("<GameSave>").count(), 1);
+        assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn vault_save_delete_refuses_a_retroarch_companion_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        let vault_directory = directory.path().join("Saves/Fixture Console");
+        fs::create_dir_all(&platform_directory).unwrap();
+        fs::create_dir_all(&vault_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE.replace(
+            r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+            r"<FilePath>Saves\Fixture Console\adventure.bcr</FilePath>",
+        );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let vault = vault_directory.join("adventure.bcr");
+        fs::write(&vault, b"saturn primary bytes").unwrap();
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let expected = document.library().game_saves[0].clone();
+
+        assert!(matches!(
+            write_game_save_backup_delete(
+                directory.path().to_path_buf(),
+                platform_path.clone(),
+                "fixture-adventure".into(),
+                0,
+                expected,
+                HostPathResolver::default(),
+            ),
+            Err(GameWriteFailure::Other(message)) if message.contains("companion files")
+        ));
+        assert_eq!(fs::read(&vault).unwrap(), b"saturn primary bytes");
+        assert_eq!(fs::read(&platform_path).unwrap(), platform_xml.as_bytes());
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn regular_file_restore_backs_up_active_before_atomic_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        let vault_directory = directory.path().join("Saves/Fixture Console");
+        fs::create_dir_all(&platform_directory).unwrap();
+        fs::create_dir_all(&vault_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE
+            .replace(
+                r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+                r"<FilePath>Emulator\Saves\slot1.sav</FilePath>",
+            )
+            .replace(
+                "    <Title>Before the Final Puzzle</Title>",
+                "    <Title>Current Active</Title>\n    <SaveGroupName>Restore Smoke</SaveGroupName>\n    <SaveGroupId>restore-smoke-group</SaveGroupId>",
+            )
+            .replace(
+                "  <FutureRootElement>preserve-me</FutureRootElement>",
+                "  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>fixture-emulator</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.sav</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Slot>1</Slot>\n    <Title>Older Vault Version</Title>\n    <SaveGroupName>Restore Smoke</SaveGroupName>\n    <SaveGroupId>restore-smoke-group</SaveGroupId>\n    <OriginalFileName>slot1.sav</OriginalFileName>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
+            );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let active = directory.path().join("Emulator/Saves/slot1.sav");
+        fs::create_dir_all(active.parent().unwrap()).unwrap();
+        fs::write(&active, b"current active save bytes").unwrap();
+        let selected = vault_directory.join("adventure.sav");
+        fs::write(&selected, b"selected vault save bytes").unwrap();
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let expected = document.library().game_saves[1].clone();
+
+        let result = write_game_save_restore(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-adventure".into(),
+            1,
+            expected,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        assert_eq!(fs::read(&active).unwrap(), b"selected vault save bytes");
+        assert_eq!(fs::read(&selected).unwrap(), b"selected vault save bytes");
+        assert_eq!(
+            fs::read(vault_directory.join("adventure-01.sav")).unwrap(),
+            b"current active save bytes"
+        );
+        assert_eq!(result.saves.len(), 3);
+        assert_eq!(
+            result.saves[2].file_path,
+            r"Saves\Fixture Console\adventure-01.sav"
+        );
+        assert_eq!(fs::read(&result.backup).unwrap(), platform_xml.as_bytes());
+        let active_backups = fs::read_dir(active.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("slot1.sav.lbport-backup-"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active_backups.len(), 1);
+        assert_eq!(
+            fs::read(&active_backups[0]).unwrap(),
+            b"current active save bytes"
+        );
+        assert!(result.operation.starts_with("Restored vault backup "));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn regular_file_restore_refuses_an_emulator_owned_adapter() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        let vault_directory = directory.path().join("Saves/Fixture Console");
+        fs::create_dir_all(&platform_directory).unwrap();
+        fs::create_dir_all(&vault_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE
+            .replace(
+                "<EmulatorFileName>fixture-emulator</EmulatorFileName>",
+                "<EmulatorFileName>pcsx2.exe</EmulatorFileName>",
+            )
+            .replace(
+                r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+                r"<FilePath>Emulator\Saves\slot1.ps2</FilePath>",
+            )
+            .replace(
+                "    <Title>Before the Final Puzzle</Title>",
+                "    <Title>Current Active</Title>\n    <SaveGroupName>PCSX2 Save</SaveGroupName>\n    <SaveGroupId>pcsx2:card:save</SaveGroupId>",
+            )
+            .replace(
+                "  <FutureRootElement>preserve-me</FutureRootElement>",
+                "  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>pcsx2.exe</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.7z</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Slot>1</Slot>\n    <Title>PCSX2 Backup</Title>\n    <SaveGroupName>PCSX2 Save</SaveGroupName>\n    <SaveGroupId>pcsx2:card:save</SaveGroupId>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
+            );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let active = directory.path().join("Emulator/Saves/slot1.ps2");
+        fs::create_dir_all(active.parent().unwrap()).unwrap();
+        fs::write(&active, b"memory card bytes").unwrap();
+        let selected = vault_directory.join("adventure.7z");
+        fs::write(&selected, b"container backup bytes").unwrap();
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let expected = document.library().game_saves[1].clone();
+
+        assert!(matches!(
+            write_game_save_restore(
+                directory.path().to_path_buf(),
+                platform_path.clone(),
+                "fixture-adventure".into(),
+                1,
+                expected,
+                HostPathResolver::default(),
+            ),
+            Err(GameWriteFailure::Other(message)) if message.contains("PCSX2 adapter")
+        ));
+        assert_eq!(fs::read(&active).unwrap(), b"memory card bytes");
+        assert_eq!(fs::read(&selected).unwrap(), b"container backup bytes");
+        assert_eq!(fs::read(&platform_path).unwrap(), platform_xml.as_bytes());
     }
 
     #[test]
