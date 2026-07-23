@@ -300,10 +300,13 @@ retaining an exact sibling recovery copy. RetroArch Saturn restore first
 commits and verifies the complete current companion set, then revision-checks
 and atomically replaces or creates all selected companions while retaining
 active members absent from the selected version like 13.27. Non-RetroArch
-scanning, directory/container backup, Dolphin/PCSX2 container restore,
-active/container deletion, stale-row reconciliation, automatic policy, repair,
-and the remaining adapters remain open, as do the manual combine/expand actions
-in `LIB-010`.
+scanning and directory/container backup remain open. Active deletion now first
+atomically replaces one regular or Saturn active row with its verified portable
+vault set, then revision-checks and deletes even host-mapped external live files
+with exact sibling recovery copies and all-or-rollback behavior.
+Dolphin/PCSX2 container restore/deletion, stale-row reconciliation, automatic
+policy, repair, and the remaining adapters remain open, as do the manual
+combine/expand actions in `LIB-010`.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:

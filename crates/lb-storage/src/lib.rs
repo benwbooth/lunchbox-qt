@@ -8,6 +8,7 @@ use lb_domain::{
 #[cfg(test)]
 use lb_domain::{GAME_SAVE_XML_FIELDS, GAME_XML_FIELDS};
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -1762,6 +1763,241 @@ pub fn replace_regular_file_from_source_if_revisions(
     Ok(AtomicSaveReport {
         target,
         backup: backup_path,
+    })
+}
+
+/// Deletes an exact set of regular files, including files outside a LaunchBox
+/// library root, while retaining one exact sibling recovery copy per file.
+///
+/// All targets and revisions are validated and all recovery copies are made
+/// durable before the first deletion. A failure after deletion starts rolls
+/// every attempted target back in reverse order. This deliberately remains a
+/// narrow filesystem primitive: callers that also mutate library metadata must
+/// first commit a durable vault copy so process death cannot lose save data.
+pub fn delete_regular_files_if_revisions(
+    files: &[(PathBuf, FileRevision)],
+) -> Result<Vec<AtomicSaveReport>, StorageError> {
+    delete_regular_files_if_revisions_with(files, |_, target| fs::remove_file(target))
+}
+
+fn delete_regular_files_if_revisions_with(
+    files: &[(PathBuf, FileRevision)],
+    mut remove: impl FnMut(usize, &Path) -> Result<(), std::io::Error>,
+) -> Result<Vec<AtomicSaveReport>, StorageError> {
+    if files.is_empty() {
+        return Err(StorageError::AtomicDeleteSetEmpty);
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut targets = Vec::with_capacity(files.len());
+    for (supplied, expected) in files {
+        let metadata = fs::symlink_metadata(supplied).map_err(|source| StorageError::Read {
+            path: supplied.clone(),
+            source,
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(StorageError::AtomicTargetNotFile {
+                path: supplied.clone(),
+            });
+        }
+        let target = fs::canonicalize(supplied).map_err(|source| StorageError::Read {
+            path: supplied.clone(),
+            source,
+        })?;
+        if !seen.insert(target.clone()) {
+            return Err(StorageError::AtomicDeleteSetDuplicate { path: target });
+        }
+        let actual = FileRevision::read(&target)?;
+        if actual != *expected {
+            return Err(StorageError::WriteConflict {
+                path: target,
+                expected: expected.clone(),
+                actual,
+            });
+        }
+        targets.push((target, expected.clone(), metadata.permissions()));
+    }
+
+    let mut reports = Vec::with_capacity(targets.len());
+    for (target, expected, permissions) in &targets {
+        let (backup_path, mut backup) = match create_unique_sibling(target, "delete-backup", false)
+        {
+            Ok(backup) => backup,
+            Err(error) => {
+                cleanup_delete_backups(&reports);
+                return Err(error);
+            }
+        };
+        let backup_result = fs::File::open(target)
+            .and_then(|mut original| std::io::copy(&mut original, &mut backup))
+            .and_then(|_| backup.flush())
+            .and_then(|()| backup.set_permissions(permissions.clone()))
+            .and_then(|()| backup.sync_all());
+        if let Err(source) = backup_result {
+            let _ = fs::remove_file(&backup_path);
+            cleanup_delete_backups(&reports);
+            return Err(StorageError::Write {
+                path: backup_path,
+                source,
+            });
+        }
+        drop(backup);
+        let backup_revision = match FileRevision::read(&backup_path) {
+            Ok(revision) => revision,
+            Err(error) => {
+                let _ = fs::remove_file(&backup_path);
+                cleanup_delete_backups(&reports);
+                return Err(error);
+            }
+        };
+        if backup_revision != *expected {
+            let _ = fs::remove_file(&backup_path);
+            cleanup_delete_backups(&reports);
+            return Err(StorageError::WriteConflict {
+                path: target.clone(),
+                expected: expected.clone(),
+                actual: backup_revision,
+            });
+        }
+        if let Err(source) = sync_parent_directory(&backup_path) {
+            let _ = fs::remove_file(&backup_path);
+            cleanup_delete_backups(&reports);
+            return Err(StorageError::Write {
+                path: backup_path,
+                source,
+            });
+        }
+        reports.push(AtomicSaveReport {
+            target: target.clone(),
+            backup: backup_path,
+        });
+    }
+
+    for ((target, expected, _), report) in targets.iter().zip(&reports) {
+        let actual = match FileRevision::read(target) {
+            Ok(actual) => actual,
+            Err(error) => {
+                cleanup_delete_backups(&reports);
+                return Err(error);
+            }
+        };
+        if actual != *expected {
+            cleanup_delete_backups(&reports);
+            return Err(StorageError::WriteConflict {
+                path: report.target.clone(),
+                expected: expected.clone(),
+                actual,
+            });
+        }
+    }
+
+    for index in 0..targets.len() {
+        let target = &targets[index].0;
+        let apply_result = remove(index, target).and_then(|()| sync_parent_directory(target));
+        if let Err(source) = apply_result {
+            let mut recovery_error = None;
+            for attempted in (0..=index).rev() {
+                if let Err(error) =
+                    restore_deleted_regular_file(&reports[attempted], &targets[attempted].1)
+                {
+                    recovery_error.get_or_insert_with(|| error.to_string());
+                }
+            }
+            if let Some(recovery_error) = recovery_error {
+                return Err(StorageError::AtomicDeleteSetRecoveryRequired {
+                    path: target.clone(),
+                    backup: reports[index].backup.clone(),
+                    delete_error: source.to_string(),
+                    recovery_error,
+                });
+            }
+            return Err(StorageError::AtomicDeleteSetRolledBack {
+                path: target.clone(),
+                backup: reports[index].backup.clone(),
+                source,
+            });
+        }
+    }
+
+    Ok(reports)
+}
+
+fn cleanup_delete_backups(reports: &[AtomicSaveReport]) {
+    for report in reports {
+        let _ = fs::remove_file(&report.backup);
+    }
+}
+
+fn restore_deleted_regular_file(
+    report: &AtomicSaveReport,
+    expected: &FileRevision,
+) -> Result<(), StorageError> {
+    match fs::symlink_metadata(&report.target) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            let actual = FileRevision::read(&report.target)?;
+            if actual == *expected {
+                return Ok(());
+            }
+            return Err(StorageError::WriteConflict {
+                path: report.target.clone(),
+                expected: expected.clone(),
+                actual,
+            });
+        }
+        Ok(_) => {
+            return Err(StorageError::AtomicTargetNotFile {
+                path: report.target.clone(),
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(StorageError::Read {
+                path: report.target.clone(),
+                source,
+            })
+        }
+    }
+
+    let backup_revision = FileRevision::read(&report.backup)?;
+    if backup_revision != *expected {
+        return Err(StorageError::WriteConflict {
+            path: report.backup.clone(),
+            expected: expected.clone(),
+            actual: backup_revision,
+        });
+    }
+    let permissions = fs::metadata(&report.backup)
+        .map_err(|source| StorageError::Read {
+            path: report.backup.clone(),
+            source,
+        })?
+        .permissions();
+    let (temporary_path, mut temporary) =
+        create_unique_sibling(&report.target, "delete-restore", true)?;
+    let restore_result = fs::File::open(&report.backup)
+        .and_then(|mut backup| std::io::copy(&mut backup, &mut temporary))
+        .and_then(|_| temporary.flush())
+        .and_then(|()| temporary.set_permissions(permissions))
+        .and_then(|()| temporary.sync_all());
+    if let Err(source) = restore_result {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(StorageError::Write {
+            path: temporary_path,
+            source,
+        });
+    }
+    drop(temporary);
+    replace_file(&temporary_path, &report.target).map_err(|source| {
+        StorageError::AtomicReplace {
+            path: report.target.clone(),
+            backup: report.backup.clone(),
+            source,
+        }
+    })?;
+    sync_parent_directory(&report.target).map_err(|source| StorageError::AtomicDirectorySync {
+        path: report.target.clone(),
+        backup: report.backup.clone(),
+        source,
     })
 }
 
@@ -5639,6 +5875,10 @@ pub enum StorageError {
     AtomicSourceNotFile { path: PathBuf },
     #[error("atomic save source and target resolve to the same file: {path}")]
     AtomicSourceEqualsTarget { path: PathBuf },
+    #[error("cannot delete an empty regular-file set")]
+    AtomicDeleteSetEmpty,
+    #[error("regular-file delete set contains {path} more than once")]
+    AtomicDeleteSetDuplicate { path: PathBuf },
     #[error("refusing to copy {path} because it changed after inspection")]
     AtomicSourceConflict {
         path: PathBuf,
@@ -5672,6 +5912,24 @@ pub enum StorageError {
         backup: PathBuf,
         #[source]
         source: std::io::Error,
+    },
+    #[error(
+        "failed to delete {path}, but every attempted deletion was rolled back; recovery copy remains at {backup}: {source}"
+    )]
+    AtomicDeleteSetRolledBack {
+        path: PathBuf,
+        backup: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "failed to delete {path} and could not fully roll the set back; recovery copy remains at {backup}; delete error: {delete_error}; recovery error: {recovery_error}"
+    )]
+    AtomicDeleteSetRecoveryRequired {
+        path: PathBuf,
+        backup: PathBuf,
+        delete_error: String,
+        recovery_error: String,
     },
     #[error("could not allocate a unique {kind} sibling for {path}")]
     UniqueSiblingExhausted { path: PathBuf, kind: String },
@@ -7188,6 +7446,72 @@ mod tests {
             Err(StorageError::WriteConflict { .. })
         ));
         assert_eq!(fs::read(&target).unwrap(), b"changed active save");
+    }
+
+    #[test]
+    fn revision_checked_file_set_delete_is_exact_and_rolls_back_partial_failure() {
+        let rollback_directory = tempfile::tempdir().unwrap();
+        let rollback_targets = ["adventure.bcr", "adventure.bkr", "adventure.smpc"]
+            .map(|name| rollback_directory.path().join(name));
+        let bytes = [
+            b"active cartridge".as_slice(),
+            b"active backup ram".as_slice(),
+            b"active clock".as_slice(),
+        ];
+        for (target, bytes) in rollback_targets.iter().zip(bytes) {
+            fs::write(target, bytes).unwrap();
+        }
+        let rollback_files = rollback_targets
+            .iter()
+            .map(|target| (target.clone(), FileRevision::read(target).unwrap()))
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            delete_regular_files_if_revisions_with(&rollback_files, |index, target| {
+                if index == 1 {
+                    Err(std::io::Error::other("injected companion delete failure"))
+                } else {
+                    fs::remove_file(target)
+                }
+            }),
+            Err(StorageError::AtomicDeleteSetRolledBack { .. })
+        ));
+        for (target, bytes) in rollback_targets.iter().zip(bytes) {
+            assert_eq!(fs::read(target).unwrap(), bytes);
+            let prefix = format!(
+                "{}.lbport-delete-backup-",
+                target.file_name().unwrap().to_string_lossy()
+            );
+            let recovery = fs::read_dir(rollback_directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|candidate| {
+                    candidate
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+                })
+                .unwrap();
+            assert_eq!(fs::read(recovery).unwrap(), bytes);
+        }
+
+        let success_directory = tempfile::tempdir().unwrap();
+        let success_targets = ["adventure.bcr", "adventure.bkr", "adventure.smpc"]
+            .map(|name| success_directory.path().join(name));
+        for (target, bytes) in success_targets.iter().zip(bytes) {
+            fs::write(target, bytes).unwrap();
+        }
+        let success_files = success_targets
+            .iter()
+            .map(|target| (target.clone(), FileRevision::read(target).unwrap()))
+            .collect::<Vec<_>>();
+        let reports = delete_regular_files_if_revisions(&success_files).unwrap();
+        assert_eq!(reports.len(), 3);
+        for ((target, bytes), report) in success_targets.iter().zip(bytes).zip(reports) {
+            assert!(!target.exists());
+            assert_eq!(report.target, *target);
+            assert_eq!(fs::read(report.backup).unwrap(), bytes);
+        }
     }
 
     #[test]

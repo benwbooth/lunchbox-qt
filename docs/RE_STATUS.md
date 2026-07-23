@@ -138,19 +138,28 @@ up a resolved regular active file or complete present Saturn
 `Saves\<Platform>\<ROM name>[-NN].<ext>` targets, captures exact aggregate
 size/seven-digit UTC modified time/MD5, and commits revision-checked streamed
 copies plus the full new row as one recoverable transaction. Active files are
-read-only. The port can also delete one resolved regular-file vault copy or
-complete Saturn set and its source-indexed row in a single revision-checked
-transaction with exact file and XML recovery copies. Plain regular-file restore
-requires one compatible active row in the same stable group, first commits and
+read-only during backup. The port can also delete one resolved regular-file
+vault copy or complete Saturn set and its source-indexed row in a single
+revision-checked transaction with exact file and XML recovery copies. Plain
+regular-file restore requires one compatible active row in the same stable
+group, first commits and
 verifies a new vault version of the active bytes, then revision-checks and
 atomically replaces the active path from the selected vault file while
 retaining an exact sibling recovery copy. RetroArch Saturn restore first
 commits and verifies the complete current companion set, then revision-checks
 and atomically replaces or creates all selected companions while retaining
 active members absent from the selected version like 13.27. Non-RetroArch
-scanning, directory/container backup, Dolphin/PCSX2 container restore,
-active/container deletion, stale-row reconciliation, automatic policy, repair,
-and the remaining adapters remain open.
+scanning and directory/container backup remain open. Active deletion now first
+atomically replaces one regular or Saturn active row with its verified portable
+vault set, then revision-checks and deletes even host-mapped external live files
+with exact sibling recovery copies and all-or-rollback behavior.
+The 13.27 RetroArch plugin does not override `EmulatorPlugin.RemoveSave`, so
+the Windows implementation calls the base `File.Delete` on only the persisted
+primary path. The port deliberately deletes the already-established Saturn
+ownership set instead of orphaning `.bkr`/`.smpc` companions; the mandatory
+vault copy and per-member recovery copies make that safety extension explicit.
+Dolphin/PCSX2 container restore/deletion, stale-row reconciliation, automatic
+policy, repair, and the remaining adapters remain open.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

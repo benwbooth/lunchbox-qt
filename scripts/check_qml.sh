@@ -100,6 +100,7 @@ game_save_metadata_root=$(mktemp -d)
 retroarch_save_scan_root=$(mktemp -d)
 game_save_backup_root=$(mktemp -d)
 game_save_delete_root=$(mktemp -d)
+game_save_active_delete_root=$(mktemp -d)
 game_save_restore_root=$(mktemp -d)
 game_save_saturn_restore_root=$(mktemp -d)
 import_root=$(mktemp -d)
@@ -114,7 +115,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -849,6 +850,105 @@ if find "$game_save_delete_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox dialog-confirmed vault save deletion, exact file/XML recovery copies, active isolation, targeted model refresh, and cleanup validated."
+
+cp -R fixtures/launchbox/Data "$game_save_active_delete_root/Data"
+game_save_active_delete_platform="$game_save_active_delete_root/Data/Platforms/Fixture Console.xml"
+sed -i \
+  -e 's|<EmulatorCore>fixture-core</EmulatorCore>|<EmulatorCore>mednafen_saturn_libretro</EmulatorCore>|' \
+  -e 's|<EmulatorFileName>fixture-emulator</EmulatorFileName>|<EmulatorFileName>retroarch</EmulatorFileName>|' \
+  -e 's|<FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>|<FilePath>Emulator\\Saves\\adventure.bcr</FilePath>|' \
+  -e '/    <Slot>1<\/Slot>/d' \
+  -e '/<Title>Before the Final Puzzle<\/Title>/a\    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>saturn-adventure</SaveGroupId>' \
+  "$game_save_active_delete_platform"
+mkdir -p "$game_save_active_delete_root/Emulator/Saves"
+declare -A game_save_active_delete_bytes=(
+  [bcr]='active delete current cartridge bytes'
+  [bkr]='active delete current backup ram bytes'
+  [smpc]='active delete current clock bytes'
+)
+for extension in bcr bkr smpc; do
+  printf %s "${game_save_active_delete_bytes[$extension]}" \
+    > "$game_save_active_delete_root/Emulator/Saves/adventure.$extension"
+done
+cp "$game_save_active_delete_platform" \
+  "$game_save_active_delete_root/original-platform.xml"
+game_save_active_delete_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$game_save_active_delete_root" \
+    --game-save-active-delete-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_save_active_delete_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_SAVE_ACTIVE_DELETE_SMOKE_COMPLETE saves=1 writes=1 revision=1 data_changes=1' \
+  <<< "$game_save_active_delete_output"; then
+  printf '%s\n' "$game_save_active_delete_output" >&2
+  echo "LaunchBox did not validate dialog-confirmed active Saturn save deletion." >&2
+  exit 1
+fi
+for extension in bcr bkr smpc; do
+  active="$game_save_active_delete_root/Emulator/Saves/adventure.$extension"
+  vault="$game_save_active_delete_root/Saves/Fixture Console/adventure.$extension"
+  if [[ -e "$active" ]] \
+    || [[ $(<"$vault") != "${game_save_active_delete_bytes[$extension]}" ]]; then
+    echo "Active save deletion did not archive and remove the $extension member exactly." >&2
+    exit 1
+  fi
+  mapfile -t active_delete_backups < <(
+    find "$game_save_active_delete_root/Emulator/Saves" -maxdepth 1 -type f \
+      -name "adventure.$extension.lbport-delete-backup-*" -print
+  )
+  if [[ ${#active_delete_backups[@]} -ne 1 ]] \
+    || [[ $(<"${active_delete_backups[0]}") \
+      != "${game_save_active_delete_bytes[$extension]}" ]]; then
+    echo "Active save deletion did not retain one exact $extension recovery copy." >&2
+    exit 1
+  fi
+done
+game_save_active_delete_size=0
+for extension in bcr bkr smpc; do
+  ((game_save_active_delete_size += \
+    ${#game_save_active_delete_bytes[$extension]}))
+done
+if [[ $(rg -c '<GameSave>' "$game_save_active_delete_platform") -ne 1 ]] \
+  || ! rg -q -F \
+    '<FilePath>Saves\Fixture Console\adventure.bcr</FilePath>' \
+    "$game_save_active_delete_platform" \
+  || rg -q -F '<FilePath>Emulator\Saves\adventure.bcr</FilePath>' \
+    "$game_save_active_delete_platform" \
+  || ! rg -q -F '<SaveGroupId>saturn-adventure</SaveGroupId>' \
+    "$game_save_active_delete_platform" \
+  || ! rg -q -F \
+    "<ReportedFileSizeBytes>$game_save_active_delete_size</ReportedFileSizeBytes>" \
+    "$game_save_active_delete_platform" \
+  || ! rg -q '<ReportedLastModifiedUtc>.*\.[0-9]{7}Z' \
+    "$game_save_active_delete_platform" \
+  || ! rg -q '<Md5>[0-9A-F]{32}</Md5>' \
+    "$game_save_active_delete_platform" \
+  || ! rg -q -F '<FutureRootElement>preserve-me</FutureRootElement>' \
+    "$game_save_active_delete_platform"; then
+  echo "Active save deletion did not persist its exact portable recovery version." >&2
+  exit 1
+fi
+mapfile -t game_save_active_delete_xml_backups < <(
+  find "$game_save_active_delete_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#game_save_active_delete_xml_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${game_save_active_delete_xml_backups[0]}" \
+    "$game_save_active_delete_root/original-platform.xml"; then
+  echo "Active save deletion did not retain one exact pre-delete XML recovery copy." >&2
+  exit 1
+fi
+if find "$game_save_active_delete_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful active save deletion left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-confirmed active Saturn save deletion, mandatory portable full-set archive, exact external-capable sibling recovery copies, targeted refresh, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$game_save_restore_root/Data"
 game_save_restore_platform="$game_save_restore_root/Data/Platforms/Fixture Console.xml"
