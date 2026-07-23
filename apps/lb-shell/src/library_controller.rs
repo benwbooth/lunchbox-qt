@@ -30,6 +30,7 @@ pub mod qobject {
         #[qproperty(bool, loading)]
         #[qproperty(bool, import_scanning)]
         #[qproperty(bool, emulator_discovery_scanning)]
+        #[qproperty(bool, emulator_bios_scanning)]
         #[qproperty(bool, writing)]
         #[qproperty(bool, launching)]
         #[qproperty(bool, launch_session_active)]
@@ -45,6 +46,8 @@ pub mod qobject {
         #[qproperty(i32, platform_revision)]
         #[qproperty(i32, emulator_revision)]
         #[qproperty(i32, emulator_discovery_revision)]
+        #[qproperty(i32, emulator_bios_revision)]
+        #[qproperty(QString, emulator_bios_audit_json)]
         #[qproperty(i32, additional_application_revision)]
         #[qproperty(i32, game_save_revision)]
         #[qproperty(i32, game_grouping_revision)]
@@ -170,6 +173,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn discovered_emulator_edit_payload(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn emulator_bios_supported(self: &LibraryController, emulator_id: QString) -> bool;
+
+        #[qinvokable]
+        fn scan_emulator_bios(self: Pin<&mut LibraryController>, emulator_id: QString);
 
         #[qinvokable]
         fn add_emulator(self: Pin<&mut LibraryController>, edit_payload: QString);
@@ -632,6 +641,13 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_emulator_bios_smoke_success(
+            self: &LibraryController,
+            emulator_id: QString,
+            initial_revision: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_category_crud_smoke_success(
             self: &LibraryController,
             category_name: QString,
@@ -820,6 +836,9 @@ use lb_integrations::pcsx2::{
     folder_manifest_signature, is_pcsx2_emulator, prepare_pcsx2_memory_card_deletion,
     prepare_pcsx2_memory_card_restore, Pcsx2Content,
 };
+use lb_integrations::pcsx2_bios::{
+    audit_pcsx2_bios, BiosFileState, Pcsx2BiosAudit, Pcsx2BiosError,
+};
 use lb_integrations::retroarch::{
     discover_retroarch_saves, inspect_saturn_save_set, is_retroarch_emulator,
     is_saturn_companion_path, retroarch_save_signature, saturn_group_id, RetroArchContent,
@@ -998,6 +1017,7 @@ pub struct LibraryControllerRust {
     loading: bool,
     import_scanning: bool,
     emulator_discovery_scanning: bool,
+    emulator_bios_scanning: bool,
     writing: bool,
     launching: bool,
     launch_session_active: bool,
@@ -1013,6 +1033,8 @@ pub struct LibraryControllerRust {
     platform_revision: i32,
     emulator_revision: i32,
     emulator_discovery_revision: i32,
+    emulator_bios_revision: i32,
+    emulator_bios_audit_json: QString,
     additional_application_revision: i32,
     game_save_revision: i32,
     game_grouping_revision: i32,
@@ -1058,6 +1080,8 @@ pub struct LibraryControllerRust {
     launchbox_root: Option<PathBuf>,
     emulator_configuration: Option<EmulatorConfiguration>,
     discovered_emulators: Vec<DiscoveredEmulatorExecutable>,
+    emulator_bios_audit: Option<Pcsx2BiosAudit>,
+    emulator_bios_emulator_id: Option<String>,
     path_mapping_settings_file: Option<PathBuf>,
     path_mappings: HostPathMappings,
     path_mappings_initialized: bool,
@@ -1072,6 +1096,7 @@ pub struct LibraryControllerRust {
     session_stats_error: Option<String>,
     pending_post_reload_message: Option<String>,
     emulator_write_notifications: u64,
+    emulator_bios_scan_notifications: u64,
     additional_application_write_notifications: u64,
     game_save_write_notifications: u64,
     category_write_notifications: u64,
@@ -1803,6 +1828,7 @@ const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
+const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 1;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
 
@@ -1913,6 +1939,43 @@ struct EmulatorEditPayload {
     emulator: Emulator,
     platforms: Vec<EmulatorPlatformEditPayload>,
     available_platforms: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct EmulatorBiosFilePayload {
+    file_name: String,
+    description: String,
+    path: String,
+    state: &'static str,
+    expected_md5: String,
+    actual_md5: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct EmulatorBiosGroupPayload {
+    id: &'static str,
+    description: &'static str,
+    required: bool,
+    all_items_required: bool,
+    satisfied: bool,
+    valid_count: usize,
+    mismatch_count: usize,
+    unsafe_count: usize,
+    unreadable_count: usize,
+    missing_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct EmulatorBiosAuditPayload {
+    version: u32,
+    emulator_id: String,
+    emulator_title: String,
+    adapter: &'static str,
+    bios_directory: String,
+    configuration_path: Option<String>,
+    location_source: &'static str,
+    group: EmulatorBiosGroupPayload,
+    files: Vec<EmulatorBiosFilePayload>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -6159,6 +6222,63 @@ fn native_paths_equal(left: &Path, right: &Path) -> bool {
     }
 }
 
+fn emulator_bios_audit_payload(
+    emulator_id: &str,
+    emulator_title: &str,
+    audit: &Pcsx2BiosAudit,
+) -> Result<String, serde_json::Error> {
+    let payload = EmulatorBiosAuditPayload {
+        version: EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION,
+        emulator_id: emulator_id.to_string(),
+        emulator_title: emulator_title.to_string(),
+        adapter: "pcsx2",
+        bios_directory: audit.bios_directory.to_string_lossy().into_owned(),
+        configuration_path: audit
+            .configuration_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        location_source: audit.location_source.label(),
+        group: EmulatorBiosGroupPayload {
+            id: audit.group_id(),
+            description: audit.group_description(),
+            required: audit.group_required(),
+            all_items_required: audit.all_items_required(),
+            satisfied: audit.group_satisfied(),
+            valid_count: audit.valid_count(),
+            mismatch_count: audit.mismatch_count(),
+            unsafe_count: audit.unsafe_count(),
+            unreadable_count: audit.unreadable_count(),
+            missing_count: audit.missing_count(),
+        },
+        files: audit
+            .files
+            .iter()
+            .map(|file| EmulatorBiosFilePayload {
+                file_name: file.requirement.file_name.clone(),
+                description: file.requirement.description.clone(),
+                path: file.path.to_string_lossy().into_owned(),
+                state: file.state.id(),
+                expected_md5: file.requirement.md5.clone(),
+                actual_md5: file.actual_md5.clone(),
+            })
+            .collect(),
+    };
+    serde_json::to_string(&payload)
+}
+
+fn emulator_supports_pcsx2_bios(
+    emulator: &Emulator,
+    launchbox_root: Option<&Path>,
+    resolver: &HostPathResolver,
+) -> bool {
+    if emulator.title.trim().eq_ignore_ascii_case("pcsx2") {
+        return true;
+    }
+    launchbox_root
+        .and_then(|root| resolver.resolve(root, &emulator.application_path).ok())
+        .is_some_and(|application_path| is_pcsx2_emulator(&emulator.title, &application_path))
+}
+
 fn load_emulator_edit_payload(
     root: &Path,
     emulator_id: &str,
@@ -7956,6 +8076,7 @@ impl qobject::LibraryController {
     pub fn load_library(mut self: Pin<&mut Self>, path: QString) {
         if *self.as_ref().import_scanning()
             || *self.as_ref().emulator_discovery_scanning()
+            || *self.as_ref().emulator_bios_scanning()
             || *self.as_ref().writing()
             || *self.as_ref().launching()
         {
@@ -8013,6 +8134,7 @@ impl qobject::LibraryController {
         if *self.as_ref().loading()
             || *self.as_ref().import_scanning()
             || *self.as_ref().emulator_discovery_scanning()
+            || *self.as_ref().emulator_bios_scanning()
             || *self.as_ref().writing()
             || *self.as_ref().launching()
         {
@@ -11104,6 +11226,59 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_emulator_bios_smoke_success(
+        &self,
+        emulator_id: QString,
+        initial_revision: i32,
+    ) -> bool {
+        let emulator_id = emulator_id.to_string();
+        let rust = self.rust();
+        let audit = rust.emulator_bios_audit.as_ref();
+        let success = rust.emulator_bios_emulator_id.as_deref() == Some(emulator_id.as_str())
+            && audit.is_some_and(|audit| {
+                audit.files.len() == 73
+                    && !audit.group_satisfied()
+                    && audit.valid_count() == 0
+                    && audit.mismatch_count() == 1
+                    && audit.unsafe_count() == 1
+                    && audit.unreadable_count() == 0
+                    && audit.missing_count() == 71
+                    && audit.location_source.label() == "portable PCSX2 configuration"
+                    && audit
+                        .bios_directory
+                        .ends_with("Emulators/PCSX2/custom-bios")
+                    && audit
+                        .configuration_path
+                        .as_ref()
+                        .is_some_and(|path| path.ends_with("Emulators/PCSX2/inis/PCSX2.ini"))
+                    && audit.files.iter().any(|file| {
+                        file.requirement.file_name == "ps2-0100jd-20000117.bin"
+                            && file.state == BiosFileState::HashMismatch
+                            && file.actual_md5.is_some()
+                    })
+                    && audit.files.iter().any(|file| {
+                        file.requirement.file_name == "ps2-0100j-20000117.bin"
+                            && file.state == BiosFileState::UnsafeEntry
+                            && file.actual_md5.is_none()
+                    })
+            })
+            && !self.emulator_bios_audit_json().is_empty()
+            && rust.emulator_bios_scan_notifications == 1
+            && *self.emulator_bios_revision() == initial_revision.saturating_add(1)
+            && !*self.emulator_bios_scanning()
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "EMULATOR_BIOS_SMOKE_COMPLETE emulator={emulator_id} files=73 valid=0 mismatch=1 unsafe=1 missing=71 scans={} revision={}",
+                rust.emulator_bios_scan_notifications,
+                self.emulator_bios_revision()
+            );
+        }
+        success
+    }
+
     pub fn report_category_crud_smoke_success(
         &self,
         category_name: QString,
@@ -11658,10 +11833,121 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn emulator_bios_supported(&self, emulator_id: QString) -> bool {
+        let emulator_id = emulator_id.to_string();
+        let Some(emulator) =
+            self.rust()
+                .emulator_configuration
+                .as_ref()
+                .and_then(|configuration| {
+                    configuration
+                        .emulators
+                        .iter()
+                        .find(|emulator| emulator.id.eq_ignore_ascii_case(&emulator_id))
+                })
+        else {
+            return false;
+        };
+        emulator_supports_pcsx2_bios(
+            emulator,
+            self.rust().launchbox_root.as_deref(),
+            &self.rust().path_resolver,
+        )
+    }
+
+    pub fn scan_emulator_bios(mut self: Pin<&mut Self>, emulator_id: QString) {
+        if *self.as_ref().loading()
+            || *self.as_ref().import_scanning()
+            || *self.as_ref().emulator_discovery_scanning()
+            || *self.as_ref().emulator_bios_scanning()
+            || *self.as_ref().writing()
+            || *self.as_ref().launching()
+        {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let emulator_id = emulator_id.to_string();
+        let Some(emulator) = self
+            .as_ref()
+            .rust()
+            .emulator_configuration
+            .as_ref()
+            .and_then(|configuration| {
+                configuration
+                    .emulators
+                    .iter()
+                    .find(|emulator| emulator.id.eq_ignore_ascii_case(&emulator_id))
+            })
+            .cloned()
+        else {
+            self.as_mut()
+                .set_status_message(qstring("The selected emulator is no longer configured."));
+            return;
+        };
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "BIOS auditing requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let application_path = match self
+            .as_ref()
+            .rust()
+            .path_resolver
+            .resolve(&root, &emulator.application_path)
+        {
+            Ok(path) => path,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not resolve the configured PCSX2 executable: {error}"
+                )));
+                return;
+            }
+        };
+        if !is_pcsx2_emulator(&emulator.title, &application_path) {
+            self.as_mut().set_status_message(qstring(
+                "BIOS auditing is not yet implemented for this emulator adapter.",
+            ));
+            return;
+        }
+        let data_directories = default_pcsx2_data_directories(&application_path);
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_emulator_bios_scanning(true);
+        self.as_mut()
+            .set_emulator_bios_audit_json(QString::default());
+        self.as_mut().set_status_message(qstring(
+            "Auditing the recovered PCSX2 BIOS catalog without executing or modifying PCSX2...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let title = emulator.title;
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-emulator-bios-audit".to_string())
+            .spawn(move || {
+                let result = audit_pcsx2_bios(&application_path, &data_directories);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_emulator_bios_audit(
+                            generation,
+                            emulator_id,
+                            title,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_bios_scanning(false);
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not start BIOS audit: {error}")));
+        }
+    }
+
     pub fn scan_installed_emulators(mut self: Pin<&mut Self>) {
         if *self.as_ref().loading()
             || *self.as_ref().import_scanning()
             || *self.as_ref().emulator_discovery_scanning()
+            || *self.as_ref().emulator_bios_scanning()
             || *self.as_ref().writing()
             || *self.as_ref().launching()
         {
@@ -12109,7 +12395,13 @@ impl qobject::LibraryController {
         let count = i32::try_from(mappings.len()).unwrap_or(i32::MAX);
         self.as_mut().rust_mut().path_mappings = mappings;
         self.as_mut().rust_mut().path_resolver = resolver;
+        self.as_mut().rust_mut().emulator_bios_audit = None;
+        self.as_mut().rust_mut().emulator_bios_emulator_id = None;
         self.as_mut().set_path_mapping_count(count);
+        self.as_mut()
+            .set_emulator_bios_audit_json(QString::default());
+        let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+        self.as_mut().set_emulator_bios_revision(bios_revision);
         self.as_mut().set_status_message(qstring(success_message));
         true
     }
@@ -12124,6 +12416,7 @@ impl qobject::LibraryController {
         if *self.as_ref().loading()
             || *self.as_ref().import_scanning()
             || *self.as_ref().emulator_discovery_scanning()
+            || *self.as_ref().emulator_bios_scanning()
             || *self.as_ref().writing()
             || *self.as_ref().launching()
         {
@@ -13212,6 +13505,59 @@ impl qobject::LibraryController {
         )));
     }
 
+    fn finish_emulator_bios_audit(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        emulator_id: String,
+        emulator_title: String,
+        result: Result<Pcsx2BiosAudit, Pcsx2BiosError>,
+    ) {
+        self.as_mut().set_emulator_bios_scanning(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(audit) => {
+                let payload =
+                    match emulator_bios_audit_payload(&emulator_id, &emulator_title, &audit) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            self.as_mut().set_status_message(qstring(format!(
+                                "Could not serialize PCSX2 BIOS audit: {error}"
+                            )));
+                            return;
+                        }
+                    };
+                let satisfied = audit.group_satisfied();
+                let valid = audit.valid_count();
+                let mismatch = audit.mismatch_count();
+                let unsafe_count = audit.unsafe_count();
+                let unreadable = audit.unreadable_count();
+                let missing = audit.missing_count();
+                let directory = audit.bios_directory.clone();
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_bios_audit = Some(audit);
+                    rust.emulator_bios_emulator_id = Some(emulator_id);
+                    rust.emulator_bios_scan_notifications =
+                        rust.emulator_bios_scan_notifications.saturating_add(1);
+                }
+                self.as_mut().set_emulator_bios_audit_json(qstring(payload));
+                let revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(revision);
+                self.as_mut().set_status_message(qstring(format!(
+                    "PCSX2 BIOS audit {} at {}: {valid} valid, {mismatch} hash mismatch, {unsafe_count} unsafe, {unreadable} unreadable, {missing} missing. No files or configuration were changed.",
+                    if satisfied { "ready" } else { "needs a valid BIOS" },
+                    directory.display()
+                )));
+            }
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not audit PCSX2 BIOS: {error}")));
+            }
+        }
+    }
+
     fn finish_emulator_write(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -13232,6 +13578,8 @@ impl qobject::LibraryController {
                 {
                     let mut rust = self.as_mut().rust_mut();
                     rust.emulator_configuration = Some(success.configuration);
+                    rust.emulator_bios_audit = None;
+                    rust.emulator_bios_emulator_id = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                 }
@@ -13243,6 +13591,10 @@ impl qobject::LibraryController {
                     .saturating_add(1);
                 self.as_mut()
                     .set_emulator_discovery_revision(discovery_revision);
+                self.as_mut()
+                    .set_emulator_bios_audit_json(QString::default());
+                let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(bios_revision);
                 if operation == EmulatorWriteOperation::Create {
                     self.as_mut()
                         .set_last_added_emulator_id(qstring(&success.emulator.id));
@@ -14003,12 +14355,15 @@ impl qobject::LibraryController {
             rust.launchbox_root = launchbox_root;
             rust.emulator_configuration = emulator_configuration;
             rust.discovered_emulators.clear();
+            rust.emulator_bios_audit = None;
+            rust.emulator_bios_emulator_id = None;
             rust.model_reset_notifications = 1;
             rust.data_change_notifications = 0;
             rust.row_insert_notifications = 0;
             rust.row_remove_notifications = 0;
             rust.launch_notifications = 0;
             rust.emulator_write_notifications = 0;
+            rust.emulator_bios_scan_notifications = 0;
             rust.additional_application_write_notifications = 0;
             rust.game_save_write_notifications = 0;
             rust.category_write_notifications = 0;
@@ -14021,6 +14376,9 @@ impl qobject::LibraryController {
         self.as_mut().set_library_name(qstring(name));
         self.as_mut().set_status_message(qstring(message));
         self.as_mut().set_emulator_discovery_scanning(false);
+        self.as_mut().set_emulator_bios_scanning(false);
+        self.as_mut()
+            .set_emulator_bios_audit_json(QString::default());
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_filtered_count(game_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
@@ -14039,6 +14397,9 @@ impl qobject::LibraryController {
             .wrapping_add(1);
         self.as_mut()
             .set_emulator_discovery_revision(emulator_discovery_revision);
+        let emulator_bios_revision = self.as_ref().rust().emulator_bios_revision.wrapping_add(1);
+        self.as_mut()
+            .set_emulator_bios_revision(emulator_bios_revision);
         self.as_mut()
             .set_pending_recovery_count(saturating_i32(pending_recovery_count));
         self.as_mut().set_delete_blocker_count(0);
@@ -14780,6 +15141,9 @@ fn qstring(value: impl AsRef<str>) -> QString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lb_integrations::pcsx2_bios::{
+        Pcsx2BiosFileAudit, Pcsx2BiosLocationSource, Pcsx2BiosRequirement,
+    };
     use lb_storage::FileRevision;
     use std::fs;
     use std::time::UNIX_EPOCH;
@@ -14934,6 +15298,69 @@ mod tests {
             Some(&registered)
         )
         .is_err());
+    }
+
+    #[test]
+    fn emulator_bios_payload_preserves_native_paths_group_semantics_and_hash_states() {
+        let audit = Pcsx2BiosAudit {
+            bios_directory: PathBuf::from("/library/Emulators/PCSX2/custom-bios"),
+            configuration_path: Some(PathBuf::from("/library/Emulators/PCSX2/inis/PCSX2.ini")),
+            location_source: Pcsx2BiosLocationSource::PortableConfiguration,
+            files: vec![
+                Pcsx2BiosFileAudit {
+                    requirement: Pcsx2BiosRequirement {
+                        file_name: "valid.bin".into(),
+                        description: "Valid fixture".into(),
+                        md5: "0123456789abcdef0123456789abcdef".into(),
+                    },
+                    path: PathBuf::from("/library/Emulators/PCSX2/custom-bios/valid.bin"),
+                    state: BiosFileState::Valid,
+                    actual_md5: Some("0123456789abcdef0123456789abcdef".into()),
+                },
+                Pcsx2BiosFileAudit {
+                    requirement: Pcsx2BiosRequirement {
+                        file_name: "missing.bin".into(),
+                        description: "Missing fixture".into(),
+                        md5: "fedcba9876543210fedcba9876543210".into(),
+                    },
+                    path: PathBuf::from("/library/Emulators/PCSX2/custom-bios/missing.bin"),
+                    state: BiosFileState::Missing,
+                    actual_md5: None,
+                },
+            ],
+        };
+
+        let serialized =
+            emulator_bios_audit_payload("pcsx2", "PCSX2", &audit).expect("BIOS audit payload");
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("typed JSON payload");
+        assert_eq!(payload["version"], EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION);
+        assert_eq!(payload["adapter"], "pcsx2");
+        assert_eq!(
+            payload["bios_directory"],
+            "/library/Emulators/PCSX2/custom-bios"
+        );
+        assert_eq!(payload["location_source"], "portable PCSX2 configuration");
+        assert_eq!(payload["group"]["id"], "ps2 bios");
+        assert_eq!(payload["group"]["required"], true);
+        assert_eq!(payload["group"]["all_items_required"], false);
+        assert_eq!(payload["group"]["satisfied"], true);
+        assert_eq!(payload["group"]["valid_count"], 1);
+        assert_eq!(payload["group"]["missing_count"], 1);
+        assert_eq!(payload["files"][0]["state"], "valid");
+        assert_eq!(payload["files"][1]["state"], "missing");
+
+        let directory = tempfile::tempdir().expect("temporary portable library");
+        let configured = Emulator {
+            title: "My PS2 Emulator".into(),
+            application_path: r"Emulators\PCSX2\pcsx2-qt.exe".into(),
+            ..Emulator::default()
+        };
+        assert!(emulator_supports_pcsx2_bios(
+            &configured,
+            Some(directory.path()),
+            &HostPathResolver::default()
+        ));
     }
 
     #[test]

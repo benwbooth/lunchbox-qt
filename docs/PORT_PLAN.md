@@ -262,8 +262,14 @@ then sends a selected candidate through the full typed editor with recovered
 13.27 defaults and shared reverse host-path conversion. Deterministic
 deduplication, the Unix `dolphin` name collision, existing platform defaults,
 candidate immutability, exact XML backup, and binary-directory isolation are
-tested. Downloads, installation, updating, dependencies, cores, and BIOS
-management remain open under `RUN-003` and `RUN-004`. The ROM importer now resolves
+tested. Downloads, installation, updating, dependencies, and cores remain open
+under `RUN-003`. The first `RUN-004` subset audits the complete recovered
+PCSX2 BIOS group of 73 alternatives without executing PCSX2 or mutating its
+configuration or firmware. It honors the portable marker and portable/native
+`PCSX2.ini` roots, resolves native paths behind the platform boundary, streams
+MD5 checks, refuses symlink entries, and exposes every result in a read-only Qt
+manager. Other-emulator adapters, firmware acquisition, configuration changes,
+and mutation remain open under `RUN-004`. The ROM importer now resolves
 primary and alternate filenames through the local database, combines matching
 stable IDs into one deterministic game, recovers separator-neutral
 version/region qualifiers, and retains every ROM including the primary as an

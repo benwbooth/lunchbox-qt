@@ -130,6 +130,11 @@ ApplicationWindow {
     property int emulatorDiscoveryInitialEmulatorRevision: -1
     property int emulatorDiscoveryInitialRevision: -1
     property bool emulatorDiscoverySmokeFinished: false
+    property bool emulatorBiosSmokeTest:
+        Qt.application.arguments.indexOf("--emulator-bios-smoke-test") >= 0
+    property int emulatorBiosSmokePhase: 0
+    property int emulatorBiosInitialRevision: -1
+    property bool emulatorBiosSmokeFinished: false
     property int categoryCrudSmokePhase: 0
     property bool categoryCrudSmokeFinished: false
     property int playlistCrudSmokePhase: 0
@@ -1664,6 +1669,90 @@ ApplicationWindow {
                           + window.emulatorDiscoverySmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(48)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.emulatorBiosSmokeTest && !window.emulatorBiosSmokeFinished
+        onTriggered: {
+            const emulatorId = "pcsx2-bios-fixture"
+            if (window.emulatorBiosSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0
+                    && controller.emulator_entry_count() === 3) {
+                if (!controller.emulator_bios_supported(emulatorId)) {
+                    console.error("EMULATOR_BIOS_SMOKE_ADAPTER_NOT_SUPPORTED")
+                    Qt.exit(49)
+                    return
+                }
+                window.emulatorBiosInitialRevision = controller.emulator_bios_revision
+                window.emulatorBiosSmokePhase = 1
+                biosManager.smokeAudit(emulatorId, "PCSX2")
+            } else if (window.emulatorBiosSmokePhase === 1
+                       && !controller.emulator_bios_scanning
+                       && controller.emulator_bios_revision
+                          === window.emulatorBiosInitialRevision + 1) {
+                const serialized = controller.emulator_bios_audit_json
+                const payload = serialized.length > 0
+                              ? JSON.parse(serialized) : null
+                let mismatchFound = false
+                let unsafeFound = false
+                if (payload !== null) {
+                    for (let index = 0; index < payload.files.length; ++index) {
+                        const file = payload.files[index]
+                        if (file.file_name === "ps2-0100jd-20000117.bin"
+                                && file.state === "hash_mismatch"
+                                && file.actual_md5 !== null)
+                            mismatchFound = true
+                        if (file.file_name === "ps2-0100j-20000117.bin"
+                                && file.state === "unsafe_entry"
+                                && file.actual_md5 === null)
+                            unsafeFound = true
+                    }
+                }
+                if (payload === null || payload.version !== 1
+                        || payload.emulator_id !== emulatorId
+                        || payload.adapter !== "pcsx2"
+                        || !payload.bios_directory.endsWith(
+                            "/Emulators/PCSX2/custom-bios")
+                        || payload.configuration_path === null
+                        || !payload.configuration_path.endsWith(
+                            "/Emulators/PCSX2/inis/PCSX2.ini")
+                        || payload.location_source
+                           !== "portable PCSX2 configuration"
+                        || payload.group.id !== "ps2 bios"
+                        || !payload.group.required
+                        || payload.group.all_items_required
+                        || payload.group.satisfied
+                        || payload.group.valid_count !== 0
+                        || payload.group.mismatch_count !== 1
+                        || payload.group.unsafe_count !== 1
+                        || payload.group.unreadable_count !== 0
+                        || payload.group.missing_count !== 71
+                        || payload.files.length !== 73
+                        || !mismatchFound || !unsafeFound
+                        || !controller.report_emulator_bios_smoke_success(
+                            emulatorId, window.emulatorBiosInitialRevision)) {
+                    console.error("EMULATOR_BIOS_SMOKE_MODEL_CONTRACT_FAILED payload="
+                                  + serialized)
+                    Qt.exit(49)
+                    return
+                }
+                window.emulatorBiosSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.emulatorBiosSmokeTest && !window.emulatorBiosSmokeFinished
+        onTriggered: {
+            console.error("EMULATOR_BIOS_SMOKE_TIMEOUT phase="
+                          + window.emulatorBiosSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(49)
         }
     }
 
@@ -4583,6 +4672,19 @@ ApplicationWindow {
                     onClicked: emulatorEditor.prepareEdit(emulatorManager.selectedId())
                 }
                 Button {
+                    text: controller.emulator_bios_scanning
+                          ? "Checking BIOS…" : "BIOS"
+                    enabled: emulatorManager.selectedIndex >= 0
+                             && controller.emulator_bios_supported(
+                                 emulatorManager.selectedId())
+                             && !controller.emulator_bios_scanning
+                             && !controller.emulator_discovery_scanning
+                             && !controller.writing && !controller.launching
+                    onClicked: biosManager.prepare(
+                                   emulatorManager.selectedId(),
+                                   emulatorManager.selectedTitle())
+                }
+                Button {
                     text: "Delete"
                     enabled: emulatorManager.selectedIndex >= 0
                              && !controller.writing && !controller.write_conflict
@@ -4703,6 +4805,197 @@ ApplicationWindow {
                     text: controller.discovered_emulator_count()
                           + " candidate(s)"
                     color: "#7d8590"
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: biosManager
+        anchors.centerIn: parent
+        modal: true
+        title: emulatorTitle.length > 0
+               ? emulatorTitle + " BIOS Status" : "Emulator BIOS Status"
+        standardButtons: Dialog.Close
+        property string emulatorId: ""
+        property string emulatorTitle: ""
+        property var audit: null
+
+        function loadAudit() {
+            const serialized = controller.emulator_bios_audit_json
+            if (serialized.length === 0) {
+                audit = null
+                return
+            }
+            const parsed = JSON.parse(serialized)
+            audit = parsed.emulator_id === emulatorId ? parsed : null
+        }
+
+        function prepare(id, title) {
+            emulatorId = id
+            emulatorTitle = title
+            audit = null
+            open()
+            controller.scan_emulator_bios(id)
+        }
+
+        function smokeAudit(id, title) {
+            prepare(id, title)
+        }
+
+        function stateLabel(state) {
+            if (state === "valid")
+                return "VALID"
+            if (state === "hash_mismatch")
+                return "HASH MISMATCH"
+            if (state === "unsafe_entry")
+                return "UNSAFE ENTRY"
+            if (state === "unreadable")
+                return "UNREADABLE"
+            return "MISSING"
+        }
+
+        function stateColor(state) {
+            if (state === "valid")
+                return "#3fb950"
+            if (state === "missing")
+                return "#7d8590"
+            return "#f85149"
+        }
+
+        Connections {
+            target: controller
+            function onEmulatorBiosRevisionChanged() {
+                biosManager.loadAudit()
+            }
+        }
+
+        contentItem: ColumnLayout {
+            implicitWidth: 820
+            implicitHeight: 620
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: "This is a read-only validation of the complete LaunchBox 13.27 PCSX2 BIOS alternative group. At least one exact MD5 match is required. The audit does not run PCSX2, follow firmware symlinks, download firmware, or change files and configuration."
+                wrapMode: Text.Wrap
+                color: "#7fbfff"
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                BusyIndicator {
+                    running: controller.emulator_bios_scanning
+                    visible: running
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: {
+                        if (controller.emulator_bios_scanning)
+                            return "Checking configured BIOS location…"
+                        if (biosManager.audit === null)
+                            return "No audit result"
+                        return biosManager.audit.group.satisfied
+                               ? "READY — "
+                                 + biosManager.audit.group.valid_count
+                                 + " recognized BIOS file(s)"
+                               : "NEEDS BIOS — no recognized exact match"
+                    }
+                    color: biosManager.audit !== null
+                           && biosManager.audit.group.satisfied
+                           ? "#3fb950" : "#d29922"
+                    font.bold: true
+                }
+                Button {
+                    text: "Check Again"
+                    enabled: biosManager.emulatorId.length > 0
+                             && !controller.emulator_bios_scanning
+                    onClicked: controller.scan_emulator_bios(
+                                   biosManager.emulatorId)
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: biosManager.audit !== null
+                text: biosManager.audit === null ? ""
+                      : "BIOS directory: " + biosManager.audit.bios_directory
+                color: "white"
+                elide: Text.ElideMiddle
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: biosManager.audit !== null
+                text: {
+                    if (biosManager.audit === null)
+                        return ""
+                    const config = biosManager.audit.configuration_path === null
+                                 ? "no readable PCSX2.ini"
+                                 : biosManager.audit.configuration_path
+                    return "Source: " + biosManager.audit.location_source
+                           + " · " + config
+                }
+                color: "#7d8590"
+                font.pixelSize: 11
+                elide: Text.ElideMiddle
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: biosManager.audit !== null
+                text: {
+                    if (biosManager.audit === null)
+                        return ""
+                    const group = biosManager.audit.group
+                    return group.description + " · valid " + group.valid_count
+                           + " · mismatch " + group.mismatch_count
+                           + " · unsafe " + group.unsafe_count
+                           + " · unreadable " + group.unreadable_count
+                           + " · missing " + group.missing_count
+                }
+                color: "white"
+            }
+            ListView {
+                id: biosFileList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: biosManager.audit === null ? [] : biosManager.audit.files
+                delegate: ItemDelegate {
+                    required property var modelData
+                    width: biosFileList.width
+                    contentItem: RowLayout {
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.file_name + " · "
+                                      + modelData.description
+                                color: "white"
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.path
+                                color: "#7d8590"
+                                font.pixelSize: 11
+                                elide: Text.ElideMiddle
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                visible: modelData.state === "hash_mismatch"
+                                text: "Expected " + modelData.expected_md5
+                                      + " · actual "
+                                      + (modelData.actual_md5 || "unavailable")
+                                color: "#f85149"
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                            }
+                        }
+                        Label {
+                            text: biosManager.stateLabel(modelData.state)
+                            color: biosManager.stateColor(modelData.state)
+                            font.bold: true
+                        }
+                    }
                 }
             }
         }

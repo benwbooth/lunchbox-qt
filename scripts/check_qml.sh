@@ -125,6 +125,7 @@ import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
 emulator_crud_root=$(mktemp -d)
 emulator_discovery_root=$(mktemp -d)
+emulator_bios_root=$(mktemp -d)
 category_crud_root=$(mktemp -d)
 playlist_crud_root=$(mktemp -d)
 game_grouping_root=$(mktemp -d)
@@ -135,7 +136,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$emulator_bios_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -2029,6 +2030,86 @@ if find "$emulator_discovery_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox reviewed RetroArch/Dolphin/PCSX2/ScummVM executable discovery, candidate provenance, full-editor registration, portable path storage, recovered defaults, exact backup, and candidate immutability validated."
+
+cp -R fixtures/launchbox/Data "$emulator_bios_root/Data"
+find "$emulator_bios_root/Data" -type f -name '*.xml' -exec \
+  sed -i 's/fixture-emulator/pcsx2-bios-fixture/g' {} +
+emulator_bios_document="$emulator_bios_root/Data/Emulators.xml"
+sed -i \
+  -e 's#<Title>Fixture Emulator</Title>#<Title>PCSX2</Title>#' \
+  -e 's#<ApplicationPath>Emulators/pcsx2-bios-fixture</ApplicationPath>#<ApplicationPath>Emulators\\PCSX2\\pcsx2-qt</ApplicationPath>#' \
+  "$emulator_bios_document"
+mkdir -p \
+  "$emulator_bios_root/Emulators/PCSX2/inis" \
+  "$emulator_bios_root/Emulators/PCSX2/custom-bios"
+emulator_bios_application="$emulator_bios_root/Emulators/PCSX2/pcsx2-qt"
+cp fixtures/runtime/noop.sh "$emulator_bios_application"
+chmod +x "$emulator_bios_application"
+printf '' > "$emulator_bios_root/Emulators/PCSX2/portable.ini"
+printf '[Folders]\nBios = custom-bios\n' \
+  > "$emulator_bios_root/Emulators/PCSX2/inis/PCSX2.ini"
+printf 'deliberately not copyrighted firmware\n' \
+  > "$emulator_bios_root/Emulators/PCSX2/custom-bios/ps2-0100jd-20000117.bin"
+emulator_bios_symlink_target="$emulator_bios_root/Emulators/PCSX2/outside.bin"
+printf 'symlink target must not be read as firmware\n' \
+  > "$emulator_bios_symlink_target"
+ln -s ../outside.bin \
+  "$emulator_bios_root/Emulators/PCSX2/custom-bios/ps2-0100j-20000117.bin"
+emulator_bios_tree_before=$(
+  find "$emulator_bios_root" -mindepth 1 \
+    -printf '%P\t%y\t%m\t%l\n' | sort
+)
+emulator_bios_hashes_before=$(
+  while IFS= read -r file; do
+    relative=${file#"$emulator_bios_root/"}
+    printf '%s\t' "$relative"
+    sha256sum "$file" | awk '{print $1}'
+  done < <(find "$emulator_bios_root" -type f | sort)
+)
+
+emulator_bios_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$emulator_bios_root" --emulator-bios-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$emulator_bios_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'EMULATOR_BIOS_SMOKE_COMPLETE emulator=pcsx2-bios-fixture files=73 valid=0 mismatch=1 unsafe=1 missing=71 scans=1 revision=[0-9]+' \
+  <<< "$emulator_bios_output"; then
+  printf '%s\n' "$emulator_bios_output" >&2
+  echo "LaunchBox did not validate the read-only PCSX2 BIOS contract." >&2
+  exit 1
+fi
+emulator_bios_tree_after=$(
+  find "$emulator_bios_root" -mindepth 1 \
+    -printf '%P\t%y\t%m\t%l\n' | sort
+)
+emulator_bios_hashes_after=$(
+  while IFS= read -r file; do
+    relative=${file#"$emulator_bios_root/"}
+    printf '%s\t' "$relative"
+    sha256sum "$file" | awk '{print $1}'
+  done < <(find "$emulator_bios_root" -type f | sort)
+)
+if [[ "$emulator_bios_tree_after" != "$emulator_bios_tree_before" ]] \
+  || [[ "$emulator_bios_hashes_after" != "$emulator_bios_hashes_before" ]]; then
+  echo "PCSX2 BIOS audit changed a file, symlink, permission, or directory." >&2
+  diff -u \
+    <(printf '%s\n%s\n' "$emulator_bios_tree_before" "$emulator_bios_hashes_before") \
+    <(printf '%s\n%s\n' "$emulator_bios_tree_after" "$emulator_bios_hashes_after") \
+    || true
+  exit 1
+fi
+if find "$emulator_bios_root" -type f \
+  \( -name '*.lbport-transaction-backup-*' \
+    -o -name '.lbport-transaction-*.json' \) -print -quit | rg -q .; then
+  echo "Read-only PCSX2 BIOS audit created a transaction artifact." >&2
+  exit 1
+fi
+
+echo "LaunchBox complete 73-alternative PCSX2 BIOS group, portable configuration resolution, streamed hash mismatch, symlink refusal, Qt status report, and whole-tree immutability validated."
 
 cp -R fixtures/launchbox/Data "$category_crud_root/Data"
 category_crud_catalog="$category_crud_root/Data/Platforms.xml"

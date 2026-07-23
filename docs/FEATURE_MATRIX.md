@@ -59,8 +59,13 @@ PCSX2, and ScummVM executables from the portable emulator tree, native
 application locations, and `PATH`, shows provenance and registration state,
 and routes a selected candidate through the full editor with recovered defaults
 and cross-platform reverse path conversion. It never starts or modifies a
-candidate. Downloads, installation, updates, dependencies, cores, BIOS
-handling, and binary deletion remain open.
+candidate. Downloads, installation, updates, dependencies, cores, and binary
+deletion remain open. The first `RUN-004` subset validates configured PCSX2
+against the complete recovered 73-alternative BIOS group. It reads portable or
+host-native PCSX2 configuration, streams MD5 checks, refuses firmware symlinks,
+and reports the complete group through Qt without executing PCSX2 or changing
+any file. Other-emulator BIOS adapters, acquisition, configuration changes,
+and mutation remain open.
 The first `IMP-001` vertical is also implemented: the LaunchBox shell accepts
 multiple files or folders, recursively discovers candidates, applies an
 optional extension filter, derives editable file- or folder-based titles,
@@ -82,8 +87,9 @@ parsing recovers `Version` and normalized `Region` through separator-neutral
 lexical handling. Copy/move also implements the recovered
 same-filename/different-extension option as an atomic companion-file bundle,
 including per-disc companions and collision refusal. Metadata and media
-downloads, emulator installation/BIOS handling, descriptor-content dependency
-copying, broader naming grammars, cancellation, and runtime-oracle edge-case
+downloads, emulator installation and remaining BIOS handling,
+descriptor-content dependency copying, broader naming grammars, cancellation,
+and runtime-oracle edge-case
 parity remain open, so `IMP-001` is not complete.
 The implemented local-database subset opens LaunchBox's SQLite file read-only,
 canonicalizes platform aliases, applies recovered exact-title and qualifier
@@ -167,8 +173,8 @@ parity remain open.
 |---|---|---|
 | RUN-001 | Add/edit/remove emulators and per-platform mappings | DV emulator editor/platform page; PA `IEmulator`, `IEmulatorPlatform`; port configuration subset implements all 31 recovered emulator fields and all six mapping fields with immutable generated IDs, source-indexed lossless XML edits, default handoff, game/additional-app reference gating, exact backups, unknown-field retention, lexical paths, and real-dialog Linux coverage; emulator binary lifecycle stays under `RUN-003` |
 | RUN-002 | Command lines, quoting/spacing, console hiding, and launch-with overrides | PA emulator fields; DM/BV launch-with actions |
-| RUN-003 | Emulator/core discovery, install, update, and dependency handling | DV install-emulator/dependencies pages; PA emulator plugin install/update contracts; port subset implements read-only, deterministic discovery and reviewed registration for native RetroArch, Dolphin, PCSX2, and ScummVM identities across a bounded portable tree, OS-native locations, and `PATH`, with provenance, canonical deduplication, Unix collision isolation, shared reverse path conversion, recovered 13.27 defaults, and real-dialog candidate-immutability coverage; downloads, installation, updates, dependencies, cores, and BIOS remain open |
-| RUN-004 | BIOS discovery and validation | DV BIOS wizard; PA BIOS groups/files |
+| RUN-003 | Emulator/core discovery, install, update, and dependency handling | DV install-emulator/dependencies pages; PA emulator plugin install/update contracts; port subset implements read-only, deterministic discovery and reviewed registration for native RetroArch, Dolphin, PCSX2, and ScummVM identities across a bounded portable tree, OS-native locations, and `PATH`, with provenance, canonical deduplication, Unix collision isolation, shared reverse path conversion, recovered 13.27 defaults, and real-dialog candidate-immutability coverage; downloads, installation, updates, dependencies, cores, and binary deletion remain open |
+| RUN-004 | BIOS discovery and validation | DV BIOS wizard; PA BIOS groups/files; first port subset implements the complete recovered PCSX2 required group with 73 filename/MD5/description alternatives and any-one-valid semantics, portable/native configuration resolution, foreign-path rejection, streamed hashing, symlink refusal, a versioned read-only Qt manager, and whole-tree-immutable real-dialog coverage; other-emulator adapters, acquisition, configuration changes, and firmware mutation remain open |
 | RUN-005 | Archive auto-extraction and cleanup | PA auto-extract fields; bundled 7-Zip |
 | RUN-006 | Multi-disc/M3U handling | PA emulator-platform `M3uDiscLoadEnabled` |
 | RUN-007 | DOSBox folder/image drive mappings | DV mounts page; PA `IMount`; recovered 13.27 `MOUNT`/`IMGMOUNT` vocabulary and flags; native Linux synthetic runtime fixture implemented |

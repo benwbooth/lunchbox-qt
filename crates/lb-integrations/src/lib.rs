@@ -8,6 +8,7 @@
 pub mod dolphin;
 pub mod emulator_discovery;
 pub mod pcsx2;
+pub mod pcsx2_bios;
 pub mod retroarch;
 
 use std::path::PathBuf;

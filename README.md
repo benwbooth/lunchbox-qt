@@ -143,7 +143,15 @@ the complete editor before transactional registration. Portable paths are
 stored with LaunchBox backslashes while mapped and external paths use the
 shared cross-platform host-path boundary. Configuration and discovery never
 create, install, update, modify, run, or delete emulator binaries. Downloads,
-installation, updates, dependencies, cores, and BIOS handling remain open.
+installation, updates, dependencies, and cores remain open. A configured
+PCSX2 entry also exposes a read-only BIOS audit using the complete recovered
+13.27 group of 73 filename-and-MD5 alternatives. It resolves `portable.ini`
+and `inis/PCSX2.ini` or the host-native PCSX2 configuration root, streams
+hashes without loading firmware into memory, requires any one valid alternative
+for the required group, and reports missing, mismatched, unreadable, or unsafe
+symlink entries without executing PCSX2 or writing any file or directory.
+Other-emulator BIOS adapters and all firmware acquisition or mutation remain
+open.
 The same sidebar now renders recovered category/platform nesting from
 `Parents.xml`, including multiple placements, recursive category game counts,
 and descendant filtering. Its category dialog edits the recovered mutable
