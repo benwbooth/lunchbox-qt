@@ -9,12 +9,14 @@ use thiserror::Error;
 pub const PCSX2_RELEASES_API: &str =
     "https://api.github.com/repos/PCSX2/pcsx2/releases?per_page=20";
 pub const MANAGED_INSTALL_MANIFEST_NAME: &str = ".launchbox-port-install.json";
-pub const MANAGED_INSTALL_MANIFEST_VERSION: u32 = 1;
+pub const MANAGED_INSTALL_MANIFEST_VERSION: u32 = 2;
+const LEGACY_MANAGED_INSTALL_MANIFEST_VERSION: u32 = 1;
 
 const GITHUB_ASSET_PREFIX: &str = "https://github.com/PCSX2/pcsx2/releases/download/";
 const MAX_RELEASE_CATALOG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_MANAGED_FILES: usize = 16 * 1024;
 const DOWNLOAD_BUFFER_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -96,10 +98,45 @@ pub struct DownloadReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManagedInstalledFile {
+    pub relative_path: String,
+    pub byte_len: u64,
+    pub sha256: String,
+}
+
+impl ManagedInstalledFile {
+    pub fn new(
+        relative_path: &Path,
+        receipt: &DownloadReceipt,
+    ) -> Result<Self, EmulatorLifecycleError> {
+        let relative_path = portable_relative_path(relative_path)?;
+        let file = Self {
+            relative_path,
+            byte_len: receipt.byte_len,
+            sha256: receipt.sha256.clone(),
+        };
+        file.validate()?;
+        Ok(file)
+    }
+
+    pub fn host_relative_path(&self) -> Result<PathBuf, EmulatorLifecycleError> {
+        validate_portable_relative_path(&self.relative_path)?;
+        Ok(self.relative_path.split('/').collect())
+    }
+
+    fn validate(&self) -> Result<(), EmulatorLifecycleError> {
+        validate_portable_relative_path(&self.relative_path)?;
+        validate_sha256(&self.sha256)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ManagedEmulatorInstall {
     pub schema_version: u32,
     pub profile_id: String,
     pub provider: String,
+    #[serde(default)]
+    pub emulator_id: Option<String>,
     pub version: String,
     pub tag: String,
     pub prerelease: bool,
@@ -111,17 +148,22 @@ pub struct ManagedEmulatorInstall {
     pub executable_name: String,
     pub executable_byte_len: u64,
     pub executable_sha256: String,
+    #[serde(default)]
+    pub installed_files: Vec<ManagedInstalledFile>,
 }
 
 impl ManagedEmulatorInstall {
     pub fn from_offer(
         offer: &Pcsx2ReleaseOffer,
         executable: &DownloadReceipt,
+        emulator_id: String,
+        installed_files: Vec<ManagedInstalledFile>,
     ) -> Result<Self, EmulatorLifecycleError> {
         let manifest = Self {
             schema_version: MANAGED_INSTALL_MANIFEST_VERSION,
             profile_id: "pcsx2".into(),
             provider: "github:PCSX2/pcsx2".into(),
+            emulator_id: Some(emulator_id),
             version: offer.version.clone(),
             tag: offer.tag.clone(),
             prerelease: offer.prerelease,
@@ -133,13 +175,17 @@ impl ManagedEmulatorInstall {
             executable_name: offer.artifact_kind.executable_name().into(),
             executable_byte_len: executable.byte_len,
             executable_sha256: executable.sha256.clone(),
+            installed_files,
         };
         manifest.validate()?;
         Ok(manifest)
     }
 
     pub fn validate(&self) -> Result<(), EmulatorLifecycleError> {
-        if self.schema_version != MANAGED_INSTALL_MANIFEST_VERSION {
+        if !matches!(
+            self.schema_version,
+            LEGACY_MANAGED_INSTALL_MANIFEST_VERSION | MANAGED_INSTALL_MANIFEST_VERSION
+        ) {
             return Err(EmulatorLifecycleError::UnsupportedManifestVersion {
                 version: self.schema_version,
             });
@@ -174,7 +220,59 @@ impl ManagedEmulatorInstall {
             });
         }
         validate_sha256(&self.asset_sha256)?;
-        validate_sha256(&self.executable_sha256)
+        validate_sha256(&self.executable_sha256)?;
+
+        if self.schema_version == LEGACY_MANAGED_INSTALL_MANIFEST_VERSION {
+            if self.emulator_id.is_some() || !self.installed_files.is_empty() {
+                return Err(EmulatorLifecycleError::InvalidManifest {
+                    message: "legacy manifest unexpectedly contains version 2 ownership data"
+                        .into(),
+                });
+            }
+            return Ok(());
+        }
+
+        if self.emulator_id.as_deref().is_none_or(|id| {
+            id.trim().is_empty() || id.len() > 1024 || id.chars().any(char::is_control)
+        }) {
+            return Err(EmulatorLifecycleError::InvalidManifest {
+                message: "managed emulator ID is empty".into(),
+            });
+        }
+        if self.installed_files.is_empty() || self.installed_files.len() > MAX_MANAGED_FILES {
+            return Err(EmulatorLifecycleError::InvalidManifest {
+                message: format!(
+                    "managed install owns invalid file count {}",
+                    self.installed_files.len()
+                ),
+            });
+        }
+        let mut normalized_paths = std::collections::BTreeSet::new();
+        let mut executable_matches = 0;
+        for file in &self.installed_files {
+            file.validate()?;
+            if !normalized_paths.insert(file.relative_path.to_ascii_lowercase()) {
+                return Err(EmulatorLifecycleError::InvalidManifest {
+                    message: format!("managed install owns duplicate path {}", file.relative_path),
+                });
+            }
+            if file.relative_path == self.executable_name {
+                executable_matches += 1;
+                if file.byte_len != self.executable_byte_len
+                    || file.sha256 != self.executable_sha256
+                {
+                    return Err(EmulatorLifecycleError::InvalidManifest {
+                        message: "managed executable ownership metadata is inconsistent".into(),
+                    });
+                }
+            }
+        }
+        if executable_matches != 1 {
+            return Err(EmulatorLifecycleError::InvalidManifest {
+                message: "managed executable is not owned exactly once".into(),
+            });
+        }
+        Ok(())
     }
 
     pub fn to_json_bytes(&self) -> Result<Vec<u8>, EmulatorLifecycleError> {
@@ -206,6 +304,7 @@ pub struct ManagedInstallAudit {
     pub executable_path: PathBuf,
     pub executable_state: ManagedExecutableState,
     pub actual_executable: Option<DownloadReceipt>,
+    pub installed_files: Vec<ManagedInstalledFileAudit>,
 }
 
 impl ManagedInstallAudit {
@@ -218,6 +317,27 @@ impl ManagedInstallAudit {
     pub fn safe_to_update(&self) -> bool {
         self.executable_state == ManagedExecutableState::Valid
     }
+
+    pub fn ownership_manifest_current(&self) -> bool {
+        self.manifest.schema_version == MANAGED_INSTALL_MANIFEST_VERSION
+    }
+
+    pub fn safe_to_remove(&self) -> bool {
+        self.ownership_manifest_current()
+            && !self.installed_files.is_empty()
+            && self
+                .installed_files
+                .iter()
+                .all(|file| file.state == ManagedExecutableState::Valid)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ManagedInstalledFileAudit {
+    pub relative_path: String,
+    pub path: PathBuf,
+    pub state: ManagedExecutableState,
+    pub actual: Option<DownloadReceipt>,
 }
 
 pub trait ReleaseTransport: Send + Sync {
@@ -498,12 +618,28 @@ pub fn read_managed_pcsx2_install(
         manifest.executable_byte_len,
         &manifest.executable_sha256,
     );
+    let installed_files = manifest
+        .installed_files
+        .iter()
+        .map(|file| {
+            let relative = file.host_relative_path()?;
+            let path = install_directory.join(relative);
+            let (state, actual) = audit_managed_executable(&path, file.byte_len, &file.sha256);
+            Ok(ManagedInstalledFileAudit {
+                relative_path: file.relative_path.clone(),
+                path,
+                state,
+                actual,
+            })
+        })
+        .collect::<Result<Vec<_>, EmulatorLifecycleError>>()?;
     Ok(Some(ManagedInstallAudit {
         manifest,
         manifest_path,
         executable_path,
         executable_state,
         actual_executable,
+        installed_files,
     }))
 }
 
@@ -552,6 +688,79 @@ fn audit_managed_executable(
         ManagedExecutableState::Modified
     };
     (state, Some(receipt))
+}
+
+fn portable_relative_path(path: &Path) -> Result<String, EmulatorLifecycleError> {
+    use std::path::Component;
+
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                let part =
+                    part.to_str()
+                        .ok_or_else(|| EmulatorLifecycleError::InvalidManifest {
+                            message: format!(
+                                "managed path is not valid UTF-8: {}",
+                                path.to_string_lossy()
+                            ),
+                        })?;
+                parts.push(part);
+            }
+            _ => {
+                return Err(EmulatorLifecycleError::InvalidManifest {
+                    message: format!(
+                        "managed path is not relative and normalized: {}",
+                        path.display()
+                    ),
+                });
+            }
+        }
+    }
+    let portable = parts.join("/");
+    validate_portable_relative_path(&portable)?;
+    Ok(portable)
+}
+
+fn validate_portable_relative_path(path: &str) -> Result<(), EmulatorLifecycleError> {
+    if path.is_empty()
+        || path.len() > 4096
+        || path.starts_with('/')
+        || path.ends_with('/')
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|part| !portable_component_is_safe(part))
+        || path.eq_ignore_ascii_case(MANAGED_INSTALL_MANIFEST_NAME)
+    {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message: format!("managed relative path is unsafe or reserved: {path}"),
+        });
+    }
+    Ok(())
+}
+
+fn portable_component_is_safe(component: &str) -> bool {
+    if component.is_empty()
+        || component.len() > 255
+        || matches!(component, "." | "..")
+        || component.ends_with('.')
+        || component.ends_with(' ')
+        || component
+            .chars()
+            .any(|character| character.is_control() || r#"<>:"|?*"#.contains(character))
+    {
+        return false;
+    }
+    let stem = component
+        .split_once('.')
+        .map_or(component, |(stem, _extension)| stem)
+        .to_ascii_lowercase();
+    !matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        && !(stem.len() == 4
+            && (stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0')
 }
 
 fn stream_download(
@@ -941,7 +1150,13 @@ mod tests {
             Pcsx2ArtifactKind::LinuxAppImageX64,
         )
         .unwrap();
-        let manifest = ManagedEmulatorInstall::from_offer(&offer, &receipt).unwrap();
+        let manifest = ManagedEmulatorInstall::from_offer(
+            &offer,
+            &receipt,
+            "pcsx2-fixture".into(),
+            vec![ManagedInstalledFile::new(Path::new("pcsx2-qt.AppImage"), &receipt).unwrap()],
+        )
+        .unwrap();
         fs::write(
             directory.path().join(MANAGED_INSTALL_MANIFEST_NAME),
             manifest.to_json_bytes().unwrap(),
@@ -974,6 +1189,76 @@ mod tests {
         assert_eq!(audit.executable_state, ManagedExecutableState::Unsafe);
     }
 
+    #[test]
+    fn managed_manifest_tracks_portable_owned_paths_and_reads_legacy_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("pcsx2-qt.AppImage");
+        fs::write(&executable, b"managed executable").unwrap();
+        let receipt = file_receipt(&executable).unwrap();
+        let offer = select_pcsx2_release(
+            &catalog_json(b"managed executable", b"windows"),
+            Pcsx2ArtifactKind::LinuxAppImageX64,
+        )
+        .unwrap();
+        let manifest = ManagedEmulatorInstall::from_offer(
+            &offer,
+            &receipt,
+            "managed-pcsx2".into(),
+            vec![
+                ManagedInstalledFile::new(Path::new("pcsx2-qt.AppImage"), &receipt).unwrap(),
+                ManagedInstalledFile::new(
+                    Path::new("portable.ini"),
+                    &DownloadReceipt {
+                        byte_len: 0,
+                        sha256: format!("{:x}", Sha256::digest([])),
+                    },
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        fs::write(directory.path().join("portable.ini"), []).unwrap();
+        fs::write(
+            directory.path().join(MANAGED_INSTALL_MANIFEST_NAME),
+            manifest.to_json_bytes().unwrap(),
+        )
+        .unwrap();
+        let audit = read_managed_pcsx2_install(directory.path())
+            .unwrap()
+            .unwrap();
+        assert!(audit.ownership_manifest_current());
+        assert!(audit.safe_to_remove());
+        assert_eq!(audit.installed_files.len(), 2);
+        assert!(audit
+            .installed_files
+            .iter()
+            .any(|file| file.relative_path == "portable.ini"));
+
+        let mut legacy = serde_json::to_value(&manifest).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.insert("schema_version".into(), serde_json::json!(1));
+        object.remove("emulator_id");
+        object.remove("installed_files");
+        fs::write(
+            directory.path().join(MANAGED_INSTALL_MANIFEST_NAME),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+        let legacy_audit = read_managed_pcsx2_install(directory.path())
+            .unwrap()
+            .unwrap();
+        assert!(!legacy_audit.ownership_manifest_current());
+        assert!(!legacy_audit.safe_to_remove());
+        assert!(legacy_audit.installed_files.is_empty());
+
+        assert!(ManagedInstalledFile::new(Path::new("../outside"), &receipt).is_err());
+        assert!(
+            ManagedInstalledFile::new(Path::new(MANAGED_INSTALL_MANIFEST_NAME), &receipt).is_err()
+        );
+        assert!(ManagedInstalledFile::new(Path::new("C:drive-relative"), &receipt).is_err());
+        assert!(ManagedInstalledFile::new(Path::new("assets/CON.txt"), &receipt).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn fixture_manifest_and_executable_symlinks_are_refused() {
@@ -1004,7 +1289,13 @@ mod tests {
             Pcsx2ArtifactKind::LinuxAppImageX64,
         )
         .unwrap();
-        let manifest = ManagedEmulatorInstall::from_offer(&offer, &receipt).unwrap();
+        let manifest = ManagedEmulatorInstall::from_offer(
+            &offer,
+            &receipt,
+            "pcsx2-fixture".into(),
+            vec![ManagedInstalledFile::new(Path::new("pcsx2-qt.AppImage"), &receipt).unwrap()],
+        )
+        .unwrap();
         fs::write(
             directory.path().join(MANAGED_INSTALL_MANIFEST_NAME),
             manifest.to_json_bytes().unwrap(),

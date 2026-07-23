@@ -144,6 +144,11 @@ ApplicationWindow {
     property int emulatorInstallSmokePhase: 0
     property int emulatorInstallInitialRevision: -1
     property bool emulatorInstallSmokeFinished: false
+    property bool emulatorRemoveSmokeTest:
+        Qt.application.arguments.indexOf("--emulator-remove-smoke-test") >= 0
+    property int emulatorRemoveSmokePhase: 0
+    property int emulatorRemoveInitialRevision: -1
+    property bool emulatorRemoveSmokeFinished: false
     property int categoryCrudSmokePhase: 0
     property bool categoryCrudSmokeFinished: false
     property int playlistCrudSmokePhase: 0
@@ -2029,6 +2034,71 @@ ApplicationWindow {
                           + " revision=" + controller.emulator_install_revision
                           + " status=" + controller.status_message)
             Qt.exit(50)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.emulatorRemoveSmokeTest
+                 && !window.emulatorRemoveSmokeFinished
+        onTriggered: {
+            if (window.emulatorRemoveSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0) {
+                window.emulatorRemoveInitialRevision =
+                    controller.emulator_install_revision
+                window.emulatorRemoveSmokePhase = 1
+                controller.review_managed_pcsx2()
+            } else if (window.emulatorRemoveSmokePhase === 1
+                       && !controller.emulator_managed_checking
+                       && controller.emulator_managed_json.length > 0) {
+                const review =
+                    JSON.parse(controller.emulator_managed_json)
+                if (review.version !== 1 || review.profile_id !== "pcsx2"
+                        || review.managed_install === null
+                        || review.managed_install.manifest.schema_version !== 2
+                        || review.managed_install.manifest.installed_files.length !== 2
+                        || review.owned_file_count !== 3
+                        || review.reference_count !== 0
+                        || !review.can_remove
+                        || review.blocked_reason !== null
+                        || !review.read_only_check) {
+                    console.error(
+                        "EMULATOR_REMOVE_SMOKE_REVIEW_CONTRACT_FAILED payload="
+                        + controller.emulator_managed_json)
+                    Qt.exit(51)
+                    return
+                }
+                window.emulatorRemoveSmokePhase = 2
+                controller.remove_managed_pcsx2()
+            } else if (window.emulatorRemoveSmokePhase === 2
+                       && !controller.writing
+                       && controller.emulator_install_revision
+                          === window.emulatorRemoveInitialRevision + 2) {
+                if (!controller.report_emulator_remove_smoke_success(
+                        window.emulatorRemoveInitialRevision)) {
+                    console.error(
+                        "EMULATOR_REMOVE_SMOKE_MODEL_CONTRACT_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(51)
+                    return
+                }
+                window.emulatorRemoveSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.emulatorRemoveSmokeTest
+                 && !window.emulatorRemoveSmokeFinished
+        onTriggered: {
+            console.error("EMULATOR_REMOVE_SMOKE_TIMEOUT phase="
+                          + window.emulatorRemoveSmokePhase
+                          + " revision=" + controller.emulator_install_revision
+                          + " status=" + controller.status_message)
+            Qt.exit(51)
         }
     }
 
@@ -5232,20 +5302,29 @@ ApplicationWindow {
         title: "Managed PCSX2"
         standardButtons: Dialog.Close
         property var review: null
+        property var managedReview: null
+        property bool releaseCheckPending: false
 
         function loadReview() {
             review = controller.emulator_release_json.length > 0
                      ? JSON.parse(controller.emulator_release_json) : null
+            managedReview = controller.emulator_managed_json.length > 0
+                            ? JSON.parse(controller.emulator_managed_json)
+                            : null
         }
 
         function prepare() {
             review = null
+            managedReview = null
+            releaseCheckPending = true
             open()
-            controller.check_pcsx2_release()
+            controller.review_managed_pcsx2()
         }
 
         function smokeCheck() {
-            prepare()
+            review = null
+            open()
+            controller.check_pcsx2_release()
         }
 
         function actionLabel() {
@@ -5266,17 +5345,25 @@ ApplicationWindow {
             target: controller
             function onEmulatorInstallRevisionChanged() {
                 pcsx2InstallManager.loadReview()
+                if (pcsx2InstallManager.releaseCheckPending
+                        && !controller.emulator_managed_checking
+                        && pcsx2InstallManager.managedReview !== null) {
+                    pcsx2InstallManager.releaseCheckPending = false
+                    Qt.callLater(function() {
+                        controller.check_pcsx2_release()
+                    })
+                }
             }
         }
 
         contentItem: ColumnLayout {
             implicitWidth: 760
-            implicitHeight: 470
+            implicitHeight: 560
             spacing: 10
 
             Label {
                 Layout.fillWidth: true
-                text: "This provider checks PCSX2/pcsx2 on GitHub, selects the exact native artifact, verifies GitHub's SHA-256 digest and byte count, then commits the portable binary, portable.ini, ownership manifest, and Data/Emulators.xml together. It never runs the downloaded artifact during installation."
+                text: "This provider checks PCSX2/pcsx2 on GitHub, selects the exact native artifact, verifies GitHub's SHA-256 digest and byte count, then commits every portable artifact path, portable.ini, an ownership manifest, and Data/Emulators.xml together. It never runs the downloaded artifact during installation."
                 wrapMode: Text.Wrap
                 color: "#7fbfff"
             }
@@ -5284,11 +5371,14 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 BusyIndicator {
                     running: controller.emulator_release_checking
+                             || controller.emulator_managed_checking
                     visible: running
                 }
                 Label {
                     Layout.fillWidth: true
                     text: {
+                        if (controller.emulator_managed_checking)
+                            return "Auditing local ownership…"
                         if (controller.emulator_release_checking)
                             return "Checking official releases…"
                         if (pcsx2InstallManager.review === null)
@@ -5306,8 +5396,10 @@ ApplicationWindow {
                 Button {
                     text: "Check Again"
                     enabled: !controller.emulator_release_checking
+                             && !controller.emulator_managed_checking
                              && !controller.emulator_installing
-                    onClicked: controller.check_pcsx2_release()
+                             && !controller.writing
+                    onClicked: pcsx2InstallManager.prepare()
                 }
             }
             Label {
@@ -5354,20 +5446,35 @@ ApplicationWindow {
             }
             Label {
                 Layout.fillWidth: true
-                visible: pcsx2InstallManager.review !== null
-                         && pcsx2InstallManager.review.managed_install !== null
+                visible: pcsx2InstallManager.managedReview !== null
+                         && pcsx2InstallManager.managedReview.managed_install
+                            !== null
                 text: {
-                    if (pcsx2InstallManager.review === null
-                            || pcsx2InstallManager.review.managed_install === null)
+                    if (pcsx2InstallManager.managedReview === null
+                            || pcsx2InstallManager.managedReview.managed_install
+                               === null)
                         return ""
                     const installed =
-                        pcsx2InstallManager.review.managed_install
+                        pcsx2InstallManager.managedReview.managed_install
                     return "Managed version "
                            + installed.manifest.version
                            + " · executable "
                            + installed.executable_state
+                           + " · "
+                           + pcsx2InstallManager.managedReview.owned_file_count
+                           + " recoverable owned files"
                 }
                 color: "#c9d1d9"
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.managedReview !== null
+                         && pcsx2InstallManager.managedReview.blocked_reason
+                            !== null
+                text: pcsx2InstallManager.managedReview === null ? ""
+                      : pcsx2InstallManager.managedReview.blocked_reason || ""
+                wrapMode: Text.Wrap
+                color: "#f85149"
             }
             Label {
                 Layout.fillWidth: true
@@ -5380,7 +5487,7 @@ ApplicationWindow {
             }
             Label {
                 Layout.fillWidth: true
-                text: "Existing PCSX2 settings and other files in the portable directory are retained. A managed update replaces only artifact-owned paths and keeps exact recovery copies for overwritten files."
+                text: "Updates replace only manifest-owned paths. Removal requires every owned file to match its recorded digest, refuses pinned emulator references, retains exact recovery copies, and leaves user settings, unrelated files, and directories in place."
                 wrapMode: Text.Wrap
                 color: "#d29922"
             }
@@ -5398,7 +5505,9 @@ ApplicationWindow {
                     enabled: pcsx2InstallManager.review !== null
                              && pcsx2InstallManager.review.can_install
                              && !controller.emulator_release_checking
+                             && !controller.emulator_managed_checking
                              && !controller.emulator_installing
+                             && !controller.writing
                              && !controller.write_conflict
                              && controller.pending_recovery_count === 0
                     onClicked: controller.install_pcsx2_release()
@@ -5409,6 +5518,21 @@ ApplicationWindow {
                     enabled: controller.emulator_installing
                     onClicked: controller.cancel_emulator_install()
                 }
+                Button {
+                    text: "Remove Managed Install"
+                    visible: pcsx2InstallManager.managedReview !== null
+                             && pcsx2InstallManager.managedReview.managed_install
+                                !== null
+                    enabled: visible
+                             && pcsx2InstallManager.managedReview.can_remove
+                             && !controller.emulator_release_checking
+                             && !controller.emulator_managed_checking
+                             && !controller.emulator_installing
+                             && !controller.writing
+                             && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: removeManagedPcsx2Confirmation.open()
+                }
                 Item { Layout.fillWidth: true }
                 Label {
                     visible: controller.emulator_installing
@@ -5418,6 +5542,25 @@ ApplicationWindow {
                     color: "#7d8590"
                 }
             }
+        }
+    }
+
+    Dialog {
+        id: removeManagedPcsx2Confirmation
+        anchors.centerIn: parent
+        modal: true
+        title: "Remove managed PCSX2?"
+        standardButtons: Dialog.Yes | Dialog.No
+
+        onAccepted: controller.remove_managed_pcsx2()
+
+        contentItem: Label {
+            width: 650
+            text: pcsx2InstallManager.managedReview === null ? ""
+                  : "Remove "
+                    + pcsx2InstallManager.managedReview.owned_file_count
+                    + " verified port-owned file(s) and the managed emulator definition? Exact recovery copies are retained. User settings, unrelated files, ROMs, media, and directories are not deleted."
+            wrapMode: Text.Wrap
         }
     }
 

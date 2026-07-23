@@ -2187,13 +2187,17 @@ if ! cmp -s "$emulator_install_asset" "$emulator_install_executable" \
   exit 1
 fi
 for expected in \
-  '"schema_version": 1' \
+  '"schema_version": 2' \
   '"profile_id": "pcsx2"' \
   '"provider": "github:PCSX2/pcsx2"' \
+  '"emulator_id": "' \
   '"version": "2.7.492"' \
   "\"asset_byte_len\": $emulator_install_asset_size" \
   "\"asset_sha256\": \"$emulator_install_asset_sha256\"" \
-  '"executable_name": "pcsx2-qt.AppImage"'; do
+  '"executable_name": "pcsx2-qt.AppImage"' \
+  '"installed_files": [' \
+  '"relative_path": "pcsx2-qt.AppImage"' \
+  '"relative_path": "portable.ini"'; do
   if ! rg -q -F "$expected" "$emulator_install_manifest"; then
     echo "Managed PCSX2 ownership manifest is missing: $expected" >&2
     exit 1
@@ -2234,7 +2238,61 @@ if [[ "$emulator_install_backup_count" -ne 1 ]] \
   exit 1
 fi
 
-echo "LaunchBox official-shaped PCSX2 release review, streamed size/SHA-256 verification, non-executing AppImage install, executable permission, portable path storage, ownership manifest, exact XML backup, and transactional cleanup validated."
+mkdir -p "$emulator_install_directory/inis" \
+  "$emulator_install_directory/cheats"
+printf '%s\n' '[UI]' 'Theme=SmokeUser' \
+  > "$emulator_install_directory/inis/PCSX2.ini"
+printf '%s\n' 'user cheat data' \
+  > "$emulator_install_directory/cheats/user.pnach"
+emulator_installed_document="$emulator_install_root/installed-emulators.xml"
+cp "$emulator_install_document" "$emulator_installed_document"
+
+emulator_remove_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$emulator_install_root" --emulator-remove-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$emulator_remove_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'EMULATOR_REMOVE_SMOKE_COMPLETE emulator=PCSX2 files=3 settings=1 removals=1 revision=[0-9]+' \
+  <<< "$emulator_remove_output"; then
+  printf '%s\n' "$emulator_remove_output" >&2
+  echo "LaunchBox did not validate the managed PCSX2 removal contract." >&2
+  exit 1
+fi
+if [[ -e "$emulator_install_executable" ]] \
+  || [[ -e "$emulator_install_manifest" ]] \
+  || [[ -e "$emulator_install_directory/portable.ini" ]] \
+  || ! rg -q -F 'Theme=SmokeUser' \
+    "$emulator_install_directory/inis/PCSX2.ini" \
+  || ! rg -q -F 'user cheat data' \
+    "$emulator_install_directory/cheats/user.pnach" \
+  || rg -q -F '<ApplicationPath>Emulators\PCSX2\pcsx2-qt.AppImage</ApplicationPath>' \
+    "$emulator_install_document"; then
+  echo "Managed PCSX2 removal deleted user data, retained an owned path, or retained its emulator definition." >&2
+  exit 1
+fi
+if ! find "$emulator_install_directory" -maxdepth 1 -type f \
+  -name 'pcsx2-qt.AppImage.lbport-transaction-backup-*' \
+  -exec cmp -s "$emulator_install_asset" {} \; -print -quit | rg -q . \
+  || ! find "$emulator_install_directory" -maxdepth 1 -type f \
+    -name 'portable.ini.lbport-transaction-backup-*' \
+    -size 0 -print -quit | rg -q . \
+  || ! find "$emulator_install_directory" -maxdepth 1 -type f \
+    -name '.launchbox-port-install.json.lbport-transaction-backup-*' \
+    -exec rg -q -F '"schema_version": 2' {} \; -print -quit | rg -q . \
+  || ! find "$emulator_install_root/Data" -maxdepth 1 -type f \
+    -name 'Emulators.xml.lbport-transaction-backup-*' \
+    -exec cmp -s "$emulator_installed_document" {} \; -print -quit | rg -q . \
+  || find "$emulator_install_root" -type f \
+    -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Managed PCSX2 removal did not retain exact file/XML recovery copies or left pending recovery state." >&2
+  exit 1
+fi
+
+echo "LaunchBox official-shaped PCSX2 release review, streamed size/SHA-256 verification, non-executing AppImage install, portable path storage, complete ownership manifest, offline removal review, reference/digest safety gates, user-file preservation, exact recovery copies, and transactional cleanup validated."
 
 cp -R fixtures/launchbox/Data "$category_crud_root/Data"
 category_crud_catalog="$category_crud_root/Data/Platforms.xml"

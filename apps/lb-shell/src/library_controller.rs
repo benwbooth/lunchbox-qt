@@ -32,6 +32,7 @@ pub mod qobject {
         #[qproperty(bool, emulator_discovery_scanning)]
         #[qproperty(bool, emulator_bios_scanning)]
         #[qproperty(bool, emulator_release_checking)]
+        #[qproperty(bool, emulator_managed_checking)]
         #[qproperty(bool, emulator_installing)]
         #[qproperty(f64, emulator_install_progress)]
         #[qproperty(bool, writing)]
@@ -75,6 +76,7 @@ pub mod qobject {
         #[qproperty(QString, emulator_bios_audit_json)]
         #[qproperty(i32, emulator_install_revision)]
         #[qproperty(QString, emulator_release_json)]
+        #[qproperty(QString, emulator_managed_json)]
         #[qproperty(i32, additional_application_revision)]
         #[qproperty(i32, game_save_revision)]
         #[qproperty(i32, game_grouping_revision)]
@@ -214,7 +216,13 @@ pub mod qobject {
         fn check_pcsx2_release(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
+        fn review_managed_pcsx2(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
         fn install_pcsx2_release(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn remove_managed_pcsx2(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
         fn cancel_emulator_install(self: Pin<&mut LibraryController>);
@@ -705,6 +713,12 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_emulator_remove_smoke_success(
+            self: &LibraryController,
+            initial_revision: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_category_crud_smoke_success(
             self: &LibraryController,
             category_name: QString,
@@ -907,9 +921,9 @@ use lb_integrations::emulator_discovery::{
 };
 use lb_integrations::emulator_lifecycle::{
     download_pcsx2_release, fetch_latest_pcsx2_release, file_receipt, read_managed_pcsx2_install,
-    EmulatorLifecycleError, FileReleaseTransport, GithubReleaseTransport, ManagedEmulatorInstall,
-    ManagedExecutableState, ManagedInstallAudit, Pcsx2ArtifactKind, Pcsx2ReleaseOffer,
-    ReleaseTransport, MANAGED_INSTALL_MANIFEST_NAME,
+    DownloadReceipt, EmulatorLifecycleError, FileReleaseTransport, GithubReleaseTransport,
+    ManagedEmulatorInstall, ManagedExecutableState, ManagedInstallAudit, ManagedInstalledFile,
+    Pcsx2ArtifactKind, Pcsx2ReleaseOffer, ReleaseTransport, MANAGED_INSTALL_MANIFEST_NAME,
 };
 use lb_integrations::pcsx2::{
     default_pcsx2_data_directories, discover_pcsx2_saves, extract_pcsx2_memory_card_save,
@@ -1106,6 +1120,7 @@ pub struct LibraryControllerRust {
     emulator_discovery_scanning: bool,
     emulator_bios_scanning: bool,
     emulator_release_checking: bool,
+    emulator_managed_checking: bool,
     emulator_installing: bool,
     emulator_install_progress: f64,
     writing: bool,
@@ -1150,6 +1165,7 @@ pub struct LibraryControllerRust {
     emulator_bios_audit_json: QString,
     emulator_install_revision: i32,
     emulator_release_json: QString,
+    emulator_managed_json: QString,
     additional_application_revision: i32,
     game_save_revision: i32,
     game_grouping_revision: i32,
@@ -1203,6 +1219,7 @@ pub struct LibraryControllerRust {
     emulator_bios_audit: Option<Pcsx2BiosAudit>,
     emulator_bios_emulator_id: Option<String>,
     pcsx2_release_state: Option<Pcsx2ReleaseState>,
+    pcsx2_remove_state: Option<Pcsx2RemoveState>,
     emulator_install_cancel: Option<Arc<AtomicBool>>,
     path_mapping_settings_file: Option<PathBuf>,
     path_mappings: HostPathMappings,
@@ -1228,6 +1245,7 @@ pub struct LibraryControllerRust {
     emulator_write_notifications: u64,
     emulator_bios_scan_notifications: u64,
     emulator_install_notifications: u64,
+    emulator_remove_notifications: u64,
     additional_application_write_notifications: u64,
     game_save_write_notifications: u64,
     category_write_notifications: u64,
@@ -1868,6 +1886,16 @@ struct Pcsx2InstallSuccess {
     recovery_files: Vec<PathBuf>,
 }
 
+struct Pcsx2RemoveSuccess {
+    configuration: EmulatorConfiguration,
+    removed_emulator: Option<Emulator>,
+    removed_mapping_count: usize,
+    emulator_document: PathBuf,
+    emulator_backup: Option<PathBuf>,
+    removed_file_count: usize,
+    recovery_files: Vec<PathBuf>,
+}
+
 struct CategoryWriteSuccess {
     name: String,
     categories: Vec<PlatformCategory>,
@@ -1999,6 +2027,7 @@ const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_RELEASE_PAYLOAD_VERSION: u32 = 1;
+const EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION: u32 = 1;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
 
@@ -2189,6 +2218,33 @@ struct Pcsx2ReleasePayload {
     managed_install: Option<ManagedInstallAudit>,
     action: Pcsx2InstallAction,
     can_install: bool,
+    blocked_reason: Option<String>,
+    read_only_check: bool,
+}
+
+#[derive(Clone, Debug)]
+struct Pcsx2RemoveState {
+    audit: Option<ManagedInstallAudit>,
+    emulator_id: Option<String>,
+    emulator_title: Option<String>,
+    reference_count: usize,
+    reference_summary: Option<String>,
+    can_remove: bool,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct Pcsx2RemovePayload {
+    version: u32,
+    profile_id: &'static str,
+    install_directory: String,
+    managed_install: Option<ManagedInstallAudit>,
+    emulator_id: Option<String>,
+    emulator_title: Option<String>,
+    reference_count: usize,
+    reference_summary: Option<String>,
+    owned_file_count: usize,
+    can_remove: bool,
     blocked_reason: Option<String>,
     read_only_check: bool,
 }
@@ -6499,6 +6555,292 @@ fn pcsx2_release_payload(state: &Pcsx2ReleaseState) -> Result<String, serde_json
     })
 }
 
+fn inspect_managed_pcsx2_removal(
+    root: &Path,
+    configuration: Option<&EmulatorConfiguration>,
+    resolver: &HostPathResolver,
+) -> Result<Pcsx2RemoveState, EmulatorWriteFailure> {
+    let install_directory = root.join("Emulators/PCSX2");
+    validate_managed_install_directory(root, &install_directory)?;
+    let audit = read_managed_pcsx2_install(&install_directory)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let Some(audit) = audit else {
+        return Ok(Pcsx2RemoveState {
+            audit: None,
+            emulator_id: None,
+            emulator_title: None,
+            reference_count: 0,
+            reference_summary: None,
+            can_remove: false,
+            blocked_reason: Some(
+                "No port-owned PCSX2 install manifest exists in the portable directory.".into(),
+            ),
+        });
+    };
+    let emulator_id = audit.manifest.emulator_id.clone();
+    let emulator = emulator_id.as_deref().and_then(|emulator_id| {
+        configuration.and_then(|configuration| {
+            configuration
+                .emulators
+                .iter()
+                .find(|emulator| emulator.id.eq_ignore_ascii_case(emulator_id))
+        })
+    });
+    let references = match emulator_id.as_deref() {
+        Some(emulator_id) => find_emulator_references(root, emulator_id)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?,
+        None => Vec::new(),
+    };
+    let reference_summary =
+        (!references.is_empty()).then(|| summarize_emulator_references(&references));
+    let mut blocked_reason = None;
+    if !audit.ownership_manifest_current() {
+        blocked_reason = Some(
+            "This install uses a legacy manifest that does not enumerate every provider-owned file. Repair or update it before removal.".into(),
+        );
+    } else if let Some(file) = audit
+        .installed_files
+        .iter()
+        .find(|file| file.state != ManagedExecutableState::Valid)
+    {
+        blocked_reason = Some(format!(
+            "Owned file {} is {}; repair the managed install before removal.",
+            file.relative_path,
+            managed_file_state_label(file.state)
+        ));
+    } else if configuration.is_none() {
+        blocked_reason = Some("The loaded library has no readable emulator configuration.".into());
+    } else if let Some(emulator) = emulator {
+        match resolver.resolve(root, &emulator.application_path) {
+            Ok(path) if path == audit.executable_path => {}
+            Ok(path) => {
+                blocked_reason = Some(format!(
+                    "Emulator {} now points to {} instead of the managed executable.",
+                    emulator.id,
+                    path.display()
+                ));
+            }
+            Err(error) => {
+                blocked_reason = Some(format!(
+                    "The managed emulator application path cannot be resolved safely: {error}"
+                ));
+            }
+        }
+    }
+    if blocked_reason.is_none() && !references.is_empty() {
+        blocked_reason = Some(format!(
+            "The managed emulator is pinned by {} dependent record(s): {}",
+            references.len(),
+            reference_summary.as_deref().unwrap_or("unknown references")
+        ));
+    }
+    Ok(Pcsx2RemoveState {
+        emulator_id,
+        emulator_title: emulator.map(|emulator| emulator.title.clone()),
+        reference_count: references.len(),
+        reference_summary,
+        can_remove: blocked_reason.is_none() && audit.safe_to_remove(),
+        blocked_reason,
+        audit: Some(audit),
+    })
+}
+
+fn managed_file_state_label(state: ManagedExecutableState) -> &'static str {
+    match state {
+        ManagedExecutableState::Valid => "valid",
+        ManagedExecutableState::Missing => "missing",
+        ManagedExecutableState::Modified => "modified",
+        ManagedExecutableState::Unsafe => "unsafe",
+        ManagedExecutableState::Unreadable => "unreadable",
+    }
+}
+
+fn managed_relative_path_key(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        path.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string()
+    }
+}
+
+fn validate_managed_install_directory(
+    root: &Path,
+    install_directory: &Path,
+) -> Result<(), EmulatorWriteFailure> {
+    let metadata = match fs::symlink_metadata(install_directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "Could not inspect managed PCSX2 directory {}: {error}",
+                install_directory.display()
+            )));
+        }
+    };
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "Refusing unsafe managed PCSX2 directory {}.",
+            install_directory.display()
+        )));
+    }
+    let canonical_root =
+        fs::canonicalize(root).map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let canonical_install = fs::canonicalize(install_directory)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if !canonical_install.starts_with(&canonical_root) {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "Managed PCSX2 directory escapes the library root: {}.",
+            install_directory.display()
+        )));
+    }
+    Ok(())
+}
+
+fn pcsx2_remove_payload(
+    root: &Path,
+    state: &Pcsx2RemoveState,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&Pcsx2RemovePayload {
+        version: EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION,
+        profile_id: "pcsx2",
+        install_directory: root.join("Emulators/PCSX2").to_string_lossy().into_owned(),
+        managed_install: state.audit.clone(),
+        emulator_id: state.emulator_id.clone(),
+        emulator_title: state.emulator_title.clone(),
+        reference_count: state.reference_count,
+        reference_summary: state.reference_summary.clone(),
+        owned_file_count: state
+            .audit
+            .as_ref()
+            .map_or(0, |audit| audit.installed_files.len().saturating_add(1)),
+        can_remove: state.can_remove,
+        blocked_reason: state.blocked_reason.clone(),
+        read_only_check: true,
+    })
+}
+
+fn remove_managed_pcsx2(
+    root: PathBuf,
+    resolver: HostPathResolver,
+    reviewed: Pcsx2RemoveState,
+) -> Result<Pcsx2RemoveSuccess, EmulatorWriteFailure> {
+    if !reviewed.can_remove {
+        return Err(EmulatorWriteFailure::Other(
+            reviewed
+                .blocked_reason
+                .unwrap_or_else(|| "The managed PCSX2 install is not safe to remove.".into()),
+        ));
+    }
+    let install_directory = root.join("Emulators/PCSX2");
+    validate_managed_install_directory(&root, &install_directory)?;
+    let current = read_managed_pcsx2_install(&install_directory)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if current != reviewed.audit {
+        return Err(EmulatorWriteFailure::Conflict(
+            "PCSX2 managed files changed after the removal review.".into(),
+        ));
+    }
+    let audit = current.ok_or_else(|| {
+        EmulatorWriteFailure::Conflict(
+            "The PCSX2 ownership manifest disappeared after the removal review.".into(),
+        )
+    })?;
+    if !audit.safe_to_remove() {
+        return Err(EmulatorWriteFailure::Conflict(
+            "A managed PCSX2 file is no longer exact after the removal review.".into(),
+        ));
+    }
+    let emulator_id = audit.manifest.emulator_id.as_deref().ok_or_else(|| {
+        EmulatorWriteFailure::Other(
+            "The PCSX2 ownership manifest has no managed emulator ID.".into(),
+        )
+    })?;
+    let references = find_emulator_references(&root, emulator_id)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if !references.is_empty() {
+        return Err(EmulatorWriteFailure::Referenced(references));
+    }
+
+    let emulator_document = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&emulator_document)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let before = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let managed_emulator = before
+        .emulators
+        .iter()
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(emulator_id))
+        .cloned();
+    if let Some(emulator) = managed_emulator.as_ref() {
+        let application_path = resolver
+            .resolve(&root, &emulator.application_path)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        if application_path != audit.executable_path {
+            return Err(EmulatorWriteFailure::Conflict(format!(
+                "Emulator {} no longer points to the managed PCSX2 executable.",
+                emulator.id
+            )));
+        }
+    }
+    let removed = managed_emulator
+        .as_ref()
+        .map(|_| {
+            document
+                .remove_emulator(emulator_id)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+        })
+        .transpose()?;
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_emulator_transaction_error)?;
+    if removed.is_some() {
+        transaction
+            .stage_auxiliary(&document)
+            .map_err(classify_emulator_transaction_error)?;
+    }
+    for file in &audit.installed_files {
+        let expected = FileRevision::read(&file.path)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        transaction
+            .stage_file_delete_with_revision(&file.path, expected)
+            .map_err(classify_emulator_transaction_error)?;
+    }
+    let manifest_revision = FileRevision::read(&audit.manifest_path)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    transaction
+        .stage_file_delete_with_revision(&audit.manifest_path, manifest_revision)
+        .map_err(classify_emulator_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_emulator_transaction_error)?;
+    let emulator_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == emulator_document)
+        .map(|write| write.backup.clone());
+    let recovery_files = report
+        .deleted_targets
+        .iter()
+        .map(|deleted| deleted.backup.clone())
+        .collect::<Vec<_>>();
+    Ok(Pcsx2RemoveSuccess {
+        configuration,
+        removed_emulator: removed.as_ref().map(|removed| removed.emulator.clone()),
+        removed_mapping_count: removed.map_or(0, |removed| removed.platforms.len()),
+        emulator_document,
+        emulator_backup,
+        removed_file_count: report.deleted_targets.len(),
+        recovery_files,
+    })
+}
+
 fn inspect_pcsx2_release_state(
     root: &Path,
     configuration: Option<&EmulatorConfiguration>,
@@ -6540,22 +6882,55 @@ fn inspect_pcsx2_release_state(
             Some("The portable PCSX2 install path is a symlink or non-directory entry.".into()),
         )
     } else if let Some(audit) = managed_install.as_ref() {
-        match audit.executable_state {
-            ManagedExecutableState::Unsafe => (
+        let unsafe_file = audit
+            .installed_files
+            .iter()
+            .find(|file| file.state == ManagedExecutableState::Unsafe);
+        let unreadable_file = audit
+            .installed_files
+            .iter()
+            .find(|file| file.state == ManagedExecutableState::Unreadable);
+        let repair_file = audit.installed_files.iter().find(|file| {
+            matches!(
+                file.state,
+                ManagedExecutableState::Missing | ManagedExecutableState::Modified
+            )
+        });
+        if audit.executable_state == ManagedExecutableState::Unsafe {
+            (
                 Pcsx2InstallAction::Blocked,
                 Some("The managed PCSX2 executable is a symlink or non-regular entry.".into()),
-            ),
-            ManagedExecutableState::Unreadable => (
+            )
+        } else if audit.executable_state == ManagedExecutableState::Unreadable {
+            (
                 Pcsx2InstallAction::Blocked,
                 Some("The managed PCSX2 executable cannot be read safely.".into()),
-            ),
-            ManagedExecutableState::Missing | ManagedExecutableState::Modified => {
-                (Pcsx2InstallAction::Repair, None)
-            }
-            ManagedExecutableState::Valid if audit.update_available(&offer) => {
-                (Pcsx2InstallAction::Update, None)
-            }
-            ManagedExecutableState::Valid => (Pcsx2InstallAction::Current, None),
+            )
+        } else if let Some(file) = unsafe_file {
+            (
+                Pcsx2InstallAction::Blocked,
+                Some(format!(
+                    "Managed path {} is a symlink or non-regular entry.",
+                    file.relative_path
+                )),
+            )
+        } else if let Some(file) = unreadable_file {
+            (
+                Pcsx2InstallAction::Blocked,
+                Some(format!(
+                    "Managed path {} cannot be read safely.",
+                    file.relative_path
+                )),
+            )
+        } else if !audit.ownership_manifest_current()
+            || audit.executable_state != ManagedExecutableState::Valid
+            || repair_file.is_some()
+        {
+            (Pcsx2InstallAction::Repair, None)
+        } else if audit.update_available(&offer) {
+            (Pcsx2InstallAction::Update, None)
+        } else {
+            (Pcsx2InstallAction::Current, None)
         }
     } else {
         match fs::symlink_metadata(&executable_path) {
@@ -6820,11 +7195,6 @@ fn install_managed_pcsx2(
         })?;
     let executable_receipt = file_receipt(&executable_source.source)
         .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
-    let manifest = ManagedEmulatorInstall::from_offer(&state.offer, &executable_receipt)
-        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
-    let manifest_bytes = manifest
-        .to_json_bytes()
-        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
     let payload = managed_pcsx2_emulator_payload(
         &root,
         &resolver,
@@ -6832,6 +7202,36 @@ fn install_managed_pcsx2(
         state.existing_emulator_id.as_deref(),
         &state.executable_path,
     )?;
+    let mut installed_files = install_sources
+        .iter()
+        .map(|file| {
+            let receipt = file_receipt(&file.source)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+            ManagedInstalledFile::new(&file.relative_target, &receipt)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    installed_files.push(
+        ManagedInstalledFile::new(
+            Path::new("portable.ini"),
+            &DownloadReceipt {
+                byte_len: 0,
+                sha256: format!("{:x}", Sha256::digest([])),
+            },
+        )
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?,
+    );
+    installed_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let manifest = ManagedEmulatorInstall::from_offer(
+        &state.offer,
+        &executable_receipt,
+        payload.emulator.id.clone(),
+        installed_files,
+    )
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let manifest_bytes = manifest
+        .to_json_bytes()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
 
     let source = emulator_document_path(&root)?;
     let mut document = AuxiliaryDocument::load(&source)
@@ -6940,6 +7340,30 @@ fn install_managed_pcsx2(
                         target.display()
                     )));
                 }
+            }
+        }
+        if let Some(previous) = state.managed_install.as_ref() {
+            let new_paths = manifest
+                .installed_files
+                .iter()
+                .map(|file| managed_relative_path_key(&file.relative_path))
+                .collect::<BTreeSet<_>>();
+            for file in &previous.installed_files {
+                if new_paths.contains(&managed_relative_path_key(&file.relative_path)) {
+                    continue;
+                }
+                if file.state != ManagedExecutableState::Valid {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing to remove stale managed path {} because it is {}.",
+                        file.path.display(),
+                        managed_file_state_label(file.state)
+                    )));
+                }
+                let expected = FileRevision::read(&file.path)
+                    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                transaction
+                    .stage_file_delete_with_revision(&file.path, expected)
+                    .map_err(classify_emulator_transaction_error)?;
             }
         }
         let portable_marker = state.install_directory.join("portable.ini");
@@ -7070,9 +7494,15 @@ fn prepare_pcsx2_windows_archive(
             if source == executable {
                 relative_target = PathBuf::from("pcsx2-qt.exe");
             }
-            if relative_target == Path::new(MANAGED_INSTALL_MANIFEST_NAME)
-                || relative_target == Path::new("portable.ini")
-            {
+            let reserved_root_metadata = relative_target.parent().is_some_and(|parent| {
+                parent.as_os_str().is_empty()
+                    && relative_target.file_name().is_some_and(|name| {
+                        let name = name.to_string_lossy();
+                        name.eq_ignore_ascii_case(MANAGED_INSTALL_MANIFEST_NAME)
+                            || name.eq_ignore_ascii_case("portable.ini")
+                    })
+            });
+            if reserved_root_metadata {
                 return Err(EmulatorWriteFailure::Other(format!(
                     "PCSX2 archive attempts to own reserved install metadata {}.",
                     relative_target.display()
@@ -12568,6 +12998,14 @@ impl qobject::LibraryController {
             }
         };
         let success = audit.executable_state == ManagedExecutableState::Valid
+            && audit.ownership_manifest_current()
+            && audit.manifest.emulator_id.as_deref()
+                == emulator.map(|emulator| emulator.id.as_str())
+            && audit.installed_files.len() == 2
+            && audit
+                .installed_files
+                .iter()
+                .all(|file| file.state == ManagedExecutableState::Valid)
             && executable_mode_is_safe
             && emulator.is_some_and(|emulator| {
                 rust.path_resolver
@@ -12591,6 +13029,54 @@ impl qobject::LibraryController {
                 "EMULATOR_INSTALL_SMOKE_COMPLETE emulator=PCSX2 version={} files=3 installs={} revision={}",
                 audit.manifest.version,
                 rust.emulator_install_notifications,
+                self.emulator_install_revision()
+            );
+        }
+        success
+    }
+
+    pub fn report_emulator_remove_smoke_success(&self, initial_revision: i32) -> bool {
+        let rust = self.rust();
+        let Some(root) = rust.launchbox_root.as_deref() else {
+            return false;
+        };
+        let install_directory = root.join("Emulators/PCSX2");
+        let executable = install_directory.join("pcsx2-qt.AppImage");
+        let manifest = install_directory.join(MANAGED_INSTALL_MANIFEST_NAME);
+        let portable_marker = install_directory.join("portable.ini");
+        let user_configuration = install_directory.join("inis/PCSX2.ini");
+        let success = read_managed_pcsx2_install(&install_directory)
+            .is_ok_and(|audit| audit.is_none())
+            && !executable.exists()
+            && !manifest.exists()
+            && !portable_marker.exists()
+            && fs::read_to_string(&user_configuration)
+                .is_ok_and(|contents| contents == "[UI]\nTheme=SmokeUser\n")
+            && rust
+                .emulator_configuration
+                .as_ref()
+                .is_some_and(|configuration| {
+                    !configuration
+                        .emulators
+                        .iter()
+                        .any(|emulator| emulator.title.eq_ignore_ascii_case("pcsx2"))
+                })
+            && rust.pcsx2_release_state.is_none()
+            && rust.pcsx2_remove_state.is_none()
+            && self.emulator_release_json().is_empty()
+            && self.emulator_managed_json().is_empty()
+            && rust.emulator_remove_notifications == 1
+            && rust.emulator_write_notifications == 1
+            && *self.emulator_install_revision() == initial_revision.saturating_add(2)
+            && !*self.emulator_managed_checking()
+            && !*self.emulator_installing()
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "EMULATOR_REMOVE_SMOKE_COMPLETE emulator=PCSX2 files=3 settings=1 removals={} revision={}",
+                rust.emulator_remove_notifications,
                 self.emulator_install_revision()
             );
         }
@@ -13397,6 +13883,116 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn review_managed_pcsx2(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator review requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let configuration = self.as_ref().rust().emulator_configuration.clone();
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().rust_mut().pcsx2_remove_state = None;
+        self.as_mut().set_emulator_managed_json(QString::default());
+        self.as_mut().set_emulator_managed_checking(true);
+        self.as_mut().set_status_message(qstring(
+            "Auditing the local PCSX2 ownership manifest without changing files...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-pcsx2-managed-review".to_string())
+            .spawn(move || {
+                let result =
+                    inspect_managed_pcsx2_removal(&root, configuration.as_ref(), &resolver)
+                        .map(|state| (root, state));
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_managed_pcsx2_review(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_managed_checking(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the managed PCSX2 review: {error}"
+            )));
+        }
+    }
+
+    pub fn remove_managed_pcsx2(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        if *self.as_ref().pending_recovery_count() > 0 {
+            self.as_mut().set_status_message(qstring(
+                "Recover the interrupted transaction before removing managed PCSX2 files.",
+            ));
+            return;
+        }
+        if *self.as_ref().write_conflict() {
+            self.as_mut().set_status_message(qstring(
+                "Reload the library before removing PCSX2 after a write conflict.",
+            ));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator removal requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let Some(state) = self.as_ref().rust().pcsx2_remove_state.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Review the local managed PCSX2 install before removing it.",
+            ));
+            return;
+        };
+        if !state.can_remove {
+            self.as_mut().set_status_message(qstring(
+                state
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("The managed PCSX2 install is not safe to remove."),
+            ));
+            return;
+        }
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Removing only verified port-owned PCSX2 files in one recoverable transaction...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-pcsx2-managed-remove".to_string())
+            .spawn(move || {
+                let result = remove_managed_pcsx2(root, resolver, state);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_managed_pcsx2_remove(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start managed PCSX2 removal: {error}"
+            )));
+        }
+    }
+
     pub fn check_pcsx2_release(mut self: Pin<&mut Self>) {
         if self.as_ref().library_operation_active() {
             self.as_mut()
@@ -14027,10 +14623,12 @@ impl qobject::LibraryController {
         self.as_mut().rust_mut().emulator_bios_audit = None;
         self.as_mut().rust_mut().emulator_bios_emulator_id = None;
         self.as_mut().rust_mut().pcsx2_release_state = None;
+        self.as_mut().rust_mut().pcsx2_remove_state = None;
         self.as_mut().set_path_mapping_count(count);
         self.as_mut()
             .set_emulator_bios_audit_json(QString::default());
         self.as_mut().set_emulator_release_json(QString::default());
+        self.as_mut().set_emulator_managed_json(QString::default());
         let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
         self.as_mut().set_emulator_bios_revision(bios_revision);
         let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
@@ -14052,6 +14650,7 @@ impl qobject::LibraryController {
             || *self.emulator_discovery_scanning()
             || *self.emulator_bios_scanning()
             || *self.emulator_release_checking()
+            || *self.emulator_managed_checking()
             || *self.emulator_installing()
             || *self.writing()
             || *self.launching()
@@ -15247,6 +15846,180 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_managed_pcsx2_review(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<(PathBuf, Pcsx2RemoveState), EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_emulator_managed_checking(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok((root, state)) => {
+                let payload = match pcsx2_remove_payload(&root, &state) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.as_mut().set_status_message(qstring(format!(
+                            "Could not serialize the managed PCSX2 review: {error}"
+                        )));
+                        return;
+                    }
+                };
+                let can_remove = state.can_remove;
+                let owned_file_count = state
+                    .audit
+                    .as_ref()
+                    .map_or(0, |audit| audit.installed_files.len().saturating_add(1));
+                let blocked_reason = state.blocked_reason.clone();
+                self.as_mut().rust_mut().pcsx2_remove_state = Some(state);
+                self.as_mut().set_emulator_managed_json(qstring(payload));
+                let revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut().set_emulator_install_revision(revision);
+                self.as_mut().set_status_message(qstring(if can_remove {
+                    format!(
+                        "Managed PCSX2 removal is ready: {owned_file_count} exact port-owned file(s) can be removed; user settings and directories will be retained."
+                    )
+                } else {
+                    format!(
+                        "Managed PCSX2 removal is unavailable: {}",
+                        blocked_reason.unwrap_or_else(|| "no removable managed install".into())
+                    )
+                }));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                let summary = summarize_emulator_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed PCSX2 removal review found {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Conflict(message))
+            | Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not review managed PCSX2 removal: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery before managed PCSX2 review: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_managed_pcsx2_remove(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<Pcsx2RemoveSuccess, EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let removed_emulator_id = success
+                    .removed_emulator
+                    .as_ref()
+                    .map(|emulator| emulator.id.clone());
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_configuration = Some(success.configuration);
+                    rust.discovered_emulators.clear();
+                    rust.emulator_bios_audit = None;
+                    rust.emulator_bios_emulator_id = None;
+                    rust.pcsx2_release_state = None;
+                    rust.pcsx2_remove_state = None;
+                    rust.emulator_write_notifications =
+                        rust.emulator_write_notifications.saturating_add(1);
+                    rust.emulator_remove_notifications =
+                        rust.emulator_remove_notifications.saturating_add(1);
+                }
+                if removed_emulator_id
+                    .as_deref()
+                    .is_some_and(|id| self.as_ref().last_added_emulator_id().to_string() == id)
+                {
+                    self.as_mut().set_last_added_emulator_id(QString::default());
+                }
+                self.as_mut()
+                    .set_emulator_bios_audit_json(QString::default());
+                self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut().set_emulator_managed_json(QString::default());
+                self.as_mut().set_delete_blocker_count(0);
+                self.as_mut().set_delete_blocker_summary(QString::default());
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_pending_recovery_count(0);
+                let emulator_revision = self.as_ref().emulator_revision().saturating_add(1);
+                self.as_mut().set_emulator_revision(emulator_revision);
+                let discovery_revision = self
+                    .as_ref()
+                    .emulator_discovery_revision()
+                    .saturating_add(1);
+                self.as_mut()
+                    .set_emulator_discovery_revision(discovery_revision);
+                let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(bios_revision);
+                let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut()
+                    .set_emulator_install_revision(install_revision);
+                let xml_result = match success.emulator_backup.as_ref() {
+                    Some(backup) => format!(
+                        " Removed emulator definition and {} mapping(s) from {}; exact XML backup: {}.",
+                        success.removed_mapping_count,
+                        success.emulator_document.display(),
+                        backup.display()
+                    ),
+                    None => " No matching emulator definition remained to remove.".into(),
+                };
+                self.as_mut().set_status_message(qstring(format!(
+                    "Removed {} verified port-owned PCSX2 file(s) with {} exact recovery copy/copies. User settings, unrelated files, and directories were retained.{xml_result}",
+                    success.removed_file_count,
+                    success.recovery_files.len()
+                )));
+                eprintln!(
+                    "PCSX2 managed removal committed: files={} mappings={} emulator={}",
+                    success.removed_file_count,
+                    success.removed_mapping_count,
+                    removed_emulator_id.as_deref().unwrap_or("already absent")
+                );
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                let summary = summarize_emulator_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed PCSX2 removal blocked by {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed PCSX2 removal stopped on a write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted PCSX2 removal requires recovery: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not remove managed PCSX2: {message}"
+                )));
+            }
+        }
+    }
+
     fn finish_pcsx2_release_check(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -15347,6 +16120,7 @@ impl qobject::LibraryController {
                     rust.emulator_bios_audit = None;
                     rust.emulator_bios_emulator_id = None;
                     rust.pcsx2_release_state = None;
+                    rust.pcsx2_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_install_notifications =
@@ -15354,6 +16128,7 @@ impl qobject::LibraryController {
                 }
                 self.as_mut().set_emulator_install_progress(1.0);
                 self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut().set_emulator_managed_json(QString::default());
                 self.as_mut()
                     .set_emulator_bios_audit_json(QString::default());
                 let emulator_revision = self.as_ref().emulator_revision().saturating_add(1);
@@ -15446,6 +16221,7 @@ impl qobject::LibraryController {
                     rust.emulator_bios_audit = None;
                     rust.emulator_bios_emulator_id = None;
                     rust.pcsx2_release_state = None;
+                    rust.pcsx2_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                 }
@@ -15460,6 +16236,7 @@ impl qobject::LibraryController {
                 self.as_mut()
                     .set_emulator_bios_audit_json(QString::default());
                 self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut().set_emulator_managed_json(QString::default());
                 let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
                 self.as_mut().set_emulator_bios_revision(bios_revision);
                 let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
@@ -16237,6 +17014,7 @@ impl qobject::LibraryController {
             rust.emulator_bios_audit = None;
             rust.emulator_bios_emulator_id = None;
             rust.pcsx2_release_state = None;
+            rust.pcsx2_remove_state = None;
             if let Some(cancel) = rust.emulator_install_cancel.take() {
                 cancel.store(true, Ordering::Relaxed);
             }
@@ -16257,6 +17035,7 @@ impl qobject::LibraryController {
             rust.emulator_write_notifications = 0;
             rust.emulator_bios_scan_notifications = 0;
             rust.emulator_install_notifications = 0;
+            rust.emulator_remove_notifications = 0;
             rust.additional_application_write_notifications = 0;
             rust.game_save_write_notifications = 0;
             rust.category_write_notifications = 0;
@@ -16272,6 +17051,7 @@ impl qobject::LibraryController {
         self.as_mut().set_emulator_discovery_scanning(false);
         self.as_mut().set_emulator_bios_scanning(false);
         self.as_mut().set_emulator_release_checking(false);
+        self.as_mut().set_emulator_managed_checking(false);
         self.as_mut().set_emulator_installing(false);
         self.as_mut().set_emulator_install_progress(0.0);
         self.as_mut().set_startup_screen_active(false);
@@ -16297,6 +17077,7 @@ impl qobject::LibraryController {
         self.as_mut()
             .set_emulator_bios_audit_json(QString::default());
         self.as_mut().set_emulator_release_json(QString::default());
+        self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_filtered_count(game_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
@@ -17337,6 +18118,100 @@ mod tests {
             .recovery_files
             .iter()
             .any(|path| fs::read(path).is_ok_and(|bytes| bytes == b"first appimage\n")));
+
+        let platform_directory = data.join("Platforms");
+        fs::create_dir(&platform_directory).unwrap();
+        let platform_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/launchbox/Data/Platforms/Fixture Console.xml");
+        let referenced_xml = fs::read_to_string(platform_fixture)
+            .unwrap()
+            .replace("fixture-emulator", &second.emulator_write.emulator.id);
+        let platform_document = platform_directory.join("Fixture Console.xml");
+        fs::write(&platform_document, referenced_xml).unwrap();
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let blocked_by_reference = inspect_managed_pcsx2_removal(
+            directory.path(),
+            Some(&configuration),
+            &HostPathResolver::default(),
+        )
+        .expect("review referenced managed install");
+        assert!(!blocked_by_reference.can_remove);
+        assert!(blocked_by_reference.reference_count > 0);
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/launchbox/Data/Platforms/Fixture Console.xml"),
+            &platform_document,
+        )
+        .unwrap();
+
+        let portable_marker = directory.path().join("Emulators/PCSX2/portable.ini");
+        fs::write(&portable_marker, b"user modified marker").unwrap();
+        let blocked_by_modification = inspect_managed_pcsx2_removal(
+            directory.path(),
+            Some(&configuration),
+            &HostPathResolver::default(),
+        )
+        .expect("review modified managed install");
+        assert!(!blocked_by_modification.can_remove);
+        assert!(blocked_by_modification
+            .blocked_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("portable.ini is modified")));
+        let repair_state = inspect_pcsx2_release_state(
+            directory.path(),
+            Some(&configuration),
+            &HostPathResolver::default(),
+            pcsx2_test_offer(fixture.path(), "2.7.493", b"second appimage\n"),
+        )
+        .expect("review modified owned file for repair");
+        assert_eq!(repair_state.action, Pcsx2InstallAction::Repair);
+        fs::write(&portable_marker, []).unwrap();
+
+        let removable = inspect_managed_pcsx2_removal(
+            directory.path(),
+            Some(&configuration),
+            &HostPathResolver::default(),
+        )
+        .expect("review removable managed install");
+        assert!(removable.can_remove);
+        assert_eq!(
+            removable
+                .audit
+                .as_ref()
+                .unwrap()
+                .manifest
+                .installed_files
+                .len(),
+            2
+        );
+        let removed = remove_managed_pcsx2(
+            directory.path().to_path_buf(),
+            HostPathResolver::default(),
+            removable,
+        )
+        .expect("remove managed PCSX2");
+        assert_eq!(removed.removed_file_count, 3);
+        assert_eq!(removed.recovery_files.len(), 3);
+        assert!(removed.removed_emulator.is_some());
+        assert!(!second.executable.exists());
+        assert!(!portable_marker.exists());
+        assert!(!directory
+            .path()
+            .join("Emulators/PCSX2/.launchbox-port-install.json")
+            .exists());
+        assert_eq!(
+            fs::read(&user_configuration).unwrap(),
+            b"[UI]\nTheme=UserChoice\n"
+        );
+        assert!(directory.path().join("Emulators/PCSX2/inis").is_dir());
+        assert!(!removed.configuration.emulators.iter().any(|emulator| {
+            emulator
+                .id
+                .eq_ignore_ascii_case(&second.emulator_write.emulator.id)
+        }));
         assert!(pending_transaction_manifests(directory.path())
             .unwrap()
             .is_empty());
