@@ -23,7 +23,8 @@ diagnostics=$(
   qmllint "${import_args[@]}" \
     apps/lb-shell/qml/LaunchBoxWindow.qml \
     apps/lb-shell/qml/BigBoxWindow.qml \
-    apps/lb-shell/qml/LaunchStartupOverlay.qml 2>&1
+    apps/lb-shell/qml/LaunchStartupOverlay.qml \
+    apps/lb-shell/qml/LaunchShutdownOverlay.qml 2>&1
 ) || {
   printf '%s\n' "$diagnostics" >&2
   exit 1
@@ -133,13 +134,15 @@ category_crud_root=$(mktemp -d)
 playlist_crud_root=$(mktemp -d)
 game_grouping_root=$(mktemp -d)
 emulator_launch_root=$(mktemp -d)
+disabled_lifecycle_root=$(mktemp -d)
+short_lifecycle_root=$(mktemp -d)
 direct_launch_root=$(mktemp -d)
 sequence_launch_root=$(mktemp -d)
 archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -2462,6 +2465,21 @@ cp fixtures/runtime/argument-recorder.sh \
   "$emulator_launch_root/Emulators/fixture-emulator"
 chmod +x "$emulator_launch_root/Emulators/fixture-emulator"
 
+cp -R fixtures/launchbox/Data "$disabled_lifecycle_root/Data"
+mkdir -p "$disabled_lifecycle_root/Emulators"
+cp fixtures/runtime/argument-recorder.sh \
+  "$disabled_lifecycle_root/Emulators/fixture-emulator"
+chmod +x "$disabled_lifecycle_root/Emulators/fixture-emulator"
+sed -i \
+  's#<UseStartupScreen>true</UseStartupScreen>#<UseStartupScreen>false</UseStartupScreen>#' \
+  "$disabled_lifecycle_root/Data/Settings.xml"
+
+cp -R fixtures/launchbox/Data "$short_lifecycle_root/Data"
+mkdir -p "$short_lifecycle_root/Emulators"
+cp fixtures/runtime/argument-recorder.sh \
+  "$short_lifecycle_root/Emulators/fixture-emulator"
+chmod +x "$short_lifecycle_root/Emulators/fixture-emulator"
+
 cp -R fixtures/launchbox-direct/Data "$direct_launch_root/Data"
 mkdir -p "$direct_launch_root/LaunchTargets"
 cp fixtures/runtime/argument-recorder.sh \
@@ -2614,55 +2632,89 @@ run_launch_smoke bigbox "$emulator_launch_root" fixture-racer "$emulator_log" \
 
 run_launch_lifecycle_smoke() {
   local shell_name=$1
-  local lifecycle_log="$emulator_launch_root/$shell_name-lifecycle-arguments.txt"
-  local lifecycle_screenshot="$emulator_launch_root/$shell_name-startup-overlay.png"
+  local lifecycle_root=$2
+  local screens_enabled=$3
+  local short_process=${4:-false}
+  local lifecycle_log="$lifecycle_root/$shell_name-lifecycle-arguments.txt"
+  local lifecycle_screenshot="$lifecycle_root/$shell_name-startup-overlay.png"
+  local shutdown_screenshot="$lifecycle_root/$shell_name-shutdown-overlay.png"
+  local startup_minimum=600
+  local shutdown_minimum=350
+  local theme="Fixture Desktop Startup"
+  if [[ "$shell_name" == bigbox ]]; then
+    startup_minimum=700
+    shutdown_minimum=450
+    theme="Fixture BigBox Startup"
+  fi
   local -a arguments=(
-    --library "$emulator_launch_root"
+    --library "$lifecycle_root"
     --launch-lifecycle-smoke-test
-    --launch-lifecycle-screenshot "$lifecycle_screenshot"
     --path-mappings-file "$empty_path_mappings"
   )
+  if [[ "$screens_enabled" == true ]]; then
+    arguments+=(
+      --launch-lifecycle-screenshot "$lifecycle_screenshot"
+      --launch-lifecycle-shutdown-screenshot "$shutdown_screenshot"
+    )
+  fi
+  local child_sleep=1.05
+  if [[ "$short_process" == true ]]; then
+    arguments+=(--launch-lifecycle-short-process)
+    child_sleep=0.05
+  fi
   if [[ "$shell_name" == bigbox ]]; then
     arguments+=(--windowed)
   fi
-  rm -f "$lifecycle_log" "$lifecycle_screenshot"
+  rm -f "$lifecycle_log" "$lifecycle_screenshot" "$shutdown_screenshot"
   local output
   output=$(
     LBPORT_LAUNCH_SMOKE_LOG="$lifecycle_log" \
+      LBPORT_LAUNCH_SMOKE_SLEEP="$child_sleep" \
       QT_QPA_PLATFORM=offscreen \
       "$binary_dir/$shell_name" "${arguments[@]}" 2>&1
   ) || {
     printf '%s\n' "$output" >&2
     exit 1
   }
-  if ! rg -q \
-    'LAUNCH_LIFECYCLE_SMOKE_COMPLETE id=fixture-racer startup_presentations=1 timer_dismissals=1 delay_ms=250 source="emulator default"' \
+  local presentation_count=0
+  if [[ "$screens_enabled" == true ]]; then
+    presentation_count=1
+  fi
+  if ! rg -q -F \
+    "LAUNCH_LIFECYCLE_SMOKE_COMPLETE id=fixture-racer enabled=$screens_enabled short=$short_process startup_presentations=$presentation_count shutdown_presentations=$presentation_count load_delay_ms=250 startup_minimum_ms=$startup_minimum shutdown_minimum_ms=$shutdown_minimum theme=\"$theme\" source=\"emulator default\"" \
     <<< "$output"; then
     printf '%s\n' "$output" >&2
-    echo "$shell_name did not validate the inherited startup-screen lifecycle." >&2
+    echo "$shell_name did not validate its frontend launch-screen lifecycle." >&2
     exit 1
   fi
   if ! cmp -s "$lifecycle_log" \
     <(printf '%s\n' \
       --platform fixture \
-      "$emulator_launch_root/Games/Fixture Racer/racer.rom"); then
+      "$lifecycle_root/Games/Fixture Racer/racer.rom"); then
     printf 'Startup lifecycle arguments for %s were:\n' "$shell_name" >&2
     sed 's/^/  /' "$lifecycle_log" >&2 || true
     exit 1
   fi
-  if [[ ! -s "$lifecycle_screenshot" ]] \
-    || [[ $(wc -c < "$lifecycle_screenshot") -lt 1024 ]] \
-    || [[ $(od -An -tx1 -N8 "$lifecycle_screenshot" | tr -d ' \n') \
-      != 89504e470d0a1a0a ]]; then
-    printf '%s\n' "$output" >&2
-    echo "$shell_name did not render a valid startup-overlay PNG." >&2
-    exit 1
+  if [[ "$screens_enabled" == true ]]; then
+    local screenshot
+    for screenshot in "$lifecycle_screenshot" "$shutdown_screenshot"; do
+      if [[ ! -s "$screenshot" ]] \
+        || [[ $(wc -c < "$screenshot") -lt 1024 ]] \
+        || [[ $(od -An -tx1 -N8 "$screenshot" | tr -d ' \n') \
+          != 89504e470d0a1a0a ]]; then
+        printf '%s\n' "$output" >&2
+        echo "$shell_name did not render a valid lifecycle-overlay PNG." >&2
+        exit 1
+      fi
+    done
   fi
 }
 
-run_launch_lifecycle_smoke launchbox
-run_launch_lifecycle_smoke bigbox
-echo "LaunchBox and BigBox inherited startup-screen policy, pre-start/primary phases, timed dismissal before child exit, exact argv, and supervised session statistics validated."
+run_launch_lifecycle_smoke launchbox "$emulator_launch_root" true
+run_launch_lifecycle_smoke bigbox "$emulator_launch_root" true
+run_launch_lifecycle_smoke launchbox "$disabled_lifecycle_root" false
+run_launch_lifecycle_smoke launchbox "$short_lifecycle_root" true true
+echo "LaunchBox and BigBox frontend-global startup/shutdown policy, exact pre-launch delay, minimum display timing including a short-lived primary, disabled bypass, rendered overlays, exact argv, and supervised session statistics validated."
 
 direct_log="$direct_launch_root/direct-arguments.txt"
 run_launch_smoke launchbox "$direct_launch_root" fixture-direct "$direct_log" \
@@ -3189,6 +3241,12 @@ assert_play_stats \
   "$emulator_launch_root/Data/Platforms/Fixture Console.xml" \
   Game ID fixture-racer 12 14404 LastPlayedDate
 assert_play_stats \
+  "$disabled_lifecycle_root/Data/Platforms/Fixture Console.xml" \
+  Game ID fixture-racer 9 14401 LastPlayedDate
+assert_play_stats \
+  "$short_lifecycle_root/Data/Platforms/Fixture Console.xml" \
+  Game ID fixture-racer 9 14400 LastPlayedDate
+assert_play_stats \
   "$direct_launch_root/Data/Platforms/Direct Fixture.xml" \
   Game ID fixture-direct 2 2 LastPlayedDate
 assert_play_stats \
@@ -3218,6 +3276,8 @@ fi
 
 for launch_root in \
   "$emulator_launch_root" \
+  "$disabled_lifecycle_root" \
+  "$short_lifecycle_root" \
   "$direct_launch_root" \
   "$sequence_launch_root" \
   "$archive_launch_root" \

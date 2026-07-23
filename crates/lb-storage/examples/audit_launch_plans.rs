@@ -346,6 +346,9 @@ fn game_has_script(game: &Game) -> bool {
 
 fn launch_error_key(error: &LaunchPlanError) -> &'static str {
     match error {
+        LaunchPlanError::InvalidFrontendLaunchSetting { .. } => {
+            "errors.invalid_frontend_launch_setting"
+        }
         LaunchPlanError::AdditionalApplicationGameMismatch { .. } => {
             "errors.additional_app.game_mismatch"
         }
@@ -391,6 +394,9 @@ fn launch_error_key(error: &LaunchPlanError) -> &'static str {
 
 fn additional_launch_error_key(error: &LaunchPlanError) -> &'static str {
     match error {
+        LaunchPlanError::InvalidFrontendLaunchSetting { .. } => {
+            "additional_plans.errors.invalid_frontend_launch_setting"
+        }
         LaunchPlanError::AdditionalApplicationGameMismatch { .. } => {
             "additional_plans.errors.game_mismatch"
         }

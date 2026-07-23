@@ -89,15 +89,21 @@ the exact expanded argument vector.
 Validated launch sequences also carry an effective startup-screen policy.
 An explicit per-game override wins over the selected emulator's defaults;
 direct, DOSBox, and legacy ScummVM targets use the game's own settings. One
-compiled Qt Quick overlay is shared by LaunchBox and BigBox, enters its
-pre-start state before the primary-start notification, and dismisses after the
-stored millisecond delay or child exit. The offscreen runtime suite keeps a
-real child alive past that delay in both frontends, captures each rendered
-overlay to a validated PNG, and proves both visible phases, exact argument
-vector, continued process supervision, and
-LaunchBox-compatible play-statistics writes. Startup theme/media selection,
-window/focus handling, delegated process trees, shutdown screens, and pause
-screens remain open.
+compiled Qt Quick startup overlay is shared by LaunchBox and BigBox. Each
+frontend selects its own `Settings.xml` or `BigBoxSettings.xml` global enable,
+theme name, cursor policy, and minimum startup/shutdown durations.
+`StartupLoadDelay` is applied before spawning the primary process on the
+existing launch worker; it is not repurposed as a post-start timer. The startup
+overlay remains until both primary start and the frontend minimum have passed.
+After child exit, the effective `DisableShutdownScreen` policy drives a second
+shared modal overlay for the frontend-specific shutdown minimum. The offscreen
+runtime suite captures both rendered overlays in both frontends, measures the
+pre-launch and minimum-display intervals, proves that a short-lived primary
+completes the startup minimum before shutdown, and proves global disable
+bypass, exact arguments, continued supervision, and LaunchBox-compatible
+statistics writes.
+Theme/media asset rendering, window/focus handling, delegated process trees,
+and pause screens remain open.
 
 The complete read index covers all 107 `Game` fields observed in the 13.24
 installation plus every other platform record, playlist, emulator mapping,

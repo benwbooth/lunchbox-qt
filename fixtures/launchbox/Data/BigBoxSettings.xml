@@ -3,5 +3,10 @@
   <BigBoxSettings>
     <Theme>Fixture BigBox Theme</Theme>
     <EnableAttractMode>true</EnableAttractMode>
+    <UseStartupScreen>true</UseStartupScreen>
+    <StartupTheme>Fixture BigBox Startup</StartupTheme>
+    <MinimumStartupScreenDisplayTime>700</MinimumStartupScreenDisplayTime>
+    <MinimumShutdownScreenDisplayTime>450</MinimumShutdownScreenDisplayTime>
+    <HideMouseCursorOnStartupScreens>false</HideMouseCursorOnStartupScreens>
   </BigBoxSettings>
 </LaunchBox>

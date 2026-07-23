@@ -7,59 +7,39 @@ Item {
 
     required property var controller
 
-    visible: controller.startup_screen_active
+    visible: controller.shutdown_screen_active
     enabled: visible
     focus: visible
-    z: 10000
-    property bool minimumDisplayElapsed: false
+    z: 10001
 
     Timer {
         id: minimumDisplayTimer
         interval: Math.max(
-                      1, controller.frontend_minimum_startup_screen_ms)
+                      1, controller.frontend_minimum_shutdown_screen_ms)
         repeat: false
-        onTriggered: {
-            overlay.minimumDisplayElapsed = true
-            overlay.dismissWhenReady()
-        }
-    }
-
-    Connections {
-        target: controller
-
-        function onStartup_screen_primary_startedChanged() {
-            overlay.dismissWhenReady()
-        }
+        onTriggered: controller.dismiss_shutdown_screen()
     }
 
     onVisibleChanged: {
-        if (visible) {
-            minimumDisplayElapsed = false
+        if (visible)
             minimumDisplayTimer.restart()
-        } else {
+        else
             minimumDisplayTimer.stop()
-        }
-    }
-
-    function dismissWhenReady() {
-        if (visible && minimumDisplayElapsed
-                && controller.startup_screen_primary_started)
-            controller.dismiss_startup_screen()
     }
 
     Rectangle {
         anchors.fill: parent
-        color: "#ed07090d"
+        color: "#f207090d"
     }
 
     Rectangle {
         anchors.centerIn: parent
         width: Math.min(parent.width - 48, 720)
-        height: Math.min(parent.height - 48, 360)
+        height: Math.min(parent.height - 48, 340)
         radius: 24
         color: "#f21b2638"
         border.width: 2
-        border.color: "#5f86bd"
+        border.color: "#6ca782"
 
         ColumnLayout {
             anchors.fill: parent
@@ -70,8 +50,8 @@ Item {
 
             Label {
                 Layout.alignment: Qt.AlignHCenter
-                text: "NOW LOADING"
-                color: "#8fb9ef"
+                text: "SESSION COMPLETE"
+                color: "#8dd8aa"
                 font.pixelSize: 20
                 font.bold: true
                 font.letterSpacing: 4
@@ -79,7 +59,7 @@ Item {
 
             Label {
                 Layout.fillWidth: true
-                text: controller.startup_screen_game_title
+                text: controller.shutdown_screen_game_title
                 color: "white"
                 font.pixelSize: 38
                 font.bold: true
@@ -87,23 +67,19 @@ Item {
                 elide: Text.ElideRight
             }
 
-            BusyIndicator {
-                Layout.alignment: Qt.AlignHCenter
-                running: overlay.visible
-            }
-
             Label {
                 Layout.alignment: Qt.AlignHCenter
-                text: controller.startup_screen_primary_started
-                      ? "Game process started"
-                      : "Preparing launch"
+                text: controller.frontend_is_big_box
+                      ? "Returning to BigBox"
+                      : "Returning to LaunchBox"
                 color: "#c3cedd"
                 font.pixelSize: 16
             }
 
             Label {
                 Layout.alignment: Qt.AlignHCenter
-                text: "Settings: " + controller.startup_screen_settings_source
+                text: "Settings: "
+                      + controller.shutdown_screen_settings_source
                 color: "#7f91aa"
                 font.pixelSize: 13
             }

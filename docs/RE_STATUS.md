@@ -274,6 +274,17 @@ whole seconds to `PlayTime` after the launch session ended. The port mirrors
 that ordering for the directly spawned primary child; process-tree and
 focus-based timing still require a live Windows oracle.
 
+The recovered `StartupViewModelBase` constructor independently carries
+`minimumStartupScreenDisplayTime` and `loadDelay`, while
+`MainStartupViewModel` carries `minimumShutdownScreenDisplayTime` and
+`disableShutdownScreen`. The option labels describe the minima in seconds, but
+a privacy-preserving read of the older installation's two settings documents
+shows the scalar values stored in milliseconds (`1000` for one second).
+LaunchBox and BigBox also persist separate global enable, theme, and cursor
+settings. The port therefore treats load delay as a pre-process delay and the
+two minima as frontend presentation policy rather than conflating these three
+values.
+
 The port keeps these stored Windows paths lexical in LaunchBox XML. A separate
 versioned host-mapping document translates drive and UNC roots only at the
 platform/process boundary. Windows path classification, separator handling,

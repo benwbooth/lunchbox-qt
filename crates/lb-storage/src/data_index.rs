@@ -973,14 +973,36 @@ mod tests {
 
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         let settings = index.settings().expect("LaunchBox settings");
-        assert_eq!(settings.entries.len(), 3);
+        assert_eq!(settings.entries.len(), 8);
         assert_eq!(settings.get("Theme"), Some("Fixture Theme"));
         assert_eq!(settings.get_bool("DebugLog"), Some(false));
+        assert_eq!(settings.get_bool("UseStartupScreen"), Some(true));
+        assert_eq!(
+            settings.get("StartupTheme"),
+            Some("Fixture Desktop Startup")
+        );
+        assert_eq!(settings.get("MinimumStartupScreenDisplayTime"), Some("600"));
+        assert_eq!(
+            settings.get("MinimumShutdownScreenDisplayTime"),
+            Some("350")
+        );
+        assert_eq!(
+            settings.get_bool("HideMouseCursorOnStartupScreens"),
+            Some(true)
+        );
         assert_eq!(settings.get("EmptyValue"), Some(""));
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 2);
+        assert_eq!(big_box.entries.len(), 7);
         assert_eq!(big_box.get_bool("EnableAttractMode"), Some(true));
+        assert_eq!(big_box.get_bool("UseStartupScreen"), Some(true));
+        assert_eq!(big_box.get("StartupTheme"), Some("Fixture BigBox Startup"));
+        assert_eq!(big_box.get("MinimumStartupScreenDisplayTime"), Some("700"));
+        assert_eq!(big_box.get("MinimumShutdownScreenDisplayTime"), Some("450"));
+        assert_eq!(
+            big_box.get_bool("HideMouseCursorOnStartupScreens"),
+            Some(false)
+        );
     }
 }

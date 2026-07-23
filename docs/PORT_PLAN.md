@@ -300,17 +300,18 @@ native game/save/extras paths, target and display flags, and transactional
 session updates through both shells. The launch boundary now increments
 PlayCount and records LastPlayed at primary spawn, adds directly observed
 whole-second child runtime to PlayTime on exit, retains exact backups, and
-surfaces transaction failures. The first startup-presentation slice now derives
-an immutable effective policy from the actual primary target: a game override
-wins over its effective emulator, while direct/DOSBox/ScummVM targets use game
-settings. LaunchBox and BigBox share one compiled overlay that spans launch
-pre-start and primary-start notifications, then dismisses after the exact stored
-millisecond delay or child exit. Both-shell real-process smokes prove the
-visible phases, capture valid rendered PNGs, compare exact `argv`, and verify
-continued process supervision and statistics writes. Startup theme/media
-selection and global minimum duration, focus/window
-hiding, delegated descendants, shutdown screens, and pause screens remain
-open. Source-indexed alternate names and custom fields
+surfaces transaction failures. The `RUN-009` slice and first `RUN-011` subset
+now resolve effective startup/shutdown settings from the actual primary target,
+then combine them with the selected frontend's separate global settings.
+`StartupLoadDelay` precedes process spawn on the launch worker; it is no longer
+approximated as a post-start display timer. Shared startup and shutdown
+overlays enforce the frontend-specific minimums, apply the startup-screen
+cursor setting, and honor effective `DisableShutdownScreen`; disabling startup
+screens globally bypasses both presentation and delay. LaunchBox and BigBox
+real-process smokes measure the timing boundaries, render both overlays,
+compare exact arguments, and verify statistics. Theme/media asset selection,
+window/focus behavior, detached descendants, and pause remain open.
+Source-indexed alternate names and custom fields
 now edit through the same real Qt dialog and transaction; retained rows keep
 unknown XML, new rows survive reload, and the custom-field fixture is explicitly
 13.27-contract-derived because the older real library contains none. A per-game
@@ -410,9 +411,9 @@ Phase 0/1 evidence and product-safety gates:
 5. Extend the launcher beyond the now-working direct/default-emulator, Launch
    With, automatic additional-app, persisted host-mapping, archive
    auto-extraction, multi-disc/M3U, DOSBox mount, legacy ScummVM, and inherited
-   startup-overlay paths into scripts, theme/media selection, focus/window
-   handling, pause/shutdown behavior, descendant-process supervision, and
-   focus-aware play-time parity.
+   frontend-specific startup/shutdown-overlay paths into scripts, theme/media
+   selection, focus/window handling, pause behavior, descendant-process
+   supervision, and focus-aware play-time parity.
 6. Run the native Qt shell and transaction scenarios on Windows as well as
    Linux; the current Windows gate covers the non-Qt core crates.
 

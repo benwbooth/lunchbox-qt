@@ -20,6 +20,8 @@ ApplicationWindow {
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
     property bool launchLifecycleSmokeTest:
         Qt.application.arguments.indexOf("--launch-lifecycle-smoke-test") >= 0
+    property bool launchLifecycleShortProcess:
+        Qt.application.arguments.indexOf("--launch-lifecycle-short-process") >= 0
     property int smokePhase: 0
     property int navigationSmokePhase: 0
     property int launchSmokePhase: 0
@@ -30,8 +32,17 @@ ApplicationWindow {
     property bool launchLifecyclePrimaryStartedSeen: false
     property bool launchLifecycleDismissedBeforeExit: false
     property bool launchLifecycleScreenshotRequested: false
+    property bool launchLifecycleShutdownVisibleSeen: false
+    property bool launchLifecycleShutdownScreenshotRequested: false
+    property double launchLifecycleStartupPresentedAt: 0
+    property double launchLifecyclePrimaryStartedAt: 0
+    property double launchLifecycleStartupDismissedAt: 0
+    property double launchLifecycleShutdownPresentedAt: 0
+    property double launchLifecycleShutdownDismissedAt: 0
     property string launchLifecycleScreenshotPath:
         argumentValue("--launch-lifecycle-screenshot")
+    property string launchLifecycleShutdownScreenshotPath:
+        argumentValue("--launch-lifecycle-shutdown-screenshot")
     property string activeNavigationName: "All Games"
     property string launchSmokeGameId: {
         const requested = argumentValue("--launch-game-id")
@@ -163,6 +174,8 @@ ApplicationWindow {
                     && controller.startup_screen_active
                     && !controller.startup_screen_primary_started) {
                 window.launchLifecycleStartupVisibleSeen = true
+                if (window.launchLifecycleStartupPresentedAt === 0)
+                    window.launchLifecycleStartupPresentedAt = Date.now()
                 if (window.launchLifecycleScreenshotPath.length > 0
                         && !window.launchLifecycleScreenshotRequested) {
                     window.launchLifecycleScreenshotRequested = true
@@ -176,18 +189,53 @@ ApplicationWindow {
                         })
                     })
                 }
+            } else if (window.launchLifecycleSmokeTest
+                       && !controller.startup_screen_active
+                       && window.launchLifecycleStartupPresentedAt > 0
+                       && window.launchLifecycleStartupDismissedAt === 0) {
+                window.launchLifecycleStartupDismissedAt = Date.now()
             }
         }
 
         function onStartup_screen_primary_startedChanged() {
             if (window.launchLifecycleSmokeTest
                     && controller.startup_screen_active
-                    && controller.startup_screen_primary_started)
+                    && controller.startup_screen_primary_started) {
                 window.launchLifecyclePrimaryStartedSeen = true
+                if (window.launchLifecyclePrimaryStartedAt === 0)
+                    window.launchLifecyclePrimaryStartedAt = Date.now()
+            }
+        }
+
+        function onShutdown_screen_activeChanged() {
+            if (window.launchLifecycleSmokeTest
+                    && controller.shutdown_screen_active) {
+                window.launchLifecycleShutdownVisibleSeen = true
+                if (window.launchLifecycleShutdownPresentedAt === 0)
+                    window.launchLifecycleShutdownPresentedAt = Date.now()
+                if (window.launchLifecycleShutdownScreenshotPath.length > 0
+                        && !window.launchLifecycleShutdownScreenshotRequested) {
+                    window.launchLifecycleShutdownScreenshotRequested = true
+                    Qt.callLater(function() {
+                        launchShutdownOverlay.grabToImage(function(result) {
+                            if (!result.saveToFile(
+                                    window.launchLifecycleShutdownScreenshotPath))
+                                console.error(
+                                    "LAUNCH_LIFECYCLE_SHUTDOWN_SCREENSHOT_SAVE_FAILED path="
+                                    + window.launchLifecycleShutdownScreenshotPath)
+                        })
+                    })
+                }
+            } else if (window.launchLifecycleSmokeTest
+                       && window.launchLifecycleShutdownPresentedAt > 0
+                       && window.launchLifecycleShutdownDismissedAt === 0) {
+                window.launchLifecycleShutdownDismissedAt = Date.now()
+            }
         }
     }
 
     Component.onCompleted: {
+        controller.configure_frontend(true)
         if (!controller.initialize_host_path_mappings()) {
             console.error("HOST_PATH_MAPPING_INITIALIZE_FAILED status="
                           + controller.status_message)
@@ -386,13 +434,43 @@ ApplicationWindow {
                     window.launchLifecycleDismissedBeforeExit = true
                     window.launchLifecycleSmokePhase = 2
                 }
-                if (!controller.launching && !controller.launch_session_active) {
+                if (!controller.launching && !controller.launch_session_active
+                        && !controller.startup_screen_active
+                        && !controller.shutdown_screen_active) {
+                    const startupPrelaunchMs =
+                        window.launchLifecycleStartupPresentedAt > 0
+                        && window.launchLifecyclePrimaryStartedAt > 0
+                        ? Math.round(
+                              window.launchLifecyclePrimaryStartedAt
+                              - window.launchLifecycleStartupPresentedAt)
+                        : 0
+                    const startupVisibleMs =
+                        window.launchLifecycleStartupPresentedAt > 0
+                        && window.launchLifecycleStartupDismissedAt > 0
+                        ? Math.round(
+                              window.launchLifecycleStartupDismissedAt
+                              - window.launchLifecycleStartupPresentedAt)
+                        : 0
+                    const shutdownVisibleMs =
+                        window.launchLifecycleShutdownPresentedAt > 0
+                        && window.launchLifecycleShutdownDismissedAt > 0
+                        ? Math.round(
+                              window.launchLifecycleShutdownDismissedAt
+                              - window.launchLifecycleShutdownPresentedAt)
+                        : 0
+                    const presentationFlags =
+                        (window.launchLifecycleStartupVisibleSeen ? 1 : 0)
+                        | (window.launchLifecyclePrimaryStartedSeen ? 2 : 0)
+                        | (window.launchLifecycleDismissedBeforeExit ? 4 : 0)
+                        | (window.launchLifecycleShutdownVisibleSeen ? 8 : 0)
+                        | (window.launchLifecycleShortProcess ? 16 : 0)
                     const contractOk =
                         controller.report_launch_lifecycle_smoke_success(
                             "fixture-racer",
-                            window.launchLifecycleStartupVisibleSeen,
-                            window.launchLifecyclePrimaryStartedSeen,
-                            window.launchLifecycleDismissedBeforeExit)
+                            presentationFlags,
+                            startupPrelaunchMs,
+                            startupVisibleMs,
+                            shutdownVisibleMs)
                     if (!contractOk) {
                         console.error(
                             "LAUNCH_LIFECYCLE_SMOKE_FAILED visible="
@@ -401,6 +479,11 @@ ApplicationWindow {
                             + window.launchLifecyclePrimaryStartedSeen
                             + " dismissed="
                             + window.launchLifecycleDismissedBeforeExit
+                            + " prelaunchMs=" + startupPrelaunchMs
+                            + " startupMs=" + startupVisibleMs
+                            + " shutdown="
+                            + window.launchLifecycleShutdownVisibleSeen
+                            + " shutdownMs=" + shutdownVisibleMs
                             + " status=" + controller.status_message)
                         Qt.exit(7)
                         return
@@ -422,6 +505,7 @@ ApplicationWindow {
                           + " startup=" + controller.startup_screen_active
                           + " primary="
                           + controller.startup_screen_primary_started
+                          + " shutdown=" + controller.shutdown_screen_active
                           + " session=" + controller.launch_session_active
                           + " status=" + controller.status_message)
             Qt.exit(7)
@@ -713,6 +797,12 @@ ApplicationWindow {
 
     LaunchStartupOverlay {
         id: launchStartupOverlay
+        anchors.fill: parent
+        controller: controller
+    }
+
+    LaunchShutdownOverlay {
+        id: launchShutdownOverlay
         anchors.fill: parent
         controller: controller
     }

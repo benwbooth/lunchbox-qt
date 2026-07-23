@@ -23,7 +23,7 @@ pub use scummvm::ScummVmPlanError;
 
 use lb_domain::{
     is_unassigned_emulator_id, AdditionalApplication, Emulator, EmulatorConfiguration,
-    EmulatorPlatform, Game, Mount, UNASSIGNED_EMULATOR_ID,
+    EmulatorPlatform, FrontendSettings, Game, Mount, UNASSIGNED_EMULATOR_ID,
 };
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -58,6 +58,117 @@ pub struct LaunchStartupPolicy {
     pub enabled: bool,
     pub load_delay: Duration,
     pub source: LaunchStartupSettingsSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LaunchShutdownPolicy {
+    pub enabled: bool,
+    pub source: LaunchStartupSettingsSource,
+}
+
+impl LaunchShutdownPolicy {
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            source: LaunchStartupSettingsSource::DirectGame,
+        }
+    }
+}
+
+impl Default for LaunchShutdownPolicy {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendLaunchScreenPolicy {
+    pub enabled: bool,
+    pub theme: String,
+    pub minimum_startup_display: Duration,
+    pub minimum_shutdown_display: Duration,
+    pub hide_mouse_cursor: bool,
+}
+
+impl FrontendLaunchScreenPolicy {
+    pub fn from_settings(settings: Option<&FrontendSettings>) -> Result<Self, LaunchPlanError> {
+        let Some(settings) = settings else {
+            return Ok(Self::default());
+        };
+        Ok(Self {
+            enabled: frontend_bool_setting(settings, "UseStartupScreen", true)?,
+            theme: settings
+                .get("StartupTheme")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("Default")
+                .to_string(),
+            minimum_startup_display: frontend_duration_setting(
+                settings,
+                "MinimumStartupScreenDisplayTime",
+            )?,
+            minimum_shutdown_display: frontend_duration_setting(
+                settings,
+                "MinimumShutdownScreenDisplayTime",
+            )?,
+            hide_mouse_cursor: frontend_bool_setting(
+                settings,
+                "HideMouseCursorOnStartupScreens",
+                false,
+            )?,
+        })
+    }
+}
+
+impl Default for FrontendLaunchScreenPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            theme: "Default".to_string(),
+            minimum_startup_display: Duration::ZERO,
+            minimum_shutdown_display: Duration::ZERO,
+            hide_mouse_cursor: false,
+        }
+    }
+}
+
+fn frontend_bool_setting(
+    settings: &FrontendSettings,
+    key: &'static str,
+    default: bool,
+) -> Result<bool, LaunchPlanError> {
+    let Some(value) = settings.get(key) else {
+        return Ok(default);
+    };
+    match value.trim() {
+        value if value.eq_ignore_ascii_case("true") => Ok(true),
+        value if value.eq_ignore_ascii_case("false") => Ok(false),
+        _ => Err(LaunchPlanError::InvalidFrontendLaunchSetting {
+            record: settings.record_name.clone(),
+            key,
+            value: value.to_string(),
+            expected: "true or false",
+        }),
+    }
+}
+
+fn frontend_duration_setting(
+    settings: &FrontendSettings,
+    key: &'static str,
+) -> Result<Duration, LaunchPlanError> {
+    let Some(value) = settings.get(key) else {
+        return Ok(Duration::ZERO);
+    };
+    let milliseconds =
+        value
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| LaunchPlanError::InvalidFrontendLaunchSetting {
+                record: settings.record_name.clone(),
+                key,
+                value: value.to_string(),
+                expected: "a non-negative millisecond count",
+            })?;
+    Ok(Duration::from_millis(milliseconds))
 }
 
 impl LaunchStartupPolicy {
@@ -156,6 +267,7 @@ pub struct LaunchSequence {
     pub game_id: String,
     pub game_title: String,
     pub startup: LaunchStartupPolicy,
+    pub shutdown: LaunchShutdownPolicy,
     pub steps: Vec<LaunchStep>,
 }
 
@@ -895,7 +1007,7 @@ fn build_game_launch_sequence_internal<'a>(
             path_resolver,
         )?
     };
-    let startup = launch_startup_policy(game, &main_plan, configuration)?;
+    let (startup, shutdown) = launch_screen_policies(game, &main_plan, configuration)?;
     steps.push(LaunchStep {
         role: LaunchStepRole::MainGame,
         wait_for_exit: applications
@@ -941,6 +1053,7 @@ fn build_game_launch_sequence_internal<'a>(
         game_id: game.id.clone(),
         game_title: game.title.clone(),
         startup,
+        shutdown,
         steps,
     })
 }
@@ -982,11 +1095,12 @@ pub fn build_selected_additional_application_sequence_with_mounts_context_and_re
         context,
         path_resolver,
     )?;
-    let startup = launch_startup_policy(game, &plan, configuration)?;
+    let (startup, shutdown) = launch_screen_policies(game, &plan, configuration)?;
     Ok(LaunchSequence {
         game_id: game.id.clone(),
         game_title: game.title.clone(),
         startup,
+        shutdown,
         steps: vec![LaunchStep {
             role: LaunchStepRole::SelectedAdditionalApplication,
             wait_for_exit: false,
@@ -1037,11 +1151,12 @@ pub fn prepare_selected_additional_application_sequence_with_mounts_context_and_
         path_resolver,
         archive_extractor,
     )?;
-    let startup = launch_startup_policy(game, &plan, configuration)?;
+    let (startup, shutdown) = launch_screen_policies(game, &plan, configuration)?;
     Ok(LaunchSequence {
         game_id: game.id.clone(),
         game_title: game.title.clone(),
         startup,
+        shutdown,
         steps: vec![LaunchStep {
             role: LaunchStepRole::SelectedAdditionalApplication,
             wait_for_exit: false,
@@ -1050,17 +1165,24 @@ pub fn prepare_selected_additional_application_sequence_with_mounts_context_and_
     })
 }
 
-fn launch_startup_policy(
+fn launch_screen_policies(
     game: &Game,
     primary_plan: &LaunchPlan,
     configuration: Option<&EmulatorConfiguration>,
-) -> Result<LaunchStartupPolicy, LaunchPlanError> {
+) -> Result<(LaunchStartupPolicy, LaunchShutdownPolicy), LaunchPlanError> {
     if game.override_default_startup_screen_settings {
-        return Ok(LaunchStartupPolicy {
+        let startup = LaunchStartupPolicy {
             enabled: game.use_startup_screen,
             load_delay: Duration::from_millis(u64::from(game.startup_load_delay)),
             source: LaunchStartupSettingsSource::GameOverride,
-        });
+        };
+        return Ok((
+            startup,
+            LaunchShutdownPolicy {
+                enabled: startup.enabled && !game.disable_shutdown_screen,
+                source: startup.source,
+            },
+        ));
     }
 
     if let LaunchKind::Emulator { id, .. } = &primary_plan.kind {
@@ -1075,18 +1197,32 @@ fn launch_startup_policy(
                 game_id: game.id.clone(),
                 emulator_id: id.clone(),
             })?;
-        return Ok(LaunchStartupPolicy {
+        let startup = LaunchStartupPolicy {
             enabled: emulator.use_startup_screen,
             load_delay: Duration::from_millis(emulator.startup_load_delay),
             source: LaunchStartupSettingsSource::EmulatorDefault,
-        });
+        };
+        return Ok((
+            startup,
+            LaunchShutdownPolicy {
+                enabled: startup.enabled && !emulator.disable_shutdown_screen,
+                source: startup.source,
+            },
+        ));
     }
 
-    Ok(LaunchStartupPolicy {
+    let startup = LaunchStartupPolicy {
         enabled: game.use_startup_screen,
         load_delay: Duration::from_millis(u64::from(game.startup_load_delay)),
         source: LaunchStartupSettingsSource::DirectGame,
-    })
+    };
+    Ok((
+        startup,
+        LaunchShutdownPolicy {
+            enabled: startup.enabled && !game.disable_shutdown_screen,
+            source: startup.source,
+        },
+    ))
 }
 
 fn select_emulator<'a>(
@@ -1654,6 +1790,13 @@ pub enum LaunchSequenceError {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum LaunchPlanError {
+    #[error("{record}.{key} has invalid value {value:?}; expected {expected}")]
+    InvalidFrontendLaunchSetting {
+        record: String,
+        key: &'static str,
+        value: String,
+        expected: &'static str,
+    },
     #[error(
         "additional application {application_id} belongs to game {actual_game_id}, not {expected_game_id}"
     )]
@@ -1906,10 +2049,18 @@ mod tests {
                 source: LaunchStartupSettingsSource::EmulatorDefault,
             }
         );
+        assert_eq!(
+            sequence.shutdown,
+            LaunchShutdownPolicy {
+                enabled: true,
+                source: LaunchStartupSettingsSource::EmulatorDefault,
+            }
+        );
 
         emulated_game.override_default_startup_screen_settings = true;
         emulated_game.use_startup_screen = true;
         emulated_game.startup_load_delay = 375;
+        emulated_game.disable_shutdown_screen = true;
         let sequence = build_game_launch_sequence_with_context_and_resolver(
             Path::new("/launchbox"),
             &emulated_game,
@@ -1927,11 +2078,19 @@ mod tests {
                 source: LaunchStartupSettingsSource::GameOverride,
             }
         );
+        assert_eq!(
+            sequence.shutdown,
+            LaunchShutdownPolicy {
+                enabled: false,
+                source: LaunchStartupSettingsSource::GameOverride,
+            }
+        );
 
         let mut direct_game = emulated_game;
         direct_game.override_default_startup_screen_settings = false;
         direct_game.emulator_id = Some(UNASSIGNED_EMULATOR_ID.into());
         direct_game.startup_load_delay = 90;
+        direct_game.disable_shutdown_screen = false;
         let sequence = build_game_launch_sequence_with_context_and_resolver(
             Path::new("/launchbox"),
             &direct_game,
@@ -1949,6 +2108,13 @@ mod tests {
                 source: LaunchStartupSettingsSource::DirectGame,
             }
         );
+        assert_eq!(
+            sequence.shutdown,
+            LaunchShutdownPolicy {
+                enabled: true,
+                source: LaunchStartupSettingsSource::DirectGame,
+            }
+        );
     }
 
     #[test]
@@ -1956,6 +2122,7 @@ mod tests {
         let mut configuration = configuration();
         configuration.emulators[0].use_startup_screen = true;
         configuration.emulators[0].startup_load_delay = 640;
+        configuration.emulators[0].disable_shutdown_screen = true;
         let mut application = additional_application("version", 0);
         application.use_emulator = true;
         application.emulator_id = Some("emulator-id".into());
@@ -1978,6 +2145,70 @@ mod tests {
                 source: LaunchStartupSettingsSource::EmulatorDefault,
             }
         );
+        assert_eq!(
+            sequence.shutdown,
+            LaunchShutdownPolicy {
+                enabled: false,
+                source: LaunchStartupSettingsSource::EmulatorDefault,
+            }
+        );
+    }
+
+    #[test]
+    fn frontend_launch_policy_parses_milliseconds_and_rejects_invalid_values() {
+        let settings = FrontendSettings {
+            record_name: "BigBoxSettings".into(),
+            entries: vec![
+                lb_domain::SettingEntry {
+                    key: "UseStartupScreen".into(),
+                    value: "false".into(),
+                },
+                lb_domain::SettingEntry {
+                    key: "StartupTheme".into(),
+                    value: "Fixture Theme".into(),
+                },
+                lb_domain::SettingEntry {
+                    key: "MinimumStartupScreenDisplayTime".into(),
+                    value: "1250".into(),
+                },
+                lb_domain::SettingEntry {
+                    key: "MinimumShutdownScreenDisplayTime".into(),
+                    value: "750".into(),
+                },
+                lb_domain::SettingEntry {
+                    key: "HideMouseCursorOnStartupScreens".into(),
+                    value: "true".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            FrontendLaunchScreenPolicy::from_settings(Some(&settings))
+                .expect("parse frontend launch-screen settings"),
+            FrontendLaunchScreenPolicy {
+                enabled: false,
+                theme: "Fixture Theme".into(),
+                minimum_startup_display: Duration::from_millis(1_250),
+                minimum_shutdown_display: Duration::from_millis(750),
+                hide_mouse_cursor: true,
+            }
+        );
+
+        let invalid = FrontendSettings {
+            record_name: "Settings".into(),
+            entries: vec![lb_domain::SettingEntry {
+                key: "MinimumStartupScreenDisplayTime".into(),
+                value: "-1".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert!(matches!(
+            FrontendLaunchScreenPolicy::from_settings(Some(&invalid)),
+            Err(LaunchPlanError::InvalidFrontendLaunchSetting {
+                key: "MinimumStartupScreenDisplayTime",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -2232,6 +2463,7 @@ mod tests {
             game_id: "game-id".into(),
             game_title: "Game Title".into(),
             startup: LaunchStartupPolicy::disabled(),
+            shutdown: LaunchShutdownPolicy::disabled(),
             steps: vec![
                 step(LaunchStepRole::AutomaticBefore, true, "before"),
                 step(LaunchStepRole::MainGame, true, "main"),
@@ -2310,6 +2542,7 @@ mod tests {
             game_id: "game-id".into(),
             game_title: "Game Title".into(),
             startup: LaunchStartupPolicy::disabled(),
+            shutdown: LaunchShutdownPolicy::disabled(),
             steps: vec![before, main],
         };
         let mut timed_out = false;
@@ -2336,6 +2569,7 @@ mod tests {
             game_id: "game-id".into(),
             game_title: "Game Title".into(),
             startup: LaunchStartupPolicy::disabled(),
+            shutdown: LaunchShutdownPolicy::disabled(),
             steps: vec![LaunchStep {
                 role: LaunchStepRole::MainGame,
                 wait_for_exit: false,

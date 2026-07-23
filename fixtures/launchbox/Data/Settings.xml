@@ -3,6 +3,11 @@
   <Settings>
     <Theme>Fixture Theme</Theme>
     <DebugLog>false</DebugLog>
+    <UseStartupScreen>true</UseStartupScreen>
+    <StartupTheme>Fixture Desktop Startup</StartupTheme>
+    <MinimumStartupScreenDisplayTime>600</MinimumStartupScreenDisplayTime>
+    <MinimumShutdownScreenDisplayTime>350</MinimumShutdownScreenDisplayTime>
+    <HideMouseCursorOnStartupScreens>true</HideMouseCursorOnStartupScreens>
     <EmptyValue />
   </Settings>
   <ImageTypeSettings>
