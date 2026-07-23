@@ -23,19 +23,23 @@ pub fn is_windows_absolute_path(path: &str) -> bool {
 /// from persisted media paths: the result is a host filename component, while
 /// values such as `Images\\Nintendo 64\\Box - Front` remain lexical LaunchBox
 /// strings until a [`LaunchPathResolver`] consumes them.
+pub fn navigation_document_file_name(display_name: &str) -> Result<String, PlatformPathError> {
+    Ok(format!("{}.xml", portable_storage_name(display_name)?))
+}
+
 pub fn platform_document_file_name(platform_name: &str) -> Result<String, PlatformPathError> {
-    Ok(format!("{}.xml", platform_storage_name(platform_name)?))
+    navigation_document_file_name(platform_name)
 }
 
 /// Produces one portable platform directory component using the filename
 /// restrictions shared by Windows, Linux, and macOS.
-pub fn platform_storage_name(platform_name: &str) -> Result<String, PlatformPathError> {
-    let platform_name = platform_name.trim();
-    if platform_name.is_empty() {
+pub fn portable_storage_name(display_name: &str) -> Result<String, PlatformPathError> {
+    let display_name = display_name.trim();
+    if display_name.is_empty() {
         return Err(PlatformPathError::EmptyPlatformName);
     }
 
-    let mut stem = platform_name
+    let mut stem = display_name
         .chars()
         .map(|character| {
             if character.is_control()
@@ -63,6 +67,10 @@ pub fn platform_storage_name(platform_name: &str) -> Result<String, PlatformPath
         stem.push('_');
     }
     Ok(stem)
+}
+
+pub fn platform_storage_name(platform_name: &str) -> Result<String, PlatformPathError> {
+    portable_storage_name(platform_name)
 }
 
 /// Reproduces the 51 default platform-folder records observed across every
@@ -394,6 +402,10 @@ mod tests {
 
     #[test]
     fn platform_document_names_are_valid_on_every_supported_host() {
+        assert_eq!(
+            navigation_document_file_name("Playlist: DOS/Windows").unwrap(),
+            "Playlist_ DOS_Windows.xml"
+        );
         assert_eq!(
             platform_document_file_name("Dragon 32/64").unwrap(),
             "Dragon 32_64.xml"

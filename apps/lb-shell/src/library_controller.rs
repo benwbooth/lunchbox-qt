@@ -123,6 +123,13 @@ pub mod qobject {
         );
 
         #[qinvokable]
+        fn apply_playlist_filter(
+            self: Pin<&mut LibraryController>,
+            search_text: QString,
+            playlist_id: QString,
+        );
+
+        #[qinvokable]
         fn save_game(
             self: Pin<&mut LibraryController>,
             row: i32,
@@ -172,6 +179,25 @@ pub mod qobject {
 
         #[qinvokable]
         fn delete_category(self: Pin<&mut LibraryController>, name: QString);
+
+        #[qinvokable]
+        fn new_playlist_edit_payload(self: &LibraryController) -> QString;
+
+        #[qinvokable]
+        fn playlist_edit_payload(self: &LibraryController, playlist_id: QString) -> QString;
+
+        #[qinvokable]
+        fn add_playlist(self: Pin<&mut LibraryController>, edit_payload: QString);
+
+        #[qinvokable]
+        fn save_playlist(
+            self: Pin<&mut LibraryController>,
+            playlist_id: QString,
+            edit_payload: QString,
+        );
+
+        #[qinvokable]
+        fn delete_playlist(self: Pin<&mut LibraryController>, playlist_id: QString);
 
         #[qinvokable]
         fn delete_game(self: Pin<&mut LibraryController>, row: i32, game_id: QString);
@@ -300,6 +326,14 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_playlist_crud_smoke_success(
+            self: &LibraryController,
+            playlist_id: QString,
+            detached_children: i32,
+            removed_cache_rows: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_launch_smoke_success(self: &LibraryController, game_id: QString) -> bool;
 
         #[qinvokable]
@@ -421,11 +455,13 @@ use cxx_qt_lib::{
 use lb_domain::{
     AdditionalApplication, AlternateName, CustomField, EmulatorConfiguration, Game,
     GameLaunchConfiguration, GameMetadata, Mount, NavigationMetadata, ParentRelationship,
-    PlatformCategory, PlatformDefinition, PlatformFolder, PlaylistDocument, UNASSIGNED_EMULATOR_ID,
+    PlatformCategory, PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument,
+    PlaylistFilter, PlaylistGame, UNASSIGNED_EMULATOR_ID,
 };
 use lb_platform::{
     default_host_path_mappings_path, default_platform_folders, execute_launch_sequence,
-    platform_document_file_name, prepare_game_launch_sequence_with_mounts_context_and_resolver,
+    navigation_document_file_name, platform_document_file_name,
+    prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     ArchiveExtractor, HostPathMappings, HostPathResolver, LaunchContext, LaunchKind,
     LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchTarget,
@@ -615,7 +651,10 @@ pub struct LibraryControllerRust {
     navigation_catalog: NavigationCatalog,
     navigation_entries: Vec<NavigationEntry>,
     category_platforms: BTreeMap<String, BTreeSet<String>>,
+    category_game_ids: BTreeMap<String, BTreeSet<String>>,
+    playlist_game_ids: BTreeMap<String, BTreeSet<String>>,
     category_filter: Option<String>,
+    playlist_filter: Option<String>,
     library_root: Option<PathBuf>,
     launchbox_root: Option<PathBuf>,
     emulator_configuration: Option<EmulatorConfiguration>,
@@ -633,6 +672,9 @@ pub struct LibraryControllerRust {
     session_stats_error: Option<String>,
     category_write_notifications: u64,
     last_category_detached_children: usize,
+    playlist_write_notifications: u64,
+    last_playlist_detached_children: usize,
+    last_playlist_cache_rows_removed: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -645,22 +687,7 @@ struct PlatformCount {
 struct NavigationCatalog {
     categories: Vec<PlatformCategory>,
     parents: Vec<ParentRelationship>,
-    playlists: Vec<PlaylistNavigation>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct PlaylistNavigation {
-    id: String,
-    name: String,
-}
-
-impl From<&PlaylistDocument> for PlaylistNavigation {
-    fn from(document: &PlaylistDocument) -> Self {
-        Self {
-            id: document.playlist.id.clone(),
-            name: document.playlist.metadata.name.clone(),
-        }
-    }
+    playlists: Vec<PlaylistDocument>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -779,11 +806,7 @@ impl LoadedLibrary {
                 .map(|catalog| catalog.categories.clone())
                 .unwrap_or_default(),
             parents: data.parents().to_vec(),
-            playlists: data
-                .playlists()
-                .iter()
-                .map(PlaylistNavigation::from)
-                .collect(),
+            playlists: data.playlists().to_vec(),
         };
         let platform_count = platform_names.len();
         let (games, game_sources) = collect_games_and_sources(data.platforms());
@@ -1043,6 +1066,27 @@ enum CategoryWriteOperation {
     Delete,
 }
 
+struct PlaylistWriteSuccess {
+    id: String,
+    playlists: Vec<PlaylistDocument>,
+    parents: Vec<ParentRelationship>,
+    source: PathBuf,
+    playlist_backup: Option<PathBuf>,
+    parents_backup: PathBuf,
+    list_cache_backup: Option<PathBuf>,
+    placement_count: usize,
+    removed_placements: usize,
+    detached_children: usize,
+    removed_cache_rows: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PlaylistWriteOperation {
+    Create,
+    Edit,
+    Delete,
+}
+
 #[derive(Clone)]
 struct GameLaunchSuccess {
     game_id: String,
@@ -1123,6 +1167,7 @@ enum PlatformWriteFailure {
 const GAME_EDIT_PAYLOAD_VERSION: u32 = 3;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
+const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -1227,6 +1272,91 @@ struct CategoryEditPayload {
     category: PlatformCategoryEditFields,
     parents: Vec<CategoryParentEditPayload>,
     available_parent_targets: Vec<CategoryParentTargetPayload>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PlaylistEditFields {
+    id: String,
+    name: String,
+    nested_name: Option<String>,
+    sort_title: Option<String>,
+    notes: Option<String>,
+    video_path: Option<String>,
+    image_type: Option<String>,
+    category: Option<String>,
+    last_game_id: Option<String>,
+    big_box_view: Option<String>,
+    big_box_theme: Option<String>,
+    hide_in_big_box: bool,
+    include_with_platforms: bool,
+    auto_populate: bool,
+    is_autogenerated: bool,
+    sort_by: Option<String>,
+}
+
+impl From<&Playlist> for PlaylistEditFields {
+    fn from(playlist: &Playlist) -> Self {
+        Self {
+            id: playlist.id.clone(),
+            name: playlist.metadata.name.clone(),
+            nested_name: playlist.metadata.nested_name.clone(),
+            sort_title: playlist.metadata.sort_title.clone(),
+            notes: playlist.metadata.notes.clone(),
+            video_path: playlist.metadata.video_path.clone(),
+            image_type: playlist.metadata.image_type.clone(),
+            category: playlist.metadata.category.clone(),
+            last_game_id: playlist.metadata.last_game_id.clone(),
+            big_box_view: playlist.metadata.big_box_view.clone(),
+            big_box_theme: playlist.metadata.big_box_theme.clone(),
+            hide_in_big_box: playlist.metadata.hide_in_big_box,
+            include_with_platforms: playlist.include_with_platforms,
+            auto_populate: playlist.auto_populate,
+            is_autogenerated: playlist.is_autogenerated,
+            sort_by: playlist.sort_by.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PlaylistFilterEditPayload {
+    source_index: Option<usize>,
+    field_key: String,
+    comparison_type_key: String,
+    value: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PlaylistGameEditPayload {
+    source_index: Option<usize>,
+    game_id: String,
+    game_title: String,
+    game_platform: String,
+    game_file_name: String,
+    launchbox_db_id: Option<u64>,
+    manual_order: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PlaylistAvailableGamePayload {
+    game_id: String,
+    title: String,
+    platform: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PlaylistEditPayload {
+    version: u32,
+    playlist: PlaylistEditFields,
+    filters: Vec<PlaylistFilterEditPayload>,
+    games: Vec<PlaylistGameEditPayload>,
+    parents: Vec<CategoryParentEditPayload>,
+    available_parent_targets: Vec<CategoryParentTargetPayload>,
+    available_games: Vec<PlaylistAvailableGamePayload>,
 }
 
 fn parse_game_edit_payload(payload: &str) -> Result<GameEditPayload, String> {
@@ -1389,6 +1519,262 @@ fn parse_category_edit_payload(
     Ok(payload)
 }
 
+fn parse_playlist_edit_payload(
+    original: Option<&Playlist>,
+    payload: &str,
+) -> Result<PlaylistEditPayload, String> {
+    let mut payload: PlaylistEditPayload = serde_json::from_str(payload)
+        .map_err(|error| format!("invalid playlist editor payload: {error}"))?;
+    if payload.version != PLAYLIST_EDIT_PAYLOAD_VERSION {
+        return Err(format!(
+            "unsupported playlist editor payload version {}; expected {}",
+            payload.version, PLAYLIST_EDIT_PAYLOAD_VERSION
+        ));
+    }
+    payload.playlist.id = payload.playlist.id.trim().to_string();
+    payload.playlist.name = payload.playlist.name.trim().to_string();
+    if payload.playlist.id.is_empty() {
+        return Err("a playlist ID is required".into());
+    }
+    if payload.playlist.name.is_empty() {
+        return Err("a playlist unique name is required".into());
+    }
+    if let Some(original) = original {
+        if payload.playlist.id != original.id {
+            return Err(format!(
+                "playlist identity cannot be changed from {} to {}",
+                original.id, payload.playlist.id
+            ));
+        }
+        if payload.playlist.name != original.metadata.name {
+            return Err(format!(
+                "playlist unique name cannot be changed from {} to {} in the recovered 13.27 contract",
+                original.metadata.name, payload.playlist.name
+            ));
+        }
+    }
+    macro_rules! canonicalize_playlist_field {
+        ($($field:ident),+ $(,)?) => {
+            $(payload.playlist.$field =
+                canonical_optional_text(payload.playlist.$field.take());)+
+        };
+    }
+    canonicalize_playlist_field!(
+        nested_name,
+        sort_title,
+        notes,
+        video_path,
+        image_type,
+        category,
+        last_game_id,
+        big_box_view,
+        big_box_theme,
+        sort_by,
+    );
+    validate_playlist_indexed_payload_rows(
+        "filter",
+        payload.filters.iter().map(|row| row.source_index),
+    )?;
+    for filter in &mut payload.filters {
+        filter.field_key = filter.field_key.trim().to_string();
+        filter.comparison_type_key = filter.comparison_type_key.trim().to_string();
+        if filter.field_key.is_empty() || filter.comparison_type_key.is_empty() {
+            return Err("playlist filters require a field and comparison".into());
+        }
+    }
+    validate_playlist_indexed_payload_rows(
+        "game",
+        payload.games.iter().map(|row| row.source_index),
+    )?;
+    let mut game_ids = BTreeSet::new();
+    for game in &mut payload.games {
+        game.game_id = game.game_id.trim().to_string();
+        if game.game_id.is_empty() {
+            return Err("playlist game rows require a game ID".into());
+        }
+        if !game_ids.insert(game.game_id.to_lowercase()) {
+            return Err(format!(
+                "game {} cannot occur more than once in a playlist",
+                game.game_id
+            ));
+        }
+    }
+    if payload.parents.is_empty() {
+        return Err("a playlist must have at least one hierarchy placement".into());
+    }
+    let mut targets = BTreeSet::new();
+    let mut previous = None;
+    let mut saw_new = false;
+    for parent in &mut payload.parents {
+        parent.target_key = parent.target_key.trim().to_string();
+        if parent.target_kind == CategoryParentKind::Root {
+            if !parent.target_key.is_empty() {
+                return Err("the root parent placement cannot have a target key".into());
+            }
+        } else if parent.target_key.is_empty() {
+            return Err("a non-root parent placement requires a target key".into());
+        }
+        match parent.source_index {
+            None => saw_new = true,
+            Some(index) => {
+                if saw_new {
+                    return Err("new parent placements must follow retained source rows".into());
+                }
+                if previous.is_some_and(|previous| previous >= index) {
+                    return Err(
+                        "parent source indices must be unique and remain in source order".into(),
+                    );
+                }
+                previous = Some(index);
+            }
+        }
+        if !targets.insert((parent.target_kind, parent.target_key.to_lowercase())) {
+            return Err("a parent placement cannot occur more than once".into());
+        }
+    }
+    Ok(payload)
+}
+
+fn validate_playlist_indexed_payload_rows(
+    record: &str,
+    indices: impl IntoIterator<Item = Option<usize>>,
+) -> Result<(), String> {
+    let mut previous = None;
+    let mut saw_new = false;
+    for source_index in indices {
+        match source_index {
+            None => saw_new = true,
+            Some(index) => {
+                if saw_new {
+                    return Err(format!(
+                        "new playlist {record} rows must follow retained source rows"
+                    ));
+                }
+                if previous.is_some_and(|previous| previous >= index) {
+                    return Err(format!(
+                        "playlist {record} source indices must be unique and remain in source order"
+                    ));
+                }
+                previous = Some(index);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn playlist_edit_fields_to_domain(
+    fields: &PlaylistEditFields,
+    original: Option<&Playlist>,
+) -> Playlist {
+    let mut playlist = original.cloned().unwrap_or_default();
+    playlist.id = fields.id.clone();
+    playlist.metadata.name = fields.name.clone();
+    playlist.metadata.nested_name = fields.nested_name.clone();
+    playlist.metadata.sort_title = fields.sort_title.clone();
+    playlist.metadata.notes = fields.notes.clone();
+    playlist.metadata.video_path = fields.video_path.clone();
+    playlist.metadata.image_type = fields.image_type.clone();
+    playlist.metadata.category = fields.category.clone();
+    playlist.metadata.last_game_id = fields.last_game_id.clone();
+    playlist.metadata.big_box_view = fields.big_box_view.clone();
+    playlist.metadata.big_box_theme = fields.big_box_theme.clone();
+    playlist.metadata.hide_in_big_box = fields.hide_in_big_box;
+    playlist.include_with_platforms = fields.include_with_platforms;
+    playlist.auto_populate = fields.auto_populate;
+    playlist.is_autogenerated = fields.is_autogenerated;
+    playlist.sort_by = fields.sort_by.clone();
+    playlist
+}
+
+fn playlist_filter_edits(
+    filters: &[PlaylistFilterEditPayload],
+) -> Vec<IndexedPlatformRecordEdit<PlaylistFilter>> {
+    filters
+        .iter()
+        .map(|filter| IndexedPlatformRecordEdit {
+            source_index: filter.source_index,
+            record: PlaylistFilter {
+                field_key: filter.field_key.clone(),
+                comparison_type_key: filter.comparison_type_key.clone(),
+                value: filter.value.clone(),
+            },
+        })
+        .collect()
+}
+
+fn playlist_game_edits(
+    games: &[PlaylistGameEditPayload],
+) -> Vec<IndexedPlatformRecordEdit<PlaylistGame>> {
+    games
+        .iter()
+        .map(|game| IndexedPlatformRecordEdit {
+            source_index: game.source_index,
+            record: PlaylistGame {
+                game_id: game.game_id.clone(),
+                game_title: game.game_title.clone(),
+                game_platform: game.game_platform.clone(),
+                game_file_name: game.game_file_name.clone(),
+                launchbox_db_id: game.launchbox_db_id,
+                manual_order: game.manual_order,
+            },
+        })
+        .collect()
+}
+
+fn playlist_parent_relationships(
+    playlist_id: &str,
+    parents: &[CategoryParentEditPayload],
+) -> Vec<IndexedPlatformRecordEdit<ParentRelationship>> {
+    parents
+        .iter()
+        .map(|parent| {
+            let mut relationship = ParentRelationship {
+                playlist_id: Some(playlist_id.to_string()),
+                ..ParentRelationship::default()
+            };
+            match parent.target_kind {
+                CategoryParentKind::Root => {}
+                CategoryParentKind::PlatformCategory => {
+                    relationship.parent_platform_category_name = Some(parent.target_key.clone());
+                }
+                CategoryParentKind::Platform => {
+                    relationship.parent_platform_name = Some(parent.target_key.clone());
+                }
+                CategoryParentKind::Playlist => {
+                    relationship.parent_playlist_id = Some(parent.target_key.clone());
+                }
+            }
+            IndexedPlatformRecordEdit {
+                source_index: parent.source_index,
+                record: relationship,
+            }
+        })
+        .collect()
+}
+
+fn available_playlist_games(games: &[Game]) -> Vec<PlaylistAvailableGamePayload> {
+    let mut available = games
+        .iter()
+        .map(|game| PlaylistAvailableGamePayload {
+            game_id: game.id.clone(),
+            title: game.title.clone(),
+            platform: game.platform.clone(),
+        })
+        .collect::<Vec<_>>();
+    available.sort_by(|left, right| {
+        left.title
+            .to_lowercase()
+            .cmp(&right.title.to_lowercase())
+            .then_with(|| {
+                left.platform
+                    .to_lowercase()
+                    .cmp(&right.platform.to_lowercase())
+            })
+            .then_with(|| left.game_id.cmp(&right.game_id))
+    });
+    available
+}
+
 fn category_edit_fields_to_domain(
     fields: &PlatformCategoryEditFields,
     original: Option<&PlatformCategory>,
@@ -1517,8 +1903,60 @@ fn category_parent_targets(
             .iter()
             .map(|playlist| CategoryParentTargetPayload {
                 target_kind: CategoryParentKind::Playlist,
-                target_key: playlist.id.clone(),
-                label: format!("Playlist — {}", playlist.name),
+                target_key: playlist.playlist.id.clone(),
+                label: format!("Playlist — {}", playlist.playlist.metadata.name),
+            }),
+    );
+    targets[1..].sort_by(|left, right| {
+        left.label
+            .to_lowercase()
+            .cmp(&right.label.to_lowercase())
+            .then_with(|| left.target_key.cmp(&right.target_key))
+    });
+    targets
+}
+
+fn playlist_parent_targets(
+    catalog: &NavigationCatalog,
+    platform_names: &[String],
+    edited_playlist_id: Option<&str>,
+) -> Vec<CategoryParentTargetPayload> {
+    let mut targets = vec![CategoryParentTargetPayload {
+        target_kind: CategoryParentKind::Root,
+        target_key: String::new(),
+        label: "Root".into(),
+    }];
+    targets.extend(
+        catalog
+            .categories
+            .iter()
+            .map(|category| CategoryParentTargetPayload {
+                target_kind: CategoryParentKind::PlatformCategory,
+                target_key: category.metadata.name.clone(),
+                label: format!("Category — {}", category.metadata.name),
+            }),
+    );
+    targets.extend(
+        platform_names
+            .iter()
+            .map(|platform| CategoryParentTargetPayload {
+                target_kind: CategoryParentKind::Platform,
+                target_key: platform.clone(),
+                label: format!("Platform — {platform}"),
+            }),
+    );
+    targets.extend(
+        catalog
+            .playlists
+            .iter()
+            .filter(|document| {
+                edited_playlist_id
+                    .is_none_or(|edited| !document.playlist.id.eq_ignore_ascii_case(edited))
+            })
+            .map(|document| CategoryParentTargetPayload {
+                target_kind: CategoryParentKind::Playlist,
+                target_key: document.playlist.id.clone(),
+                label: format!("Playlist — {}", document.playlist.metadata.name),
             }),
     );
     targets[1..].sort_by(|left, right| {
@@ -1555,7 +1993,7 @@ fn validate_category_hierarchy_edit(
     let playlist_ids = catalog
         .playlists
         .iter()
-        .map(|playlist| playlist.id.as_str())
+        .map(|playlist| playlist.playlist.id.as_str())
         .collect::<Vec<_>>();
     for parent in &payload.parents {
         let exists = match parent.target_kind {
@@ -1604,6 +2042,118 @@ fn validate_category_hierarchy_edit(
         return Err("the selected parent placements would create a hierarchy cycle".into());
     }
     Ok(())
+}
+
+fn validate_playlist_hierarchy_edit(
+    catalog: &NavigationCatalog,
+    platform_names: &[String],
+    payload: &PlaylistEditPayload,
+    creating: bool,
+) -> Result<(), String> {
+    let playlist_id = &payload.playlist.id;
+    let existing = catalog
+        .playlists
+        .iter()
+        .find(|document| document.playlist.id.eq_ignore_ascii_case(playlist_id));
+    if creating && existing.is_some() {
+        return Err(format!("playlist ID already exists: {playlist_id}"));
+    }
+    if !creating && existing.is_none() {
+        return Err(format!("playlist was not found: {playlist_id}"));
+    }
+    if catalog.playlists.iter().any(|document| {
+        !document.playlist.id.eq_ignore_ascii_case(playlist_id)
+            && document
+                .playlist
+                .metadata
+                .name
+                .eq_ignore_ascii_case(&payload.playlist.name)
+    }) {
+        return Err(format!(
+            "playlist unique name already exists: {}",
+            payload.playlist.name
+        ));
+    }
+    for parent in &payload.parents {
+        let exists = match parent.target_kind {
+            CategoryParentKind::Root => true,
+            CategoryParentKind::PlatformCategory => catalog.categories.iter().any(|category| {
+                category
+                    .metadata
+                    .name
+                    .eq_ignore_ascii_case(&parent.target_key)
+            }),
+            CategoryParentKind::Platform => platform_names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&parent.target_key)),
+            CategoryParentKind::Playlist => catalog.playlists.iter().any(|document| {
+                document
+                    .playlist
+                    .id
+                    .eq_ignore_ascii_case(&parent.target_key)
+            }),
+        };
+        if !exists {
+            return Err(format!(
+                "parent target is no longer available: {:?} {}",
+                parent.target_kind, parent.target_key
+            ));
+        }
+    }
+    let playlist_key = NavigationNodeKey::Playlist(playlist_id.to_lowercase());
+    let mut parent_graph = BTreeMap::<NavigationNodeKey, BTreeSet<NavigationNodeKey>>::new();
+    for relationship in &catalog.parents {
+        let Some(child) = relationship_child_key(relationship) else {
+            continue;
+        };
+        if child == playlist_key {
+            continue;
+        }
+        if let Some(parent) = relationship_parent_key(relationship) {
+            parent_graph.entry(child).or_default().insert(parent);
+        }
+    }
+    for edit in playlist_parent_relationships(playlist_id, &payload.parents) {
+        if let Some(parent) = relationship_parent_key(&edit.record) {
+            parent_graph
+                .entry(playlist_key.clone())
+                .or_default()
+                .insert(parent);
+        }
+    }
+    let mut path = BTreeSet::new();
+    if hierarchy_reaches(&playlist_key, &playlist_key, &parent_graph, &mut path, true) {
+        return Err("the selected parent placements would create a hierarchy cycle".into());
+    }
+    Ok(())
+}
+
+fn canonicalize_playlist_games(
+    payload: &mut PlaylistEditPayload,
+    games: &[Game],
+) -> Result<(), String> {
+    let games_by_id = games
+        .iter()
+        .map(|game| (game.id.to_lowercase(), game))
+        .collect::<BTreeMap<_, _>>();
+    for edit in &mut payload.games {
+        let Some(game) = games_by_id.get(&edit.game_id.to_lowercase()) else {
+            return Err(format!(
+                "playlist game is no longer available: {}",
+                edit.game_id
+            ));
+        };
+        edit.game_id = game.id.clone();
+        edit.game_title = game.title.clone();
+        edit.game_platform = game.platform.clone();
+        edit.game_file_name = lexical_file_name(&game.application_path).to_string();
+        edit.launchbox_db_id = game.database_id.map(u64::from);
+    }
+    Ok(())
+}
+
+fn lexical_file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 fn hierarchy_reaches(
@@ -2198,6 +2748,471 @@ fn finish_category_documents(
         placement_count,
         removed_placements,
         detached_children,
+    })
+}
+
+fn new_playlist_payload(
+    catalog: &NavigationCatalog,
+    platform_names: &[String],
+    games: &[Game],
+) -> Result<String, PlatformWriteFailure> {
+    let id = Uuid::new_v4().to_string();
+    serde_json::to_string(&PlaylistEditPayload {
+        version: PLAYLIST_EDIT_PAYLOAD_VERSION,
+        playlist: PlaylistEditFields {
+            id,
+            name: String::new(),
+            nested_name: None,
+            sort_title: None,
+            notes: None,
+            video_path: None,
+            image_type: None,
+            category: None,
+            last_game_id: None,
+            big_box_view: None,
+            big_box_theme: None,
+            hide_in_big_box: false,
+            include_with_platforms: false,
+            auto_populate: false,
+            is_autogenerated: false,
+            sort_by: Some("Title".into()),
+        },
+        filters: Vec::new(),
+        games: Vec::new(),
+        parents: vec![CategoryParentEditPayload {
+            source_index: None,
+            target_kind: CategoryParentKind::Root,
+            target_key: String::new(),
+        }],
+        available_parent_targets: playlist_parent_targets(catalog, platform_names, None),
+        available_games: available_playlist_games(games),
+    })
+    .map_err(|error| PlatformWriteFailure::Other(error.to_string()))
+}
+
+fn load_playlist_edit_payload(
+    root: &Path,
+    playlist_id: &str,
+    base_catalog: &NavigationCatalog,
+    platform_names: &[String],
+    games: &[Game],
+) -> Result<String, PlatformWriteFailure> {
+    let source = base_catalog
+        .playlists
+        .iter()
+        .find(|document| document.playlist.id.eq_ignore_ascii_case(playlist_id))
+        .map(|document| document.source_path.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(format!("playlist was not found: {playlist_id}"))
+        })?;
+    let document = AuxiliaryDocument::load(&source)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let playlist_document = document
+        .playlist_document()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let exact_id = playlist_document.playlist.id.clone();
+    let parents_document = AuxiliaryDocument::load(parents_document_path(root)?)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let all_parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let mut parents = all_parents
+        .iter()
+        .filter(|relationship| {
+            relationship
+                .playlist_id
+                .as_deref()
+                .is_some_and(|id| id.eq_ignore_ascii_case(&exact_id))
+        })
+        .enumerate()
+        .map(|(source_index, relationship)| category_parent_payload(source_index, relationship))
+        .collect::<Vec<_>>();
+    if parents.is_empty() {
+        parents.push(CategoryParentEditPayload {
+            source_index: None,
+            target_kind: CategoryParentKind::Root,
+            target_key: String::new(),
+        });
+    }
+    let filters = playlist_document
+        .filters
+        .iter()
+        .enumerate()
+        .map(|(source_index, filter)| PlaylistFilterEditPayload {
+            source_index: Some(source_index),
+            field_key: filter.field_key.clone(),
+            comparison_type_key: filter.comparison_type_key.clone(),
+            value: filter.value.clone(),
+        })
+        .collect();
+    let playlist_games = playlist_document
+        .games
+        .iter()
+        .enumerate()
+        .map(|(source_index, game)| PlaylistGameEditPayload {
+            source_index: Some(source_index),
+            game_id: game.game_id.clone(),
+            game_title: game.game_title.clone(),
+            game_platform: game.game_platform.clone(),
+            game_file_name: game.game_file_name.clone(),
+            launchbox_db_id: game.launchbox_db_id,
+            manual_order: game.manual_order,
+        })
+        .collect();
+    let mut current_catalog = base_catalog.clone();
+    if let Some(existing) = current_catalog
+        .playlists
+        .iter_mut()
+        .find(|document| document.playlist.id.eq_ignore_ascii_case(&exact_id))
+    {
+        *existing = playlist_document.clone();
+    }
+    current_catalog.parents = all_parents;
+    serde_json::to_string(&PlaylistEditPayload {
+        version: PLAYLIST_EDIT_PAYLOAD_VERSION,
+        playlist: PlaylistEditFields::from(&playlist_document.playlist),
+        filters,
+        games: playlist_games,
+        parents,
+        available_parent_targets: playlist_parent_targets(
+            &current_catalog,
+            platform_names,
+            Some(&exact_id),
+        ),
+        available_games: available_playlist_games(games),
+    })
+    .map_err(|error| PlatformWriteFailure::Other(error.to_string()))
+}
+
+fn playlist_directory_path(root: &Path) -> Result<PathBuf, PlatformWriteFailure> {
+    [root.join("Data/Playlists"), root.join("Playlists")]
+        .into_iter()
+        .find(|candidate| candidate.is_dir())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(format!(
+                "could not find a writable Playlists directory under {}",
+                root.display()
+            ))
+        })
+}
+
+fn list_cache_document_path(root: &Path) -> Option<PathBuf> {
+    [root.join("Data/ListCache.xml"), root.join("ListCache.xml")]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
+fn ensure_portable_playlist_target_available(
+    directory: &Path,
+    file_name: &str,
+) -> Result<PathBuf, PlatformWriteFailure> {
+    let target = directory.join(file_name);
+    let entries = fs::read_dir(directory).map_err(|error| {
+        PlatformWriteFailure::Other(format!(
+            "could not inspect playlist directory {}: {error}",
+            directory.display()
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(file_name)
+        {
+            return Err(PlatformWriteFailure::Other(format!(
+                "portable playlist filename collides with existing {}",
+                entry.path().display()
+            )));
+        }
+    }
+    Ok(target)
+}
+
+fn create_playlist_in_library(
+    root: PathBuf,
+    mut payload: PlaylistEditPayload,
+    mut navigation_catalog: NavigationCatalog,
+    platform_names: Vec<String>,
+    games: Vec<Game>,
+) -> Result<PlaylistWriteSuccess, PlatformWriteFailure> {
+    let parents_path = parents_document_path(&root)?;
+    let mut parents_document = AuxiliaryDocument::load(&parents_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    navigation_catalog.parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    validate_playlist_hierarchy_edit(&navigation_catalog, &platform_names, &payload, true)
+        .map_err(PlatformWriteFailure::Other)?;
+    canonicalize_playlist_games(&mut payload, &games).map_err(PlatformWriteFailure::Other)?;
+    let playlist = playlist_edit_fields_to_domain(&payload.playlist, None);
+    let id = playlist.id.clone();
+    let directory = playlist_directory_path(&root)?;
+    let file_name = navigation_document_file_name(&playlist.metadata.name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let source = ensure_portable_playlist_target_available(&directory, &file_name)?;
+    let filter_edits = playlist_filter_edits(&payload.filters);
+    let game_edits = playlist_game_edits(&payload.games);
+    let document = AuxiliaryDocument::new_playlist(
+        &source,
+        playlist,
+        filter_edits.into_iter().map(|edit| edit.record).collect(),
+        game_edits.into_iter().map(|edit| edit.record).collect(),
+    )
+    .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let parent_edits = playlist_parent_relationships(&id, &payload.parents);
+    let placement_count = parent_edits.len();
+    parents_document
+        .set_playlist_parents(&id, parent_edits)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let playlist_document = document
+        .playlist_document()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_new_playlist(&document)
+        .map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&parents_document)
+        .map_err(classify_platform_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_platform_transaction_error)?;
+    let parents_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == parents_path)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other("playlist create reported no hierarchy write".into())
+        })?;
+    navigation_catalog.playlists.push(playlist_document);
+    Ok(PlaylistWriteSuccess {
+        id,
+        playlists: navigation_catalog.playlists,
+        parents,
+        source,
+        playlist_backup: None,
+        parents_backup,
+        list_cache_backup: None,
+        placement_count,
+        removed_placements: 0,
+        detached_children: 0,
+        removed_cache_rows: 0,
+    })
+}
+
+fn edit_playlist_in_library(
+    root: PathBuf,
+    playlist_id: String,
+    mut payload: PlaylistEditPayload,
+    mut navigation_catalog: NavigationCatalog,
+    platform_names: Vec<String>,
+    games: Vec<Game>,
+) -> Result<PlaylistWriteSuccess, PlatformWriteFailure> {
+    let source = navigation_catalog
+        .playlists
+        .iter()
+        .find(|document| document.playlist.id.eq_ignore_ascii_case(&playlist_id))
+        .map(|document| document.source_path.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(format!("playlist was not found: {playlist_id}"))
+        })?;
+    let parents_path = parents_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let original = document
+        .playlist_document()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let exact_id = original.playlist.id.clone();
+    let mut parents_document = AuxiliaryDocument::load(&parents_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    if let Some(existing) = navigation_catalog
+        .playlists
+        .iter_mut()
+        .find(|document| document.playlist.id.eq_ignore_ascii_case(&exact_id))
+    {
+        *existing = original.clone();
+    }
+    navigation_catalog.parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    validate_playlist_hierarchy_edit(&navigation_catalog, &platform_names, &payload, false)
+        .map_err(PlatformWriteFailure::Other)?;
+    canonicalize_playlist_games(&mut payload, &games).map_err(PlatformWriteFailure::Other)?;
+    let playlist = playlist_edit_fields_to_domain(&payload.playlist, Some(&original.playlist));
+    document
+        .set_playlist(
+            &exact_id,
+            playlist,
+            playlist_filter_edits(&payload.filters),
+            playlist_game_edits(&payload.games),
+        )
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let parent_edits = playlist_parent_relationships(&exact_id, &payload.parents);
+    let placement_count = parent_edits.len();
+    parents_document
+        .set_playlist_parents(&exact_id, parent_edits)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let playlist_document = document
+        .playlist_document()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&document)
+        .map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&parents_document)
+        .map_err(classify_platform_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_platform_transaction_error)?;
+    let playlist_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other("playlist edit reported no playlist write".into())
+        })?;
+    let parents_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == parents_path)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other("playlist edit reported no hierarchy write".into())
+        })?;
+    if let Some(existing) = navigation_catalog
+        .playlists
+        .iter_mut()
+        .find(|document| document.playlist.id.eq_ignore_ascii_case(&exact_id))
+    {
+        *existing = playlist_document;
+    }
+    Ok(PlaylistWriteSuccess {
+        id: exact_id,
+        playlists: navigation_catalog.playlists,
+        parents,
+        source,
+        playlist_backup: Some(playlist_backup),
+        parents_backup,
+        list_cache_backup: None,
+        placement_count,
+        removed_placements: 0,
+        detached_children: 0,
+        removed_cache_rows: 0,
+    })
+}
+
+fn delete_playlist_from_library(
+    root: PathBuf,
+    playlist_id: String,
+    mut navigation_catalog: NavigationCatalog,
+) -> Result<PlaylistWriteSuccess, PlatformWriteFailure> {
+    let source = navigation_catalog
+        .playlists
+        .iter()
+        .find(|document| document.playlist.id.eq_ignore_ascii_case(&playlist_id))
+        .map(|document| document.source_path.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(format!("playlist was not found: {playlist_id}"))
+        })?;
+    let document = AuxiliaryDocument::load(&source)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let exact_id = document
+        .playlist_document()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?
+        .playlist
+        .id;
+    let parents_path = parents_document_path(&root)?;
+    let mut parents_document = AuxiliaryDocument::load(&parents_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let removed = parents_document
+        .remove_playlist_relationships(&exact_id)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let mut cache_document = list_cache_document_path(&root)
+        .map(AuxiliaryDocument::load)
+        .transpose()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let removed_cache_rows = cache_document
+        .as_mut()
+        .map(|cache| cache.remove_playlist_list_cache_items(&exact_id))
+        .transpose()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?
+        .unwrap_or_default();
+    let cache_path = cache_document
+        .as_ref()
+        .map(|document| document.source_path().to_path_buf());
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_delete_playlist(&document)
+        .map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&parents_document)
+        .map_err(classify_platform_transaction_error)?;
+    if removed_cache_rows > 0 {
+        transaction
+            .stage_auxiliary(
+                cache_document
+                    .as_ref()
+                    .expect("removed cache rows require document"),
+            )
+            .map_err(classify_platform_transaction_error)?;
+    }
+    let report = transaction
+        .commit()
+        .map_err(classify_platform_transaction_error)?;
+    let playlist_backup = report
+        .deleted_targets
+        .iter()
+        .find(|deleted| deleted.target == source)
+        .map(|deleted| deleted.backup.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other("playlist delete reported no playlist deletion".into())
+        })?;
+    let parents_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == parents_path)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other("playlist delete reported no hierarchy write".into())
+        })?;
+    let list_cache_backup = cache_path.and_then(|cache_path| {
+        report
+            .writes
+            .iter()
+            .find(|write| write.target == cache_path)
+            .map(|write| write.backup.clone())
+    });
+    navigation_catalog
+        .playlists
+        .retain(|document| !document.playlist.id.eq_ignore_ascii_case(&exact_id));
+    Ok(PlaylistWriteSuccess {
+        id: exact_id,
+        playlists: navigation_catalog.playlists,
+        parents,
+        source,
+        playlist_backup: Some(playlist_backup),
+        parents_backup,
+        list_cache_backup,
+        placement_count: 0,
+        removed_placements: removed.removed_placements,
+        detached_children: removed.detached_children,
+        removed_cache_rows,
     })
 }
 
@@ -2941,6 +3956,7 @@ impl qobject::LibraryController {
         self.as_mut().set_search_text(search_text);
         self.as_mut().set_platform_filter(platform);
         self.as_mut().rust_mut().category_filter = None;
+        self.as_mut().rust_mut().playlist_filter = None;
         self.as_mut().refresh_filtered_games();
     }
 
@@ -2954,7 +3970,7 @@ impl qobject::LibraryController {
         if !self
             .as_ref()
             .rust()
-            .category_platforms
+            .category_game_ids
             .contains_key(&category_key)
         {
             self.as_mut().set_status_message(qstring(format!(
@@ -2965,6 +3981,32 @@ impl qobject::LibraryController {
         self.as_mut().set_search_text(search_text);
         self.as_mut().set_platform_filter(QString::default());
         self.as_mut().rust_mut().category_filter = Some(category_key);
+        self.as_mut().rust_mut().playlist_filter = None;
+        self.as_mut().refresh_filtered_games();
+    }
+
+    pub fn apply_playlist_filter(
+        mut self: Pin<&mut Self>,
+        search_text: QString,
+        playlist_id: QString,
+    ) {
+        let playlist_id = playlist_id.to_string();
+        let playlist_key = playlist_id.to_lowercase();
+        if !self
+            .as_ref()
+            .rust()
+            .playlist_game_ids
+            .contains_key(&playlist_key)
+        {
+            self.as_mut().set_status_message(qstring(format!(
+                "Playlist is no longer available: {playlist_id}"
+            )));
+            return;
+        }
+        self.as_mut().set_search_text(search_text);
+        self.as_mut().set_platform_filter(QString::default());
+        self.as_mut().rust_mut().category_filter = None;
+        self.as_mut().rust_mut().playlist_filter = Some(playlist_key);
         self.as_mut().refresh_filtered_games();
     }
 
@@ -3447,6 +4489,243 @@ impl qobject::LibraryController {
             self.as_mut().set_writing(false);
             self.as_mut().set_status_message(qstring(format!(
                 "Could not start platform category deletion: {error}"
+            )));
+        }
+    }
+
+    pub fn new_playlist_edit_payload(&self) -> QString {
+        match new_playlist_payload(
+            &self.rust().navigation_catalog,
+            &self.rust().platform_names,
+            &self.rust().games,
+        ) {
+            Ok(payload) => qstring(payload),
+            Err(error) => {
+                eprintln!(
+                    "Could not prepare new playlist editor: {}",
+                    describe_platform_write_failure(&error)
+                );
+                QString::default()
+            }
+        }
+    }
+
+    pub fn playlist_edit_payload(&self, playlist_id: QString) -> QString {
+        let Some(root) = self.rust().launchbox_root.as_deref() else {
+            return QString::default();
+        };
+        match load_playlist_edit_payload(
+            root,
+            playlist_id.to_string().trim(),
+            &self.rust().navigation_catalog,
+            &self.rust().platform_names,
+            &self.rust().games,
+        ) {
+            Ok(payload) => qstring(payload),
+            Err(error) => {
+                eprintln!(
+                    "Could not prepare playlist editor: {}",
+                    describe_platform_write_failure(&error)
+                );
+                QString::default()
+            }
+        }
+    }
+
+    pub fn add_playlist(mut self: Pin<&mut Self>, edit_payload: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let payload = match parse_playlist_edit_payload(None, &edit_payload.to_string()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not create playlist: {error}.")));
+                return;
+            }
+        };
+        if let Err(error) = validate_playlist_hierarchy_edit(
+            &self.as_ref().rust().navigation_catalog,
+            &self.as_ref().rust().platform_names,
+            &payload,
+            true,
+        ) {
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not create playlist: {error}.")));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Playlist creation requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let id = payload.playlist.id.clone();
+        let name = payload.playlist.name.clone();
+        let navigation_catalog = self.as_ref().rust().navigation_catalog.clone();
+        let platform_names = self.as_ref().rust().platform_names.clone();
+        let games = self.as_ref().rust().games.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Creating playlist {name}...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-playlist-create".to_string())
+            .spawn(move || {
+                let result = create_playlist_in_library(
+                    root,
+                    payload,
+                    navigation_catalog,
+                    platform_names,
+                    games,
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_playlist_write(
+                            generation,
+                            PlaylistWriteOperation::Create,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start playlist {id} creation: {error}"
+            )));
+        }
+    }
+
+    pub fn save_playlist(mut self: Pin<&mut Self>, playlist_id: QString, edit_payload: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let playlist_id = playlist_id.to_string().trim().to_string();
+        let Some(original) = self
+            .as_ref()
+            .rust()
+            .navigation_catalog
+            .playlists
+            .iter()
+            .find(|document| document.playlist.id.eq_ignore_ascii_case(&playlist_id))
+            .map(|document| document.playlist.clone())
+        else {
+            self.as_mut().set_status_message(qstring(format!(
+                "Playlist is no longer available: {playlist_id}"
+            )));
+            return;
+        };
+        let payload = match parse_playlist_edit_payload(Some(&original), &edit_payload.to_string())
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not save playlist: {error}.")));
+                return;
+            }
+        };
+        if let Err(error) = validate_playlist_hierarchy_edit(
+            &self.as_ref().rust().navigation_catalog,
+            &self.as_ref().rust().platform_names,
+            &payload,
+            false,
+        ) {
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not save playlist: {error}.")));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Playlist editing requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let navigation_catalog = self.as_ref().rust().navigation_catalog.clone();
+        let platform_names = self.as_ref().rust().platform_names.clone();
+        let games = self.as_ref().rust().games.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Saving playlist {playlist_id}...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-playlist-edit".to_string())
+            .spawn(move || {
+                let result = edit_playlist_in_library(
+                    root,
+                    playlist_id,
+                    payload,
+                    navigation_catalog,
+                    platform_names,
+                    games,
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_playlist_write(
+                            generation,
+                            PlaylistWriteOperation::Edit,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not start playlist writer: {error}")));
+        }
+    }
+
+    pub fn delete_playlist(mut self: Pin<&mut Self>, playlist_id: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let playlist_id = playlist_id.to_string().trim().to_string();
+        if !self
+            .as_ref()
+            .rust()
+            .navigation_catalog
+            .playlists
+            .iter()
+            .any(|document| document.playlist.id.eq_ignore_ascii_case(&playlist_id))
+        {
+            self.as_mut().set_status_message(qstring(format!(
+                "Playlist is no longer available: {playlist_id}"
+            )));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Playlist deletion requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let navigation_catalog = self.as_ref().rust().navigation_catalog.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Deleting playlist {playlist_id}...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-playlist-delete".to_string())
+            .spawn(move || {
+                let result = delete_playlist_from_library(root, playlist_id, navigation_catalog);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_playlist_write(
+                            generation,
+                            PlaylistWriteOperation::Delete,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start playlist deletion: {error}"
             )));
         }
     }
@@ -4036,6 +5315,37 @@ impl qobject::LibraryController {
             eprintln!(
                 "CATEGORY_CRUD_SMOKE_COMPLETE category=\"{category_name}\" writes={} detached={detached_children} navigation_entries={}",
                 rust.category_write_notifications,
+                rust.navigation_entries.len()
+            );
+        }
+        success
+    }
+
+    pub fn report_playlist_crud_smoke_success(
+        &self,
+        playlist_id: QString,
+        detached_children: i32,
+        removed_cache_rows: i32,
+    ) -> bool {
+        let playlist_id = playlist_id.to_string();
+        let rust = self.rust();
+        let expected_detached = usize::try_from(detached_children).unwrap_or(usize::MAX);
+        let expected_cache_rows = usize::try_from(removed_cache_rows).unwrap_or(usize::MAX);
+        let success = !rust
+            .navigation_catalog
+            .playlists
+            .iter()
+            .any(|document| document.playlist.id.eq_ignore_ascii_case(&playlist_id))
+            && rust.playlist_write_notifications == 5
+            && rust.last_playlist_detached_children == expected_detached
+            && rust.last_playlist_cache_rows_removed == expected_cache_rows
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "PLAYLIST_CRUD_SMOKE_COMPLETE playlist_id=\"{playlist_id}\" writes={} detached={detached_children} cache_rows={removed_cache_rows} navigation_entries={}",
+                rust.playlist_write_notifications,
                 rust.navigation_entries.len()
             );
         }
@@ -5149,6 +6459,112 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_playlist_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        operation: PlaylistWriteOperation,
+        result: Result<PlaylistWriteSuccess, PlatformWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        let operation_label = match operation {
+            PlaylistWriteOperation::Create => "create",
+            PlaylistWriteOperation::Edit => "edit",
+            PlaylistWriteOperation::Delete => "delete",
+        };
+        match result {
+            Ok(written) => {
+                let PlaylistWriteSuccess {
+                    id,
+                    playlists,
+                    parents,
+                    source,
+                    playlist_backup,
+                    parents_backup,
+                    list_cache_backup,
+                    placement_count,
+                    removed_placements,
+                    detached_children,
+                    removed_cache_rows,
+                } = written;
+                let deleting_selected_filter = matches!(operation, PlaylistWriteOperation::Delete)
+                    && self
+                        .as_ref()
+                        .rust()
+                        .playlist_filter
+                        .as_deref()
+                        .is_some_and(|selected| selected == id.to_lowercase());
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.navigation_catalog.playlists = playlists;
+                    rust.navigation_catalog.parents = parents;
+                    if deleting_selected_filter {
+                        rust.playlist_filter = None;
+                    }
+                    rust.playlist_write_notifications =
+                        rust.playlist_write_notifications.saturating_add(1);
+                    rust.last_playlist_detached_children = rust
+                        .last_playlist_detached_children
+                        .saturating_add(detached_children);
+                    rust.last_playlist_cache_rows_removed = rust
+                        .last_playlist_cache_rows_removed
+                        .saturating_add(removed_cache_rows);
+                }
+                self.as_mut().update_library_counts();
+                if self.as_ref().rust().playlist_filter.is_some() || deleting_selected_filter {
+                    self.as_mut().refresh_filtered_games();
+                }
+                self.as_mut().set_write_conflict(false);
+                let detail = match operation {
+                    PlaylistWriteOperation::Create => format!(
+                        "Created playlist {id} with {placement_count} hierarchy placement(s) at {}.",
+                        source.display()
+                    ),
+                    PlaylistWriteOperation::Edit => format!(
+                        "Saved playlist {id} with {placement_count} hierarchy placement(s)."
+                    ),
+                    PlaylistWriteOperation::Delete => format!(
+                        "Deleted all instances of playlist {id}, removed {removed_placements} placement(s), detached {detached_children} direct child placement(s) to root, and removed {removed_cache_rows} list-cache row(s). No games or media were deleted."
+                    ),
+                };
+                let playlist_backup = playlist_backup
+                    .map(|path| format!(" Exact playlist backup: {}.", path.display()))
+                    .unwrap_or_default();
+                let cache_backup = list_cache_backup
+                    .map(|path| format!(" Exact list-cache backup: {}.", path.display()))
+                    .unwrap_or_default();
+                self.as_mut().set_status_message(qstring(format!(
+                    "{detail}{playlist_backup} Exact hierarchy backup: {}.{cache_backup}",
+                    parents_backup.display()
+                )));
+            }
+            Err(PlatformWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict during playlist {operation_label}: {message}. Reload before retrying."
+                )));
+            }
+            Err(PlatformWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(PlatformWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not {operation_label} playlist: unexpected platform reference result ({})",
+                    references.len()
+                )));
+            }
+            Err(PlatformWriteFailure::Other(message)) => self.as_mut().set_status_message(qstring(
+                format!("Could not {operation_label} playlist: {message}"),
+            )),
+        }
+    }
+
     fn finish_game_delete(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -5288,9 +6704,29 @@ impl qobject::LibraryController {
         if let Some(category) = self.rust().category_filter.as_deref() {
             let visible = self
                 .rust()
-                .category_platforms
+                .category_game_ids
                 .get(category)
-                .is_some_and(|platforms| platforms.contains(&platform_key(&game.platform)));
+                .is_some_and(|ids| ids.contains(&game.id))
+                || self
+                    .rust()
+                    .category_platforms
+                    .get(category)
+                    .is_some_and(|platforms| platforms.contains(&platform_key(&game.platform)));
+            if !visible {
+                return None;
+            }
+        }
+        if let Some(playlist_id) = self.rust().playlist_filter.as_deref() {
+            let visible = self
+                .rust()
+                .navigation_catalog
+                .playlists
+                .iter()
+                .find(|document| document.playlist.id.eq_ignore_ascii_case(playlist_id))
+                .is_some_and(|document| {
+                    document.playlist.auto_populate
+                        && auto_playlist_matches(game, &document.filters)
+                });
             if !visible {
                 return None;
             }
@@ -5319,20 +6755,31 @@ impl qobject::LibraryController {
     }
 
     fn update_library_counts(mut self: Pin<&mut Self>) {
-        let (game_count, filtered_count, platform_counts, navigation_entries, category_platforms) = {
+        let (
+            game_count,
+            filtered_count,
+            platform_counts,
+            navigation_entries,
+            category_platforms,
+            category_game_ids,
+            playlist_game_ids,
+        ) = {
             let this = self.as_ref();
             let rust = this.rust();
-            let (navigation_entries, category_platforms) = build_navigation_entries(
-                &rust.navigation_catalog,
-                &rust.platform_names,
-                &rust.games,
-            );
+            let (navigation_entries, category_platforms, category_game_ids, playlist_game_ids) =
+                build_navigation_entries(
+                    &rust.navigation_catalog,
+                    &rust.platform_names,
+                    &rust.games,
+                );
             (
                 saturating_i32(rust.games.len()),
                 saturating_i32(rust.filtered_indices.len()),
                 collect_platform_counts(&rust.games, &rust.platform_names),
                 navigation_entries,
                 category_platforms,
+                category_game_ids,
+                playlist_game_ids,
             )
         };
         let platform_entry_count = saturating_i32(platform_counts.len());
@@ -5342,6 +6789,8 @@ impl qobject::LibraryController {
             rust.platform_counts = platform_counts;
             rust.navigation_entries = navigation_entries;
             rust.category_platforms = category_platforms;
+            rust.category_game_ids = category_game_ids;
+            rust.playlist_game_ids = playlist_game_ids;
         }
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_filtered_count(filtered_count);
@@ -5374,7 +6823,7 @@ impl qobject::LibraryController {
         let game_count = saturating_i32(games.len());
         let platform_counts = collect_platform_counts(&games, &platform_names);
         let platform_entry_count = saturating_i32(platform_counts.len());
-        let (navigation_entries, category_platforms) =
+        let (navigation_entries, category_platforms, category_game_ids, playlist_game_ids) =
             build_navigation_entries(&navigation_catalog, &platform_names, &games);
         let navigation_entry_count = saturating_i32(navigation_entries.len());
         let filtered_indices = (0..games.len()).collect();
@@ -5394,7 +6843,10 @@ impl qobject::LibraryController {
             rust.navigation_catalog = navigation_catalog;
             rust.navigation_entries = navigation_entries;
             rust.category_platforms = category_platforms;
+            rust.category_game_ids = category_game_ids;
+            rust.playlist_game_ids = playlist_game_ids;
             rust.category_filter = None;
+            rust.playlist_filter = None;
             rust.library_root = library_root;
             rust.launchbox_root = launchbox_root;
             rust.emulator_configuration = emulator_configuration;
@@ -5405,6 +6857,9 @@ impl qobject::LibraryController {
             rust.launch_notifications = 0;
             rust.category_write_notifications = 0;
             rust.last_category_detached_children = 0;
+            rust.playlist_write_notifications = 0;
+            rust.last_playlist_detached_children = 0;
+            rust.last_playlist_cache_rows_removed = 0;
         }
         self.as_mut().end_reset_model();
         self.as_mut().set_library_name(qstring(name));
@@ -5434,6 +6889,7 @@ impl qobject::LibraryController {
         let search_text = self.as_ref().search_text().to_string();
         let platform = self.as_ref().platform_filter().to_string();
         let category_filter = self.as_ref().rust().category_filter.clone();
+        let playlist_filter = self.as_ref().rust().playlist_filter.clone();
         let indices = {
             let this = self.as_ref();
             let rust = this.rust();
@@ -5444,10 +6900,15 @@ impl qobject::LibraryController {
             };
             let mut indices = filter_game_indices(&rust.games, &filter);
             if let Some(category) = category_filter.as_deref() {
-                if let Some(platforms) = rust.category_platforms.get(category) {
-                    indices.retain(|index| {
-                        platforms.contains(&platform_key(&rust.games[*index].platform))
-                    });
+                if let Some(ids) = rust.category_game_ids.get(category) {
+                    indices.retain(|index| ids.contains(&rust.games[*index].id));
+                } else {
+                    indices.clear();
+                }
+            }
+            if let Some(playlist) = playlist_filter.as_deref() {
+                if let Some(ids) = rust.playlist_game_ids.get(playlist) {
+                    indices.retain(|index| ids.contains(&rust.games[*index].id));
                 } else {
                     indices.clear();
                 }
@@ -5572,11 +7033,18 @@ struct NavigationNodeInfo {
     sort_key: String,
 }
 
+type NavigationBuildResult = (
+    Vec<NavigationEntry>,
+    BTreeMap<String, BTreeSet<String>>,
+    BTreeMap<String, BTreeSet<String>>,
+    BTreeMap<String, BTreeSet<String>>,
+);
+
 fn build_navigation_entries(
     catalog: &NavigationCatalog,
     platform_names: &[String],
     games: &[Game],
-) -> (Vec<NavigationEntry>, BTreeMap<String, BTreeSet<String>>) {
+) -> NavigationBuildResult {
     let mut nodes = BTreeMap::<NavigationNodeKey, NavigationNodeInfo>::new();
     for category in &catalog.categories {
         let key = category.metadata.name.to_lowercase();
@@ -5613,6 +7081,31 @@ fn build_navigation_entries(
             },
         );
     }
+    for document in &catalog.playlists {
+        let playlist = &document.playlist;
+        let key = playlist.id.to_lowercase();
+        nodes.insert(
+            NavigationNodeKey::Playlist(key),
+            NavigationNodeInfo {
+                kind: "playlist",
+                key: playlist.id.clone(),
+                name: playlist
+                    .metadata
+                    .nested_name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(&playlist.metadata.name)
+                    .to_string(),
+                sort_key: playlist
+                    .metadata
+                    .sort_title
+                    .as_deref()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or(&playlist.metadata.name)
+                    .to_lowercase(),
+            },
+        );
+    }
 
     let mut placements = BTreeMap::<NavigationNodeKey, Vec<Option<NavigationNodeKey>>>::new();
     for relationship in &catalog.parents {
@@ -5620,14 +7113,8 @@ fn build_navigation_entries(
         let Some(child) = child.filter(|child| nodes.contains_key(child)) else {
             continue;
         };
-        let parent = relationship_parent_key(relationship)
-            .filter(|parent| {
-                matches!(
-                    parent,
-                    NavigationNodeKey::Category(_) | NavigationNodeKey::Platform(_)
-                )
-            })
-            .filter(|parent| nodes.contains_key(parent));
+        let parent =
+            relationship_parent_key(relationship).filter(|parent| nodes.contains_key(parent));
         placements.entry(child).or_default().push(parent);
     }
 
@@ -5669,6 +7156,43 @@ fn build_navigation_entries(
             .entry(platform_key(&game.platform))
             .or_default() += 1;
     }
+    let playlist_game_ids = catalog
+        .playlists
+        .iter()
+        .map(|document| {
+            let ids = if document.playlist.auto_populate {
+                games
+                    .iter()
+                    .filter(|game| auto_playlist_matches(game, &document.filters))
+                    .map(|game| game.id.clone())
+                    .collect()
+            } else {
+                document
+                    .games
+                    .iter()
+                    .map(|game| game.game_id.clone())
+                    .collect()
+            };
+            (document.playlist.id.to_lowercase(), ids)
+        })
+        .collect::<BTreeMap<String, BTreeSet<String>>>();
+    let mut category_game_ids = BTreeMap::new();
+    for node in nodes.keys() {
+        let NavigationNodeKey::Category(category) = node else {
+            continue;
+        };
+        let mut ids = BTreeSet::new();
+        let mut path = BTreeSet::new();
+        collect_descendant_game_ids(
+            node,
+            &children,
+            games,
+            &playlist_game_ids,
+            &mut path,
+            &mut ids,
+        );
+        category_game_ids.insert(category.clone(), ids);
+    }
 
     let mut entries = Vec::new();
     let mut rendered = BTreeSet::new();
@@ -5681,7 +7205,8 @@ fn build_navigation_entries(
             0,
             &nodes,
             &children,
-            &category_platforms,
+            &category_game_ids,
+            &playlist_game_ids,
             &platform_game_counts,
             &mut path,
             &mut rendered,
@@ -5701,14 +7226,20 @@ fn build_navigation_entries(
             0,
             &nodes,
             &children,
-            &category_platforms,
+            &category_game_ids,
+            &playlist_game_ids,
             &platform_game_counts,
             &mut path,
             &mut rendered,
             &mut entries,
         );
     }
-    (entries, category_platforms)
+    (
+        entries,
+        category_platforms,
+        category_game_ids,
+        playlist_game_ids,
+    )
 }
 
 fn relationship_child_key(relationship: &ParentRelationship) -> Option<NavigationNodeKey> {
@@ -5780,6 +7311,124 @@ fn collect_descendant_platforms(
     path.remove(node);
 }
 
+fn collect_descendant_game_ids(
+    node: &NavigationNodeKey,
+    children: &BTreeMap<NavigationNodeKey, BTreeSet<NavigationNodeKey>>,
+    games: &[Game],
+    playlist_game_ids: &BTreeMap<String, BTreeSet<String>>,
+    path: &mut BTreeSet<NavigationNodeKey>,
+    ids: &mut BTreeSet<String>,
+) {
+    if !path.insert(node.clone()) {
+        return;
+    }
+    if let Some(node_children) = children.get(node) {
+        for child in node_children {
+            match child {
+                NavigationNodeKey::Platform(platform) => {
+                    ids.extend(
+                        games
+                            .iter()
+                            .filter(|game| platform_key(&game.platform) == *platform)
+                            .map(|game| game.id.clone()),
+                    );
+                }
+                NavigationNodeKey::Playlist(playlist) => {
+                    if let Some(playlist_ids) = playlist_game_ids.get(playlist) {
+                        ids.extend(playlist_ids.iter().cloned());
+                    }
+                }
+                NavigationNodeKey::Category(_) => {}
+            }
+            collect_descendant_game_ids(child, children, games, playlist_game_ids, path, ids);
+        }
+    }
+    path.remove(node);
+}
+
+fn auto_playlist_matches(game: &Game, filters: &[lb_domain::PlaylistFilter]) -> bool {
+    let mut grouped = BTreeMap::<String, Vec<&lb_domain::PlaylistFilter>>::new();
+    for filter in filters {
+        grouped
+            .entry(filter.field_key.to_lowercase())
+            .or_default()
+            .push(filter);
+    }
+    grouped.values().all(|group| {
+        group
+            .iter()
+            .any(|filter| playlist_filter_matches(game, filter))
+    })
+}
+
+fn playlist_filter_matches(game: &Game, filter: &lb_domain::PlaylistFilter) -> bool {
+    let field = filter.field_key.to_lowercase();
+    let comparison = filter.comparison_type_key.to_lowercase();
+    let expected = filter.value.trim();
+    let boolean = match field.as_str() {
+        "favorite" => Some(game.favorite),
+        "completed" => Some(game.completed),
+        "broken" => Some(game.broken),
+        "hidden" | "hide" => Some(game.hidden),
+        "installed" => game.installed,
+        _ => None,
+    };
+    if let Some(actual) = boolean {
+        return match comparison.as_str() {
+            "istrue" => actual,
+            "isfalse" => !actual,
+            "equalto" | "isequalto" => expected
+                .parse::<bool>()
+                .is_ok_and(|expected| actual == expected),
+            "notequalto" | "isnotequalto" => expected
+                .parse::<bool>()
+                .is_ok_and(|expected| actual != expected),
+            _ => false,
+        };
+    }
+    if field == "lastplayed" && comparison == "recentdays" {
+        let Ok(days) = expected.parse::<i64>() else {
+            return false;
+        };
+        let Some(last_played) = game.last_played_date.as_deref() else {
+            return false;
+        };
+        let Ok(last_played) = DateTime::parse_from_rfc3339(last_played) else {
+            return false;
+        };
+        return Local::now().signed_duration_since(last_played).num_days() <= days;
+    }
+    let actual = match field.as_str() {
+        "title" => Some(game.title.as_str()),
+        "platform" => Some(game.platform.as_str()),
+        "genre" => game.genre.as_deref(),
+        "publisher" => game.publisher.as_deref(),
+        "series" => game.series.as_deref(),
+        "source" => game.source.as_deref(),
+        "playmode" => game.play_mode.as_deref(),
+        "developer" => game.developer.as_deref(),
+        "status" => game.status.as_deref(),
+        "region" => game.region.as_deref(),
+        "rating" => game.rating.as_deref(),
+        "releasetype" => game.release_type.as_deref(),
+        "version" => game.version.as_deref(),
+        "progress" => game.progress.as_deref(),
+        _ => None,
+    }
+    .unwrap_or_default()
+    .to_lowercase();
+    let expected = expected.to_lowercase();
+    match comparison.as_str() {
+        "contains" => actual.contains(&expected),
+        "notcontains" => !actual.contains(&expected),
+        "equalto" | "isequalto" => actual == expected,
+        "notequalto" | "isnotequalto" => actual != expected,
+        "startswith" => actual.starts_with(&expected),
+        "endswith" => actual.ends_with(&expected),
+        _ => false,
+    }
+}
+
 fn sort_navigation_keys(
     keys: &mut [NavigationNodeKey],
     nodes: &BTreeMap<NavigationNodeKey, NavigationNodeInfo>,
@@ -5801,7 +7450,8 @@ fn flatten_navigation_node(
     depth: usize,
     nodes: &BTreeMap<NavigationNodeKey, NavigationNodeInfo>,
     children: &BTreeMap<NavigationNodeKey, BTreeSet<NavigationNodeKey>>,
-    category_platforms: &BTreeMap<String, BTreeSet<String>>,
+    category_game_ids: &BTreeMap<String, BTreeSet<String>>,
+    playlist_game_ids: &BTreeMap<String, BTreeSet<String>>,
     platform_game_counts: &BTreeMap<String, usize>,
     path: &mut BTreeSet<NavigationNodeKey>,
     rendered: &mut BTreeSet<NavigationNodeKey>,
@@ -5819,18 +7469,14 @@ fn flatten_navigation_node(
         NavigationNodeKey::Platform(name) => {
             platform_game_counts.get(name).copied().unwrap_or_default()
         }
-        NavigationNodeKey::Category(name) => category_platforms
+        NavigationNodeKey::Category(name) => category_game_ids
             .get(name)
-            .into_iter()
-            .flat_map(|platforms| platforms.iter())
-            .map(|platform| {
-                platform_game_counts
-                    .get(platform)
-                    .copied()
-                    .unwrap_or_default()
-            })
-            .sum(),
-        NavigationNodeKey::Playlist(_) => 0,
+            .map(BTreeSet::len)
+            .unwrap_or_default(),
+        NavigationNodeKey::Playlist(id) => playlist_game_ids
+            .get(id)
+            .map(BTreeSet::len)
+            .unwrap_or_default(),
     };
     entries.push(NavigationEntry {
         kind: info.kind,
@@ -5848,7 +7494,8 @@ fn flatten_navigation_node(
                 depth.saturating_add(1),
                 nodes,
                 children,
-                category_platforms,
+                category_game_ids,
+                playlist_game_ids,
                 platform_game_counts,
                 path,
                 rendered,
@@ -5999,7 +7646,7 @@ mod tests {
                 ..Game::default()
             },
         ];
-        let (entries, category_platforms) =
+        let (entries, category_platforms, category_game_ids, playlist_game_ids) =
             build_navigation_entries(&catalog, &["Game Boy".into(), "Arcade".into()], &games);
         assert_eq!(
             entries
@@ -6025,6 +7672,139 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["game boy"]
         );
+        assert_eq!(
+            category_game_ids["systems"],
+            BTreeSet::from(["handheld-game".into()])
+        );
+        assert!(playlist_game_ids.is_empty());
+    }
+
+    #[test]
+    fn playlist_navigation_uses_ids_and_launchbox_or_within_and_across_filter_groups() {
+        let games = vec![
+            Game {
+                id: "adventure".into(),
+                title: "Adventure".into(),
+                platform: "Arcade".into(),
+                genre: Some("Action Adventure".into()),
+                favorite: true,
+                ..Game::default()
+            },
+            Game {
+                id: "racer".into(),
+                title: "Racer".into(),
+                platform: "Arcade".into(),
+                genre: Some("Racing".into()),
+                ..Game::default()
+            },
+            Game {
+                id: "console".into(),
+                title: "Console Game".into(),
+                platform: "Console".into(),
+                genre: Some("Racing".into()),
+                ..Game::default()
+            },
+        ];
+        let catalog = NavigationCatalog {
+            categories: vec![PlatformCategory {
+                metadata: NavigationMetadata {
+                    name: "Collections".into(),
+                    ..NavigationMetadata::default()
+                },
+                ..PlatformCategory::default()
+            }],
+            parents: vec![
+                ParentRelationship {
+                    platform_category_name: Some("Collections".into()),
+                    ..ParentRelationship::default()
+                },
+                ParentRelationship {
+                    playlist_id: Some("auto-id".into()),
+                    parent_platform_category_name: Some("Collections".into()),
+                    ..ParentRelationship::default()
+                },
+                ParentRelationship {
+                    playlist_id: Some("manual-id".into()),
+                    ..ParentRelationship::default()
+                },
+            ],
+            playlists: vec![
+                PlaylistDocument {
+                    playlist: Playlist {
+                        id: "auto-id".into(),
+                        metadata: NavigationMetadata {
+                            name: "Immutable Auto Name".into(),
+                            nested_name: Some("Arcade Genres".into()),
+                            ..NavigationMetadata::default()
+                        },
+                        auto_populate: true,
+                        ..Playlist::default()
+                    },
+                    filters: vec![
+                        PlaylistFilter {
+                            field_key: "Platform".into(),
+                            comparison_type_key: "EqualTo".into(),
+                            value: "Arcade".into(),
+                        },
+                        PlaylistFilter {
+                            field_key: "Genre".into(),
+                            comparison_type_key: "Contains".into(),
+                            value: "Action".into(),
+                        },
+                        PlaylistFilter {
+                            field_key: "Genre".into(),
+                            comparison_type_key: "Contains".into(),
+                            value: "Racing".into(),
+                        },
+                    ],
+                    ..PlaylistDocument::default()
+                },
+                PlaylistDocument {
+                    playlist: Playlist {
+                        id: "manual-id".into(),
+                        metadata: NavigationMetadata {
+                            name: "Manual".into(),
+                            ..NavigationMetadata::default()
+                        },
+                        ..Playlist::default()
+                    },
+                    games: vec![PlaylistGame {
+                        game_id: "console".into(),
+                        game_title: "Console Game".into(),
+                        game_platform: "Console".into(),
+                        ..PlaylistGame::default()
+                    }],
+                    ..PlaylistDocument::default()
+                },
+            ],
+        };
+        let (entries, _, category_game_ids, playlist_game_ids) =
+            build_navigation_entries(&catalog, &[], &games);
+        assert_eq!(
+            playlist_game_ids["auto-id"],
+            BTreeSet::from(["adventure".into(), "racer".into()])
+        );
+        assert_eq!(
+            playlist_game_ids["manual-id"],
+            BTreeSet::from(["console".into()])
+        );
+        assert_eq!(
+            category_game_ids["collections"],
+            BTreeSet::from(["adventure".into(), "racer".into()])
+        );
+        assert!(entries.iter().any(|entry| {
+            entry.kind == "playlist"
+                && entry.key == "auto-id"
+                && entry.name == "Arcade Genres"
+                && entry.depth == 1
+                && entry.game_count == 2
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.kind == "playlist"
+                && entry.key == "manual-id"
+                && entry.depth == 0
+                && entry.game_count == 1
+        }));
     }
 
     #[test]
@@ -6082,6 +7862,82 @@ mod tests {
     }
 
     #[test]
+    fn playlist_payload_rejects_identity_changes_duplicate_games_and_cycles() {
+        let parent = Playlist {
+            id: "parent".into(),
+            metadata: NavigationMetadata {
+                name: "Parent Unique Name".into(),
+                ..NavigationMetadata::default()
+            },
+            ..Playlist::default()
+        };
+        let child = Playlist {
+            id: "child".into(),
+            metadata: NavigationMetadata {
+                name: "Child Unique Name".into(),
+                ..NavigationMetadata::default()
+            },
+            ..Playlist::default()
+        };
+        let catalog = NavigationCatalog {
+            parents: vec![ParentRelationship {
+                playlist_id: Some("child".into()),
+                parent_playlist_id: Some("parent".into()),
+                ..ParentRelationship::default()
+            }],
+            playlists: vec![
+                PlaylistDocument {
+                    playlist: parent.clone(),
+                    ..PlaylistDocument::default()
+                },
+                PlaylistDocument {
+                    playlist: child,
+                    ..PlaylistDocument::default()
+                },
+            ],
+            ..NavigationCatalog::default()
+        };
+        let mut payload: PlaylistEditPayload =
+            serde_json::from_str(&new_playlist_payload(&catalog, &[], &[]).unwrap()).unwrap();
+        payload.playlist = PlaylistEditFields::from(&parent);
+        payload.parents[0].target_kind = CategoryParentKind::Playlist;
+        payload.parents[0].target_key = "child".into();
+        let serialized = serde_json::to_string(&payload).unwrap();
+        let parsed = parse_playlist_edit_payload(Some(&parent), &serialized).unwrap();
+        assert!(validate_playlist_hierarchy_edit(&catalog, &[], &parsed, false).is_err());
+
+        payload.playlist.id = "changed".into();
+        assert!(parse_playlist_edit_payload(
+            Some(&parent),
+            &serde_json::to_string(&payload).unwrap()
+        )
+        .is_err());
+        payload.playlist = PlaylistEditFields::from(&parent);
+        payload.playlist.name = "Changed Name".into();
+        assert!(parse_playlist_edit_payload(
+            Some(&parent),
+            &serde_json::to_string(&payload).unwrap()
+        )
+        .is_err());
+        payload.playlist = PlaylistEditFields::from(&parent);
+        let duplicate = PlaylistGameEditPayload {
+            source_index: None,
+            game_id: "same-game".into(),
+            game_title: "Game".into(),
+            game_platform: "Platform".into(),
+            game_file_name: String::new(),
+            launchbox_db_id: None,
+            manual_order: 1,
+        };
+        payload.games = vec![duplicate.clone(), duplicate];
+        assert!(parse_playlist_edit_payload(
+            Some(&parent),
+            &serde_json::to_string(&payload).unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
     fn category_lifecycle_is_two_document_transactional_and_detaches_children() {
         let directory = tempfile::tempdir().expect("temporary library");
         let data_directory = directory.path().join("Data");
@@ -6109,9 +7965,16 @@ mod tests {
         let navigation_catalog = NavigationCatalog {
             categories: catalog_document.platform_catalog().unwrap().categories,
             parents: parents_document.parent_relationships().unwrap(),
-            playlists: vec![PlaylistNavigation {
-                id: "fixture-playlist".into(),
-                name: "Fixture Playlist".into(),
+            playlists: vec![PlaylistDocument {
+                playlist: lb_domain::Playlist {
+                    id: "fixture-playlist".into(),
+                    metadata: NavigationMetadata {
+                        name: "Fixture Playlist".into(),
+                        ..NavigationMetadata::default()
+                    },
+                    ..lb_domain::Playlist::default()
+                },
+                ..PlaylistDocument::default()
             }],
         };
         let mut create: CategoryEditPayload = serde_json::from_str(
@@ -6216,6 +8079,212 @@ mod tests {
         let final_parents = fs::read_to_string(&parents_path).unwrap();
         assert!(final_catalog.contains("FutureCategoryField"));
         assert!(final_parents.contains("FutureChildPlacement"));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn playlist_lifecycle_is_transactional_portable_and_detaches_without_deleting_games() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data_directory = directory.path().join("Data");
+        let playlist_directory = data_directory.join("Playlists");
+        fs::create_dir_all(&playlist_directory).unwrap();
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        let parents_path = data_directory.join("Parents.xml");
+        let cache_path = data_directory.join("ListCache.xml");
+        let platform_path = data_directory.join("Platforms/Fixture Console.xml");
+        fs::create_dir_all(platform_path.parent().unwrap()).unwrap();
+        fs::copy(fixture_root.join("Parents.xml"), &parents_path).unwrap();
+        fs::copy(fixture_root.join("ListCache.xml"), &cache_path).unwrap();
+        fs::copy(
+            fixture_root.join("Platforms/Fixture Console.xml"),
+            &platform_path,
+        )
+        .unwrap();
+        let original_platform = fs::read(&platform_path).unwrap();
+        let parents_document = AuxiliaryDocument::load(&parents_path).unwrap();
+        let navigation_catalog = NavigationCatalog {
+            categories: vec![PlatformCategory {
+                metadata: NavigationMetadata {
+                    name: "Fixture Category".into(),
+                    ..NavigationMetadata::default()
+                },
+                ..PlatformCategory::default()
+            }],
+            parents: parents_document.parent_relationships().unwrap(),
+            playlists: Vec::new(),
+        };
+        let games = vec![Game {
+            id: "fixture-racer".into(),
+            title: "Fixture Racer".into(),
+            platform: "Fixture Console".into(),
+            application_path: r"Games\Fixture Racer\racer.rom".into(),
+            database_id: Some(4321),
+            favorite: true,
+            ..Game::default()
+        }];
+        let mut create: PlaylistEditPayload = serde_json::from_str(
+            &new_playlist_payload(&navigation_catalog, &["Fixture Console".into()], &games)
+                .unwrap(),
+        )
+        .unwrap();
+        create.playlist.name = "Portable/Queue".into();
+        create.playlist.nested_name = Some("Portable Queue".into());
+        create.playlist.video_path = Some(r"Videos\Playlists\portable.mp4".into());
+        create.games.push(PlaylistGameEditPayload {
+            source_index: None,
+            game_id: "fixture-racer".into(),
+            game_title: String::new(),
+            game_platform: String::new(),
+            game_file_name: String::new(),
+            launchbox_db_id: None,
+            manual_order: 1,
+        });
+        create.parents[0].target_kind = CategoryParentKind::PlatformCategory;
+        create.parents[0].target_key = "Fixture Category".into();
+        let create =
+            parse_playlist_edit_payload(None, &serde_json::to_string(&create).unwrap()).unwrap();
+        let created = create_playlist_in_library(
+            directory.path().to_path_buf(),
+            create,
+            navigation_catalog,
+            vec!["Fixture Console".into()],
+            games.clone(),
+        )
+        .unwrap();
+        assert_eq!(created.source.file_name().unwrap(), "Portable_Queue.xml");
+        assert_eq!(created.placement_count, 1);
+        assert!(created.playlist_backup.is_none());
+        let created_document = AuxiliaryDocument::load(&created.source)
+            .unwrap()
+            .playlist_document()
+            .unwrap();
+        assert_eq!(created_document.games[0].game_file_name, "racer.rom");
+        assert_eq!(created_document.games[0].launchbox_db_id, Some(4321));
+        assert_eq!(
+            created_document.playlist.metadata.video_path.as_deref(),
+            Some(r"Videos\Playlists\portable.mp4")
+        );
+        let created_playlist_bytes = fs::read(&created.source).unwrap();
+        let created_parent_bytes = fs::read(&parents_path).unwrap();
+
+        let current = NavigationCatalog {
+            categories: vec![PlatformCategory {
+                metadata: NavigationMetadata {
+                    name: "Fixture Category".into(),
+                    ..NavigationMetadata::default()
+                },
+                ..PlatformCategory::default()
+            }],
+            parents: created.parents.clone(),
+            playlists: created.playlists.clone(),
+        };
+        let serialized = load_playlist_edit_payload(
+            directory.path(),
+            &created.id,
+            &current,
+            &["Fixture Console".into()],
+            &games,
+        )
+        .unwrap();
+        let original_playlist = current.playlists[0].playlist.clone();
+        let mut edit = parse_playlist_edit_payload(Some(&original_playlist), &serialized).unwrap();
+        assert_eq!(edit.games[0].source_index, Some(0));
+        assert_eq!(edit.parents[0].source_index, Some(0));
+        edit.playlist.sort_title = Some("Queue, Portable".into());
+        edit.playlist.auto_populate = true;
+        edit.filters.push(PlaylistFilterEditPayload {
+            source_index: None,
+            field_key: "Favorite".into(),
+            comparison_type_key: "IsTrue".into(),
+            value: String::new(),
+        });
+        edit.parents.push(CategoryParentEditPayload {
+            source_index: None,
+            target_kind: CategoryParentKind::Root,
+            target_key: String::new(),
+        });
+        let edit = parse_playlist_edit_payload(
+            Some(&original_playlist),
+            &serde_json::to_string(&edit).unwrap(),
+        )
+        .unwrap();
+        let edited = edit_playlist_in_library(
+            directory.path().to_path_buf(),
+            created.id.clone(),
+            edit,
+            current,
+            vec!["Fixture Console".into()],
+            games,
+        )
+        .unwrap();
+        assert_eq!(edited.placement_count, 2);
+        assert_eq!(
+            fs::read(edited.playlist_backup.as_ref().unwrap()).unwrap(),
+            created_playlist_bytes
+        );
+        assert_eq!(
+            fs::read(&edited.parents_backup).unwrap(),
+            created_parent_bytes
+        );
+
+        let mut parents_document = AuxiliaryDocument::load(&parents_path).unwrap();
+        parents_document
+            .set_playlist_parents(
+                "child-list",
+                vec![IndexedPlatformRecordEdit {
+                    source_index: None,
+                    record: ParentRelationship {
+                        playlist_id: Some("child-list".into()),
+                        parent_playlist_id: Some(created.id.clone()),
+                        ..ParentRelationship::default()
+                    },
+                }],
+            )
+            .unwrap();
+        fs::write(&parents_path, parents_document.to_xml_bytes().unwrap()).unwrap();
+        let cache_xml = format!(
+            "<LaunchBox><ListCacheItem><PlaylistId>{}</PlaylistId><FutureCache>drop</FutureCache></ListCacheItem><ListCacheItem><PlaylistId>other</PlaylistId><FutureCache>keep</FutureCache></ListCacheItem></LaunchBox>",
+            created.id
+        );
+        fs::write(&cache_path, cache_xml).unwrap();
+        let edited_playlist_bytes = fs::read(&created.source).unwrap();
+        let edited_parents_bytes = fs::read(&parents_path).unwrap();
+        let deleted = delete_playlist_from_library(
+            directory.path().to_path_buf(),
+            created.id.clone(),
+            NavigationCatalog {
+                categories: vec![],
+                parents: edited.parents,
+                playlists: edited.playlists,
+            },
+        )
+        .unwrap();
+        assert_eq!(deleted.removed_placements, 2);
+        assert_eq!(deleted.detached_children, 1);
+        assert_eq!(deleted.removed_cache_rows, 1);
+        assert_eq!(
+            fs::read(deleted.playlist_backup.as_ref().unwrap()).unwrap(),
+            edited_playlist_bytes
+        );
+        assert_eq!(
+            fs::read(&deleted.parents_backup).unwrap(),
+            edited_parents_bytes
+        );
+        assert!(deleted.list_cache_backup.is_some());
+        assert!(!deleted.source.exists());
+        let remaining_parent = deleted
+            .parents
+            .iter()
+            .find(|relationship| relationship.playlist_id.as_deref() == Some("child-list"))
+            .unwrap();
+        assert!(remaining_parent.parent_playlist_id.is_none());
+        assert!(fs::read_to_string(cache_path)
+            .unwrap()
+            .contains("<FutureCache>keep</FutureCache>"));
+        assert_eq!(fs::read(platform_path).unwrap(), original_platform);
         assert!(pending_transaction_manifests(directory.path())
             .unwrap()
             .is_empty());

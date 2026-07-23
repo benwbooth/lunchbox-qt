@@ -141,6 +141,22 @@ identity read-only because the protected save body and failing Wine runtime do
 not establish the required game/emulator/playlist/parent/controller/settings
 and filename rename behavior.
 
+Playlist editing now has the same explicit evidence boundary. `IPlaylist`
+exposes getter-only `PlaylistId` and unique `Name`, mutable nested display name,
+sort/notes/video/image/category/last-game/BigBox metadata, inclusion and
+auto-populate flags, ordered games, filters, and children. The add/edit view
+model exposes the corresponding metadata, hierarchy, manual-game, and
+auto-filter surfaces. Installed resource text says every playlist needs at
+least one hierarchy location and that Delete permanently removes all instances
+while a single location is removed through the Parents tab. The value-free
+13.24 census contains 51 auto-populated documents, 3 manual documents, 104
+filters, and 955 playlist-game rows. Repeated filters sharing a field occur
+alongside filters for distinct fields; the implemented membership evaluator
+uses the observed LaunchBox grouping of OR within one field and AND across
+fields. Deletion removes the playlist document and owned placement/cache rows,
+detaches direct children to root, and never treats membership as ownership of
+game XML or media. Live 13.27 runtime comparison remains pending.
+
 The 13.27 installation also yielded a concrete DOSBox mount contract despite
 the protected method bodies. `IMount` exposes game ID, drive letter,
 filesystem, mount type, path, and media type. The installed strings identify

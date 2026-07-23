@@ -138,6 +138,19 @@ updates both `Platforms.xml` and `Parents.xml` with exact backups. Deleting a
 category removes its placements and detaches direct child categories,
 platforms, and playlists to root; it never deletes their records, games, or
 media. All stored video paths remain lexical LaunchBox strings.
+Playlist nodes now participate in the same nested sidebar with stable
+`PlaylistId` keys, manual or auto-populated counts, recursive category counts,
+and exact membership filtering. The playlist dialog covers the recovered
+mutable metadata and BigBox fields, manual game order, source-indexed automatic
+filter rules, and multiple root/category/platform/playlist placements. The
+13.27 contract exposes both `PlaylistId` and the unique `Name` as getter-only,
+so an existing playlist edits its `NestedName` display label while retaining
+identity. Create/edit writes the playlist document and `Parents.xml` together;
+delete removes all instances of the playlist, clears matching `ListCache.xml`
+rows when present, and detaches direct children to root. Game XML and media are
+never modified or deleted. Playlist filenames use the platform layer's shared
+Windows/Linux/macOS-safe component rules, while stored video and game paths
+remain lexical LaunchBox strings.
 Interrupted transactions require an explicit Recover action; conflicts require
 a reload and never offer a blind overwrite.
 

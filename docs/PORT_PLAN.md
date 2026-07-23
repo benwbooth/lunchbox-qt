@@ -272,9 +272,9 @@ Phase 0/1 evidence and product-safety gates:
 2. Capture first-run and edit/import/launch diffs for the fixture.
 3. Convert the first ten critical runtime scenarios into structured fixtures
    and map them to feature-matrix IDs.
-4. Expand desktop editing beyond the now-working platform and nested-category
-   create/edit/delete workflows into playlist CRUD and reviewed
-   cascade/remediation choices for dependencies. Category deletion now follows
+4. Expand desktop editing beyond the now-working platform, nested-category,
+   and playlist create/edit/delete workflows into reviewed cascade/remediation
+   choices for dependencies. Category and playlist deletion now follow
    the recovered detach-to-root behavior without deleting child records or
    media. Alternate names and custom fields now pass typed storage and real-dialog runtime gates. The
    launch-configuration subset now edits direct/emulator/DOSBox/ScummVM fields

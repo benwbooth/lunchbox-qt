@@ -203,7 +203,10 @@ fn load_playlist(path: &Path) -> Result<PlaylistDocument, StorageError> {
     parse_playlist(path, &root)
 }
 
-fn parse_playlist(path: &Path, root: &Element) -> Result<PlaylistDocument, StorageError> {
+pub(crate) fn parse_playlist(
+    path: &Path,
+    root: &Element,
+) -> Result<PlaylistDocument, StorageError> {
     let playlist_elements = elements_named(root, "Playlist").collect::<Vec<_>>();
     let playlist_element = exactly_one(path, "Playlist", &playlist_elements)?;
     let playlist = Playlist {

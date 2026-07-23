@@ -4,7 +4,8 @@ use lb_domain::{
     AdditionalApplication, AlternateName, CatalogValidationError, CustomField, Game,
     GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave, Mount,
     NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
-    PlatformFolder, PlatformLibrary, ValidationError,
+    PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
+    ValidationError,
 };
 use serde::Deserialize;
 use std::fs;
@@ -134,6 +135,12 @@ pub struct RemovedPlatformCatalogRecords {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemovedPlatformCategoryRelationships {
+    pub removed_placements: usize,
+    pub detached_children: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemovedPlaylistRelationships {
     pub removed_placements: usize,
     pub detached_children: usize,
 }
@@ -665,6 +672,103 @@ impl AuxiliaryDocument {
         data_index::parse_platform_catalog(&self.source_path, &self.root)
     }
 
+    pub fn new_playlist(
+        source_path: impl Into<PathBuf>,
+        playlist: Playlist,
+        filters: Vec<PlaylistFilter>,
+        games: Vec<PlaylistGame>,
+    ) -> Result<Self, StorageError> {
+        let source_path = source_path.into();
+        if AuxiliaryDocumentKind::infer(&source_path)? != AuxiliaryDocumentKind::Playlist {
+            return Err(StorageError::UnsupportedAuxiliaryDocument { path: source_path });
+        }
+        let document = PlaylistDocument {
+            source_path: source_path.clone(),
+            playlist,
+            filters,
+            games,
+        };
+        document.validate()?;
+        validate_playlist_row_identity(&document)?;
+        let mut root = Element::new("LaunchBox");
+        root.children
+            .push(XMLNode::Element(playlist_element(&document.playlist)));
+        root.children.extend(
+            document
+                .filters
+                .iter()
+                .map(playlist_filter_element)
+                .map(XMLNode::Element),
+        );
+        root.children.extend(
+            document
+                .games
+                .iter()
+                .map(playlist_game_element)
+                .map(XMLNode::Element),
+        );
+        data_index::validate_auxiliary_root(AuxiliaryDocumentKind::Playlist, &source_path, &root)?;
+        Ok(Self {
+            kind: AuxiliaryDocumentKind::Playlist,
+            source_path,
+            source_revision: None,
+            root,
+        })
+    }
+
+    pub fn playlist_document(&self) -> Result<PlaylistDocument, StorageError> {
+        self.ensure_operation_kind("read playlist", AuxiliaryDocumentKind::Playlist)?;
+        data_index::parse_playlist(&self.source_path, &self.root)
+    }
+
+    /// Updates one playlist and its ordered filter/game rows without
+    /// rebuilding retained XML elements. Playlist ID and unique name are kept
+    /// immutable because the recovered 13.27 plugin contract exposes both as
+    /// getter-only identity fields.
+    pub fn set_playlist(
+        &mut self,
+        playlist_id: &str,
+        playlist: Playlist,
+        filter_edits: Vec<IndexedPlatformRecordEdit<PlaylistFilter>>,
+        game_edits: Vec<IndexedPlatformRecordEdit<PlaylistGame>>,
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind("edit playlist", AuxiliaryDocumentKind::Playlist)?;
+        playlist.validate()?;
+        let original = self.playlist_document()?;
+        if original.playlist.id != playlist_id {
+            return Err(StorageError::PlaylistNotFound {
+                id: playlist_id.to_string(),
+            });
+        }
+        if playlist.id != original.playlist.id {
+            return Err(StorageError::ImmutablePlaylistId {
+                expected: original.playlist.id,
+                actual: playlist.id,
+            });
+        }
+        if playlist.metadata.name != original.playlist.metadata.name {
+            return Err(StorageError::ImmutablePlaylistName {
+                expected: original.playlist.metadata.name,
+                actual: playlist.metadata.name,
+            });
+        }
+        validate_indexed_playlist_filters(original.filters.len(), &filter_edits)?;
+        validate_indexed_playlist_games(playlist_id, original.games.len(), &game_edits)?;
+
+        self.mutate(move |root| {
+            let playlist_indices = record_indices(root, "Playlist", None);
+            let playlist_index = exactly_one_editable_record("Playlist", None, &playlist_indices)?;
+            let element = root.children[playlist_index]
+                .as_mut_element()
+                .expect("playlist index must identify an element");
+            update_playlist_element(element, &original.playlist, &playlist);
+
+            replace_playlist_filter_rows(root, &original.filters, &filter_edits)?;
+            replace_playlist_game_rows(root, &original.games, &game_edits)?;
+            Ok(())
+        })
+    }
+
     /// Adds one typed platform and all of its folder records in a single
     /// lossless DOM mutation. `FolderPath` values are lexical LaunchBox data;
     /// this method never interprets them as native paths.
@@ -1140,6 +1244,147 @@ impl AuxiliaryDocument {
             removed_placements,
             detached_children,
         })
+    }
+
+    /// Replaces only hierarchy placements whose child is the selected
+    /// playlist. Source indices are local to that playlist's retained rows.
+    pub fn set_playlist_parents(
+        &mut self,
+        playlist_id: &str,
+        edits: Vec<IndexedPlatformRecordEdit<ParentRelationship>>,
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind("edit playlist parents", AuxiliaryDocumentKind::Parents)?;
+        let original = self
+            .parent_relationships()?
+            .into_iter()
+            .filter(|relationship| {
+                relationship
+                    .playlist_id
+                    .as_deref()
+                    .is_some_and(|id| id.eq_ignore_ascii_case(playlist_id))
+            })
+            .collect::<Vec<_>>();
+        validate_indexed_playlist_parent_edits(playlist_id, original.len(), &edits)?;
+
+        self.mutate(move |root| {
+            let root_indices = root
+                .children
+                .iter()
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    let element = node.as_element()?;
+                    (element.name == "Parent"
+                        && child_text(element, "PlaylistId")
+                            .is_some_and(|id| id.eq_ignore_ascii_case(playlist_id)))
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            if root_indices.len() != original.len() {
+                return Err(StorageError::InvalidPlaylistParentEdit {
+                    id: playlist_id.to_string(),
+                    reason: format!(
+                        "typed/XML source count mismatch ({} versus {})",
+                        original.len(),
+                        root_indices.len()
+                    ),
+                });
+            }
+
+            let mut retained = vec![false; original.len()];
+            for edit in &edits {
+                let Some(source_index) = edit.source_index else {
+                    continue;
+                };
+                retained[source_index] = true;
+                let element = root.children[root_indices[source_index]]
+                    .as_mut_element()
+                    .expect("parent index must identify an element");
+                update_parent_relationship_element(element, &original[source_index], &edit.record);
+            }
+            for source_index in (0..root_indices.len()).rev() {
+                if !retained[source_index] {
+                    root.children.remove(root_indices[source_index]);
+                }
+            }
+            for edit in edits.iter().filter(|edit| edit.source_index.is_none()) {
+                root.children
+                    .push(XMLNode::Element(parent_relationship_element(&edit.record)));
+            }
+            Ok(())
+        })
+    }
+
+    /// Removes every placement of the deleted playlist and detaches direct
+    /// child placements to root. Playlist games are only membership records;
+    /// this never deletes game records or media.
+    pub fn remove_playlist_relationships(
+        &mut self,
+        playlist_id: &str,
+    ) -> Result<RemovedPlaylistRelationships, StorageError> {
+        self.ensure_operation_kind(
+            "remove playlist relationships",
+            AuxiliaryDocumentKind::Parents,
+        )?;
+        let mut removed_placements = 0usize;
+        let mut detached_children = 0usize;
+        self.mutate(|root| {
+            root.children.retain_mut(|node| {
+                let Some(element) = node.as_mut_element() else {
+                    return true;
+                };
+                if element.name != "Parent" {
+                    return true;
+                }
+                if child_text(element, "PlaylistId")
+                    .is_some_and(|id| id.eq_ignore_ascii_case(playlist_id))
+                {
+                    removed_placements = removed_placements.saturating_add(1);
+                    return false;
+                }
+                if child_text(element, "ParentPlaylistId")
+                    .is_some_and(|id| id.eq_ignore_ascii_case(playlist_id))
+                {
+                    clear_child_text_preserving_element(element, "ParentPlaylistId");
+                    detached_children = detached_children.saturating_add(1);
+                }
+                true
+            });
+            Ok(())
+        })?;
+        Ok(RemovedPlaylistRelationships {
+            removed_placements,
+            detached_children,
+        })
+    }
+
+    /// Removes cache rows owned by a playlist that is being deleted. Cache
+    /// documents are optional transaction participants; unrelated rows remain
+    /// byte-semantically present in the lossless DOM.
+    pub fn remove_playlist_list_cache_items(
+        &mut self,
+        playlist_id: &str,
+    ) -> Result<usize, StorageError> {
+        self.ensure_operation_kind(
+            "remove playlist list-cache items",
+            AuxiliaryDocumentKind::ListCache,
+        )?;
+        let mut removed = 0usize;
+        self.mutate(|root| {
+            root.children.retain(|node| {
+                let Some(element) = node.as_element() else {
+                    return true;
+                };
+                let matches = element.name == "ListCacheItem"
+                    && child_text(element, "PlaylistId")
+                        .is_some_and(|id| id.eq_ignore_ascii_case(playlist_id));
+                if matches {
+                    removed = removed.saturating_add(1);
+                }
+                !matches
+            });
+            Ok(())
+        })?;
+        Ok(removed)
     }
 
     /// Updates a field on the only record with `record_name`.
@@ -2176,6 +2421,159 @@ fn validate_indexed_record_edits<T>(
     Ok(())
 }
 
+fn validate_playlist_row_identity(document: &PlaylistDocument) -> Result<(), StorageError> {
+    let mut game_ids = std::collections::BTreeSet::new();
+    for game in &document.games {
+        if !game_ids.insert(game.game_id.to_lowercase()) {
+            return Err(StorageError::DuplicatePlaylistGame {
+                id: document.playlist.id.clone(),
+                game_id: game.game_id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_indexed_playlist_filters(
+    original_count: usize,
+    edits: &[IndexedPlatformRecordEdit<PlaylistFilter>],
+) -> Result<(), StorageError> {
+    validate_playlist_source_indices("filter", original_count, edits)?;
+    for edit in edits {
+        edit.record.validate()?;
+    }
+    Ok(())
+}
+
+fn validate_indexed_playlist_games(
+    playlist_id: &str,
+    original_count: usize,
+    edits: &[IndexedPlatformRecordEdit<PlaylistGame>],
+) -> Result<(), StorageError> {
+    validate_playlist_source_indices("game", original_count, edits)?;
+    let mut game_ids = std::collections::BTreeSet::new();
+    for edit in edits {
+        edit.record.validate()?;
+        if !game_ids.insert(edit.record.game_id.to_lowercase()) {
+            return Err(StorageError::DuplicatePlaylistGame {
+                id: playlist_id.to_string(),
+                game_id: edit.record.game_id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_playlist_source_indices<T>(
+    record: &'static str,
+    original_count: usize,
+    edits: &[IndexedPlatformRecordEdit<T>],
+) -> Result<(), StorageError> {
+    let mut previous = None;
+    let mut saw_new = false;
+    for edit in edits {
+        match edit.source_index {
+            None => saw_new = true,
+            Some(index) => {
+                let reason = if saw_new {
+                    Some("new rows must follow retained source rows".to_string())
+                } else if index >= original_count {
+                    Some(format!(
+                        "source index {index} is outside 0..{original_count}"
+                    ))
+                } else if previous.is_some_and(|previous| previous >= index) {
+                    Some("source indices must be unique and remain in source order".to_string())
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    return Err(StorageError::InvalidPlaylistRecordEdit { record, reason });
+                }
+                previous = Some(index);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn replace_playlist_filter_rows(
+    root: &mut Element,
+    original: &[PlaylistFilter],
+    edits: &[IndexedPlatformRecordEdit<PlaylistFilter>],
+) -> Result<(), StorageError> {
+    let root_indices = record_indices(root, "PlaylistFilter", None);
+    if root_indices.len() != original.len() {
+        return Err(StorageError::InvalidPlaylistRecordEdit {
+            record: "filter",
+            reason: format!(
+                "typed/XML source count mismatch ({} versus {})",
+                original.len(),
+                root_indices.len()
+            ),
+        });
+    }
+    let mut retained = vec![false; original.len()];
+    for edit in edits {
+        let Some(source_index) = edit.source_index else {
+            continue;
+        };
+        retained[source_index] = true;
+        let element = root.children[root_indices[source_index]]
+            .as_mut_element()
+            .expect("playlist filter index must identify an element");
+        update_playlist_filter_element(element, &original[source_index], &edit.record);
+    }
+    for source_index in (0..root_indices.len()).rev() {
+        if !retained[source_index] {
+            root.children.remove(root_indices[source_index]);
+        }
+    }
+    for edit in edits.iter().filter(|edit| edit.source_index.is_none()) {
+        root.children
+            .push(XMLNode::Element(playlist_filter_element(&edit.record)));
+    }
+    Ok(())
+}
+
+fn replace_playlist_game_rows(
+    root: &mut Element,
+    original: &[PlaylistGame],
+    edits: &[IndexedPlatformRecordEdit<PlaylistGame>],
+) -> Result<(), StorageError> {
+    let root_indices = record_indices(root, "PlaylistGame", None);
+    if root_indices.len() != original.len() {
+        return Err(StorageError::InvalidPlaylistRecordEdit {
+            record: "game",
+            reason: format!(
+                "typed/XML source count mismatch ({} versus {})",
+                original.len(),
+                root_indices.len()
+            ),
+        });
+    }
+    let mut retained = vec![false; original.len()];
+    for edit in edits {
+        let Some(source_index) = edit.source_index else {
+            continue;
+        };
+        retained[source_index] = true;
+        let element = root.children[root_indices[source_index]]
+            .as_mut_element()
+            .expect("playlist game index must identify an element");
+        update_playlist_game_element(element, &original[source_index], &edit.record);
+    }
+    for source_index in (0..root_indices.len()).rev() {
+        if !retained[source_index] {
+            root.children.remove(root_indices[source_index]);
+        }
+    }
+    for edit in edits.iter().filter(|edit| edit.source_index.is_none()) {
+        root.children
+            .push(XMLNode::Element(playlist_game_element(&edit.record)));
+    }
+    Ok(())
+}
+
 fn validate_indexed_platform_folder_edits(
     platform: &str,
     original_count: usize,
@@ -2303,6 +2701,103 @@ fn validate_indexed_category_parent_edits(
     if edits.is_empty() {
         return Err(invalid(
             "a category must retain at least one hierarchy placement".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_indexed_playlist_parent_edits(
+    playlist_id: &str,
+    original_count: usize,
+    edits: &[IndexedPlatformRecordEdit<ParentRelationship>],
+) -> Result<(), StorageError> {
+    let invalid = |reason: String| StorageError::InvalidPlaylistParentEdit {
+        id: playlist_id.to_string(),
+        reason,
+    };
+    let mut previous = None;
+    let mut saw_new = false;
+    let mut targets = std::collections::BTreeSet::new();
+    for edit in edits {
+        match edit.source_index {
+            None => saw_new = true,
+            Some(index) => {
+                if saw_new {
+                    return Err(invalid(
+                        "new rows must follow retained source rows".to_string(),
+                    ));
+                }
+                if index >= original_count {
+                    return Err(invalid(format!(
+                        "source index {index} is outside 0..{original_count}"
+                    )));
+                }
+                if previous.is_some_and(|previous| previous >= index) {
+                    return Err(invalid(
+                        "source indices must be unique and remain in source order".to_string(),
+                    ));
+                }
+                previous = Some(index);
+            }
+        }
+        edit.record.validate()?;
+        if edit.record.playlist_id.as_deref() != Some(playlist_id)
+            || edit
+                .record
+                .platform_name
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            || edit
+                .record
+                .platform_category_name
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(invalid(
+                "every row must identify the exact edited playlist as its only child".to_string(),
+            ));
+        }
+        if edit
+            .record
+            .parent_playlist_id
+            .as_deref()
+            .is_some_and(|id| id.eq_ignore_ascii_case(playlist_id))
+        {
+            return Err(invalid("a playlist cannot be its own parent".to_string()));
+        }
+        let target = if let Some(name) = edit
+            .record
+            .parent_platform_category_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            format!("category:{}", name.to_lowercase())
+        } else if let Some(name) = edit
+            .record
+            .parent_platform_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            format!("platform:{}", name.to_lowercase())
+        } else if let Some(id) = edit
+            .record
+            .parent_playlist_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+        {
+            format!("playlist:{}", id.to_lowercase())
+        } else {
+            "root".to_string()
+        };
+        if !targets.insert(target.clone()) {
+            return Err(invalid(format!(
+                "the parent placement occurs more than once: {target}"
+            )));
+        }
+    }
+    if edits.is_empty() {
+        return Err(invalid(
+            "a playlist must retain at least one hierarchy placement".to_string(),
         ));
     }
     Ok(())
@@ -3726,6 +4221,82 @@ fn update_platform_category_element(
     }
 }
 
+fn update_playlist_element(element: &mut Element, original: &Playlist, updated: &Playlist) {
+    update_navigation_metadata_element(element, &original.metadata, &updated.metadata);
+    if original.auto_populate != updated.auto_populate {
+        set_child_text(element, "AutoPopulate", &updated.auto_populate.to_string());
+    }
+    if original.include_with_platforms != updated.include_with_platforms {
+        set_child_text(
+            element,
+            "IncludeWithPlatforms",
+            &updated.include_with_platforms.to_string(),
+        );
+    }
+    if original.is_autogenerated != updated.is_autogenerated {
+        set_child_text(
+            element,
+            "IsAutogenerated",
+            &updated.is_autogenerated.to_string(),
+        );
+    }
+    if original.sort_by != updated.sort_by {
+        set_optional_child_text(element, "SortBy", updated.sort_by.as_deref());
+    }
+}
+
+fn update_playlist_filter_element(
+    element: &mut Element,
+    original: &PlaylistFilter,
+    updated: &PlaylistFilter,
+) {
+    if original.field_key != updated.field_key {
+        set_child_text(element, "FieldKey", &updated.field_key);
+    }
+    if original.comparison_type_key != updated.comparison_type_key {
+        set_child_text(element, "ComparisonTypeKey", &updated.comparison_type_key);
+    }
+    if original.value != updated.value {
+        set_child_text(element, "Value", &updated.value);
+    }
+}
+
+fn update_playlist_game_element(
+    element: &mut Element,
+    original: &PlaylistGame,
+    updated: &PlaylistGame,
+) {
+    if original.game_id != updated.game_id {
+        set_child_text(element, "GameId", &updated.game_id);
+    }
+    if original.game_title != updated.game_title {
+        set_child_text(element, "GameTitle", &updated.game_title);
+    }
+    if original.game_platform != updated.game_platform {
+        set_child_text(element, "GamePlatform", &updated.game_platform);
+    }
+    if original.game_file_name != updated.game_file_name {
+        set_optional_child_text(
+            element,
+            "GameFileName",
+            (!updated.game_file_name.is_empty()).then_some(updated.game_file_name.as_str()),
+        );
+    }
+    if original.launchbox_db_id != updated.launchbox_db_id {
+        set_optional_child_text(
+            element,
+            "LaunchBoxDbId",
+            updated
+                .launchbox_db_id
+                .map(|value| value.to_string())
+                .as_deref(),
+        );
+    }
+    if original.manual_order != updated.manual_order {
+        set_child_text(element, "ManualOrder", &updated.manual_order.to_string());
+    }
+}
+
 fn update_parent_relationship_element(
     element: &mut Element,
     original: &ParentRelationship,
@@ -3916,6 +4487,86 @@ fn platform_category_element(category: &PlatformCategory) -> Element {
     element
 }
 
+fn playlist_element(playlist: &Playlist) -> Element {
+    let metadata = &playlist.metadata;
+    let mut element = Element::new("Playlist");
+    set_child_text(&mut element, "PlaylistId", &playlist.id);
+    set_child_text(&mut element, "Name", &metadata.name);
+    for (field, value) in [
+        ("NestedName", metadata.nested_name.as_deref()),
+        ("SortTitle", metadata.sort_title.as_deref()),
+        ("Notes", metadata.notes.as_deref()),
+        ("VideoPath", metadata.video_path.as_deref()),
+        ("ImageType", metadata.image_type.as_deref()),
+        ("Category", metadata.category.as_deref()),
+        ("LastGameId", metadata.last_game_id.as_deref()),
+        ("BigBoxView", metadata.big_box_view.as_deref()),
+        ("BigBoxTheme", metadata.big_box_theme.as_deref()),
+        ("SortBy", playlist.sort_by.as_deref()),
+    ] {
+        set_optional_child_text(&mut element, field, value);
+    }
+    set_child_text(
+        &mut element,
+        "HideInBigBox",
+        &metadata.hide_in_big_box.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "LocalDbParsed",
+        &metadata.local_db_parsed.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "AutoPopulate",
+        &playlist.auto_populate.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "IncludeWithPlatforms",
+        &playlist.include_with_platforms.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "IsAutogenerated",
+        &playlist.is_autogenerated.to_string(),
+    );
+    element
+}
+
+fn playlist_filter_element(filter: &PlaylistFilter) -> Element {
+    let mut element = Element::new("PlaylistFilter");
+    set_child_text(&mut element, "FieldKey", &filter.field_key);
+    set_child_text(
+        &mut element,
+        "ComparisonTypeKey",
+        &filter.comparison_type_key,
+    );
+    set_child_text(&mut element, "Value", &filter.value);
+    element
+}
+
+fn playlist_game_element(game: &PlaylistGame) -> Element {
+    let mut element = Element::new("PlaylistGame");
+    set_child_text(&mut element, "GameId", &game.game_id);
+    set_child_text(&mut element, "GameTitle", &game.game_title);
+    set_child_text(&mut element, "GamePlatform", &game.game_platform);
+    set_optional_child_text(
+        &mut element,
+        "GameFileName",
+        (!game.game_file_name.is_empty()).then_some(game.game_file_name.as_str()),
+    );
+    set_optional_child_text(
+        &mut element,
+        "LaunchBoxDbId",
+        game.launchbox_db_id
+            .map(|value| value.to_string())
+            .as_deref(),
+    );
+    set_child_text(&mut element, "ManualOrder", &game.manual_order.to_string());
+    element
+}
+
 fn parent_relationship_element(relationship: &ParentRelationship) -> Element {
     let mut element = Element::new("Parent");
     for (field, value) in [
@@ -4038,6 +4689,21 @@ pub enum StorageError {
     ImmutablePlatformCategoryName { expected: String, actual: String },
     #[error("invalid parent placement edit for platform category {category}: {reason}")]
     InvalidPlatformCategoryParentEdit { category: String, reason: String },
+    #[error("playlist was not found: {id}")]
+    PlaylistNotFound { id: String },
+    #[error("playlist ID is immutable; expected {expected}, got {actual}")]
+    ImmutablePlaylistId { expected: String, actual: String },
+    #[error("playlist unique name is immutable in the recovered 13.27 contract; expected {expected}, got {actual}")]
+    ImmutablePlaylistName { expected: String, actual: String },
+    #[error("invalid playlist {record} edit: {reason}")]
+    InvalidPlaylistRecordEdit {
+        record: &'static str,
+        reason: String,
+    },
+    #[error("playlist {id} contains game {game_id} more than once")]
+    DuplicatePlaylistGame { id: String, game_id: String },
+    #[error("invalid parent placement edit for playlist {id}: {reason}")]
+    InvalidPlaylistParentEdit { id: String, reason: String },
     #[error("{path} has no {record} record")]
     MissingDocumentRecord { path: PathBuf, record: &'static str },
     #[error("{path} has more than one {record} record")]
@@ -5812,5 +6478,167 @@ mod tests {
         let remaining_xml = String::from_utf8(parents.to_xml_bytes().unwrap()).unwrap();
         assert!(remaining_xml.contains("<FutureChildPlacement>keep-child</FutureChildPlacement>"));
         assert!(!remaining_xml.contains("keep-placement"));
+    }
+
+    #[test]
+    fn playlist_edit_preserves_unknown_xml_and_replaces_indexed_rows() {
+        let fixture = include_str!(
+            "../../../fixtures/launchbox/Data/Playlists/Fixture Playlist.xml"
+        )
+        .replace(
+            "<Notes>A deterministic playlist fixture.</Notes>",
+            "<Notes>A deterministic playlist fixture.</Notes><FuturePlaylistField>keep-playlist</FuturePlaylistField>",
+        )
+        .replace(
+            "<Value>true</Value>",
+            "<Value>true</Value><FutureFilterField>keep-filter</FutureFilterField>",
+        )
+        .replace(
+            "<ManualOrder>1</ManualOrder>",
+            "<ManualOrder>1</ManualOrder><FutureGameField>keep-game</FutureGameField>",
+        );
+        let mut document = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Playlist,
+            "Playlists/Fixture Playlist.xml",
+            fixture.as_bytes(),
+        )
+        .unwrap();
+        let original = document.playlist_document().unwrap();
+        let mut playlist = original.playlist.clone();
+        playlist.metadata.nested_name = Some("Edited Favorites".into());
+        playlist.metadata.notes = None;
+        playlist.metadata.video_path = Some(r"Videos\Playlists\favorite.mp4".into());
+        playlist.metadata.hide_in_big_box = true;
+        playlist.auto_populate = false;
+        playlist.sort_by = Some("ManualOrder".into());
+        document
+            .set_playlist(
+                "fixture-playlist",
+                playlist.clone(),
+                vec![IndexedPlatformRecordEdit {
+                    source_index: Some(0),
+                    record: PlaylistFilter {
+                        field_key: "Genre".into(),
+                        comparison_type_key: "Contains".into(),
+                        value: "Adventure".into(),
+                    },
+                }],
+                vec![
+                    IndexedPlatformRecordEdit {
+                        source_index: Some(0),
+                        record: PlaylistGame {
+                            game_title: "Edited Adventure".into(),
+                            manual_order: 2,
+                            ..original.games[0].clone()
+                        },
+                    },
+                    IndexedPlatformRecordEdit {
+                        source_index: None,
+                        record: PlaylistGame {
+                            game_id: "fixture-racer".into(),
+                            game_title: "Fixture Racer".into(),
+                            game_platform: "Fixture Console".into(),
+                            game_file_name: r"Games\Fixture\racer.rom".into(),
+                            launchbox_db_id: Some(4321),
+                            manual_order: 3,
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+
+        let updated = document.playlist_document().unwrap();
+        assert_eq!(updated.playlist, playlist);
+        assert_eq!(updated.filters[0].field_key, "Genre");
+        assert_eq!(updated.games.len(), 2);
+        assert_eq!(updated.games[1].game_file_name, r"Games\Fixture\racer.rom");
+        let xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(xml.contains("<FuturePlaylistField>keep-playlist</FuturePlaylistField>"));
+        assert!(xml.contains("<FutureFilterField>keep-filter</FutureFilterField>"));
+        assert!(xml.contains("<FutureGameField>keep-game</FutureGameField>"));
+        assert!(!xml.contains("A deterministic playlist fixture."));
+
+        let before = document.to_xml_bytes().unwrap();
+        let mut renamed = playlist;
+        renamed.metadata.name = "Renamed Unique Name".into();
+        assert!(matches!(
+            document.set_playlist("fixture-playlist", renamed, Vec::new(), Vec::new()),
+            Err(StorageError::ImmutablePlaylistName { .. })
+        ));
+        assert_eq!(document.to_xml_bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn playlist_create_and_relationship_cleanup_are_lossless() {
+        let path = PathBuf::from("Data/Playlists/Portable List.xml");
+        let playlist = Playlist {
+            id: "portable-list".into(),
+            metadata: NavigationMetadata {
+                name: "Portable List".into(),
+                video_path: Some(r"Videos\Playlists\portable.mp4".into()),
+                ..NavigationMetadata::default()
+            },
+            ..Playlist::default()
+        };
+        let created = AuxiliaryDocument::new_playlist(
+            &path,
+            playlist.clone(),
+            Vec::new(),
+            vec![PlaylistGame {
+                game_id: "fixture-racer".into(),
+                game_title: "Fixture Racer".into(),
+                game_platform: "Fixture Console".into(),
+                game_file_name: r"Games\Fixture\racer.rom".into(),
+                manual_order: 1,
+                ..PlaylistGame::default()
+            }],
+        )
+        .unwrap();
+        assert_eq!(created.playlist_document().unwrap().playlist, playlist);
+
+        let parent_fixture = r#"<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Parent><PlaylistId>portable-list</PlaylistId><ParentPlatformCategoryName>Fixture Category</ParentPlatformCategoryName><FuturePlacement>drop</FuturePlacement></Parent>
+  <Parent><PlaylistId>portable-list</PlaylistId><FutureRootPlacement>drop-root</FutureRootPlacement></Parent>
+  <Parent><PlaylistId>child-list</PlaylistId><ParentPlaylistId>portable-list</ParentPlaylistId><FutureChildPlacement>keep-child</FutureChildPlacement></Parent>
+</LaunchBox>"#;
+        let mut parents = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Parents,
+            "Data/Parents.xml",
+            parent_fixture.as_bytes(),
+        )
+        .unwrap();
+        let removed = parents
+            .remove_playlist_relationships("PORTABLE-LIST")
+            .unwrap();
+        assert_eq!(removed.removed_placements, 2);
+        assert_eq!(removed.detached_children, 1);
+        let remaining = parents.parent_relationships().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].playlist_id.as_deref(), Some("child-list"));
+        assert!(remaining[0].parent_playlist_id.is_none());
+        let parent_xml = String::from_utf8(parents.to_xml_bytes().unwrap()).unwrap();
+        assert!(parent_xml.contains("<FutureChildPlacement>keep-child</FutureChildPlacement>"));
+        assert!(!parent_xml.contains("drop-root"));
+
+        let cache_fixture = r#"<LaunchBox>
+  <ListCacheItem><PlaylistId>portable-list</PlaylistId><FutureCache>drop</FutureCache></ListCacheItem>
+  <ListCacheItem><PlaylistId>other-list</PlaylistId><FutureCache>keep-cache</FutureCache></ListCacheItem>
+</LaunchBox>"#;
+        let mut cache = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::ListCache,
+            "Data/ListCache.xml",
+            cache_fixture.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            cache
+                .remove_playlist_list_cache_items("Portable-List")
+                .unwrap(),
+            1
+        );
+        let cache_xml = String::from_utf8(cache.to_xml_bytes().unwrap()).unwrap();
+        assert!(cache_xml.contains("keep-cache"));
+        assert!(!cache_xml.contains("<FutureCache>drop</FutureCache>"));
     }
 }

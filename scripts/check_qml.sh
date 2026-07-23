@@ -79,6 +79,7 @@ edit_root=$(mktemp -d)
 crud_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
 category_crud_root=$(mktemp -d)
+playlist_crud_root=$(mktemp -d)
 emulator_launch_root=$(mktemp -d)
 direct_launch_root=$(mktemp -d)
 sequence_launch_root=$(mktemp -d)
@@ -86,7 +87,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$platform_crud_root" "$category_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -415,7 +416,7 @@ category_crud_output=$(
   printf '%s\n' "$category_crud_output" >&2
   exit 1
 }
-if ! rg -q 'CATEGORY_CRUD_SMOKE_COMPLETE category="Portable Collections" writes=3 detached=1 navigation_entries=2' \
+if ! rg -q 'CATEGORY_CRUD_SMOKE_COMPLETE category="Portable Collections" writes=3 detached=1 navigation_entries=3' \
   <<< "$category_crud_output"; then
   printf '%s\n' "$category_crud_output" >&2
   echo "LaunchBox did not validate dialog-driven nested category creation, editing, and deletion." >&2
@@ -518,6 +519,107 @@ if find "$category_crud_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox dialog-driven nested category lifecycle, descendant counts, paired transactions, child detachment, lexical paths, unknown XML, and media isolation validated."
+
+cp -R fixtures/launchbox/Data "$playlist_crud_root/Data"
+playlist_crud_platform="$playlist_crud_root/Data/Platforms/Fixture Console.xml"
+playlist_crud_parents="$playlist_crud_root/Data/Parents.xml"
+playlist_crud_cache="$playlist_crud_root/Data/ListCache.xml"
+playlist_crud_original_platform="$playlist_crud_root/original-platform.xml"
+playlist_crud_original_parents="$playlist_crud_root/original-parents.xml"
+playlist_crud_original_cache="$playlist_crud_root/original-cache.xml"
+cp "$playlist_crud_platform" "$playlist_crud_original_platform"
+cp "$playlist_crud_parents" "$playlist_crud_original_parents"
+cp "$playlist_crud_cache" "$playlist_crud_original_cache"
+
+playlist_crud_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$playlist_crud_root" --playlist-crud-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$playlist_crud_output" >&2
+  exit 1
+}
+if ! rg -q 'PLAYLIST_CRUD_SMOKE_COMPLETE .* writes=5 detached=1 cache_rows=0 navigation_entries=3' \
+  <<< "$playlist_crud_output"; then
+  printf '%s\n' "$playlist_crud_output" >&2
+  echo "LaunchBox did not validate dialog-driven playlist creation, editing, nesting, filtering, and deletion." >&2
+  exit 1
+fi
+if find "$playlist_crud_root/Data/Playlists" -maxdepth 1 -type f \
+  \( -name 'Portable_Queue.xml' -o -name 'Portable Child.xml' \) -print -quit \
+  | rg -q .; then
+  echo "Playlist CRUD smoke retained a deleted playlist document." >&2
+  exit 1
+fi
+if ! rg -q -F '<PlaylistId>fixture-playlist</PlaylistId>' "$playlist_crud_parents"; then
+  echo "Playlist CRUD smoke lost the pre-existing playlist hierarchy row." >&2
+  exit 1
+fi
+if rg -q -F 'Portable/Queue' "$playlist_crud_parents" \
+  || rg -q -F 'Portable Child' "$playlist_crud_parents"; then
+  echo "Deleted playlist still owns or parents a hierarchy row." >&2
+  exit 1
+fi
+if ! cmp -s "$playlist_crud_platform" "$playlist_crud_original_platform"; then
+  echo "Playlist membership editing changed a game platform document." >&2
+  exit 1
+fi
+if ! cmp -s "$playlist_crud_cache" "$playlist_crud_original_cache"; then
+  echo "Playlist deletion changed ListCache.xml without a matching cache row." >&2
+  exit 1
+fi
+for media_directory in Images Videos Manuals Music; do
+  if [[ -e "$playlist_crud_root/$media_directory" ]]; then
+    echo "Playlist CRUD unexpectedly created the $media_directory media directory." >&2
+    exit 1
+  fi
+done
+
+mapfile -t playlist_parent_backups < <(
+  find "$playlist_crud_root/Data" -maxdepth 1 -type f \
+    -name 'Parents.xml.lbport-transaction-backup-*' -print
+)
+mapfile -t playlist_document_backups < <(
+  find "$playlist_crud_root/Data/Playlists" -maxdepth 1 -type f \
+    \( -name 'Portable_Queue.xml.lbport-transaction-backup-*' \
+       -o -name 'Portable Child.xml.lbport-transaction-backup-*' \) -print
+)
+if [[ ${#playlist_parent_backups[@]} -ne 5 \
+  || ${#playlist_document_backups[@]} -ne 3 ]]; then
+  echo "Playlist lifecycle did not retain five hierarchy and three playlist-document backups." >&2
+  exit 1
+fi
+playlist_manual_backups=0
+playlist_auto_backups=0
+playlist_child_backups=0
+for backup in "${playlist_document_backups[@]}"; do
+  if rg -q -F '<Name>Portable/Queue</Name>' "$backup" \
+    && rg -q -F '<GameId>fixture-racer</GameId>' "$backup" \
+    && rg -q -F '<AutoPopulate>false</AutoPopulate>' "$backup"; then
+    ((playlist_manual_backups += 1))
+  elif rg -q -F '<Name>Portable/Queue</Name>' "$backup" \
+    && rg -q -F '<NestedName>Portable Favorites</NestedName>' "$backup" \
+    && rg -q -F '<VideoPath>Videos\Portable Favorites\theme.mp4</VideoPath>' "$backup" \
+    && rg -q -F '<FieldKey>Favorite</FieldKey>' "$backup" \
+    && rg -q -F '<ComparisonTypeKey>IsTrue</ComparisonTypeKey>' "$backup" \
+    && rg -q -F '<AutoPopulate>true</AutoPopulate>' "$backup"; then
+    ((playlist_auto_backups += 1))
+  elif rg -q -F '<Name>Portable Child</Name>' "$backup"; then
+    ((playlist_child_backups += 1))
+  fi
+done
+if [[ $playlist_manual_backups -ne 1 || $playlist_auto_backups -ne 1 \
+  || $playlist_child_backups -ne 1 ]]; then
+  echo "Playlist backups do not prove the expected manual, auto-filtered, nested, and deleted states." >&2
+  exit 1
+fi
+if find "$playlist_crud_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful playlist CRUD smoke left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-driven playlist lifecycle, stable identity, auto/manual membership, filtering, nesting, child detachment, portable filenames, lexical paths, exact backups, and media isolation validated."
 
 cp -R fixtures/launchbox/Data "$emulator_launch_root/Data"
 mkdir -p "$emulator_launch_root/Emulators"

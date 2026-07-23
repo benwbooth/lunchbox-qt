@@ -38,7 +38,13 @@ filtered, and deleted through one paired `Platforms.xml`/`Parents.xml`
 transaction. Direct children detach to root without deleting platforms,
 playlists, games, or media. Category rename remains gated because the 13.27
 `IPlatformCategory.Name` contract is likewise getter-only. Playlist CRUD and
-playlist nodes in the sidebar remain open.
+playlist nodes now implement the corresponding `LIB-008` and `DESK-003`
+subset: stable-ID nested navigation, manual membership/order, recovered
+automatic filter grouping, mutable metadata and BigBox fields, multiple
+placements, paired playlist/parent transactions, optional list-cache cleanup,
+and detach-to-root deletion all pass real-dialog and storage gates. Unique-name
+and ID rename remain gated by the getter-only 13.27 contract. Playlist
+generation (`LIB-009`) and full BigBox playlist navigation remain open.
 Persisted Windows-style paths remain lexical until the cross-platform launch
 service resolves them. None of those complete their family: bulk editing, all
 filter/sort modes, reset commands, rating downloads, and full Windows behavior

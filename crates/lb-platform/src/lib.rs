@@ -9,9 +9,9 @@ pub use archive::{ArchiveExtractionError, ArchiveExtractor, LaunchResourceLease}
 pub use dosbox::DosBoxPlanError;
 pub use m3u::M3uPreparationError;
 pub use path::{
-    default_platform_folders, is_windows_absolute_path, platform_document_file_name,
-    platform_storage_name, HostPathResolver, LaunchPathError, LaunchPathResolver,
-    PlatformPathError,
+    default_platform_folders, is_windows_absolute_path, navigation_document_file_name,
+    platform_document_file_name, platform_storage_name, portable_storage_name, HostPathResolver,
+    LaunchPathError, LaunchPathResolver, PlatformPathError,
 };
 pub use path_settings::{
     default_host_path_mappings_path, HostPathMappings, HostPathMappingsError, WindowsDriveMapping,

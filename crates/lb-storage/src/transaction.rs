@@ -138,6 +138,53 @@ impl LibraryTransaction {
         self.stage_replace(document.source_path(), candidate, expected)
     }
 
+    /// Stages a newly constructed playlist document. Its parent directory
+    /// must already exist and the portable target must remain absent through
+    /// commit.
+    pub fn stage_new_playlist(
+        &mut self,
+        document: &AuxiliaryDocument,
+    ) -> Result<(), TransactionError> {
+        if document.kind() != super::AuxiliaryDocumentKind::Playlist {
+            return Err(StorageError::UnsupportedAuxiliaryOperation {
+                operation: "create playlist transaction",
+                expected: super::AuxiliaryDocumentKind::Playlist,
+                actual: document.kind(),
+            }
+            .into());
+        }
+        if document.source_revision().is_some() {
+            return Err(TransactionError::VersionedNewDocument {
+                path: document.source_path().to_path_buf(),
+            });
+        }
+        let candidate = document.to_xml_bytes()?;
+        self.stage_create(document.source_path(), candidate)
+    }
+
+    /// Stages deletion of one existing playlist document. The playlist's
+    /// membership/filter rows belong to the playlist; deleting this file does
+    /// not delete any game or media record.
+    pub fn stage_delete_playlist(
+        &mut self,
+        document: &AuxiliaryDocument,
+    ) -> Result<(), TransactionError> {
+        if document.kind() != super::AuxiliaryDocumentKind::Playlist {
+            return Err(StorageError::UnsupportedAuxiliaryOperation {
+                operation: "delete playlist transaction",
+                expected: super::AuxiliaryDocumentKind::Playlist,
+                actual: document.kind(),
+            }
+            .into());
+        }
+        let expected = document.source_revision().cloned().ok_or_else(|| {
+            TransactionError::UnversionedDocument {
+                path: document.source_path().to_path_buf(),
+            }
+        })?;
+        self.stage_delete(document.source_path(), expected)
+    }
+
     /// Stages a newly constructed platform document. The target must not
     /// exist both when staged and immediately before commit.
     pub fn stage_new_platform(
@@ -1630,5 +1677,100 @@ mod tests {
             transaction.stage_delete_platform(&platform),
             Err(TransactionError::PlatformDocumentNotEmpty { path }) if path == platform_path
         ));
+    }
+
+    #[test]
+    fn commits_playlist_create_edit_and_delete_with_hierarchy_peers() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        let playlists = data.join("Playlists");
+        fs::create_dir_all(&playlists).unwrap();
+        let parents_path = data.join("Parents.xml");
+        fs::write(
+            &parents_path,
+            b"<LaunchBox><FutureRoot>keep</FutureRoot></LaunchBox>",
+        )
+        .unwrap();
+        let playlist_path = playlists.join("Portable List.xml");
+        let playlist = lb_domain::Playlist {
+            id: "portable-list".into(),
+            metadata: lb_domain::NavigationMetadata {
+                name: "Portable List".into(),
+                ..lb_domain::NavigationMetadata::default()
+            },
+            ..lb_domain::Playlist::default()
+        };
+        let new_playlist = AuxiliaryDocument::new_playlist(
+            &playlist_path,
+            playlist.clone(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut parents = AuxiliaryDocument::load(&parents_path).unwrap();
+        parents
+            .set_playlist_parents(
+                "portable-list",
+                vec![crate::IndexedPlatformRecordEdit {
+                    source_index: None,
+                    record: lb_domain::ParentRelationship {
+                        playlist_id: Some("portable-list".into()),
+                        ..lb_domain::ParentRelationship::default()
+                    },
+                }],
+            )
+            .unwrap();
+        let original_parents = fs::read(&parents_path).unwrap();
+        let mut create = LibraryTransaction::new(directory.path()).unwrap();
+        create.stage_new_playlist(&new_playlist).unwrap();
+        create.stage_auxiliary(&parents).unwrap();
+        let created = create.commit().unwrap();
+        assert_eq!(
+            created.created_targets.as_slice(),
+            std::slice::from_ref(&playlist_path)
+        );
+        assert_eq!(created.writes.len(), 1);
+        assert_eq!(
+            fs::read(&created.writes[0].backup).unwrap(),
+            original_parents
+        );
+
+        let original_playlist = fs::read(&playlist_path).unwrap();
+        let mut edited_playlist = AuxiliaryDocument::load(&playlist_path).unwrap();
+        let mut edited = playlist.clone();
+        edited.metadata.nested_name = Some("Portable Collection".into());
+        edited_playlist
+            .set_playlist("portable-list", edited, Vec::new(), Vec::new())
+            .unwrap();
+        let mut edit = LibraryTransaction::new(directory.path()).unwrap();
+        edit.stage_auxiliary(&edited_playlist).unwrap();
+        let edited_report = edit.commit().unwrap();
+        assert_eq!(edited_report.writes.len(), 1);
+        assert_eq!(
+            fs::read(&edited_report.writes[0].backup).unwrap(),
+            original_playlist
+        );
+
+        let loaded_playlist = AuxiliaryDocument::load(&playlist_path).unwrap();
+        let mut deleted_parents = AuxiliaryDocument::load(&parents_path).unwrap();
+        let removed = deleted_parents
+            .remove_playlist_relationships("portable-list")
+            .unwrap();
+        assert_eq!(removed.removed_placements, 1);
+        let before_delete = fs::read(&playlist_path).unwrap();
+        let mut delete = LibraryTransaction::new(directory.path()).unwrap();
+        delete.stage_delete_playlist(&loaded_playlist).unwrap();
+        delete.stage_auxiliary(&deleted_parents).unwrap();
+        let deleted = delete.commit().unwrap();
+        assert_eq!(deleted.deleted_targets.len(), 1);
+        assert_eq!(deleted.deleted_targets[0].target, playlist_path);
+        assert_eq!(
+            fs::read(&deleted.deleted_targets[0].backup).unwrap(),
+            before_delete
+        );
+        assert!(!deleted.deleted_targets[0].target.exists());
+        assert!(fs::read_to_string(parents_path)
+            .unwrap()
+            .contains("<FutureRoot>keep</FutureRoot>"));
     }
 }

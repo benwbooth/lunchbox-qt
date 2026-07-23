@@ -28,6 +28,8 @@ ApplicationWindow {
         Qt.application.arguments.indexOf("--platform-crud-smoke-test") >= 0
     property bool categoryCrudSmokeTest:
         Qt.application.arguments.indexOf("--category-crud-smoke-test") >= 0
+    property bool playlistCrudSmokeTest:
+        Qt.application.arguments.indexOf("--playlist-crud-smoke-test") >= 0
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
     property bool pathMappingSmokeTest:
         Qt.application.arguments.indexOf("--path-mapping-smoke-test") >= 0
@@ -45,6 +47,10 @@ ApplicationWindow {
     property bool platformCrudSmokeFinished: false
     property int categoryCrudSmokePhase: 0
     property bool categoryCrudSmokeFinished: false
+    property int playlistCrudSmokePhase: 0
+    property bool playlistCrudSmokeFinished: false
+    property string playlistCrudParentId: ""
+    property string playlistCrudChildId: ""
     property int launchSmokePhase: 0
     property bool launchSmokeFinished: false
     property int pathMappingSmokePhase: 0
@@ -78,6 +84,8 @@ ApplicationWindow {
     function applyCurrentFilter() {
         if (selectedNavigationKind === "category")
             controller.apply_category_filter(searchField.text, selectedNavigationKey)
+        else if (selectedNavigationKind === "playlist")
+            controller.apply_playlist_filter(searchField.text, selectedNavigationKey)
         else
             controller.apply_filters(searchField.text, selectedPlatform)
     }
@@ -501,7 +509,7 @@ ApplicationWindow {
             const categoryName = "Portable Collections"
             if (window.categoryCrudSmokePhase === 0 && !controller.loading
                     && controller.library_path.length > 0
-                    && controller.navigation_entry_count === 2) {
+                    && controller.navigation_entry_count === 3) {
                 window.categoryCrudSmokePhase = 1
                 categoryEditor.smokeCreate(categoryName, "platform_category",
                                            "Fixture Category")
@@ -572,6 +580,137 @@ ApplicationWindow {
                           + window.categoryCrudSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(10)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.playlistCrudSmokeTest && !window.playlistCrudSmokeFinished
+        onTriggered: {
+            const parentName = "Portable/Queue"
+            const childName = "Portable Child"
+            if (window.playlistCrudSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0
+                    && controller.navigation_entry_count === 3) {
+                window.playlistCrudSmokePhase = 1
+                playlistEditor.smokeCreateParent(parentName)
+            } else if (window.playlistCrudSmokePhase === 1 && !controller.writing) {
+                const parentIndex = window.navigationIndex(
+                            "playlist", window.playlistCrudParentId)
+                if (parentIndex < 0
+                        || controller.navigation_entry_depth_at(parentIndex) !== 0
+                        || controller.navigation_entry_game_count_at(parentIndex) !== 1) {
+                    console.error("PLAYLIST_CRUD_SMOKE_CREATE_NOT_VISIBLE index="
+                                  + parentIndex)
+                    Qt.exit(11)
+                    return
+                }
+                controller.apply_playlist_filter("", window.playlistCrudParentId)
+                if (controller.filtered_count !== 1) {
+                    console.error("PLAYLIST_CRUD_SMOKE_MANUAL_FILTER_FAILED count="
+                                  + controller.filtered_count)
+                    Qt.exit(11)
+                    return
+                }
+                window.playlistCrudSmokePhase = 2
+                playlistEditor.smokeSaveParent(window.playlistCrudParentId)
+            } else if (window.playlistCrudSmokePhase === 2 && !controller.writing) {
+                const serialized = controller.playlist_edit_payload(
+                            window.playlistCrudParentId)
+                if (serialized.length === 0) {
+                    console.error("PLAYLIST_CRUD_SMOKE_EDIT_PAYLOAD_MISSING")
+                    Qt.exit(11)
+                    return
+                }
+                const payload = JSON.parse(serialized)
+                const parentIndex = window.navigationIndex(
+                            "playlist", window.playlistCrudParentId)
+                if (payload.playlist.name !== parentName
+                        || payload.playlist.nested_name !== "Portable Favorites"
+                        || payload.playlist.sort_title !== "Favorites, Portable"
+                        || payload.playlist.notes
+                           !== "Edited through the real playlist dialog."
+                        || payload.playlist.video_path
+                           !== "Videos\\Portable Favorites\\theme.mp4"
+                        || payload.playlist.image_type !== "Clear Logo"
+                        || payload.playlist.category !== "Arcade"
+                        || payload.playlist.last_game_id !== "fixture-adventure"
+                        || payload.playlist.big_box_view !== "TextGamesView"
+                        || payload.playlist.big_box_theme !== "Default"
+                        || !payload.playlist.hide_in_big_box
+                        || !payload.playlist.include_with_platforms
+                        || !payload.playlist.auto_populate
+                        || payload.filters.length !== 1
+                        || payload.filters[0].field_key !== "Favorite"
+                        || payload.filters[0].comparison_type_key !== "IsTrue"
+                        || parentIndex < 0
+                        || controller.navigation_entry_name_at(parentIndex)
+                           !== "Portable Favorites"
+                        || controller.navigation_entry_game_count_at(parentIndex) !== 1
+                        || controller.filtered_count !== 1) {
+                    console.error("PLAYLIST_CRUD_SMOKE_EDIT_NOT_PERSISTED payload="
+                                  + serialized + " filtered=" + controller.filtered_count)
+                    Qt.exit(11)
+                    return
+                }
+                window.playlistCrudSmokePhase = 3
+                playlistEditor.smokeCreateChild(childName,
+                                                window.playlistCrudParentId)
+            } else if (window.playlistCrudSmokePhase === 3 && !controller.writing) {
+                const parentIndex = window.navigationIndex(
+                            "playlist", window.playlistCrudParentId)
+                const childIndex = window.navigationIndex(
+                            "playlist", window.playlistCrudChildId)
+                if (parentIndex < 0 || childIndex < 0
+                        || controller.navigation_entry_depth_at(childIndex)
+                           !== controller.navigation_entry_depth_at(parentIndex) + 1) {
+                    console.error("PLAYLIST_CRUD_SMOKE_CHILD_NOT_NESTED parent="
+                                  + parentIndex + " child=" + childIndex)
+                    Qt.exit(11)
+                    return
+                }
+                window.playlistCrudSmokePhase = 4
+                deletePlaylistConfirmation.smokeDelete(
+                            window.playlistCrudParentId, parentName)
+            } else if (window.playlistCrudSmokePhase === 4 && !controller.writing
+                       && window.navigationIndex(
+                           "playlist", window.playlistCrudParentId) < 0) {
+                const childIndex = window.navigationIndex(
+                            "playlist", window.playlistCrudChildId)
+                if (childIndex < 0
+                        || controller.navigation_entry_depth_at(childIndex) !== 0) {
+                    console.error("PLAYLIST_CRUD_SMOKE_CHILD_NOT_DETACHED child="
+                                  + childIndex)
+                    Qt.exit(11)
+                    return
+                }
+                window.playlistCrudSmokePhase = 5
+                deletePlaylistConfirmation.smokeDelete(
+                            window.playlistCrudChildId, childName)
+            } else if (window.playlistCrudSmokePhase === 5 && !controller.writing
+                       && window.navigationIndex(
+                           "playlist", window.playlistCrudChildId) < 0) {
+                if (!controller.report_playlist_crud_smoke_success(
+                        window.playlistCrudParentId, 1, 0)) {
+                    console.error("PLAYLIST_CRUD_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(11)
+                    return
+                }
+                window.playlistCrudSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 25000
+        running: window.playlistCrudSmokeTest && !window.playlistCrudSmokeFinished
+        onTriggered: {
+            console.error("PLAYLIST_CRUD_SMOKE_TIMEOUT phase="
+                          + window.playlistCrudSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(11)
         }
     }
 
@@ -760,6 +899,16 @@ ApplicationWindow {
                         font.pixelSize: 16
                     }
                     ToolButton {
+                        text: "+ List"
+                        Accessible.name: "Add playlist"
+                        enabled: controller.library_path.length > 0
+                                 && !controller.loading && !controller.writing
+                                 && !controller.launching
+                                 && !controller.write_conflict
+                                 && controller.pending_recovery_count === 0
+                        onClicked: playlistEditor.prepareCreate()
+                    }
+                    ToolButton {
                         text: "+ Cat"
                         Accessible.name: "Add platform category"
                         enabled: controller.library_path.length > 0
@@ -785,9 +934,10 @@ ApplicationWindow {
                     Button {
                         Layout.fillWidth: true
                         text: "Edit"
-                        Accessible.name: "Edit selected category or platform"
+                        Accessible.name: "Edit selected playlist, category, or platform"
                         enabled: (window.selectedNavigationKind === "platform"
-                                  || window.selectedNavigationKind === "category")
+                                  || window.selectedNavigationKind === "category"
+                                  || window.selectedNavigationKind === "playlist")
                                  && !controller.loading && !controller.writing
                                  && !controller.launching
                                  && !controller.write_conflict
@@ -795,6 +945,8 @@ ApplicationWindow {
                         onClicked: {
                             if (window.selectedNavigationKind === "category")
                                 categoryEditor.prepareEdit(window.selectedNavigationKey)
+                            else if (window.selectedNavigationKind === "playlist")
+                                playlistEditor.prepareEdit(window.selectedNavigationKey)
                             else
                                 platformEditor.prepare(window.selectedNavigationKey)
                         }
@@ -802,9 +954,10 @@ ApplicationWindow {
                     Button {
                         Layout.fillWidth: true
                         text: "Delete"
-                        Accessible.name: "Delete selected category or platform"
+                        Accessible.name: "Delete selected playlist, category, or platform"
                         enabled: (window.selectedNavigationKind === "platform"
-                                  || window.selectedNavigationKind === "category")
+                                  || window.selectedNavigationKind === "category"
+                                  || window.selectedNavigationKind === "playlist")
                                  && !controller.loading && !controller.writing
                                  && !controller.launching
                                  && !controller.write_conflict
@@ -813,6 +966,10 @@ ApplicationWindow {
                             if (window.selectedNavigationKind === "category")
                                 deleteCategoryConfirmation.prepare(
                                             window.selectedNavigationKey)
+                            else if (window.selectedNavigationKind === "playlist")
+                                deletePlaylistConfirmation.prepare(
+                                            window.selectedNavigationKey,
+                                            window.selectedNavigationName)
                             else
                                 deletePlatformConfirmation.prepare(
                                             window.selectedNavigationKey)
@@ -863,9 +1020,12 @@ ApplicationWindow {
                             spacing: 6
                             Label {
                                 Layout.leftMargin: platformDelegate.entryDepth * 16
-                                text: platformDelegate.entryKind === "category" ? "▾" : "▪"
+                                text: platformDelegate.entryKind === "category" ? "▾"
+                                      : platformDelegate.entryKind === "playlist" ? "≡" : "▪"
                                 color: platformDelegate.entryKind === "category"
-                                       ? "#7fbfff" : "#7d8590"
+                                       ? "#7fbfff"
+                                       : platformDelegate.entryKind === "playlist"
+                                         ? "#a78bfa" : "#7d8590"
                             }
                             Label {
                                 Layout.fillWidth: true
@@ -2515,6 +2675,578 @@ ApplicationWindow {
         contentItem: Label {
             width: 500
             text: "The category and all of its placements will be removed. Direct child categories, platforms, and playlists are detached to the root. No platforms, playlists, games, media files, or directories are deleted."
+            wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: playlistEditor
+        anchors.centerIn: parent
+        modal: true
+        title: createMode ? "Add Playlist" : "Edit " + originalName
+        standardButtons: Dialog.Save | Dialog.Cancel
+        property bool createMode: true
+        property string originalId: ""
+        property string originalName: ""
+        property var draft: null
+
+        ListModel { id: playlistParentEditorModel }
+        ListModel { id: playlistFilterEditorModel }
+        ListModel { id: playlistGameEditorModel }
+
+        function storedText(value) {
+            return value === null || value === undefined ? "" : value
+        }
+
+        function optionalText(value) {
+            return value.trim().length > 0 ? value : null
+        }
+
+        function targetIndex(kind, key) {
+            if (draft === null)
+                return -1
+            for (let index = 0; index < draft.available_parent_targets.length; ++index) {
+                const target = draft.available_parent_targets[index]
+                if (target.target_kind === kind && target.target_key === key)
+                    return index
+            }
+            return -1
+        }
+
+        function gameIndex(gameId) {
+            if (draft === null)
+                return -1
+            for (let index = 0; index < draft.available_games.length; ++index) {
+                if (draft.available_games[index].game_id === gameId)
+                    return index
+            }
+            return -1
+        }
+
+        function loadDraft(serialized, creating) {
+            if (serialized.length === 0)
+                return false
+            createMode = creating
+            draft = JSON.parse(serialized)
+            originalId = creating ? "" : draft.playlist.id
+            originalName = creating ? "" : draft.playlist.name
+            playlistIdField.text = draft.playlist.id
+            playlistNameField.text = draft.playlist.name
+            playlistNestedNameField.text = storedText(draft.playlist.nested_name)
+            playlistSortTitleField.text = storedText(draft.playlist.sort_title)
+            playlistSortByField.text = storedText(draft.playlist.sort_by)
+            playlistImageTypeField.text = storedText(draft.playlist.image_type)
+            playlistCategoryField.text = storedText(draft.playlist.category)
+            playlistLastGameField.text = storedText(draft.playlist.last_game_id)
+            playlistVideoPathField.text = storedText(draft.playlist.video_path)
+            playlistBigBoxViewField.text = storedText(draft.playlist.big_box_view)
+            playlistBigBoxThemeField.text = storedText(draft.playlist.big_box_theme)
+            playlistNotesField.text = storedText(draft.playlist.notes)
+            playlistHideBigBoxCheck.checked = draft.playlist.hide_in_big_box
+            playlistIncludePlatformsCheck.checked = draft.playlist.include_with_platforms
+            playlistAutoPopulateCheck.checked = draft.playlist.auto_populate
+            playlistAutogeneratedCheck.checked = draft.playlist.is_autogenerated
+            playlistParentEditorModel.clear()
+            for (let index = 0; index < draft.parents.length; ++index) {
+                const parent = draft.parents[index]
+                playlistParentEditorModel.append({
+                    sourceIndex: parent.source_index === null ? -1 : parent.source_index,
+                    targetKind: parent.target_kind,
+                    targetKey: parent.target_key
+                })
+            }
+            playlistFilterEditorModel.clear()
+            for (let index = 0; index < draft.filters.length; ++index) {
+                const filter = draft.filters[index]
+                playlistFilterEditorModel.append({
+                    sourceIndex: filter.source_index === null ? -1 : filter.source_index,
+                    fieldKey: filter.field_key,
+                    comparisonTypeKey: filter.comparison_type_key,
+                    filterValue: filter.value
+                })
+            }
+            playlistGameEditorModel.clear()
+            for (let index = 0; index < draft.games.length; ++index) {
+                const game = draft.games[index]
+                playlistGameEditorModel.append({
+                    sourceIndex: game.source_index === null ? -1 : game.source_index,
+                    gameId: game.game_id,
+                    gameTitle: game.game_title,
+                    gamePlatform: game.game_platform,
+                    gameFileName: game.game_file_name,
+                    launchboxDbId: game.launchbox_db_id === null ? -1 : game.launchbox_db_id,
+                    manualOrder: game.manual_order
+                })
+            }
+            return true
+        }
+
+        function prepareCreate() {
+            if (loadDraft(controller.new_playlist_edit_payload(), true))
+                open()
+        }
+
+        function prepareEdit(playlistId) {
+            if (loadDraft(controller.playlist_edit_payload(playlistId), false))
+                open()
+        }
+
+        function addRootPlacement() {
+            playlistParentEditorModel.append({
+                sourceIndex: -1,
+                targetKind: "root",
+                targetKey: ""
+            })
+        }
+
+        function addFilter() {
+            playlistFilterEditorModel.append({
+                sourceIndex: -1,
+                fieldKey: "Platform",
+                comparisonTypeKey: "EqualTo",
+                filterValue: ""
+            })
+        }
+
+        function addGame() {
+            if (draft === null)
+                return
+            for (let index = 0; index < draft.available_games.length; ++index) {
+                const available = draft.available_games[index]
+                let duplicate = false
+                for (let row = 0; row < playlistGameEditorModel.count; ++row) {
+                    if (playlistGameEditorModel.get(row).gameId === available.game_id) {
+                        duplicate = true
+                        break
+                    }
+                }
+                if (!duplicate) {
+                    playlistGameEditorModel.append({
+                        sourceIndex: -1,
+                        gameId: available.game_id,
+                        gameTitle: available.title,
+                        gamePlatform: available.platform,
+                        gameFileName: "",
+                        launchboxDbId: -1,
+                        manualOrder: playlistGameEditorModel.count + 1
+                    })
+                    return
+                }
+            }
+        }
+
+        function editPayload() {
+            draft.playlist.id = playlistIdField.text
+            draft.playlist.name = playlistNameField.text
+            draft.playlist.nested_name = optionalText(playlistNestedNameField.text)
+            draft.playlist.sort_title = optionalText(playlistSortTitleField.text)
+            draft.playlist.sort_by = optionalText(playlistSortByField.text)
+            draft.playlist.image_type = optionalText(playlistImageTypeField.text)
+            draft.playlist.category = optionalText(playlistCategoryField.text)
+            draft.playlist.last_game_id = optionalText(playlistLastGameField.text)
+            draft.playlist.video_path = optionalText(playlistVideoPathField.text)
+            draft.playlist.big_box_view = optionalText(playlistBigBoxViewField.text)
+            draft.playlist.big_box_theme = optionalText(playlistBigBoxThemeField.text)
+            draft.playlist.notes = optionalText(playlistNotesField.text)
+            draft.playlist.hide_in_big_box = playlistHideBigBoxCheck.checked
+            draft.playlist.include_with_platforms = playlistIncludePlatformsCheck.checked
+            draft.playlist.auto_populate = playlistAutoPopulateCheck.checked
+            draft.playlist.is_autogenerated = playlistAutogeneratedCheck.checked
+            const parents = []
+            for (let index = 0; index < playlistParentEditorModel.count; ++index) {
+                const parent = playlistParentEditorModel.get(index)
+                parents.push({
+                    source_index: parent.sourceIndex < 0 ? null : parent.sourceIndex,
+                    target_kind: parent.targetKind,
+                    target_key: parent.targetKey
+                })
+            }
+            draft.parents = parents
+            const filters = []
+            for (let index = 0; index < playlistFilterEditorModel.count; ++index) {
+                const filter = playlistFilterEditorModel.get(index)
+                filters.push({
+                    source_index: filter.sourceIndex < 0 ? null : filter.sourceIndex,
+                    field_key: filter.fieldKey,
+                    comparison_type_key: filter.comparisonTypeKey,
+                    value: filter.filterValue
+                })
+            }
+            draft.filters = filters
+            const games = []
+            for (let index = 0; index < playlistGameEditorModel.count; ++index) {
+                const game = playlistGameEditorModel.get(index)
+                games.push({
+                    source_index: game.sourceIndex < 0 ? null : game.sourceIndex,
+                    game_id: game.gameId,
+                    game_title: game.gameTitle,
+                    game_platform: game.gamePlatform,
+                    game_file_name: game.gameFileName,
+                    launchbox_db_id: game.launchboxDbId < 0 ? null : game.launchboxDbId,
+                    manual_order: game.manualOrder
+                })
+            }
+            draft.games = games
+            return JSON.stringify(draft)
+        }
+
+        function selectParent(row, kind, key) {
+            const index = targetIndex(kind, key)
+            if (index < 0)
+                return false
+            const target = draft.available_parent_targets[index]
+            playlistParentEditorModel.setProperty(row, "targetKind", target.target_kind)
+            playlistParentEditorModel.setProperty(row, "targetKey", target.target_key)
+            return true
+        }
+
+        function addGameById(gameId) {
+            const index = gameIndex(gameId)
+            if (index < 0)
+                return false
+            const game = draft.available_games[index]
+            playlistGameEditorModel.append({
+                sourceIndex: -1,
+                gameId: game.game_id,
+                gameTitle: game.title,
+                gamePlatform: game.platform,
+                gameFileName: "",
+                launchboxDbId: -1,
+                manualOrder: playlistGameEditorModel.count + 1
+            })
+            return true
+        }
+
+        function smokeCreateParent(name) {
+            prepareCreate()
+            window.playlistCrudParentId = draft.playlist.id
+            playlistNameField.text = name
+            playlistNestedNameField.text = "Portable Queue"
+            playlistVideoPathField.text = "Videos\\Playlists\\portable.mp4"
+            if (!addGameById("fixture-racer")) {
+                console.error("PLAYLIST_CRUD_SMOKE_GAME_TARGET_MISSING")
+                Qt.exit(11)
+                return
+            }
+            Qt.callLater(function() { playlistEditor.accept() })
+        }
+
+        function smokeSaveParent(playlistId) {
+            prepareEdit(playlistId)
+            playlistNestedNameField.text = "Portable Favorites"
+            playlistSortTitleField.text = "Favorites, Portable"
+            playlistSortByField.text = "Title"
+            playlistImageTypeField.text = "Clear Logo"
+            playlistCategoryField.text = "Arcade"
+            playlistLastGameField.text = "fixture-adventure"
+            playlistVideoPathField.text = "Videos\\Portable Favorites\\theme.mp4"
+            playlistBigBoxViewField.text = "TextGamesView"
+            playlistBigBoxThemeField.text = "Default"
+            playlistNotesField.text = "Edited through the real playlist dialog."
+            playlistHideBigBoxCheck.checked = true
+            playlistIncludePlatformsCheck.checked = true
+            playlistAutoPopulateCheck.checked = true
+            playlistFilterEditorModel.clear()
+            playlistFilterEditorModel.append({
+                sourceIndex: -1,
+                fieldKey: "Favorite",
+                comparisonTypeKey: "IsTrue",
+                filterValue: ""
+            })
+            Qt.callLater(function() { playlistEditor.accept() })
+        }
+
+        function smokeCreateChild(name, parentId) {
+            prepareCreate()
+            window.playlistCrudChildId = draft.playlist.id
+            playlistNameField.text = name
+            playlistNestedNameField.text = "Nested Queue"
+            if (!selectParent(0, "playlist", parentId)) {
+                console.error("PLAYLIST_CRUD_SMOKE_PARENT_TARGET_MISSING")
+                Qt.exit(11)
+                return
+            }
+            Qt.callLater(function() { playlistEditor.accept() })
+        }
+
+        onAccepted: {
+            const serialized = editPayload()
+            if (createMode)
+                controller.add_playlist(serialized)
+            else
+                controller.save_playlist(originalId, serialized)
+        }
+
+        contentItem: ScrollView {
+            id: playlistEditorScroll
+            implicitWidth: 760
+            implicitHeight: Math.min(680, window.height - 120)
+            contentWidth: availableWidth
+            clip: true
+
+            ColumnLayout {
+                width: playlistEditorScroll.availableWidth
+                spacing: 12
+
+                Label {
+                    Layout.fillWidth: true
+                    text: "LaunchBox 13.27 treats PlaylistId and the unique Name as identity. Existing values stay fixed; Nested Name is the editable display label."
+                    wrapMode: Text.Wrap
+                    color: "#d29922"
+                }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+
+                    Label { text: "Playlist ID" }
+                    TextField { id: playlistIdField; Layout.fillWidth: true; readOnly: true }
+                    Label { text: "Unique name" }
+                    TextField {
+                        id: playlistNameField
+                        Layout.fillWidth: true
+                        readOnly: !playlistEditor.createMode
+                    }
+                    Label { text: "Nested name" }
+                    TextField { id: playlistNestedNameField; Layout.fillWidth: true }
+                    Label { text: "Sort title" }
+                    TextField { id: playlistSortTitleField; Layout.fillWidth: true }
+                    Label { text: "Sort games by" }
+                    TextField { id: playlistSortByField; Layout.fillWidth: true }
+                    Label { text: "Image type" }
+                    TextField { id: playlistImageTypeField; Layout.fillWidth: true }
+                    Label { text: "Category metadata" }
+                    TextField { id: playlistCategoryField; Layout.fillWidth: true }
+                    Label { text: "Last game ID" }
+                    TextField { id: playlistLastGameField; Layout.fillWidth: true }
+                    Label { text: "Video path" }
+                    TextField {
+                        id: playlistVideoPathField
+                        Layout.fillWidth: true
+                        placeholderText: "Stored LaunchBox path"
+                    }
+                    Label { text: "BigBox view" }
+                    TextField { id: playlistBigBoxViewField; Layout.fillWidth: true }
+                    Label { text: "BigBox theme" }
+                    TextField { id: playlistBigBoxThemeField; Layout.fillWidth: true }
+                }
+                Label { text: "Notes" }
+                TextArea {
+                    id: playlistNotesField
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 90
+                    wrapMode: TextEdit.Wrap
+                }
+                RowLayout {
+                    CheckBox { id: playlistHideBigBoxCheck; text: "Hide in BigBox" }
+                    CheckBox {
+                        id: playlistIncludePlatformsCheck
+                        text: "Include with platforms"
+                    }
+                    CheckBox {
+                        id: playlistAutogeneratedCheck
+                        text: "LaunchBox-generated"
+                        enabled: playlistEditor.createMode
+                    }
+                }
+                CheckBox {
+                    id: playlistAutoPopulateCheck
+                    text: "Auto-populate from filter rules"
+                }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#30363d" }
+                Label { text: "Hierarchy placements"; font.pixelSize: 18; font.bold: true }
+                Label {
+                    Layout.fillWidth: true
+                    text: "A playlist needs at least one location and can appear at root or below a category, platform, or another playlist. Duplicate placements and cycles are rejected."
+                    wrapMode: Text.Wrap
+                    color: "#7d8590"
+                }
+                Repeater {
+                    model: playlistParentEditorModel
+                    delegate: RowLayout {
+                        required property int index
+                        required property int sourceIndex
+                        required property string targetKind
+                        required property string targetKey
+                        Layout.fillWidth: true
+
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: playlistEditor.draft === null
+                                   ? [] : playlistEditor.draft.available_parent_targets
+                            textRole: "label"
+                            currentIndex: playlistEditor.targetIndex(targetKind, targetKey)
+                            onActivated: function(selectedIndex) {
+                                const target = model[selectedIndex]
+                                playlistParentEditorModel.setProperty(
+                                            index, "targetKind", target.target_kind)
+                                playlistParentEditorModel.setProperty(
+                                            index, "targetKey", target.target_key)
+                            }
+                        }
+                        Button {
+                            text: "Remove"
+                            enabled: playlistParentEditorModel.count > 1
+                            onClicked: playlistParentEditorModel.remove(index)
+                        }
+                    }
+                }
+                Button { text: "Add Placement"; onClicked: playlistEditor.addRootPlacement() }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#30363d" }
+                Label {
+                    text: "Auto-populate filters"
+                    font.pixelSize: 18
+                    font.bold: true
+                    visible: playlistAutoPopulateCheck.checked
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: playlistAutoPopulateCheck.checked
+                    text: "Rules sharing a FieldKey are ORed; different fields are ANDed, matching the recovered LaunchBox playlist behavior."
+                    wrapMode: Text.Wrap
+                    color: "#7d8590"
+                }
+                Repeater {
+                    model: playlistFilterEditorModel
+                    delegate: RowLayout {
+                        required property int index
+                        required property int sourceIndex
+                        required property string fieldKey
+                        required property string comparisonTypeKey
+                        required property string filterValue
+                        Layout.fillWidth: true
+                        visible: playlistAutoPopulateCheck.checked
+
+                        TextField {
+                            Layout.preferredWidth: 170
+                            text: fieldKey
+                            placeholderText: "FieldKey"
+                            onTextEdited: playlistFilterEditorModel.setProperty(index, "fieldKey", text)
+                        }
+                        TextField {
+                            Layout.preferredWidth: 170
+                            text: comparisonTypeKey
+                            placeholderText: "Comparison"
+                            onTextEdited: playlistFilterEditorModel.setProperty(
+                                              index, "comparisonTypeKey", text)
+                        }
+                        TextField {
+                            Layout.fillWidth: true
+                            text: filterValue
+                            placeholderText: "Value"
+                            onTextEdited: playlistFilterEditorModel.setProperty(
+                                              index, "filterValue", text)
+                        }
+                        Button { text: "Remove"; onClicked: playlistFilterEditorModel.remove(index) }
+                    }
+                }
+                Button {
+                    text: "Add Filter"
+                    visible: playlistAutoPopulateCheck.checked
+                    onClicked: playlistEditor.addFilter()
+                }
+                Label {
+                    text: "Manual games"
+                    font.pixelSize: 18
+                    font.bold: true
+                    visible: !playlistAutoPopulateCheck.checked
+                }
+                Repeater {
+                    model: playlistGameEditorModel
+                    delegate: RowLayout {
+                        required property int index
+                        required property int sourceIndex
+                        required property string gameId
+                        required property string gameTitle
+                        required property string gamePlatform
+                        required property int manualOrder
+                        Layout.fillWidth: true
+                        visible: !playlistAutoPopulateCheck.checked
+
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: playlistEditor.draft === null
+                                   ? [] : playlistEditor.draft.available_games
+                            textRole: "title"
+                            currentIndex: playlistEditor.gameIndex(gameId)
+                            displayText: currentIndex < 0
+                                         ? gameTitle + " — " + gamePlatform
+                                         : model[currentIndex].title + " — "
+                                           + model[currentIndex].platform
+                            onActivated: function(selectedIndex) {
+                                const game = model[selectedIndex]
+                                playlistGameEditorModel.setProperty(index, "gameId", game.game_id)
+                                playlistGameEditorModel.setProperty(index, "gameTitle", game.title)
+                                playlistGameEditorModel.setProperty(
+                                            index, "gamePlatform", game.platform)
+                            }
+                        }
+                        SpinBox {
+                            from: -1000000
+                            to: 1000000
+                            value: manualOrder
+                            editable: true
+                            onValueModified: playlistGameEditorModel.setProperty(
+                                                 index, "manualOrder", value)
+                        }
+                        Button { text: "Remove"; onClicked: playlistGameEditorModel.remove(index) }
+                    }
+                }
+                Button {
+                    text: "Add Game"
+                    visible: !playlistAutoPopulateCheck.checked
+                    enabled: playlistEditor.draft !== null
+                             && playlistGameEditorModel.count
+                                < playlistEditor.draft.available_games.length
+                    onClicked: playlistEditor.addGame()
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: "Save writes the playlist XML and Data/Parents.xml as one recoverable transaction. Stored paths remain lexical LaunchBox strings. Editing membership never edits game records or media."
+                    wrapMode: Text.Wrap
+                    color: "#7d8590"
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: deletePlaylistConfirmation
+        anchors.centerIn: parent
+        modal: true
+        title: "Delete " + playlistName + "?"
+        standardButtons: Dialog.Yes | Dialog.No
+        property string playlistId: ""
+        property string playlistName: ""
+
+        function prepare(id, name) {
+            playlistId = id
+            playlistName = name
+            open()
+        }
+
+        function smokeDelete(id, name) {
+            prepare(id, name)
+            Qt.callLater(function() { deletePlaylistConfirmation.accept() })
+        }
+
+        onAccepted: {
+            const deleting = playlistId
+            if (window.selectedNavigationKind === "playlist"
+                    && window.selectedNavigationKey === deleting) {
+                window.selectedPlatform = ""
+                window.selectedNavigationKind = "all"
+                window.selectedNavigationKey = ""
+                window.selectedNavigationName = "All Games"
+                controller.apply_filters(searchField.text, "")
+            }
+            controller.delete_playlist(deleting)
+        }
+
+        contentItem: Label {
+            width: 540
+            text: "This permanently deletes ALL INSTANCES of the playlist. To remove only one location, edit its hierarchy placements instead. Direct children are detached to root and matching list-cache rows are removed. No games, game XML, media files, or media directories are deleted."
             wrapMode: Text.Wrap
         }
     }
