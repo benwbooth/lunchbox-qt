@@ -953,13 +953,15 @@ echo "LaunchBox dialog-confirmed active Saturn save deletion, mandatory portable
 cp -R fixtures/launchbox/Data "$game_save_restore_root/Data"
 game_save_restore_platform="$game_save_restore_root/Data/Platforms/Fixture Console.xml"
 sed -i \
-  's|<FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>|<FilePath>Emulator\\Saves\\slot1.sav</FilePath>|' \
+  -e 's|<EmulatorFileName>fixture-emulator</EmulatorFileName>|<EmulatorFileName>Dolphin.exe</EmulatorFileName>|' \
+  -e 's|<FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>|<FilePath>Emulator\\Saves\\slot1.sav</FilePath>|' \
+  -e '/    <Slot>1<\/Slot>/d' \
   "$game_save_restore_platform"
 sed -i \
-  '/<Title>Before the Final Puzzle<\/Title>/a\    <SaveGroupName>Restore Smoke</SaveGroupName>\n    <SaveGroupId>restore-smoke-group</SaveGroupId>' \
+  '/<Title>Before the Final Puzzle<\/Title>/a\    <SaveGroupName>GameCube Save</SaveGroupName>\n    <SaveGroupId>dolphin:gc:fixture-adventure:GAME01:Folder:slot1.sav</SaveGroupId>' \
   "$game_save_restore_platform"
 sed -i \
-  '/<\/GameSave>/a\  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>fixture-emulator</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.sav</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Slot>1</Slot>\n    <Title>Older Vault Version</Title>\n    <SaveGroupName>Restore Smoke</SaveGroupName>\n    <SaveGroupId>restore-smoke-group</SaveGroupId>\n    <OriginalFileName>slot1.sav</OriginalFileName>\n  </GameSave>' \
+  '/<\/GameSave>/a\  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>Dolphin.exe</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.sav</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Older Vault Version</Title>\n    <SaveGroupName>GameCube Save</SaveGroupName>\n    <SaveGroupId>dolphin:gc:fixture-adventure:GAME01:Folder:slot1.sav</SaveGroupId>\n    <OriginalFileName>slot1.sav</OriginalFileName>\n  </GameSave>' \
   "$game_save_restore_platform"
 mkdir -p \
   "$game_save_restore_root/Emulator/Saves" \
@@ -998,7 +1000,8 @@ game_save_restore_md5=$(
   md5sum "$game_save_restore_new_backup" | cut -d ' ' -f 1 | tr '[:lower:]' '[:upper:]'
 )
 if [[ $(rg -c '<GameSave>' "$game_save_restore_platform") -ne 3 ]] \
-  || [[ $(rg -c -F '<SaveGroupId>restore-smoke-group</SaveGroupId>' \
+  || [[ $(rg -c -F \
+    '<SaveGroupId>dolphin:gc:fixture-adventure:GAME01:Folder:slot1.sav</SaveGroupId>' \
     "$game_save_restore_platform") -ne 3 ]] \
   || ! rg -q -F \
     '<FilePath>Saves\Fixture Console\adventure-01.sav</FilePath>' \
@@ -1036,7 +1039,7 @@ if find "$game_save_restore_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox dialog-confirmed regular-file restore, mandatory active backup, atomic replacement, exact recovery copies, targeted refresh, and cleanup validated."
+echo "LaunchBox dialog-confirmed Dolphin regular-file restore, mandatory active backup, atomic replacement, exact recovery copies, targeted refresh, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$game_save_saturn_restore_root/Data"
 game_save_saturn_restore_platform="$game_save_saturn_restore_root/Data/Platforms/Fixture Console.xml"

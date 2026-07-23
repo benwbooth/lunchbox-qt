@@ -3987,10 +3987,10 @@ fn save_requires_container_adapter(save: &GameSave) -> bool {
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    emulator.contains("dolphin")
-        || emulator.contains("pcsx2")
+    emulator.contains("pcsx2")
         || group.starts_with("pcsx2:")
         || group.starts_with("pcsx2-state:")
+        || group.starts_with("dolphin:wii:")
 }
 
 fn inspected_save_sets_match(left: &InspectedSaveSet, right: &InspectedSaveSet) -> bool {
@@ -4273,6 +4273,12 @@ fn write_game_save_active_delete(
         .map_err(|error| {
             GameWriteFailure::Other(format!("could not resolve active save: {error}"))
         })?;
+    if save_requires_container_adapter(&expected) {
+        return Err(GameWriteFailure::Other(
+            "this active save requires its Dolphin Wii directory or PCSX2 container deletion adapter"
+                .into(),
+        ));
+    }
     let active = inspect_game_save_set(&expected, &active_path)?;
     let vault_root = root.join("Saves");
     if active
@@ -4284,12 +4290,6 @@ fn write_game_save_active_delete(
             "select a resolved Active version; vault backups use Delete Backup instead".into(),
         ));
     }
-    if save_requires_container_adapter(&expected) {
-        return Err(GameWriteFailure::Other(
-            "this active save requires its Dolphin or PCSX2 container deletion adapter".into(),
-        ));
-    }
-
     let game = document
         .library()
         .games
@@ -4502,6 +4502,12 @@ fn write_game_save_restore(
             "game-save row {source_index} changed after the manager was opened"
         )));
     }
+    if save_requires_container_adapter(&expected) {
+        return Err(GameWriteFailure::Other(
+            "this save requires its Dolphin Wii directory or PCSX2 container adapter before it can be restored"
+                .into(),
+        ));
+    }
     let group_id = expected
         .save_group_id
         .as_deref()
@@ -4595,8 +4601,7 @@ fn write_game_save_restore(
     }
     if save_requires_container_adapter(&expected) || save_requires_container_adapter(active_save) {
         return Err(GameWriteFailure::Other(
-            "this save requires its Dolphin or PCSX2 container adapter before it can be restored"
-                .into(),
+            "this save requires its Dolphin Wii directory or PCSX2 container adapter before it can be restored".into(),
         ));
     }
 
@@ -8747,9 +8752,11 @@ impl qobject::LibraryController {
                 && saves[0].file_path == r"Emulator\Saves\slot1.sav"
                 && saves[1].file_path == r"Saves\Fixture Console\adventure.sav"
                 && saves[2].file_path == r"Saves\Fixture Console\adventure-01.sav"
-                && saves
-                    .iter()
-                    .all(|save| save.save_group_id.as_deref() == Some("restore-smoke-group"))
+                && saves.iter().all(|save| {
+                    save.save_group_id.as_deref()
+                        == Some("dolphin:gc:fixture-adventure:GAME01:Folder:slot1.sav")
+                        && save.emulator_file_name == "Dolphin.exe"
+                })
         }) && rust.game_save_write_notifications == 1
             && *self.game_save_revision() == 1
             && !*self.writing()
@@ -13904,7 +13911,89 @@ mod tests {
     }
 
     #[test]
-    fn regular_file_restore_backs_up_active_before_atomic_replacement() {
+    fn dolphin_regular_save_delete_archives_and_removes_the_mapped_active_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let library_root = directory.path().join("library");
+        let platform_directory = library_root.join("Data/Platforms");
+        let external_drive = directory.path().join("windows-c");
+        let active_directory = external_drive.join("Dolphin/User/GC/USA/GAME01");
+        fs::create_dir_all(&platform_directory).unwrap();
+        fs::create_dir_all(&active_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE
+            .replace(
+                "<EmulatorFileName>fixture-emulator</EmulatorFileName>",
+                "<EmulatorFileName>Dolphin.exe</EmulatorFileName>",
+            )
+            .replace(
+                r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+                r"<FilePath>C:\Dolphin\User\GC\USA\GAME01\01-GAME-adventure.gci</FilePath>",
+            )
+            .replace("    <Slot>1</Slot>\n", "")
+            .replace(
+                "    <Title>Before the Final Puzzle</Title>",
+                "    <Title>Current GameCube Save</Title>\n    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>dolphin:gc:fixture-adventure:GAME01:Folder:01-GAME-adventure.gci</SaveGroupId>",
+            );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let active = active_directory.join("01-GAME-adventure.gci");
+        fs::write(&active, b"active mapped GameCube save").unwrap();
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let expected = document.library().game_saves[0].clone();
+        let resolver = HostPathResolver::default()
+            .with_windows_drive_mapping('C', &external_drive)
+            .unwrap();
+
+        let result = write_game_save_active_delete(
+            library_root.clone(),
+            platform_path.clone(),
+            "fixture-adventure".into(),
+            0,
+            expected,
+            resolver,
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        assert_eq!(result.saves.len(), 1);
+        assert_eq!(
+            result.saves[0].file_path,
+            r"Saves\Fixture Console\adventure.gci"
+        );
+        assert_eq!(
+            result.saves[0].save_group_id.as_deref(),
+            Some("dolphin:gc:fixture-adventure:GAME01:Folder:01-GAME-adventure.gci")
+        );
+        assert!(result
+            .operation
+            .starts_with("Archived and deleted active save set (1 file)"));
+        assert!(!active.exists());
+        assert_eq!(
+            fs::read(library_root.join("Saves/Fixture Console/adventure.gci")).unwrap(),
+            b"active mapped GameCube save"
+        );
+        let recovery = fs::read_dir(&active_directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|candidate| {
+                candidate.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with("01-GAME-adventure.gci.lbport-delete-backup-")
+                })
+            })
+            .unwrap();
+        assert_eq!(fs::read(recovery).unwrap(), b"active mapped GameCube save");
+        assert_eq!(fs::read(&result.backup).unwrap(), platform_xml.as_bytes());
+        let xml = fs::read_to_string(platform_path).unwrap();
+        assert_eq!(xml.matches("<GameSave>").count(), 1);
+        assert!(xml.contains(r"<FilePath>Saves\Fixture Console\adventure.gci</FilePath>"));
+        assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+        assert!(pending_transaction_manifests(&library_root)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn dolphin_regular_file_restore_backs_up_active_before_atomic_replacement() {
         let directory = tempfile::tempdir().unwrap();
         let platform_directory = directory.path().join("Data/Platforms");
         let vault_directory = directory.path().join("Saves/Fixture Console");
@@ -13913,16 +14002,21 @@ mod tests {
         let platform_path = platform_directory.join("Fixture Console.xml");
         let platform_xml = FIXTURE
             .replace(
+                "<EmulatorFileName>fixture-emulator</EmulatorFileName>",
+                "<EmulatorFileName>Dolphin.exe</EmulatorFileName>",
+            )
+            .replace(
                 r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
                 r"<FilePath>Emulator\Saves\slot1.sav</FilePath>",
             )
+            .replace("    <Slot>1</Slot>\n", "")
             .replace(
                 "    <Title>Before the Final Puzzle</Title>",
-                "    <Title>Current Active</Title>\n    <SaveGroupName>Restore Smoke</SaveGroupName>\n    <SaveGroupId>restore-smoke-group</SaveGroupId>",
+                "    <Title>Current Active</Title>\n    <SaveGroupName>GameCube Save</SaveGroupName>\n    <SaveGroupId>dolphin:gc:fixture-adventure:GAME01:Folder:slot1.sav</SaveGroupId>",
             )
             .replace(
                 "  <FutureRootElement>preserve-me</FutureRootElement>",
-                "  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>fixture-emulator</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.sav</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Slot>1</Slot>\n    <Title>Older Vault Version</Title>\n    <SaveGroupName>Restore Smoke</SaveGroupName>\n    <SaveGroupId>restore-smoke-group</SaveGroupId>\n    <OriginalFileName>slot1.sav</OriginalFileName>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
+                "  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>Dolphin.exe</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.sav</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Older Vault Version</Title>\n    <SaveGroupName>GameCube Save</SaveGroupName>\n    <SaveGroupId>dolphin:gc:fixture-adventure:GAME01:Folder:slot1.sav</SaveGroupId>\n    <OriginalFileName>slot1.sav</OriginalFileName>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
             );
         fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
         let active = directory.path().join("Emulator/Saves/slot1.sav");
@@ -14156,6 +14250,19 @@ mod tests {
 
     #[test]
     fn container_restore_and_active_delete_stay_adapter_gated() {
+        assert!(save_requires_container_adapter(&GameSave {
+            emulator_file_name: "Dolphin.exe".into(),
+            save_group_id: Some("dolphin:wii:fixture:00010000:47414d45".into()),
+            ..GameSave::default()
+        }));
+        assert!(!save_requires_container_adapter(&GameSave {
+            emulator_file_name: "Dolphin.exe".into(),
+            save_group_id: Some(
+                "dolphin:gc:fixture-adventure:GAME01:Folder:01-GAME-adventure.gci".into()
+            ),
+            ..GameSave::default()
+        }));
+
         let directory = tempfile::tempdir().unwrap();
         let platform_directory = directory.path().join("Data/Platforms");
         let vault_directory = directory.path().join("Saves/Fixture Console");

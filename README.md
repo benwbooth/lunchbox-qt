@@ -272,21 +272,24 @@ from the selected vault version with a second exact sibling recovery copy.
 RetroArch Saturn restore revision-checks all source and target members and
 replaces or creates the selected `.bcr`, `.bkr`, and `.smpc` companions under
 one recovery manifest; active companions absent from the selected version are
-retained to match 13.27. Dolphin, PCSX2, directory, and ambiguous-active cases
+retained to match 13.27. Evidence-backed regular Dolphin save states and
+GameCube save files use the same backup-first atomic restore path; Dolphin Wii
+directories, PCSX2 containers, other directories, and ambiguous-active cases
 remain adapter-gated.
 Confirmed active deletion supports a resolved regular file or complete
 RetroArch Saturn companion set, including host-mapped files outside the
-library root. It first atomically replaces the active history row with an
-exact portable vault copy. Only after that copy is committed and verified
-does it revision-check and remove the live file set, retaining exact sibling
-recovery copies and rolling back every attempted deletion if a peer fails.
+library root and regular Dolphin GameCube/state files. It first atomically
+replaces the active history row with an exact portable vault copy. Only after
+that copy is committed and verified does it revision-check and remove the live
+file set, retaining exact sibling recovery copies and rolling back every
+attempted deletion if a peer fails.
 Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
 Unresolved. Metadata operations never move or delete save files, and backup
 never changes active files. Non-RetroArch scanning, directory/container backup,
-Dolphin/PCSX2 container restore/deletion, stale-row reconciliation,
-automatic-backup policy, repair, and the remaining emulator adapters remain
-open, as does manual game combine/expand.
+Dolphin Wii directory and PCSX2 container restore/deletion, stale-row
+reconciliation, automatic-backup policy, repair, and the remaining emulator
+adapters remain open, as does manual game combine/expand.
 
 Emulator
 auto-extraction invokes 7-Zip without a shell for ZIP, 7z, and RAR inputs,

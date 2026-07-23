@@ -304,9 +304,11 @@ scanning and directory/container backup remain open. Active deletion now first
 atomically replaces one regular or Saturn active row with its verified portable
 vault set, then revision-checks and deletes even host-mapped external live files
 with exact sibling recovery copies and all-or-rollback behavior.
-Dolphin/PCSX2 container restore/deletion, stale-row reconciliation, automatic
-policy, repair, and the remaining adapters remain open, as do the manual
-combine/expand actions in `LIB-010`.
+Recovered Dolphin 13.27 regular-file semantics now allow the same path for
+GameCube files and state rows; only `dolphin:wii:` directory saves remain
+adapter-gated. Dolphin Wii/PCSX2 container restore/deletion, stale-row
+reconciliation, automatic policy, repair, and the remaining adapters remain
+open, as do the manual combine/expand actions in `LIB-010`.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:

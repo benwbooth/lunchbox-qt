@@ -153,13 +153,21 @@ scanning and directory/container backup remain open. Active deletion now first
 atomically replaces one regular or Saturn active row with its verified portable
 vault set, then revision-checks and deletes even host-mapped external live files
 with exact sibling recovery copies and all-or-rollback behavior.
+The 13.27 Dolphin plugin restores state and GameCube rows with ordinary
+overwrite-copy and removes ordinary paths with `File.Delete`; it uses recursive
+directory replacement/deletion only for Wii save folders. The port therefore
+allows regular Dolphin state/GameCube rows through its revision-checked
+backup-first restore and active-delete paths, recognizes `dolphin:wii:` as the
+explicit directory boundary, and keeps unrecognized directories rejected by
+regular-file inspection.
 The 13.27 RetroArch plugin does not override `EmulatorPlugin.RemoveSave`, so
 the Windows implementation calls the base `File.Delete` on only the persisted
 primary path. The port deliberately deletes the already-established Saturn
 ownership set instead of orphaning `.bkr`/`.smpc` companions; the mandatory
 vault copy and per-member recovery copies make that safety extension explicit.
-Dolphin/PCSX2 container restore/deletion, stale-row reconciliation, automatic
-policy, repair, and the remaining adapters remain open.
+Dolphin Wii directory/PCSX2 container restore/deletion, stale-row
+reconciliation, automatic policy, repair, and the remaining adapters remain
+open.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the
