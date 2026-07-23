@@ -250,7 +250,7 @@ onto the owning game while preserving game identity and game-only data. Save
 records now use the full persisted 13.27 contract in both readers. A per-game
 Saves manager displays grouped version history and provides transactional
 Rename Version, Rename Group, Combine, and Make New Save metadata operations.
-Its native emulator adapters inspect configured RetroArch and Dolphin launch
+Its native emulator adapters inspect configured RetroArch, Dolphin, and PCSX2 launch
 targets for the main game and emulator-owned additional applications and
 append only new active rows without deleting history. RetroArch discovery
 reads the host-resolved `retroarch.cfg`, applies content/core sorting, and
@@ -261,7 +261,15 @@ WAD title IDs, or a sibling DolphinTool for compressed RVZ/GCZ/WIA/WBFS
 content, then searches portable and native user roots for GameCube folder/card
 files and two-digit save-state slots. Stable Dolphin group IDs preserve
 idempotency even if a persisted GameCube path moves. Wii directory saves are
-not claimed by the ordinary-file adapter. Manual backup derives collision-free
+not claimed by the ordinary-file adapter. PCSX2 discovery checks the recovered
+portable/legacy roots and the platform-native data root (`~/.config/PCSX2` by
+default on Linux), parses exact `.p2s`/`.p2z` state names, and matches serials
+from `SYSTEM.CNF` prefixes, content names, or game titles. It also enumerates
+folder-format `.ps2` card members with recovered `icon.sys`, GameIndex, serial,
+title, size, timestamp, group-ID, and owner rules. Ordinary PCSX2 state rows use
+the regular-file transaction path; folder-card members retain their card/member
+boundary and raw `.ps2` card files remain unclaimed until the native card
+filesystem is implemented. Manual backup derives collision-free
 portable
 `Saves\<Platform>\<ROM name>[-NN].<ext>` targets through the host-path service,
 records exact aggregate size, seven-digit UTC modified time, and MD5, and
@@ -279,10 +287,10 @@ from the selected vault version with a second exact sibling recovery copy.
 RetroArch Saturn restore revision-checks all source and target members and
 replaces or creates the selected `.bcr`, `.bkr`, and `.smpc` companions under
 one recovery manifest; active companions absent from the selected version are
-retained to match 13.27. Evidence-backed regular Dolphin save states and
-GameCube save files use the same backup-first atomic restore path; Dolphin Wii
-directories, PCSX2 containers, other directories, and ambiguous-active cases
-remain adapter-gated.
+retained to match 13.27. Evidence-backed regular Dolphin save states, GameCube
+save files, and PCSX2 save states use the same backup-first atomic restore path;
+Dolphin Wii directories, PCSX2 memory-card members, other directories, and
+ambiguous-active cases remain adapter-gated.
 Confirmed active deletion supports a resolved regular file or complete
 RetroArch Saturn companion set, including host-mapped files outside the
 library root and regular Dolphin GameCube/state files. It first atomically
@@ -294,9 +302,10 @@ Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
 Unresolved. Metadata operations never move or delete save files, and backup
 never changes active files. Other-emulator scanning, directory/container backup,
-Dolphin Wii directory and PCSX2 container restore/deletion, stale-row
-reconciliation, automatic-backup policy, repair, and the remaining emulator
-adapters remain open, as does manual game combine/expand.
+Dolphin Wii directory and PCSX2 memory-card-member restore/deletion, raw PCSX2
+card parsing, full disc-image serial extraction, stale-row reconciliation,
+automatic-backup policy, repair, and the remaining emulator adapters remain
+open, as does manual game combine/expand.
 
 Emulator
 auto-extraction invokes 7-Zip without a shell for ZIP, 7z, and RAR inputs,

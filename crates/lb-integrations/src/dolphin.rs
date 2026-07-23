@@ -218,6 +218,7 @@ fn push_gamecube_file(
         )),
         save_group_name: "My Save File".to_string(),
         display_chip_text,
+        container_save: None,
     });
     Ok(())
 }
@@ -269,6 +270,7 @@ fn discover_save_states(
                 save_group_id: Some(format!("{}-{}-State-{slot}", target.game_id, disc_id)),
                 save_group_name: "My Save State".to_string(),
                 display_chip_text: None,
+                container_save: None,
             });
         }
     }

@@ -95,6 +95,11 @@ ApplicationWindow {
             "--dolphin-save-scan-smoke-test") >= 0
     property int dolphinSaveScanSmokePhase: 0
     property bool dolphinSaveScanSmokeFinished: false
+    property bool pcsx2SaveScanSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--pcsx2-save-scan-smoke-test") >= 0
+    property int pcsx2SaveScanSmokePhase: 0
+    property bool pcsx2SaveScanSmokeFinished: false
     property int platformCrudSmokePhase: 0
     property int platformCrudBlockedReferences: 0
     property string platformCrudAddedGameId: ""
@@ -1108,6 +1113,54 @@ ApplicationWindow {
                           + window.dolphinSaveScanSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(23)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.pcsx2SaveScanSmokeTest
+                 && !window.pcsx2SaveScanSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-racer"
+            if (window.pcsx2SaveScanSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 0) {
+                    console.error("PCSX2_SAVE_SCAN_SMOKE_BAD_FIXTURE")
+                    Qt.exit(24)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Racer")
+                window.pcsx2SaveScanSmokePhase = 1
+                gameSaveManager.smokeScan()
+            } else if (window.pcsx2SaveScanSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_save_revision === 1) {
+                if (!controller.report_pcsx2_save_scan_smoke_success(
+                        gameId)) {
+                    console.error(
+                        "PCSX2_SAVE_SCAN_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(24)
+                    return
+                }
+                window.pcsx2SaveScanSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.pcsx2SaveScanSmokeTest
+                 && !window.pcsx2SaveScanSmokeFinished
+        onTriggered: {
+            console.error("PCSX2_SAVE_SCAN_SMOKE_TIMEOUT phase="
+                          + window.pcsx2SaveScanSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(24)
         }
     }
 
@@ -2402,7 +2455,7 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.preferredWidth: 820
-                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads configured RetroArch and Dolphin launch targets and records newly discovered saves without deleting existing history. RetroArch discovery covers regular saves, states, and grouped Saturn companion sets. Dolphin discovery covers regular GameCube memory-card files and save states; Wii directory saves remain gated. Manual backup, restore, and deletion support regular files and complete RetroArch Saturn companion sets. Active deletion always archives the exact current bytes in the vault before removing live files. Dolphin Wii and PCSX2 container operations remain gated."
+                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads configured RetroArch, Dolphin, and PCSX2 launch targets and records newly discovered saves without deleting existing history. RetroArch discovery covers regular saves, states, and grouped Saturn companion sets. Dolphin discovery covers regular GameCube memory-card files and save states; Wii directory saves remain gated. PCSX2 discovery covers ordinary save states and folder-memory-card members; raw card parsing and all card-member mutations remain gated. Manual backup, restore, and deletion support regular files and complete RetroArch Saturn companion sets. Active deletion always archives the exact current bytes in the vault before removing live files."
                 wrapMode: Text.Wrap
                 color: "#aeb8c5"
             }
@@ -2768,7 +2821,7 @@ ApplicationWindow {
                 const version = gameSaveManager.selectedVersion()
                 return "Restore “"
                        + (version !== null ? version.title : "")
-                       + "” over the active save? The current active file or RetroArch Saturn companion set is first committed as a new vault version. Dolphin and PCSX2 container restores remain disabled until their adapters are available."
+                       + "” over the active save? The current active file or RetroArch Saturn companion set is first committed as a new vault version. Dolphin Wii directory and PCSX2 memory-card member restores remain disabled until their container adapters are available."
             }
             wrapMode: Text.Wrap
         }
@@ -2808,7 +2861,7 @@ ApplicationWindow {
                 const version = gameSaveManager.selectedVersion()
                 return "Archive “"
                        + (version !== null ? version.title : "")
-                       + "” in the portable vault, then delete its active emulator file or complete RetroArch Saturn companion set? Exact sibling recovery copies are retained. Dolphin and PCSX2 containers remain disabled."
+                       + "” in the portable vault, then delete its active emulator file or complete RetroArch Saturn companion set? Exact sibling recovery copies are retained. Dolphin Wii directories and PCSX2 memory-card members remain disabled."
             }
             wrapMode: Text.Wrap
         }

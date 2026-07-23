@@ -6,14 +6,28 @@
 //! those transactions.
 
 pub mod dolphin;
+pub mod pcsx2;
 pub mod retroarch;
 
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EmulatorSaveKind {
     Game,
     State { slot: i32 },
+}
+
+/// Metadata for one logical save stored inside an emulator-owned container.
+///
+/// `primary_path` remains the card/container location. The member name is
+/// deliberately separate so application code cannot accidentally perform a
+/// regular-file operation on the complete card.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveredContainerSave {
+    pub original_file_name: String,
+    pub reported_file_size_bytes: Option<i64>,
+    pub reported_last_modified: Option<SystemTime>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,6 +42,7 @@ pub struct DiscoveredEmulatorSave {
     pub save_group_id: Option<String>,
     pub save_group_name: String,
     pub display_chip_text: Option<String>,
+    pub container_save: Option<DiscoveredContainerSave>,
 }
 
 impl DiscoveredEmulatorSave {

@@ -281,8 +281,8 @@ the edit/default backup chain, direct-launch sentinel, model refresh, lexical
 Windows path, and game-only/unknown-data retention. The first save-management
 subset now models the full persisted 13.27 save record and provides lossless
 group/version inventory plus rename, combine, and split metadata operations. A
-new platform-neutral `lb-integrations` boundary owns explicit RetroArch and
-Dolphin save adapters. Both reuse configured launch-emulator selection for main
+new platform-neutral `lb-integrations` boundary owns explicit RetroArch,
+Dolphin, and PCSX2 save adapters. All reuse configured launch-emulator selection for main
 and emulator-owned additional applications and append only new rows without
 deleting history. RetroArch discovery reads the native host-resolved
 configuration, follows content/core sort settings, and finds regular saves,
@@ -291,6 +291,12 @@ disc IDs from raw ISO/GCM headers, WAD title IDs, or a sibling DolphinTool for
 compressed images, searches portable and OS-native user roots, and records
 region-aware GameCube folder/card files plus exact two-digit state slots with
 stable group IDs. Wii directory saves stay outside this ordinary-file adapter.
+PCSX2 checks portable/legacy and OS-native data roots, parses the recovered
+state filename/slot/group contract, and discovers folder-format `.ps2` card
+members with recovered serial, GameIndex, title, `icon.sys`, grouping, and
+single-context fallback rules. An explicit integration type preserves the
+card/member boundary. Ordinary state rows use the regular-file path; raw card
+files and all card-member mutations remain gated.
 Manual backup now covers one resolved regular active
 file or all present `.bcr`/`.bkr`/`.smpc` members with collision-free portable
 vault naming, aggregate size/time and 13.27-compatible MD5 metadata,
@@ -309,11 +315,13 @@ scanning and directory/container backup remain open. Active deletion now first
 atomically replaces one regular or Saturn active row with its verified portable
 vault set, then revision-checks and deletes even host-mapped external live files
 with exact sibling recovery copies and all-or-rollback behavior.
-Recovered Dolphin 13.27 regular-file semantics allow the same path for the
-discovered GameCube files and state rows; only `dolphin:wii:` directory saves
-remain adapter-gated. Dolphin Wii/PCSX2 container restore/deletion, stale-row
-reconciliation, automatic policy, repair, and the remaining adapters remain
-open, as do the manual combine/expand actions in `LIB-010`.
+Recovered Dolphin and PCSX2 13.27 regular-file semantics allow the same path
+for discovered Dolphin GameCube/state files and PCSX2 state rows; only
+`dolphin:wii:` directories and `pcsx2:` memory-card members remain
+adapter-gated. Dolphin Wii/PCSX2 card-member restore/deletion, raw-card parsing,
+full PCSX2 disc-image serial extraction, stale-row reconciliation, automatic
+policy, repair, and the remaining adapters remain open, as do the manual
+combine/expand actions in `LIB-010`.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:

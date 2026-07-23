@@ -169,14 +169,29 @@ recovery copies, and cleanup. Those regular rows then use the existing
 revision-checked backup-first restore and active-delete paths. The adapter
 recognizes `dolphin:wii:` as the explicit directory boundary and never claims
 Wii directories or other unrecognized directories as ordinary files.
+The recovered 13.27 PCSX2 plugin uses the exact
+`SERIAL (CRC).NN.p2s`/`.p2z` contract for ordinary state files, but treats each
+logical memory-card save as a named member inside a `.ps2` card. The port's
+third native save adapter preserves that boundary explicitly. It checks the
+recovered executable-relative and legacy roots plus current PCSX2's
+platform-native data root; current upstream PCSX2 defines Linux data under
+`$XDG_CONFIG_HOME/PCSX2` or `~/.config/PCSX2`, with `memcards` and `sstates`
+below it ([upstream source](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/Pcsx2Config.cpp)).
+It matches exact state serials and folder-card members using the recovered
+content/header serial, GameIndex title, alternate-title, ROM-name,
+`icon.sys`, grouping, and single-context rules. Container rows retain the card
+path and internal directory name without inventing a whole-card MD5; ordinary
+state rows use the existing regular-file transactions. Raw `.ps2` card parsing,
+compressed/full disc-image serial extraction, and card-member
+backup/restore/deletion remain explicit gates.
 The 13.27 RetroArch plugin does not override `EmulatorPlugin.RemoveSave`, so
 the Windows implementation calls the base `File.Delete` on only the persisted
 primary path. The port deliberately deletes the already-established Saturn
 ownership set instead of orphaning `.bkr`/`.smpc` companions; the mandatory
 vault copy and per-member recovery copies make that safety extension explicit.
-Dolphin Wii directory/PCSX2 container restore/deletion, stale-row
-reconciliation, automatic policy, repair, and the remaining adapters remain
-open.
+Dolphin Wii directory/PCSX2 card-member restore/deletion, raw-card parsing,
+full PCSX2 disc-image serial extraction, stale-row reconciliation, automatic
+policy, repair, and the remaining adapters remain open.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

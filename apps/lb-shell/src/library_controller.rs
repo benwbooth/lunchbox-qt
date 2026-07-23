@@ -526,6 +526,10 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_pcsx2_save_scan_smoke_success(self: &LibraryController, game_id: QString)
+            -> bool;
+
+        #[qinvokable]
         fn report_platform_crud_smoke_success(
             self: &LibraryController,
             platform_name: QString,
@@ -705,6 +709,9 @@ use lb_import::{
 };
 use lb_integrations::dolphin::{
     default_dolphin_user_directories, discover_dolphin_saves, is_dolphin_emulator, DolphinContent,
+};
+use lb_integrations::pcsx2::{
+    default_pcsx2_data_directories, discover_pcsx2_saves, is_pcsx2_emulator, Pcsx2Content,
 };
 use lb_integrations::retroarch::{
     discover_retroarch_saves, inspect_saturn_save_set, is_retroarch_emulator,
@@ -3360,6 +3367,7 @@ fn inspect_game_save_set(
             save_group_id: save.save_group_id.clone(),
             save_group_name: save.save_group_name.clone().unwrap_or_default(),
             display_chip_text: save.display_chip_text.clone(),
+            container_save: None,
         })
         .map_err(|error| GameWriteFailure::Other(error.to_string()))?
     } else {
@@ -3382,6 +3390,10 @@ enum ConfiguredSaveScanTarget {
         emulator_path: PathBuf,
         content: DolphinContent,
     },
+    Pcsx2 {
+        emulator_path: PathBuf,
+        content: Pcsx2Content,
+    },
 }
 
 fn configured_save_scan_target(
@@ -3391,6 +3403,7 @@ fn configured_save_scan_target(
     configuration: &EmulatorConfiguration,
     resolver: &HostPathResolver,
     scrape_as: Option<String>,
+    alternate_titles: Vec<String>,
 ) -> Result<Option<ConfiguredSaveScanTarget>, GameWriteFailure> {
     if target.use_dos_box || target.use_scumm_vm {
         return Ok(None);
@@ -3410,7 +3423,8 @@ fn configured_save_scan_target(
         })?;
     let retroarch = is_retroarch_emulator(&emulator.title, &emulator_path);
     let dolphin = is_dolphin_emulator(&emulator.title, &emulator_path);
-    if !retroarch && !dolphin {
+    let pcsx2 = is_pcsx2_emulator(&emulator.title, &emulator_path);
+    if !retroarch && !dolphin && !pcsx2 {
         return Ok(None);
     }
     let content_path = resolver
@@ -3429,6 +3443,18 @@ fn configured_save_scan_target(
                 additional_application_id,
                 content_path,
                 platform: target.platform.clone(),
+            },
+        }));
+    }
+    if pcsx2 {
+        return Ok(Some(ConfiguredSaveScanTarget::Pcsx2 {
+            emulator_path,
+            content: Pcsx2Content {
+                game_id: target.id.clone(),
+                additional_application_id,
+                content_path,
+                title: target.title.clone(),
+                alternate_titles,
             },
         }));
     }
@@ -3477,8 +3503,16 @@ fn discover_configured_game_saves(
         .iter()
         .filter(|application| application.game_id == game_id)
         .collect::<Vec<_>>();
+    let alternate_titles = document
+        .library()
+        .alternate_names
+        .iter()
+        .filter(|alternate| alternate.game_id == game_id)
+        .map(|alternate| alternate.name.clone())
+        .collect::<Vec<_>>();
     let mut retroarch_targets = BTreeMap::<PathBuf, Vec<RetroArchContent>>::new();
     let mut dolphin_targets = BTreeMap::<PathBuf, Vec<DolphinContent>>::new();
+    let mut pcsx2_targets = BTreeMap::<PathBuf, Vec<Pcsx2Content>>::new();
     {
         let mut collect_target = |target| match target {
             ConfiguredSaveScanTarget::RetroArch {
@@ -3492,6 +3526,13 @@ fn discover_configured_game_saves(
                 emulator_path,
                 content,
             } => dolphin_targets
+                .entry(emulator_path)
+                .or_default()
+                .push(content),
+            ConfiguredSaveScanTarget::Pcsx2 {
+                emulator_path,
+                content,
+            } => pcsx2_targets
                 .entry(emulator_path)
                 .or_default()
                 .push(content),
@@ -3513,6 +3554,7 @@ fn discover_configured_game_saves(
                 configuration,
                 resolver,
                 scrape_as.clone(),
+                alternate_titles.clone(),
             )? {
                 collect_target(target);
             }
@@ -3521,16 +3563,22 @@ fn discover_configured_game_saves(
             .iter()
             .any(|application| application.application_path == game.application_path)
         {
-            if let Some(target) =
-                configured_save_scan_target(root, &game, None, configuration, resolver, scrape_as)?
-            {
+            if let Some(target) = configured_save_scan_target(
+                root,
+                &game,
+                None,
+                configuration,
+                resolver,
+                scrape_as,
+                alternate_titles,
+            )? {
                 collect_target(target);
             }
         }
     }
-    if retroarch_targets.is_empty() && dolphin_targets.is_empty() {
+    if retroarch_targets.is_empty() && dolphin_targets.is_empty() && pcsx2_targets.is_empty() {
         return Err(GameWriteFailure::Other(
-            "the selected game has no launch target owned by a configured RetroArch or Dolphin emulator"
+            "the selected game has no launch target owned by a configured RetroArch, Dolphin, or PCSX2 emulator"
                 .into(),
         ));
     }
@@ -3547,6 +3595,12 @@ fn discover_configured_game_saves(
             .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
         discovered.append(&mut saves);
     }
+    for (emulator_path, targets) in pcsx2_targets {
+        let data_directories = default_pcsx2_data_directories(&emulator_path);
+        let mut saves = discover_pcsx2_saves(&emulator_path, &targets, &data_directories)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        discovered.append(&mut saves);
+    }
     discovered.sort_by(|left, right| {
         left.additional_application_id
             .cmp(&right.additional_application_id)
@@ -3560,6 +3614,54 @@ fn game_save_from_discovery(
     discovered: &DiscoveredEmulatorSave,
     resolver: &HostPathResolver,
 ) -> Result<GameSave, GameWriteFailure> {
+    if let Some(container) = &discovered.container_save {
+        if !discovered.companion_paths.is_empty() {
+            return Err(GameWriteFailure::Other(
+                "emulator adapter returned companion files for a container save".into(),
+            ));
+        }
+        let metadata = fs::symlink_metadata(&discovered.primary_path).map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not inspect emulator save container {}: {error}",
+                discovered.primary_path.display()
+            ))
+        })?;
+        if !metadata.file_type().is_file() && !metadata.file_type().is_dir() {
+            return Err(GameWriteFailure::Other(format!(
+                "emulator save container has an unsupported file type: {}",
+                discovered.primary_path.display()
+            )));
+        }
+        let stored_path = resolver
+            .stored_path_for_host_path(root, &discovered.primary_path)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let reported_last_modified_utc = container.reported_last_modified.map(|modified| {
+            let modified = DateTime::<Utc>::from(modified);
+            format!(
+                "{}.{:07}Z",
+                modified.format("%Y-%m-%dT%H:%M:%S"),
+                modified.timestamp_subsec_nanos() / 100
+            )
+        });
+        return Ok(GameSave {
+            game_id: discovered.game_id.clone(),
+            additional_application_id: discovered.additional_application_id.clone(),
+            emulator_core: discovered.emulator_core.clone(),
+            emulator_file_name: discovered.emulator_file_name.clone(),
+            title: None,
+            save_group_name: Some(discovered.save_group_name.clone()),
+            display_chip_text: discovered.display_chip_text.clone(),
+            save_group_id: discovered.save_group_id.clone(),
+            match_lineage_id: None,
+            migration_family_id: None,
+            file_path: stored_path,
+            original_file_name: Some(container.original_file_name.clone()),
+            slot: discovered.slot(),
+            reported_file_size_bytes: container.reported_file_size_bytes,
+            reported_last_modified_utc,
+            md5: None,
+        });
+    }
     let mut inspected = Vec::new();
     for path in discovered.all_paths() {
         inspected.push(inspect_save_file(path)?);
@@ -3634,7 +3736,9 @@ fn persisted_save_matches_discovery(
         return false;
     }
     if candidate.save_group_id.as_deref().is_some_and(|group| {
-        (group.starts_with("saturn-") || group.starts_with("dolphin:gc:"))
+        (group.starts_with("saturn-")
+            || group.starts_with("dolphin:gc:")
+            || group.starts_with("pcsx2:"))
             && current
                 .save_group_id
                 .as_deref()
@@ -4047,10 +4151,10 @@ fn save_requires_container_adapter(save: &GameSave) -> bool {
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    emulator.contains("pcsx2")
-        || group.starts_with("pcsx2:")
-        || group.starts_with("pcsx2-state:")
-        || group.starts_with("dolphin:wii:")
+    if group.starts_with("pcsx2-state:") {
+        return false;
+    }
+    emulator.contains("pcsx2") || group.starts_with("pcsx2:") || group.starts_with("dolphin:wii:")
 }
 
 fn inspected_save_sets_match(left: &InspectedSaveSet, right: &InspectedSaveSet) -> bool {
@@ -4335,7 +4439,7 @@ fn write_game_save_active_delete(
         })?;
     if save_requires_container_adapter(&expected) {
         return Err(GameWriteFailure::Other(
-            "this active save requires its Dolphin Wii directory or PCSX2 container deletion adapter"
+            "this active save requires its Dolphin Wii directory or PCSX2 memory-card member deletion adapter"
                 .into(),
         ));
     }
@@ -4564,7 +4668,7 @@ fn write_game_save_restore(
     }
     if save_requires_container_adapter(&expected) {
         return Err(GameWriteFailure::Other(
-            "this save requires its Dolphin Wii directory or PCSX2 container adapter before it can be restored"
+            "this save requires its Dolphin Wii directory or PCSX2 memory-card member adapter before it can be restored"
                 .into(),
         ));
     }
@@ -4661,7 +4765,7 @@ fn write_game_save_restore(
     }
     if save_requires_container_adapter(&expected) || save_requires_container_adapter(active_save) {
         return Err(GameWriteFailure::Other(
-            "this save requires its Dolphin Wii directory or PCSX2 container adapter before it can be restored".into(),
+            "this save requires its Dolphin Wii directory or PCSX2 memory-card member adapter before it can be restored".into(),
         ));
     }
 
@@ -8945,6 +9049,48 @@ impl qobject::LibraryController {
         if success {
             eprintln!(
                 "DOLPHIN_SAVE_SCAN_SMOKE_COMPLETE saves=3 writes={} revision={} data_changes={}",
+                rust.game_save_write_notifications,
+                self.game_save_revision(),
+                rust.data_change_notifications,
+            );
+        }
+        success
+    }
+
+    pub fn report_pcsx2_save_scan_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let saves = rust.game_saves_by_game.get(&game_id);
+        let success = saves.is_some_and(|saves| {
+            saves.len() == 2
+                && saves.iter().all(|save| {
+                    save.emulator_file_name == "pcsx2-qt"
+                        && save.emulator_core.is_empty()
+                        && save.original_file_name.is_some()
+                        && save.reported_file_size_bytes.is_some()
+                        && save.reported_last_modified_utc.is_some()
+                })
+                && saves.iter().any(|save| {
+                    save.file_path == r"Emulators\PCSX2\memcards\Mcd001.ps2"
+                        && save.slot.is_none()
+                        && save.original_file_name.as_deref() == Some("BASLUS-12345SAVE")
+                        && save.save_group_id.as_deref() == Some("pcsx2:Mcd001:BASLUS-12345SAVE")
+                        && save.md5.is_none()
+                })
+                && saves.iter().any(|save| {
+                    save.file_path == r"Emulators\PCSX2\sstates\SLUS-12345 (DEADBEEF).03.p2s"
+                        && save.slot == Some(3)
+                        && save.save_group_id.as_deref() == Some("pcsx2-state:SLUS12345:03")
+                        && save.md5.as_deref().is_some_and(|md5| md5.len() == 32)
+                })
+        }) && rust.game_save_write_notifications == 1
+            && *self.game_save_revision() == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "PCSX2_SAVE_SCAN_SMOKE_COMPLETE saves=2 writes={} revision={} data_changes={}",
                 rust.game_save_write_notifications,
                 self.game_save_revision(),
                 rust.data_change_notifications,
@@ -13726,6 +13872,131 @@ mod tests {
     }
 
     #[test]
+    fn pcsx2_scan_persists_folder_card_member_and_regular_state_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        fs::create_dir_all(&platform_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE.replace(
+            r"Games\Fixture Racer\racer.rom",
+            r"Games\Fixture Racer\racer-SLUS-12345.iso",
+        );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let emulator_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/launchbox/Data/Emulators.xml");
+        let emulators = fs::read_to_string(emulator_fixture)
+            .unwrap()
+            .replace("<Title>Fixture Emulator</Title>", "<Title>PCSX2</Title>")
+            .replace(
+                "<ApplicationPath>Emulators/fixture-emulator</ApplicationPath>",
+                r"<ApplicationPath>Emulators\PCSX2\pcsx2-qt</ApplicationPath>",
+            );
+        fs::write(directory.path().join("Data/Emulators.xml"), emulators).unwrap();
+
+        let executable = directory.path().join("Emulators/PCSX2/pcsx2-qt");
+        let content = directory
+            .path()
+            .join("Games/Fixture Racer/racer-SLUS-12345.iso");
+        let member = directory
+            .path()
+            .join("Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-12345SAVE");
+        let state = directory
+            .path()
+            .join("Emulators/PCSX2/sstates/SLUS-12345 (DEADBEEF).03.p2s");
+        for path in [&executable, &content, &state] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::create_dir_all(&member).unwrap();
+        fs::write(&executable, b"pcsx2").unwrap();
+        fs::write(&content, b"disc bytes").unwrap();
+        fs::write(member.join("data.bin"), b"folder card save").unwrap();
+        fs::write(&state, b"state three").unwrap();
+
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let game = document
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "fixture-racer")
+            .unwrap()
+            .clone();
+        let original = fs::read(&platform_path).unwrap();
+        let result = write_game_save_scan(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-racer".into(),
+            game.clone(),
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| {
+            panic!("PCSX2 scan failed: {}", describe_game_write_failure(&error))
+        });
+
+        assert_eq!(result.discovered_count, 2);
+        assert_eq!(result.added_count, 2);
+        assert_eq!(result.saves.len(), 2);
+        assert_eq!(fs::read(result.backup.as_ref().unwrap()).unwrap(), original);
+        let card = result
+            .saves
+            .iter()
+            .find(|save| save.slot.is_none())
+            .unwrap();
+        assert_eq!(card.file_path, r"Emulators\PCSX2\memcards\Mcd001.ps2");
+        assert_eq!(
+            card.save_group_id.as_deref(),
+            Some("pcsx2:Mcd001:BASLUS-12345SAVE")
+        );
+        assert_eq!(card.original_file_name.as_deref(), Some("BASLUS-12345SAVE"));
+        assert_eq!(card.reported_file_size_bytes, Some(16));
+        assert!(card.reported_last_modified_utc.is_some());
+        assert!(card.md5.is_none());
+        assert!(save_requires_container_adapter(card));
+
+        let state = result
+            .saves
+            .iter()
+            .find(|save| save.slot == Some(3))
+            .unwrap();
+        assert_eq!(
+            state.file_path,
+            r"Emulators\PCSX2\sstates\SLUS-12345 (DEADBEEF).03.p2s"
+        );
+        assert_eq!(
+            state.save_group_id.as_deref(),
+            Some("pcsx2-state:SLUS12345:03")
+        );
+        assert!(state.md5.as_ref().is_some_and(|md5| md5.len() == 32));
+        assert!(!save_requires_container_adapter(state));
+
+        let after_first_scan = fs::read_to_string(&platform_path).unwrap();
+        let moved_card = after_first_scan.replace(
+            r"Emulators\PCSX2\memcards\Mcd001.ps2",
+            r"External\PCSX2\Mcd001.ps2",
+        );
+        assert_ne!(after_first_scan, moved_card);
+        fs::write(&platform_path, moved_card.as_bytes()).unwrap();
+        let second = write_game_save_scan(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-racer".into(),
+            game,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "second PCSX2 scan failed: {}",
+                describe_game_write_failure(&error)
+            )
+        });
+        assert_eq!(second.discovered_count, 2);
+        assert_eq!(second.added_count, 0);
+        assert!(second.backup.is_none());
+        assert_eq!(fs::read(&platform_path).unwrap(), moved_card.as_bytes());
+        assert_eq!(moved_card.matches("<GameSave>").count(), 3);
+        assert!(moved_card.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+    }
+
+    #[test]
     fn manual_save_backup_copies_and_records_one_exact_active_file_transactionally() {
         let directory = tempfile::tempdir().unwrap();
         let platform_directory = directory.path().join("Data/Platforms");
@@ -14493,6 +14764,16 @@ mod tests {
             ),
             ..GameSave::default()
         }));
+        assert!(save_requires_container_adapter(&GameSave {
+            emulator_file_name: "pcsx2-qt".into(),
+            save_group_id: Some("pcsx2:Mcd001:BASLUS-12345SAVE".into()),
+            ..GameSave::default()
+        }));
+        assert!(!save_requires_container_adapter(&GameSave {
+            emulator_file_name: "pcsx2-qt".into(),
+            save_group_id: Some("pcsx2-state:SLUS12345:03".into()),
+            ..GameSave::default()
+        }));
 
         let directory = tempfile::tempdir().unwrap();
         let platform_directory = directory.path().join("Data/Platforms");
@@ -14535,7 +14816,8 @@ mod tests {
                 expected,
                 HostPathResolver::default(),
             ),
-            Err(GameWriteFailure::Other(message)) if message.contains("PCSX2 container adapter")
+            Err(GameWriteFailure::Other(message))
+                if message.contains("PCSX2 memory-card member adapter")
         ));
         let document = PlatformDocument::load(&platform_path).unwrap();
         let active_expected = document.library().game_saves[0].clone();
@@ -14549,7 +14831,7 @@ mod tests {
                 HostPathResolver::default(),
             ),
             Err(GameWriteFailure::Other(message))
-                if message.contains("PCSX2 container deletion adapter")
+                if message.contains("PCSX2 memory-card member deletion adapter")
         ));
         assert_eq!(fs::read(&active).unwrap(), b"memory card bytes");
         assert_eq!(fs::read(&selected).unwrap(), b"container backup bytes");

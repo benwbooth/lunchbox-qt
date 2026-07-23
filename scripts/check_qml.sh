@@ -99,6 +99,7 @@ additional_application_default_root=$(mktemp -d)
 game_save_metadata_root=$(mktemp -d)
 retroarch_save_scan_root=$(mktemp -d)
 dolphin_save_scan_root=$(mktemp -d)
+pcsx2_save_scan_root=$(mktemp -d)
 game_save_backup_root=$(mktemp -d)
 game_save_delete_root=$(mktemp -d)
 game_save_active_delete_root=$(mktemp -d)
@@ -116,7 +117,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -791,6 +792,90 @@ if find "$dolphin_save_scan_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox manager-driven Dolphin disc-ID discovery, portable GameCube folder/card saves, state slots, full metadata, exact XML rollback backup, and cleanup validated."
+
+cp -R fixtures/launchbox/Data "$pcsx2_save_scan_root/Data"
+pcsx2_save_scan_platform="$pcsx2_save_scan_root/Data/Platforms/Fixture Console.xml"
+pcsx2_save_scan_emulators="$pcsx2_save_scan_root/Data/Emulators.xml"
+sed -i \
+  -e 's|racer\.rom|racer-SLUS-12345.iso|' \
+  "$pcsx2_save_scan_platform"
+sed -i \
+  -e 's|<Title>Fixture Emulator</Title>|<Title>PCSX2</Title>|' \
+  -e 's|<ApplicationPath>Emulators/fixture-emulator</ApplicationPath>|<ApplicationPath>Emulators/PCSX2/pcsx2-qt</ApplicationPath>|' \
+  "$pcsx2_save_scan_emulators"
+mkdir -p \
+  "$pcsx2_save_scan_root/Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-12345SAVE" \
+  "$pcsx2_save_scan_root/Emulators/PCSX2/sstates" \
+  "$pcsx2_save_scan_root/Games/Fixture Racer"
+printf %s 'pcsx2 runtime fixture' \
+  > "$pcsx2_save_scan_root/Emulators/PCSX2/pcsx2-qt"
+printf %s 'fixture racer ps2 disc bytes' \
+  > "$pcsx2_save_scan_root/Games/Fixture Racer/racer-SLUS-12345.iso"
+printf %s 'runtime folder card save bytes' \
+  > "$pcsx2_save_scan_root/Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-12345SAVE/data.bin"
+printf %s 'runtime state three bytes' \
+  > "$pcsx2_save_scan_root/Emulators/PCSX2/sstates/SLUS-12345 (DEADBEEF).03.p2s"
+cp "$pcsx2_save_scan_platform" \
+  "$pcsx2_save_scan_root/original-platform.xml"
+pcsx2_save_scan_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$pcsx2_save_scan_root" \
+    --pcsx2-save-scan-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$pcsx2_save_scan_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'PCSX2_SAVE_SCAN_SMOKE_COMPLETE saves=2 writes=1 revision=1 data_changes=1' \
+  <<< "$pcsx2_save_scan_output"; then
+  printf '%s\n' "$pcsx2_save_scan_output" >&2
+  echo "LaunchBox did not validate manager-driven PCSX2 save discovery." >&2
+  exit 1
+fi
+if [[ $(rg -c '<GameSave>' "$pcsx2_save_scan_platform") -ne 3 ]] \
+  || [[ $(rg -c -F '<EmulatorFileName>pcsx2-qt</EmulatorFileName>' \
+    "$pcsx2_save_scan_platform") -ne 2 ]] \
+  || [[ $(rg -c '<ReportedFileSizeBytes>' \
+    "$pcsx2_save_scan_platform") -ne 2 ]] \
+  || [[ $(rg -c '<ReportedLastModifiedUtc>.*\.[0-9]{7}Z' \
+    "$pcsx2_save_scan_platform") -ne 2 ]] \
+  || [[ $(rg -c '<Md5>[0-9A-F]{32}</Md5>' \
+    "$pcsx2_save_scan_platform") -ne 1 ]]; then
+  echo "PCSX2 save discovery wrote incomplete or fabricated metadata." >&2
+  exit 1
+fi
+for expected in \
+  '<FilePath>Emulators\PCSX2\memcards\Mcd001.ps2</FilePath>' \
+  '<FilePath>Emulators\PCSX2\sstates\SLUS-12345 (DEADBEEF).03.p2s</FilePath>' \
+  '<SaveGroupId>pcsx2:Mcd001:BASLUS-12345SAVE</SaveGroupId>' \
+  '<SaveGroupId>pcsx2-state:SLUS12345:03</SaveGroupId>' \
+  '<OriginalFileName>BASLUS-12345SAVE</OriginalFileName>' \
+  '<OriginalFileName>SLUS-12345 (DEADBEEF).03.p2s</OriginalFileName>' \
+  '<Slot>3</Slot>' \
+  '<FutureRootElement>preserve-me</FutureRootElement>'; do
+  if ! rg -q -F "$expected" "$pcsx2_save_scan_platform"; then
+    echo "PCSX2 save discovery did not persist: $expected" >&2
+    exit 1
+  fi
+done
+mapfile -t pcsx2_save_scan_backups < <(
+  find "$pcsx2_save_scan_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#pcsx2_save_scan_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${pcsx2_save_scan_backups[0]}" \
+    "$pcsx2_save_scan_root/original-platform.xml"; then
+  echo "PCSX2 save discovery did not retain one exact XML recovery copy." >&2
+  exit 1
+fi
+if find "$pcsx2_save_scan_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful PCSX2 save discovery left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox manager-driven PCSX2 portable folder-card/member discovery, exact state matching, container metadata, regular-file state eligibility, exact XML rollback backup, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$game_save_backup_root/Data"
 game_save_backup_platform="$game_save_backup_root/Data/Platforms/Fixture Console.xml"
