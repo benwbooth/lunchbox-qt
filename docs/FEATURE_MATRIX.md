@@ -61,14 +61,16 @@ ordered additional application, including the primary Disc 1 record, matching
 the older real installation. Copy/move also implements the recovered
 same-filename/different-extension option as an atomic companion-file bundle,
 including per-disc companions and collision refusal. Metadata and media
-downloads, fuzzy/partial search, database-driven version combining, emulator installation/BIOS
+downloads, database-driven version combining, emulator installation/BIOS
 handling, descriptor-content dependency copying, cancellation, and
 runtime-oracle edge-case parity remain open, so `IMP-001` is not complete.
 The implemented local-database subset opens LaunchBox's SQLite file read-only,
 canonicalizes platform aliases, applies recovered exact-title and qualifier
-rules, exposes compact stable-ID review choices for ambiguous exact matches,
-revalidates selections, persists 13 typed metadata fields, and can copy/move
-the complete file bundle into a portable final-title/year subfolder.
+rules, falls back only when necessary to recovered substring/all-word matching
+with bare-numbered-suffix suppression, exposes compact stable-ID review choices
+for ambiguous exact or partial matches, revalidates selections, persists 13
+typed metadata fields, and can copy/move the complete file bundle into a
+portable final-title/year subfolder.
 Playlist generation (`LIB-009`) and theme-specific playlist views remain open.
 Persisted Windows-style paths remain lexical until the cross-platform launch
 service resolves them. None of those complete their family: bulk editing, all

@@ -313,27 +313,27 @@ sqlite3 "$import_root/Metadata/LaunchBox.Metadata.db" \
   < fixtures/launchbox/Metadata/fixture.sql
 sqlite3 "$import_root/Metadata/LaunchBox.Metadata.db" \
   "INSERT INTO Games VALUES (
-    4343, 'Fixture Saga Collector (USA)', 'FIXTURE SAGA', NULL, 2004,
+    4343, 'Fixture Saga Collector (USA)', 'FIXTURE SAGA COLLECTOR', NULL, 2004,
     'Collector overview', 4, 'Released', 0, NULL, 4.0, NULL,
     'Fixture Console', 'E10+', 'Role-Playing', 'Collector Forge',
     'Collector Press'
   );"
 printf 'disc-one-import-bytes' > \
-  "$import_source_root/Fixture Saga (USA) - (Disc 1 of 2).rom"
+  "$import_source_root/Fixture Sag (USA) - (Disc 1 of 2).rom"
 printf 'disc-two-import-bytes' > \
-  "$import_source_root/Fixture Saga (USA) - (Disc 2 of 2).rom"
+  "$import_source_root/Fixture Sag (USA) - (Disc 2 of 2).rom"
 printf 'disc-one-companion-bytes' > \
-  "$import_source_root/Fixture Saga (USA) - (Disc 1 of 2).dat"
+  "$import_source_root/Fixture Sag (USA) - (Disc 1 of 2).dat"
 printf 'disc-two-companion-bytes' > \
-  "$import_source_root/Fixture Saga (USA) - (Disc 2 of 2).dat"
+  "$import_source_root/Fixture Sag (USA) - (Disc 2 of 2).dat"
 printf 'game-manual-pdf-bytes' > \
-  "$import_source_root/Fixture Saga (USA) - (Disc 1 of 2).pdf"
+  "$import_source_root/Fixture Sag (USA) - (Disc 1 of 2).pdf"
 import_platform="$import_root/Data/Platforms/Fixture Console.xml"
 import_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
     --library "$import_root" --import-smoke-test \
-    --import-rom-1 "$import_source_root/Fixture Saga (USA) - (Disc 1 of 2).rom" \
-    --import-rom-2 "$import_source_root/Fixture Saga (USA) - (Disc 2 of 2).rom" \
+    --import-rom-1 "$import_source_root/Fixture Sag (USA) - (Disc 1 of 2).rom" \
+    --import-rom-2 "$import_source_root/Fixture Sag (USA) - (Disc 2 of 2).rom" \
     --path-mappings-file "$empty_path_mappings" 2>&1
 ) || {
   printf '%s\n' "$import_output" >&2
@@ -360,9 +360,9 @@ for expected in \
   '<WikipediaURL>https://example.org/wiki/Fixture_Saga</WikipediaURL>' \
   '<VideoUrl>https://video.example/fixture-saga</VideoUrl>' \
   '<CommunityStarRating>4.75</CommunityStarRating>' \
-  '<ManualPath>Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Saga (USA) - (Disc 1 of 2).pdf</ManualPath>' \
-  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Saga (USA) - (Disc 1 of 2).rom</ApplicationPath>' \
-  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Saga (USA) - (Disc 2 of 2).rom</ApplicationPath>' \
+  '<ManualPath>Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Sag (USA) - (Disc 1 of 2).pdf</ManualPath>' \
+  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Sag (USA) - (Disc 1 of 2).rom</ApplicationPath>' \
+  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Sag (USA) - (Disc 2 of 2).rom</ApplicationPath>' \
   '<Disc>1</Disc>' \
   '<Disc>2</Disc>' \
   '<Priority>1</Priority>' \
@@ -379,11 +379,11 @@ if [[ $(rg -c -F '<Emulator>fixture-emulator</Emulator>' "$import_platform") -ne
   exit 1
 fi
 for file_name in \
-  'Fixture Saga (USA) - (Disc 1 of 2).rom' \
-  'Fixture Saga (USA) - (Disc 2 of 2).rom' \
-  'Fixture Saga (USA) - (Disc 1 of 2).dat' \
-  'Fixture Saga (USA) - (Disc 2 of 2).dat' \
-  'Fixture Saga (USA) - (Disc 1 of 2).pdf'; do
+  'Fixture Sag (USA) - (Disc 1 of 2).rom' \
+  'Fixture Sag (USA) - (Disc 2 of 2).rom' \
+  'Fixture Sag (USA) - (Disc 1 of 2).dat' \
+  'Fixture Sag (USA) - (Disc 2 of 2).dat' \
+  'Fixture Sag (USA) - (Disc 1 of 2).pdf'; do
   if ! cmp -s "$import_source_root/$file_name" \
     "$import_root/Games/Fixture Console/Fixture Saga (USA) (2002)/$file_name"; then
     echo "ROM import did not preserve exact bytes for $file_name." >&2
@@ -406,7 +406,7 @@ if find "$import_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox dialog-driven multi-disc ROM import, ambiguous exact local-metadata review by stable database ID and typed persistence, PDF-manual discovery and re-planned portable ManualPath persistence, title/year subfolder planning, same-stem companion copying, validated emulator selection, editable grouped preview, exact streamed bytes, additional-application persistence, shared transaction recovery, and source preservation validated."
+echo "LaunchBox dialog-driven multi-disc ROM import, recovered exact-to-partial local-metadata fallback, ambiguous partial review by stable database ID and typed persistence, PDF-manual discovery and re-planned portable ManualPath persistence, title/year subfolder planning, same-stem companion copying, validated emulator selection, editable grouped preview, exact streamed bytes, additional-application persistence, shared transaction recovery, and source preservation validated."
 
 cp -R fixtures/launchbox/Data "$platform_crud_root/Data"
 platform_crud_catalog="$platform_crud_root/Data/Platforms.xml"

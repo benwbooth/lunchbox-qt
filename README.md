@@ -179,14 +179,18 @@ game instead of producing a partial set. Copy never overwrites a destination.
 An optional read-only local metadata search opens
 `Metadata/LaunchBox.Metadata.db`, canonicalizes platform aliases, applies the
 recovered title comparison and parenthetical qualifier preference, and
-auto-applies only a unique exact result. Zero or multiple candidates remain
-visible instead of being guessed; an ambiguous row exposes compact title,
+uses exact primary/alternate-title results first. Only when none exist does it
+apply the recovered partial fallback: a contiguous normalized substring or all
+query words in any order, excluding bare numbered suffixes such as `GAME2`.
+Filename/query parenthetical qualifiers are preferred after either search.
+A unique result is auto-applied; zero or multiple candidates remain visible
+instead of being guessed, and an ambiguous row exposes compact title,
 database-ID, year, developer, and publisher choices in the review page.
-Execution reruns the exact search and rejects a selected database ID that is
-no longer a candidate before any write. An automatic or explicitly selected
-match persists the database ID, overview, developer, genres, player/mode data,
-publisher, content rating, release date/type, URLs, and community rating as
-typed game fields.
+Execution reruns the same ordered search and rejects a selected database ID
+that is no longer a candidate before any write. An automatic or explicitly
+selected match persists the database ID, overview, developer, genres,
+player/mode data, publisher, content rating, release date/type, URLs, and
+community rating as typed game fields.
 Copy/move can then place the whole game bundle in a cross-platform-safe
 `Title (Year)` subdirectory; edited final titles are re-sanitized and all
 destination collisions are rechecked during execution.
@@ -204,9 +208,8 @@ folder and extension collapse to one game. Disc 1 remains the main application
 and every disc, including Disc 1, is persisted as a priority-ordered additional
 application, matching the older real-install records and the existing M3U
 launch contract. Incomplete or colliding sets remain separate preview rows.
-Fuzzy/partial metadata search, online media acquisition, database-driven
-version combining, MAME-specific options, and the remaining import families are
-still open.
+Online media acquisition, database-driven version combining, MAME-specific
+options, and the remaining import families are still open.
 
 Both front ends now expose a shared launch vertical. A launch plan selects
 an explicit or single default emulator mapping (or a direct executable), keeps

@@ -5621,7 +5621,7 @@ impl qobject::LibraryController {
                     && game.emulator_id.as_deref() == Some("fixture-emulator")
                     && game.manual_path.as_deref()
                         == Some(
-                            r"Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Saga (USA) - (Disc 1 of 2).pdf",
+                            r"Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Sag (USA) - (Disc 1 of 2).pdf",
                         )
             })
         });

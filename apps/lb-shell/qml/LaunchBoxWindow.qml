@@ -372,12 +372,13 @@ ApplicationWindow {
                 const preview = JSON.parse(controller.import_preview_json)
                 if (preview.rows.length !== 1
                         || preview.rows[0].metadata_candidate_count !== 2
+                        || preview.rows[0].metadata_match_kind !== "partial"
                         || preview.rows[0].metadata_candidates.length !== 2
                         || preview.rows[0].metadata_candidates[0].database_id !== 4242
                         || preview.rows[0].manual_candidate_count !== 1
                         || preview.rows[0].manual === null
                         || preview.rows[0].manual.stored_path
-                           !== "Games\\Fixture Console\\Fixture Saga (USA)\\Fixture Saga (USA) - (Disc 1 of 2).pdf") {
+                           !== "Games\\Fixture Console\\Fixture Sag (USA)\\Fixture Sag (USA) - (Disc 1 of 2).pdf") {
                     console.error("IMPORT_SMOKE_MANUAL_PREVIEW_CONTRACT_FAILED")
                     Qt.exit(12)
                     return
@@ -3518,6 +3519,8 @@ ApplicationWindow {
                     "discFileCount": 1 + row.additional_discs.length,
                     "companionFileCount": companionFileCount(row),
                     "metadataCandidateCount": row.metadata_candidate_count,
+                    "metadataMatchKind": row.metadata_match_kind === null
+                                         ? "" : row.metadata_match_kind,
                     "metadataCandidates": row.metadata_candidates,
                     "selectedMetadataDatabaseId": row.metadata === null
                                                   ? 0 : row.metadata.database_id,
@@ -3825,6 +3828,7 @@ ApplicationWindow {
                                 required property int discFileCount
                                 required property int companionFileCount
                                 required property int metadataCandidateCount
+                                required property string metadataMatchKind
                                 required property var metadataCandidates
                                 required property double selectedMetadataDatabaseId
                                 required property int manualCandidateCount
@@ -3888,7 +3892,8 @@ ApplicationWindow {
                                                      : "")
                                                   + (importPreviewDelegate.metadataCandidateCount > 0
                                                      ? "  (" + importPreviewDelegate.metadataCandidateCount
-                                                       + " exact metadata match(es))"
+                                                       + " " + importPreviewDelegate.metadataMatchKind
+                                                       + " metadata match(es))"
                                                      : "")
                                                   + (importPreviewDelegate.manualCandidateCount > 0
                                                      ? "  (" + importPreviewDelegate.manualCandidateCount

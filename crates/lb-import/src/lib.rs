@@ -2,7 +2,7 @@ use lb_domain::{
     is_unassigned_emulator_id, AdditionalApplication, EmulatorConfiguration, Game,
     UNASSIGNED_EMULATOR_ID,
 };
-use lb_metadata::{MetadataDatabase, MetadataError, MetadataGame};
+use lb_metadata::{MetadataDatabase, MetadataError, MetadataGame, MetadataMatchKind};
 use lb_platform::{
     portable_storage_name, portable_stored_path, HostPathResolver, LaunchPathError,
     LaunchPathResolver, PlatformPathError,
@@ -75,9 +75,10 @@ pub struct ManualImportRequest {
     /// extension; incomplete or colliding sets remain separate games.
     #[serde(default)]
     pub combine_disc_sets: bool,
-    /// Search LaunchBox's local SQLite metadata database. Only a unique exact
-    /// platform/title match is applied automatically; missing or ambiguous
-    /// matches remain explicit in the preview.
+    /// Search LaunchBox's local SQLite metadata database. Exact primary or
+    /// alternate titles win; when none match, use the recovered partial-word
+    /// fallback. Only one result is applied automatically, while missing or
+    /// ambiguous results remain explicit in the preview.
     #[serde(default)]
     pub search_local_metadata: bool,
     /// Look in each imported game's source directory for a PDF that can be
@@ -102,6 +103,22 @@ pub enum ImportRowState {
     InvalidTitle,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualImportMetadataMatchKind {
+    Exact,
+    Partial,
+}
+
+impl From<MetadataMatchKind> for ManualImportMetadataMatchKind {
+    fn from(kind: MetadataMatchKind) -> Self {
+        match kind {
+            MetadataMatchKind::Exact => Self::Exact,
+            MetadataMatchKind::Partial => Self::Partial,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManualImportPreviewRow {
@@ -120,6 +137,7 @@ pub struct ManualImportPreviewRow {
     pub additional_discs: Vec<ManualImportDisc>,
     pub metadata: Option<ManualImportMetadata>,
     pub metadata_candidate_count: usize,
+    pub metadata_match_kind: Option<ManualImportMetadataMatchKind>,
     #[serde(default)]
     pub metadata_candidates: Vec<ManualImportMetadataCandidate>,
     pub manual: Option<ManualImportManual>,
@@ -509,6 +527,7 @@ pub fn preview_manual_import(
             additional_discs: Vec::new(),
             metadata: None,
             metadata_candidate_count: 0,
+            metadata_match_kind: None,
             metadata_candidates: Vec::new(),
             manual: None,
             manual_candidate_count: 0,
@@ -954,7 +973,9 @@ fn apply_local_metadata(
         if !row.included || !row.is_importable(duplicate_policy) {
             continue;
         }
-        let matches = database.search_exact(platform, &row.title, Some(&row.source_path))?;
+        let search = database.search(platform, &row.title, Some(&row.source_path))?;
+        row.metadata_match_kind = search.kind.map(Into::into);
+        let matches = search.games;
         row.metadata_candidate_count = matches.len();
         row.metadata_candidates = matches
             .iter()
@@ -964,13 +985,18 @@ fn apply_local_metadata(
             [game] => {
                 row.title = game.name.clone();
                 row.metadata = Some(manual_import_metadata(game)?);
-                row.message.push_str("; unique exact local metadata match");
+                let kind = metadata_match_label(row.metadata_match_kind);
+                row.message
+                    .push_str(&format!("; unique {kind} local metadata match"));
             }
-            [] => row.message.push_str("; no exact local metadata match"),
-            candidates => row.message.push_str(&format!(
-                "; {} exact local metadata matches require review",
-                candidates.len()
-            )),
+            [] => row.message.push_str("; no local metadata match"),
+            candidates => {
+                let kind = metadata_match_label(row.metadata_match_kind);
+                row.message.push_str(&format!(
+                    "; {} {kind} local metadata matches require review",
+                    candidates.len()
+                ));
+            }
         }
     }
     Ok(())
@@ -1012,8 +1038,9 @@ fn apply_selected_local_metadata(
         let Some(database_id) = selection.metadata_database_id else {
             continue;
         };
-        let matches = database.search_exact(platform, &row.title, Some(&row.source_path))?;
-        let Some(game) = matches
+        let search = database.search(platform, &row.title, Some(&row.source_path))?;
+        let Some(game) = search
+            .games
             .iter()
             .find(|game| u32::try_from(game.database_id) == Ok(database_id))
         else {
@@ -1029,6 +1056,14 @@ fn apply_selected_local_metadata(
         }
     }
     Ok(())
+}
+
+fn metadata_match_label(kind: Option<ManualImportMetadataMatchKind>) -> &'static str {
+    match kind {
+        Some(ManualImportMetadataMatchKind::Exact) => "exact",
+        Some(ManualImportMetadataMatchKind::Partial) => "partial",
+        None => "unknown",
+    }
 }
 
 fn apply_pdf_manuals(
@@ -1669,7 +1704,7 @@ pub enum ImportError {
     },
     #[error("selected import title is empty: {path}")]
     EmptyTitle { path: PathBuf },
-    #[error("metadata game {database_id} is no longer an exact candidate for {path}")]
+    #[error("metadata game {database_id} is no longer a search candidate for {path}")]
     InvalidMetadataSelection { path: PathBuf, database_id: u32 },
     #[error("at least one importable row must be selected")]
     EmptySelection,
@@ -1879,6 +1914,10 @@ mod tests {
                 .unwrap();
         assert_eq!(preview.rows[0].title, "Fixture Saga (USA)");
         assert_eq!(preview.rows[0].metadata_candidate_count, 1);
+        assert_eq!(
+            preview.rows[0].metadata_match_kind,
+            Some(ManualImportMetadataMatchKind::Exact)
+        );
         assert!(preview.rows[0]
             .destination_path
             .as_deref()
@@ -1956,7 +1995,62 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_exact_local_metadata_match_can_be_selected_and_persisted() {
+    fn unique_partial_local_metadata_fallback_is_previewed_and_persisted() {
+        let (library, platform) = library();
+        configure_fixture_metadata(library.path());
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("Fixture Sag (USA).rom");
+        fs::write(&source, b"partial metadata rom").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: source,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Leave,
+        );
+        import_request.search_local_metadata = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows[0].title, "Fixture Saga (USA)");
+        assert_eq!(preview.rows[0].metadata_candidate_count, 1);
+        assert_eq!(
+            preview.rows[0].metadata_match_kind,
+            Some(ManualImportMetadataMatchKind::Partial)
+        );
+        assert_eq!(
+            preview.rows[0]
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.database_id),
+            Some(4242)
+        );
+        assert!(preview.rows[0]
+            .message
+            .contains("unique partial local metadata match"));
+
+        let report = execute_manual_import_with_ids(
+            library.path(),
+            &platform,
+            &HostPathResolver::default(),
+            selection(&preview),
+            || "partial-metadata-game".into(),
+        )
+        .unwrap();
+        assert_eq!(report.games[0].database_id, Some(4242));
+        assert_eq!(report.games[0].title, "Fixture Saga (USA)");
+        assert_eq!(
+            report.games[0].application_path,
+            source_directory
+                .path()
+                .join("Fixture Sag (USA).rom")
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn ambiguous_partial_local_metadata_match_can_be_selected_and_persisted() {
         let (library, platform) = library();
         let database_path = configure_fixture_metadata(library.path());
         let connection = rusqlite::Connection::open(database_path).unwrap();
@@ -1972,10 +2066,10 @@ mod tests {
             )
             .unwrap();
         let source_directory = tempfile::tempdir().unwrap();
-        let source = source_directory.path().join("Fixture Saga.rom");
+        let source = source_directory.path().join("Fixture Sag.rom");
         fs::write(&source, b"ambiguous rom").unwrap();
         fs::write(
-            source_directory.path().join("Fixture Saga.pdf"),
+            source_directory.path().join("Fixture Sag.pdf"),
             b"selected metadata manual",
         )
         .unwrap();
@@ -1994,8 +2088,12 @@ mod tests {
         let preview =
             preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
                 .unwrap();
-        assert_eq!(preview.rows[0].title, "Fixture Saga");
+        assert_eq!(preview.rows[0].title, "Fixture Sag");
         assert_eq!(preview.rows[0].metadata_candidate_count, 2);
+        assert_eq!(
+            preview.rows[0].metadata_match_kind,
+            Some(ManualImportMetadataMatchKind::Partial)
+        );
         assert_eq!(
             preview.rows[0].metadata_candidates,
             vec![
@@ -2020,7 +2118,7 @@ mod tests {
         assert_eq!(preview.rows[0].metadata, None);
         assert!(preview.rows[0]
             .message
-            .contains("2 exact local metadata matches require review"));
+            .contains("2 partial local metadata matches require review"));
 
         let mut selected = selection(&preview);
         selected.rows[0].title = "Fixture Saga (Japan)".into();
@@ -2039,18 +2137,18 @@ mod tests {
         assert_eq!(report.games[0].developer.as_deref(), Some("Japan Forge"));
         assert_eq!(
             report.games[0].manual_path,
-            Some(r"Games\Fixture Console\Fixture Saga (Japan) (2003)\Fixture Saga.pdf".into())
+            Some(r"Games\Fixture Console\Fixture Saga (Japan) (2003)\Fixture Sag.pdf".into())
         );
         assert_eq!(report.created_files.len(), 2);
         assert_eq!(
             report.games[0].application_path,
-            r"Games\Fixture Console\Fixture Saga (Japan) (2003)\Fixture Saga.rom"
+            r"Games\Fixture Console\Fixture Saga (Japan) (2003)\Fixture Sag.rom"
         );
         assert_eq!(
             fs::read(
                 library
                     .path()
-                    .join("Games/Fixture Console/Fixture Saga (Japan) (2003)/Fixture Saga.rom")
+                    .join("Games/Fixture Console/Fixture Saga (Japan) (2003)/Fixture Sag.rom")
             )
             .unwrap(),
             b"ambiguous rom"
@@ -2059,7 +2157,7 @@ mod tests {
             fs::read(
                 library
                     .path()
-                    .join("Games/Fixture Console/Fixture Saga (Japan) (2003)/Fixture Saga.pdf")
+                    .join("Games/Fixture Console/Fixture Saga (Japan) (2003)/Fixture Sag.pdf")
             )
             .unwrap(),
             b"selected metadata manual"

@@ -24,6 +24,18 @@ pub struct MetadataGame {
     pub publisher: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MetadataMatchKind {
+    Exact,
+    Partial,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetadataSearchResult {
+    pub kind: Option<MetadataMatchKind>,
+    pub games: Vec<MetadataGame>,
+}
+
 #[derive(Debug)]
 pub struct MetadataDatabase {
     path: PathBuf,
@@ -115,6 +127,81 @@ impl MetadataDatabase {
         Ok(prefer_qualifier_matches(matches, query, application_path))
     }
 
+    pub fn search(
+        &self,
+        platform: &str,
+        query: &str,
+        application_path: Option<&Path>,
+    ) -> Result<MetadataSearchResult, MetadataError> {
+        let exact = self.search_exact(platform, query, application_path)?;
+        if !exact.is_empty() {
+            return Ok(MetadataSearchResult {
+                kind: Some(MetadataMatchKind::Exact),
+                games: exact,
+            });
+        }
+        let partial = self.search_partial(platform, query, application_path)?;
+        Ok(MetadataSearchResult {
+            kind: (!partial.is_empty()).then_some(MetadataMatchKind::Partial),
+            games: partial,
+        })
+    }
+
+    fn search_partial(
+        &self,
+        platform: &str,
+        query: &str,
+        application_path: Option<&Path>,
+    ) -> Result<Vec<MetadataGame>, MetadataError> {
+        let Some(platform) = self.canonical_platform_name(platform)? else {
+            return Ok(Vec::new());
+        };
+        let compare_value = comparison_value(query);
+        if compare_value.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut title_statement = self
+            .connection
+            .prepare(PARTIAL_SEARCH_TITLES_SQL)
+            .map_err(|source| self.query_error(source))?;
+        let title_matches = title_statement
+            .query_map([&platform], |row| {
+                Ok(MatchedTitle {
+                    database_id: row.get(0)?,
+                    matched_title: row.get(1)?,
+                    compare_value: row.get(2)?,
+                })
+            })
+            .map_err(|source| self.query_error(source))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| self.query_error(source))?
+            .into_iter()
+            .filter(|candidate| {
+                candidate.compare_value != compare_value
+                    && recovered_partial_match(&candidate.compare_value, &compare_value)
+            })
+            .collect::<Vec<_>>();
+        let candidate_titles = title_matches
+            .iter()
+            .map(|candidate| (candidate.database_id, candidate.matched_title.as_str()))
+            .collect::<Vec<_>>();
+        let retained_ids = preferred_candidate_ids(&candidate_titles, query, application_path);
+
+        let mut game_statement = self
+            .connection
+            .prepare(GAME_BY_ID_SQL)
+            .map_err(|source| self.query_error(source))?;
+        retained_ids
+            .into_iter()
+            .map(|database_id| {
+                game_statement
+                    .query_row([database_id], metadata_game_from_row)
+                    .map_err(|source| self.query_error(source))
+            })
+            .collect()
+    }
+
     fn query_error(&self, source: rusqlite::Error) -> MetadataError {
         MetadataError::Query {
             path: self.path.clone(),
@@ -127,6 +214,13 @@ impl MetadataDatabase {
 struct MatchedGame {
     game: MetadataGame,
     matched_title: String,
+}
+
+#[derive(Clone, Debug)]
+struct MatchedTitle {
+    database_id: i64,
+    matched_title: String,
+    compare_value: String,
 }
 
 const EXACT_SEARCH_SQL: &str = "
@@ -150,28 +244,52 @@ const EXACT_SEARCH_SQL: &str = "
       AND a.AltNameCompareValue = ?2
     ORDER BY DatabaseID, MatchedTitle";
 
+const PARTIAL_SEARCH_TITLES_SQL: &str = "
+    SELECT g.DatabaseID, g.Name AS MatchedTitle, g.CompareName
+    FROM Games g
+    WHERE g.Platform = ?1 COLLATE NOCASE
+    UNION ALL
+    SELECT g.DatabaseID, a.AlternateName AS MatchedTitle, a.AltNameCompareValue
+    FROM GameAlternateTitles a
+    JOIN Games g ON g.DatabaseID = a.DatabaseID
+    WHERE g.Platform = ?1 COLLATE NOCASE
+    ORDER BY DatabaseID, MatchedTitle";
+
+const GAME_BY_ID_SQL: &str = "
+    SELECT
+        g.DatabaseID, g.Name, g.CompareName, g.ReleaseDate, g.ReleaseYear,
+        g.Overview, g.MaxPlayers, g.ReleaseType, g.Cooperative, g.VideoURL,
+        g.CommunityRating, g.WikipediaURL, g.Platform, g.ESRB, g.Genres,
+        g.Developer, g.Publisher
+    FROM Games g
+    WHERE g.DatabaseID = ?1";
+
 fn matched_game_from_row(row: &Row<'_>) -> rusqlite::Result<MatchedGame> {
     Ok(MatchedGame {
-        game: MetadataGame {
-            database_id: row.get(0)?,
-            name: row.get(1)?,
-            compare_name: row.get(2)?,
-            release_date: row.get(3)?,
-            release_year: row.get(4)?,
-            overview: row.get(5)?,
-            max_players: row.get(6)?,
-            release_type: row.get(7)?,
-            cooperative: row.get(8)?,
-            video_url: row.get(9)?,
-            community_rating: row.get(10)?,
-            wikipedia_url: row.get(11)?,
-            platform: row.get(12)?,
-            esrb: row.get(13)?,
-            genres: row.get(14)?,
-            developer: row.get(15)?,
-            publisher: row.get(16)?,
-        },
+        game: metadata_game_from_row(row)?,
         matched_title: row.get(17)?,
+    })
+}
+
+fn metadata_game_from_row(row: &Row<'_>) -> rusqlite::Result<MetadataGame> {
+    Ok(MetadataGame {
+        database_id: row.get(0)?,
+        name: row.get(1)?,
+        compare_name: row.get(2)?,
+        release_date: row.get(3)?,
+        release_year: row.get(4)?,
+        overview: row.get(5)?,
+        max_players: row.get(6)?,
+        release_type: row.get(7)?,
+        cooperative: row.get(8)?,
+        video_url: row.get(9)?,
+        community_rating: row.get(10)?,
+        wikipedia_url: row.get(11)?,
+        platform: row.get(12)?,
+        esrb: row.get(13)?,
+        genres: row.get(14)?,
+        developer: row.get(15)?,
+        publisher: row.get(16)?,
     })
 }
 
@@ -183,6 +301,19 @@ fn prefer_qualifier_matches(
     if matches.is_empty() {
         return Vec::new();
     }
+    let candidate_titles = matches
+        .iter()
+        .map(|candidate| (candidate.game.database_id, candidate.matched_title.as_str()))
+        .collect::<Vec<_>>();
+    let retained_ids = preferred_candidate_ids(&candidate_titles, query, application_path);
+    unique_games(matches, &retained_ids)
+}
+
+fn preferred_candidate_ids(
+    candidates: &[(i64, &str)],
+    query: &str,
+    application_path: Option<&Path>,
+) -> BTreeSet<i64> {
     let mut supplied_qualifiers = parenthetical_values(query);
     if let Some(application_title) = application_path
         .and_then(Path::file_stem)
@@ -191,10 +322,10 @@ fn prefer_qualifier_matches(
         supplied_qualifiers.extend(parenthetical_values(application_title));
     }
 
-    let qualified_ids = matches
+    let qualified_ids = candidates
         .iter()
-        .filter(|candidate| {
-            parenthetical_values(&candidate.matched_title)
+        .filter(|(_, matched_title)| {
+            parenthetical_values(matched_title)
                 .iter()
                 .any(|candidate_value| {
                     supplied_qualifiers
@@ -202,36 +333,50 @@ fn prefer_qualifier_matches(
                         .any(|supplied| candidate_value.eq_ignore_ascii_case(supplied))
                 })
         })
-        .map(|candidate| candidate.game.database_id)
+        .map(|(database_id, _)| *database_id)
         .collect::<BTreeSet<_>>();
     if !qualified_ids.is_empty() {
-        return unique_games(matches, Some(&qualified_ids));
+        return qualified_ids;
     }
 
-    let unqualified_ids = matches
+    let unqualified_ids = candidates
         .iter()
-        .filter(|candidate| parenthetical_values(&candidate.matched_title).is_empty())
-        .map(|candidate| candidate.game.database_id)
+        .filter(|(_, matched_title)| parenthetical_values(matched_title).is_empty())
+        .map(|(database_id, _)| *database_id)
         .collect::<BTreeSet<_>>();
     if !unqualified_ids.is_empty() {
-        return unique_games(matches, Some(&unqualified_ids));
+        return unqualified_ids;
     }
-    unique_games(matches, None)
+    candidates
+        .iter()
+        .map(|(database_id, _)| *database_id)
+        .collect()
 }
 
-fn unique_games(
-    matches: Vec<MatchedGame>,
-    retained_ids: Option<&BTreeSet<i64>>,
-) -> Vec<MetadataGame> {
+fn unique_games(matches: Vec<MatchedGame>, retained_ids: &BTreeSet<i64>) -> Vec<MetadataGame> {
     matches
         .into_iter()
-        .filter(|candidate| {
-            retained_ids.is_none_or(|ids| ids.contains(&candidate.game.database_id))
-        })
+        .filter(|candidate| retained_ids.contains(&candidate.game.database_id))
         .map(|candidate| (candidate.game.database_id, candidate.game))
         .collect::<BTreeMap<_, _>>()
         .into_values()
         .collect()
+}
+
+fn recovered_partial_match(candidate: &str, query: &str) -> bool {
+    if candidate.contains(query) && !is_bare_numbered_suffix(candidate, query) {
+        return true;
+    }
+    let candidate_words = candidate.split(' ').collect::<BTreeSet<_>>();
+    query
+        .split(' ')
+        .all(|query_word| candidate_words.contains(query_word))
+}
+
+fn is_bare_numbered_suffix(candidate: &str, query: &str) -> bool {
+    candidate
+        .strip_prefix(query)
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(char::is_numeric))
 }
 
 fn parenthetical_values(value: &str) -> Vec<String> {
@@ -443,6 +588,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn search_uses_recovered_partial_fallback_only_after_exact_results() {
+        assert!(!recovered_partial_match("VALOR2", "VALOR"));
+        assert!(recovered_partial_match("VALOR 2", "VALOR"));
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("LaunchBox.Metadata.db");
+        create_fixture(&path);
+        let database = MetadataDatabase::open(&path).unwrap();
+
+        let exact = database
+            .search("Fixture Console", "Fixture Quest", None)
+            .unwrap();
+        assert_eq!(exact.kind, Some(MetadataMatchKind::Exact));
+        assert_eq!(
+            exact
+                .games
+                .iter()
+                .map(|game| game.database_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let reordered_words = database
+            .search("Fixture Console", "Valor Legends", None)
+            .unwrap();
+        assert_eq!(reordered_words.kind, Some(MetadataMatchKind::Partial));
+        assert_eq!(reordered_words.games.len(), 1);
+        assert_eq!(reordered_words.games[0].database_id, 3);
+
+        let alternate_substring = database
+            .search("Fixture Console", "Grand Chronicle", None)
+            .unwrap();
+        assert_eq!(alternate_substring.kind, Some(MetadataMatchKind::Partial));
+        assert_eq!(alternate_substring.games.len(), 1);
+        assert_eq!(alternate_substring.games[0].database_id, 5);
+
+        let numbered_suffix = database
+            .search(
+                "Fixture Console",
+                "Valor (USA)",
+                Some(Path::new("Valor (USA).rom")),
+            )
+            .unwrap();
+        assert_eq!(numbered_suffix.kind, Some(MetadataMatchKind::Partial));
+        assert_eq!(
+            numbered_suffix
+                .games
+                .iter()
+                .map(|game| game.database_id)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+    }
+
     fn create_fixture(path: &Path) {
         let connection = Connection::open(path).unwrap();
         connection
@@ -489,9 +689,22 @@ mod tests {
                     (2, 'Fixture Quest (USA)', 'FIXTURE QUEST', NULL,
                      2002, 'USA overview', 2, 'Released', 1, NULL, 4.2,
                      NULL, 'Fixture Console', 'E10+', 'Role-Playing', 'Studio B',
-                     'Publisher B');
+                     'Publisher B'),
+                    (3, 'Legends of Valor (USA)', 'LEGENDS OF VALOR', NULL,
+                     2003, 'Valor overview', 1, 'Released', 0, NULL, 4.3,
+                     NULL, 'Fixture Console', 'E', 'Adventure', 'Studio C',
+                     'Publisher C'),
+                    (4, 'Valor2', 'VALOR2', NULL, 2004, 'Sequel overview', 1,
+                     'Released', 0, NULL, 4.4, NULL, 'Fixture Console', 'E',
+                     'Adventure', 'Studio D', 'Publisher D'),
+                    (5, 'Chronicles of Courage', 'CHRONICLES OF COURAGE', NULL,
+                     2005, 'Courage overview', 1, 'Released', 0, NULL, 4.5,
+                     NULL, 'Fixture Console', 'E', 'Adventure', 'Studio E',
+                     'Publisher E');
                 INSERT INTO GameAlternateTitles VALUES
-                    ('Quest Alternate', 1, 'Japan', 'QUEST ALTERNATE');
+                    ('Quest Alternate', 1, 'Japan', 'QUEST ALTERNATE'),
+                    ('Valor Grand Chronicle', 5, 'USA',
+                     'VALOR GRAND CHRONICLE');
                 ",
             )
             .unwrap();
