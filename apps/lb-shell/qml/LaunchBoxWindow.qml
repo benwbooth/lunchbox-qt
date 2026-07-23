@@ -1205,6 +1205,16 @@ ApplicationWindow {
             } else if (window.pcsx2SaveLifecycleSmokePhase === 1
                        && !controller.writing
                        && controller.game_save_revision === 1) {
+                if (controller.status_message.indexOf(
+                        "Recovered 28 orphaned memory-card cluster(s) "
+                        + "in the private working copy before replacement.")
+                        < 0) {
+                    console.error(
+                        "PCSX2_SAVE_LIFECYCLE_SMOKE_REPAIR_STATUS_FAILED "
+                        + controller.status_message)
+                    Qt.exit(27)
+                    return
+                }
                 const row = controller.row_for_game_id(gameId)
                 if (row < 0 || controller.game_save_count(row, gameId) !== 3) {
                     console.error(

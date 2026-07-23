@@ -5834,17 +5834,20 @@ fn write_pcsx2_card_member_restore(
         }
     };
     let working_copy = staging.path().join("working-card");
-    if let Err(error) = prepare_pcsx2_memory_card_restore(
+    let prepared_restore = match prepare_pcsx2_memory_card_restore(
         active_card.path(),
         &working_copy,
         &member,
         &restore_source,
     ) {
-        result.operation = format!(
-            "PCSX2 restore stopped after backing up the active member because a validated card working copy could not be built: {error}"
-        );
-        return Ok(result);
-    }
+        Ok(prepared) => prepared,
+        Err(error) => {
+            result.operation = format!(
+                "PCSX2 restore stopped after backing up the active member because a validated card working copy could not be built: {error}"
+            );
+            return Ok(result);
+        }
+    };
     let restored = match extract_pcsx2_memory_card_save(
         &working_copy,
         &member,
@@ -5882,8 +5885,9 @@ fn write_pcsx2_card_member_restore(
 
     match active_card.replace_from_working_copy(&working_copy) {
         Ok(recovery) => {
+            let repair_detail = pcsx2_repair_detail(prepared_restore.freed_orphan_clusters);
             result.operation = format!(
-                "Restored PCSX2 memory-card member {member} from {} to {}. Complete active-card recovery copy: {}",
+                "Restored PCSX2 memory-card member {member} from {} to {}.{repair_detail} Complete active-card recovery copy: {}",
                 selected_archive.source.display(),
                 active_card.path().display(),
                 recovery.display()
@@ -5894,8 +5898,9 @@ fn write_pcsx2_card_member_restore(
             source: error,
             ..
         }) => {
+            let repair_detail = pcsx2_repair_detail(prepared_restore.freed_orphan_clusters);
             result.operation = format!(
-                "Restored PCSX2 memory-card member {member} to {}, but directory durability could not be confirmed: {error}. Complete active-card recovery copy: {}",
+                "Restored PCSX2 memory-card member {member} to {}.{repair_detail} Directory durability could not be confirmed: {error}. Complete active-card recovery copy: {}",
                 active_card.path().display(),
                 backup.display()
             );
@@ -5907,6 +5912,16 @@ fn write_pcsx2_card_member_restore(
         }
     }
     Ok(result)
+}
+
+fn pcsx2_repair_detail(freed_orphan_clusters: usize) -> String {
+    if freed_orphan_clusters == 0 {
+        String::new()
+    } else {
+        format!(
+            " Recovered {freed_orphan_clusters} orphaned memory-card cluster(s) in the private working copy before replacement."
+        )
+    }
 }
 
 fn write_pcsx2_card_member_active_delete(
@@ -22586,6 +22601,107 @@ mod tests {
                 b"selected vault card progress".to_vec()
             ]
         );
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn pcsx2_raw_restore_reports_recovered_capacity_through_the_controller_result() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        let vault_directory = directory.path().join("Saves/Fixture Console");
+        let active_card = directory.path().join("Emulators/PCSX2/memcards/Mcd001.ps2");
+        fs::create_dir_all(&platform_directory).unwrap();
+        fs::create_dir_all(&vault_directory).unwrap();
+        fs::create_dir_all(active_card.parent().unwrap()).unwrap();
+        let rom = directory
+            .path()
+            .join("Games/Fixture Adventure/adventure.rom");
+        fs::create_dir_all(rom.parent().unwrap()).unwrap();
+        fs::write(&rom, b"fixture rom").unwrap();
+
+        let original = lb_integrations::pcsx2::test_fixtures::saturated_raw_memory_card();
+        fs::write(&active_card, &original).unwrap();
+        let selected_source = directory.path().join("selected-member");
+        fs::create_dir(&selected_source).unwrap();
+        let mut selected_icon = vec![0_u8; 148];
+        selected_icon[..4].copy_from_slice(b"PS2D");
+        selected_icon[6..8].copy_from_slice(&7_u16.to_le_bytes());
+        selected_icon[80..95].copy_from_slice(b"Selected Member");
+        fs::write(selected_source.join("icon.sys"), selected_icon).unwrap();
+        let selected_bytes =
+            vec![0x5a; lb_integrations::pcsx2::test_fixtures::CLUSTER_SIZE * 2 + 1];
+        fs::write(selected_source.join("save.bin"), &selected_bytes).unwrap();
+        let selected = vault_directory.join("adventure.7z");
+        ArchiveExtractor::for_launchbox_root(directory.path())
+            .create_7z_from_directory(&selected_source, &selected)
+            .unwrap();
+
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE
+            .replace(
+                "<EmulatorFileName>fixture-emulator</EmulatorFileName>",
+                "<EmulatorFileName>pcsx2-qt</EmulatorFileName>",
+            )
+            .replace(
+                r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+                r"<FilePath>Emulators\PCSX2\memcards\Mcd001.ps2</FilePath>",
+            )
+            .replace("    <Slot>1</Slot>\n", "")
+            .replace(
+                "    <Title>Before the Final Puzzle</Title>",
+                "    <Title>Current Active Member</Title>\n    <SaveGroupName>PCSX2 Save</SaveGroupName>\n    <SaveGroupId>pcsx2:Mcd001:BASLUS-12345SAVE</SaveGroupId>\n    <OriginalFileName>BASLUS-12345SAVE</OriginalFileName>",
+            )
+            .replace(
+                "  <FutureRootElement>preserve-me</FutureRootElement>",
+                "  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>pcsx2-qt</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.7z</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Selected PCSX2 Backup</Title>\n    <SaveGroupName>PCSX2 Save</SaveGroupName>\n    <SaveGroupId>pcsx2:Mcd001:BASLUS-12345SAVE</SaveGroupId>\n    <OriginalFileName>BASLUS-12345SAVE</OriginalFileName>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
+            );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let expected = document.library().game_saves[1].clone();
+
+        let restored = write_game_save_restore(
+            directory.path().to_path_buf(),
+            platform_path,
+            "fixture-adventure".into(),
+            1,
+            expected,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        assert!(restored.operation.contains(&format!(
+            "Recovered {} orphaned memory-card cluster(s) in the private working copy before replacement.",
+            lb_integrations::pcsx2::test_fixtures::FREED_ORPHAN_CLUSTERS
+        )));
+        let extracted = directory.path().join("restored-member");
+        extract_pcsx2_memory_card_save(&active_card, "BASLUS-12345SAVE", &extracted).unwrap();
+        assert_eq!(
+            fs::read(extracted.join("save.bin")).unwrap(),
+            selected_bytes
+        );
+        let recoveries = fs::read_dir(active_card.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("Mcd001.ps2.lbport-backup-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(fs::read(recoveries[0].path()).unwrap(), original);
+
+        let backed_up = directory.path().join("backed-up-member");
+        let (member, _) = extract_pcsx2_archive_source(
+            directory.path(),
+            &vault_directory.join("adventure-01.7z"),
+            &backed_up,
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        assert_eq!(fs::read(member.join("save.bin")).unwrap(), b"save bytes");
         assert!(pending_transaction_manifests(directory.path())
             .unwrap()
             .is_empty());

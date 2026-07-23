@@ -106,8 +106,65 @@ fn run_explicit_mode(mode: &OsStr, arguments: &[OsString]) -> Result<(), String>
             })?;
             write_line(&lifetime_log, "alive-until-exit")
         }
+        Some("pcsx2-saturated-card") => {
+            write_pcsx2_saturated_card(&option_path(arguments, "--path")?)
+        }
+        Some("pcsx2-restore-source") => {
+            write_pcsx2_restore_source(&option_path(arguments, "--path")?)
+        }
+        Some("pcsx2-extract") => {
+            let card = option_path(arguments, "--card")?;
+            let member = option(arguments, "--member")?
+                .to_str()
+                .ok_or_else(|| "--member must be Unicode".to_string())?;
+            let destination = option_path(arguments, "--out")?;
+            lb_integrations::pcsx2::extract_pcsx2_memory_card_save(&card, member, &destination)
+                .map(|_| ())
+                .map_err(|error| format!("extract PCSX2 fixture member: {error}"))
+        }
         _ => Err(format!("unknown explicit fixture mode {mode:?}")),
     }
+}
+
+fn write_pcsx2_saturated_card(path: &Path) -> Result<(), String> {
+    write_new_bytes(
+        path,
+        &lb_integrations::pcsx2::test_fixtures::saturated_raw_memory_card(),
+        "PCSX2 saturated-card fixture",
+    )
+}
+
+fn write_pcsx2_restore_source(path: &Path) -> Result<(), String> {
+    fs::create_dir(path)
+        .map_err(|error| io_error("create PCSX2 restore-source fixture directory", path, error))?;
+    let result = (|| {
+        let mut icon = vec![0_u8; 148];
+        icon[..4].copy_from_slice(b"PS2D");
+        icon[6..8].copy_from_slice(&7_u16.to_le_bytes());
+        icon[80..95].copy_from_slice(b"Selected Member");
+        write_new_bytes(&path.join("icon.sys"), &icon, "PCSX2 restore-source icon")?;
+        write_new_bytes(
+            &path.join("save.bin"),
+            &vec![0x5a; lb_integrations::pcsx2::test_fixtures::CLUSTER_SIZE * 2 + 1],
+            "PCSX2 restore-source save",
+        )
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(path);
+    }
+    result
+}
+
+fn write_new_bytes(path: &Path, bytes: &[u8], kind: &str) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| io_error(&format!("create {kind}"), path, error))?;
+    file.write_all(bytes)
+        .map_err(|error| io_error(&format!("write {kind}"), path, error))?;
+    file.sync_all()
+        .map_err(|error| io_error(&format!("sync {kind}"), path, error))
 }
 
 fn executable_role() -> Result<String, String> {
@@ -355,4 +412,63 @@ fn append_line(path: &Path, value: &OsStr) -> Result<(), String> {
 
 fn io_error(operation: &str, path: impl AsRef<Path>, error: std::io::Error) -> String {
     format!("{operation} at {}: {error}", path.as_ref().display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pcsx2_fixture_modes_create_a_saturated_card_and_large_restore_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = directory.path().join("Mcd001.ps2");
+        run_explicit_mode(
+            OsStr::new("pcsx2-saturated-card"),
+            &[OsString::from("--path"), card.clone().into_os_string()],
+        )
+        .unwrap();
+        let saves = lb_integrations::pcsx2::list_pcsx2_memory_card_saves(&card).unwrap();
+        assert_eq!(saves.len(), 1);
+        assert_eq!(saves[0].directory_name, "BASLUS-12345SAVE");
+        assert!(run_explicit_mode(
+            OsStr::new("pcsx2-saturated-card"),
+            &[OsString::from("--path"), card.into_os_string()],
+        )
+        .is_err());
+
+        let source = directory.path().join("source");
+        run_explicit_mode(
+            OsStr::new("pcsx2-restore-source"),
+            &[OsString::from("--path"), source.clone().into_os_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::metadata(source.join("save.bin")).unwrap().len(),
+            u64::try_from(lb_integrations::pcsx2::test_fixtures::CLUSTER_SIZE * 2 + 1).unwrap()
+        );
+        assert_eq!(&fs::read(source.join("icon.sys")).unwrap()[..4], b"PS2D");
+    }
+
+    #[test]
+    fn pcsx2_extract_mode_routes_through_the_real_card_adapter() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = directory.path().join("Mcd001.ps2");
+        write_pcsx2_saturated_card(&card).unwrap();
+        let output = directory.path().join("member");
+
+        run_explicit_mode(
+            OsStr::new("pcsx2-extract"),
+            &[
+                OsString::from("--card"),
+                card.into_os_string(),
+                OsString::from("--member"),
+                OsString::from("BASLUS-12345SAVE"),
+                OsString::from("--out"),
+                output.clone().into_os_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(output.join("save.bin")).unwrap(), b"save bytes");
+    }
 }

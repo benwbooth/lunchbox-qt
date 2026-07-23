@@ -399,12 +399,19 @@ result for manifest verification, and revision-checks the selected archive and
 live card before a recoverable swap. Folder cards use a rollback-capable
 sibling-directory replacement; raw cards use atomic file replacement and
 regenerate physical spare/ECC pages. Raw restore is deliberately limited to
-ECC-bearing physical cards, matching the recovered 13.27 gate. Active deletion
+ECC-bearing physical cards, matching the recovered 13.27 gate. If that private
+raw-card import first fails for lack of space, the port follows the recovered
+13.27 capacity-recovery path: it walks every directory reachable from the root,
+marks each referenced FAT chain, clears only allocated unreachable clusters,
+durably rewrites the working-copy FAT, and retries the import. The source/live
+card is never repaired in place, a zero-cluster repair still retries like
+13.27, and the Qt result reports the exact reclaimed count only when recovery
+occurred. Active deletion
 commits the vault archive and removes the active XML row before swapping the
 validated deletion copy, so a final conflict remains recoverable through Find
-Active Saves. PCSX2 filesystem repair/capacity recovery, full PCSX2
-disc-image serial extraction, stale-row reconciliation, automatic policy,
-repair, and the remaining adapters remain open. The manual `LIB-010` subset now
+Active Saves. Full PCSX2 disc-image serial extraction, stale-row reconciliation,
+automatic policy, repair, and the remaining adapters remain open. The manual
+`LIB-010` subset now
 combines same-platform games into launchable version applications and expands
 them back transactionally; collapse and remaining presentation parity stay
 open.

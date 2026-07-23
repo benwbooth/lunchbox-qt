@@ -1104,34 +1104,28 @@ sed -i \
   '/<\/GameSave>/a\  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>pcsx2-qt</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.7z</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Selected PCSX2 Backup</Title>\n    <SaveGroupName>PCSX2 Save</SaveGroupName>\n    <SaveGroupId>pcsx2:Mcd001:BASLUS-12345SAVE</SaveGroupId>\n    <OriginalFileName>BASLUS-12345SAVE</OriginalFileName>\n  </GameSave>' \
   "$pcsx2_save_lifecycle_platform"
 pcsx2_save_lifecycle_card="$pcsx2_save_lifecycle_root/Emulators/PCSX2/memcards/Mcd001.ps2"
-pcsx2_save_lifecycle_member="$pcsx2_save_lifecycle_card/BASLUS-12345SAVE"
-pcsx2_save_lifecycle_unrelated="$pcsx2_save_lifecycle_card/BASLUS-UNRELATED"
 pcsx2_save_lifecycle_selected_source="$pcsx2_save_lifecycle_root/selected-member"
 pcsx2_save_lifecycle_vault="$pcsx2_save_lifecycle_root/Saves/Fixture Console"
 mkdir -p \
-  "$pcsx2_save_lifecycle_member" \
-  "$pcsx2_save_lifecycle_unrelated" \
-  "$pcsx2_save_lifecycle_selected_source" \
+  "$(dirname "$pcsx2_save_lifecycle_card")" \
   "$pcsx2_save_lifecycle_vault" \
   "$pcsx2_save_lifecycle_root/Games/Fixture Adventure"
 printf %s 'fixture rom' \
   > "$pcsx2_save_lifecycle_root/Games/Fixture Adventure/adventure.rom"
-for icon in \
-  "$pcsx2_save_lifecycle_member/icon.sys" \
-  "$pcsx2_save_lifecycle_unrelated/icon.sys" \
-  "$pcsx2_save_lifecycle_selected_source/icon.sys"; do
-  dd if=/dev/zero of="$icon" bs=148 count=1 status=none
-  printf %s 'PS2D' | dd of="$icon" conv=notrunc status=none
-done
-pcsx2_save_lifecycle_active_bytes='lifecycle current active bytes'
-pcsx2_save_lifecycle_selected_bytes='lifecycle selected vault bytes'
-pcsx2_save_lifecycle_unrelated_bytes='lifecycle unrelated member bytes'
-printf %s "$pcsx2_save_lifecycle_active_bytes" \
-  > "$pcsx2_save_lifecycle_member/save.bin"
-printf %s "$pcsx2_save_lifecycle_unrelated_bytes" \
-  > "$pcsx2_save_lifecycle_unrelated/other.bin"
-printf %s "$pcsx2_save_lifecycle_selected_bytes" \
-  > "$pcsx2_save_lifecycle_selected_source/save.bin"
+"$process_fixture" \
+  --fixture-mode pcsx2-saturated-card \
+  --path "$pcsx2_save_lifecycle_card"
+"$process_fixture" \
+  --fixture-mode pcsx2-restore-source \
+  --path "$pcsx2_save_lifecycle_selected_source"
+pcsx2_save_lifecycle_initial_member="$pcsx2_save_lifecycle_root/initial-member"
+"$process_fixture" \
+  --fixture-mode pcsx2-extract \
+  --card "$pcsx2_save_lifecycle_card" \
+  --member BASLUS-12345SAVE \
+  --out "$pcsx2_save_lifecycle_initial_member"
+cp "$pcsx2_save_lifecycle_card" \
+  "$pcsx2_save_lifecycle_root/original-card.ps2"
 (
   cd "$pcsx2_save_lifecycle_selected_source"
   7z a -t7z -mx=9 \
@@ -1156,16 +1150,19 @@ if ! rg -q \
   echo "LaunchBox did not validate dialog-confirmed PCSX2 restore and active deletion." >&2
   exit 1
 fi
-if [[ -e "$pcsx2_save_lifecycle_member" ]] \
-  || [[ $(<"$pcsx2_save_lifecycle_unrelated/other.bin") \
-    != "$pcsx2_save_lifecycle_unrelated_bytes" ]]; then
-  echo "PCSX2 lifecycle did not delete only the selected logical card member." >&2
+if "$process_fixture" \
+  --fixture-mode pcsx2-extract \
+  --card "$pcsx2_save_lifecycle_card" \
+  --member BASLUS-12345SAVE \
+  --out "$pcsx2_save_lifecycle_root/unexpected-live-member" \
+  >/dev/null 2>&1; then
+  echo "PCSX2 lifecycle did not delete the selected raw-card member." >&2
   exit 1
 fi
 pcsx2_save_lifecycle_expected=(
-  "$pcsx2_save_lifecycle_selected_bytes"
-  "$pcsx2_save_lifecycle_active_bytes"
-  "$pcsx2_save_lifecycle_selected_bytes"
+  "$pcsx2_save_lifecycle_selected_source/save.bin"
+  "$pcsx2_save_lifecycle_initial_member/save.bin"
+  "$pcsx2_save_lifecycle_selected_source/save.bin"
 )
 pcsx2_save_lifecycle_archives=(
   "$pcsx2_save_lifecycle_vault/adventure.7z"
@@ -1177,40 +1174,42 @@ for index in 0 1 2; do
   extracted="$pcsx2_save_lifecycle_root/archive-check-$index"
   mkdir "$extracted"
   7z x -y -bd -bb0 "-o$extracted" -- "$archive" >/dev/null
-  if [[ $(<"$extracted/save.bin") \
-    != "${pcsx2_save_lifecycle_expected[$index]}" ]]; then
+  if ! cmp -s "$extracted/save.bin" \
+    "${pcsx2_save_lifecycle_expected[$index]}"; then
     echo "PCSX2 lifecycle archive $archive has the wrong logical member bytes." >&2
     exit 1
   fi
 done
 mapfile -t pcsx2_save_lifecycle_card_backups < <(
-  find "$pcsx2_save_lifecycle_card/.." -maxdepth 1 -type d \
-    -name 'Mcd001.ps2.lbport-directory-backup-*' -print
+  find "$(dirname "$pcsx2_save_lifecycle_card")" -maxdepth 1 -type f \
+    -name 'Mcd001.ps2.lbport-backup-*' -print
 )
 if [[ ${#pcsx2_save_lifecycle_card_backups[@]} -ne 2 ]]; then
-  echo "PCSX2 lifecycle did not retain exactly two complete-card recovery trees." >&2
+  echo "PCSX2 lifecycle did not retain exactly two complete raw-card recovery files." >&2
   exit 1
 fi
-pcsx2_save_lifecycle_recovery_values=()
-for recovery_root in "${pcsx2_save_lifecycle_card_backups[@]}"; do
-  recovered_card="$recovery_root/Mcd001.ps2"
-  if [[ $(<"$recovered_card/BASLUS-UNRELATED/other.bin") \
-      != "$pcsx2_save_lifecycle_unrelated_bytes" ]]; then
-    echo "PCSX2 complete-card recovery lost the unrelated member." >&2
-    exit 1
+pcsx2_save_lifecycle_original_recovery_count=0
+pcsx2_save_lifecycle_selected_recovery_count=0
+for index in "${!pcsx2_save_lifecycle_card_backups[@]}"; do
+  recovery="${pcsx2_save_lifecycle_card_backups[$index]}"
+  extracted="$pcsx2_save_lifecycle_root/recovery-check-$index"
+  "$process_fixture" \
+    --fixture-mode pcsx2-extract \
+    --card "$recovery" \
+    --member BASLUS-12345SAVE \
+    --out "$extracted"
+  if cmp -s "$recovery" \
+    "$pcsx2_save_lifecycle_root/original-card.ps2"; then
+    pcsx2_save_lifecycle_original_recovery_count=$((pcsx2_save_lifecycle_original_recovery_count + 1))
   fi
-  pcsx2_save_lifecycle_recovery_values+=(
-    "$(<"$recovered_card/BASLUS-12345SAVE/save.bin")"
-  )
+  if cmp -s "$extracted/save.bin" \
+    "$pcsx2_save_lifecycle_selected_source/save.bin"; then
+    pcsx2_save_lifecycle_selected_recovery_count=$((pcsx2_save_lifecycle_selected_recovery_count + 1))
+  fi
 done
-mapfile -t pcsx2_save_lifecycle_recovery_values < <(
-  printf '%s\n' "${pcsx2_save_lifecycle_recovery_values[@]}" | sort
-)
-if [[ "${pcsx2_save_lifecycle_recovery_values[0]}" \
-      != "$pcsx2_save_lifecycle_active_bytes" ]] \
-  || [[ "${pcsx2_save_lifecycle_recovery_values[1]}" \
-      != "$pcsx2_save_lifecycle_selected_bytes" ]]; then
-  echo "PCSX2 complete-card recovery trees do not contain both pre-mutation states." >&2
+if [[ $pcsx2_save_lifecycle_original_recovery_count -ne 1 ]] \
+  || [[ $pcsx2_save_lifecycle_selected_recovery_count -ne 1 ]]; then
+  echo "PCSX2 raw-card recovery files do not contain both exact pre-mutation states." >&2
   exit 1
 fi
 if [[ $(rg -c '<GameSave>' "$pcsx2_save_lifecycle_platform") -ne 3 ]] \
@@ -1246,7 +1245,7 @@ if find "$pcsx2_save_lifecycle_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox dialog-confirmed PCSX2 folder-card restore/deletion, three exact vault versions, two complete-card recovery trees, unrelated-member retention, targeted refresh, and cleanup validated."
+echo "LaunchBox dialog-confirmed PCSX2 raw-card capacity recovery, restore/deletion, Qt-visible repair result, three exact vault versions, two complete-card recovery files, targeted refresh, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$dolphin_wii_save_lifecycle_root/Data"
 dolphin_wii_save_lifecycle_platform="$dolphin_wii_save_lifecycle_root/Data/Platforms/Fixture Console.xml"

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use encoding_rs::SHIFT_JIS;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -30,6 +30,14 @@ pub struct ExtractedPcsx2MemoryCardSave {
     pub files: Vec<PathBuf>,
     /// LaunchBox 13.27's uppercase SHA-256 folder-manifest signature.
     pub signature: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedPcsx2MemoryCardRestore {
+    pub save: Pcsx2MemoryCardSave,
+    /// Allocated but unreachable FAT clusters reclaimed after the first
+    /// raw-card import failed for lack of space.
+    pub freed_orphan_clusters: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -319,6 +327,62 @@ impl RawMemoryCard {
         self.import_missing_member(member_name, source_folder)
     }
 
+    fn repair_orphaned_clusters(&mut self) -> Result<usize, Pcsx2CardError> {
+        let mut reachable = vec![false; self.fat.len()];
+        mark_reachable_chain(&self.fat, self.header.root_dir_cluster, &mut reachable);
+
+        let mut seen_first_clusters = BTreeSet::new();
+        seen_first_clusters.insert(self.header.root_dir_cluster);
+        let mut pending = VecDeque::from([self.root.clone()]);
+        while let Some(entries) = pending.pop_front() {
+            for entry in entries {
+                if !entry.exists()
+                    || entry.name == "."
+                    || entry.name == ".."
+                    || !seen_first_clusters.insert(entry.first_cluster)
+                {
+                    continue;
+                }
+                mark_reachable_chain(&self.fat, entry.first_cluster, &mut reachable);
+                if entry.is_directory() {
+                    pending.push_back(read_directory(
+                        &mut self.file,
+                        &self.path,
+                        &self.header,
+                        &self.fat,
+                        entry.first_cluster,
+                        entry.length,
+                        self.use_raw_cluster_size,
+                    )?);
+                }
+            }
+        }
+
+        let mut freed = 0;
+        for (entry, is_reachable) in self.fat.iter_mut().zip(reachable) {
+            if *entry & FAT_ALLOCATED != 0 && !is_reachable {
+                *entry = 0;
+                freed += 1;
+            }
+        }
+        if freed > 0 {
+            write_fat(
+                &mut self.file,
+                &self.path,
+                &self.header,
+                &self.fat,
+                self.use_raw_cluster_size,
+            )?;
+            self.file
+                .sync_all()
+                .map_err(|source| Pcsx2CardError::Write {
+                    path: self.path.clone(),
+                    source,
+                })?;
+        }
+        Ok(freed)
+    }
+
     fn import_missing_member(
         &mut self,
         member_name: &str,
@@ -580,7 +644,7 @@ pub fn prepare_pcsx2_memory_card_restore(
     destination: &Path,
     member_name: &str,
     source_folder: &Path,
-) -> Result<Pcsx2MemoryCardSave, Pcsx2CardError> {
+) -> Result<PreparedPcsx2MemoryCardRestore, Pcsx2CardError> {
     validate_member_component(member_name)?;
     let source_folder = canonical_directory(source_folder, "PCSX2 restore source")?;
     let sources = import_source_files(&source_folder)?;
@@ -594,19 +658,36 @@ pub fn prepare_pcsx2_memory_card_restore(
     }
     let kind = copy_memory_card_working_copy(source_card, destination)?;
     let result = (|| {
-        match kind {
+        let (saves, freed_orphan_clusters) = match kind {
             MemoryCardKind::Folder => {
                 import_folder_member(destination, member_name, &source_folder)?;
-                list_folder_saves(destination)
+                (list_folder_saves(destination)?, 0)
             }
             MemoryCardKind::Raw => {
                 validate_raw_name(member_name, destination)?;
-                RawMemoryCard::open_writable(destination)?
-                    .import_member(member_name, &source_folder)?;
-                RawMemoryCard::open(destination)?.list_saves()
+                let first_import = RawMemoryCard::open_writable(destination)?
+                    .import_member(member_name, &source_folder);
+                let freed_orphan_clusters = match first_import {
+                    Ok(()) => 0,
+                    Err(Pcsx2CardError::NoFreeSpace { .. }) => {
+                        let freed = RawMemoryCard::open_writable(destination)?
+                            .repair_orphaned_clusters()?;
+                        RawMemoryCard::open_writable(destination)?
+                            .import_member(member_name, &source_folder)?;
+                        freed
+                    }
+                    Err(error) => return Err(error),
+                };
+                (
+                    RawMemoryCard::open(destination)?.list_saves()?,
+                    freed_orphan_clusters,
+                )
             }
-        }
-        .and_then(|saves| exactly_one_named_save(destination, member_name, saves))
+        };
+        Ok(PreparedPcsx2MemoryCardRestore {
+            save: exactly_one_named_save(destination, member_name, saves)?,
+            freed_orphan_clusters,
+        })
     })();
     if result.is_err() {
         let _ = remove_working_copy(destination);
@@ -1489,6 +1570,24 @@ fn enumerate_chain(fat: &[u32], start: u32, path: &Path) -> Result<Vec<usize>, P
     Ok(chain)
 }
 
+fn mark_reachable_chain(fat: &[u32], start: u32, reachable: &mut [bool]) {
+    let mut current = start;
+    while current != FAT_CHAIN_END {
+        let Ok(index) = usize::try_from(current) else {
+            break;
+        };
+        if index >= fat.len() || reachable[index] {
+            break;
+        }
+        reachable[index] = true;
+        let next = fat[index];
+        if next & FAT_ALLOCATED == 0 {
+            break;
+        }
+        current = next & FAT_CLUSTER_MASK;
+    }
+}
+
 fn read_alloc_cluster(
     file: &mut File,
     path: &Path,
@@ -2275,19 +2374,19 @@ pub enum Pcsx2CardError {
     EmptyManifest { path: PathBuf },
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "test-fixtures"))]
+mod fixture {
     use super::*;
 
-    const PAGE_SIZE: usize = 512;
-    const PAGES_PER_CLUSTER: usize = 4;
-    const CLUSTER_SIZE: usize = PAGE_SIZE * PAGES_PER_CLUSTER;
-    const SPARE_SIZE: usize = 16;
-    const RAW_PAGE_SIZE: usize = PAGE_SIZE + SPARE_SIZE;
-    const RAW_CLUSTER_SIZE: usize = RAW_PAGE_SIZE * PAGES_PER_CLUSTER;
-    const CLUSTERS_PER_CARD: usize = 64;
-    const ALLOCATABLE_OFFSET: usize = 4;
-    const ALLOCATABLE_END: usize = 32;
+    pub(super) const PAGE_SIZE: usize = 512;
+    pub(super) const PAGES_PER_CLUSTER: usize = 4;
+    pub(super) const CLUSTER_SIZE: usize = PAGE_SIZE * PAGES_PER_CLUSTER;
+    pub(super) const SPARE_SIZE: usize = 16;
+    pub(super) const RAW_PAGE_SIZE: usize = PAGE_SIZE + SPARE_SIZE;
+    pub(super) const RAW_CLUSTER_SIZE: usize = RAW_PAGE_SIZE * PAGES_PER_CLUSTER;
+    pub(super) const CLUSTERS_PER_CARD: usize = 64;
+    pub(super) const ALLOCATABLE_OFFSET: usize = 4;
+    pub(super) const ALLOCATABLE_END: usize = 32;
 
     fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
         bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
@@ -2316,7 +2415,7 @@ mod tests {
         bytes
     }
 
-    fn icon_sys(title: &str) -> Vec<u8> {
+    pub(super) fn icon_sys(title: &str) -> Vec<u8> {
         let mut bytes = vec![0_u8; 148];
         bytes[..4].copy_from_slice(b"PS2D");
         bytes[6..8].copy_from_slice(&7_u16.to_le_bytes());
@@ -2339,7 +2438,7 @@ mod tests {
         }
     }
 
-    fn card_fixture(raw: bool) -> Vec<u8> {
+    pub(super) fn memory_card(raw: bool) -> Vec<u8> {
         let physical_cluster_size = if raw { RAW_CLUSTER_SIZE } else { CLUSTER_SIZE };
         let mut card = vec![0xff_u8; CLUSTERS_PER_CARD * physical_cluster_size];
         let mut header_cluster = vec![0xff_u8; CLUSTER_SIZE];
@@ -2388,6 +2487,39 @@ mod tests {
         card
     }
 
+    pub(super) fn card_with_orphans(orphan_clusters: impl IntoIterator<Item = usize>) -> Vec<u8> {
+        let mut card = memory_card(true);
+        let mut fat = vec![0_u8; CLUSTER_SIZE];
+        for cluster in 0..=3 {
+            write_u32(&mut fat, cluster * 4, FAT_CHAIN_END);
+        }
+        for cluster in orphan_clusters {
+            assert!((4..ALLOCATABLE_END).contains(&cluster));
+            write_u32(&mut fat, cluster * 4, FAT_CHAIN_END);
+        }
+        put_cluster(&mut card, 2, &fat, true);
+        card
+    }
+}
+
+#[cfg(feature = "test-fixtures")]
+#[doc(hidden)]
+pub mod test_fixtures {
+    /// Synthetic physical-page card with one valid save member and all
+    /// otherwise allocatable clusters marked as unreachable allocations.
+    pub fn saturated_raw_memory_card() -> Vec<u8> {
+        super::fixture::card_with_orphans(4..super::fixture::ALLOCATABLE_END)
+    }
+
+    pub const FREED_ORPHAN_CLUSTERS: usize = super::fixture::ALLOCATABLE_END - 4;
+    pub const CLUSTER_SIZE: usize = super::fixture::CLUSTER_SIZE;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture::*;
+    use super::*;
+
     fn restore_source(root: &Path, save_bytes: &[u8]) -> PathBuf {
         let source = root.join("restore-source");
         fs::create_dir(&source).unwrap();
@@ -2414,7 +2546,7 @@ mod tests {
             let card = directory
                 .path()
                 .join(if raw { "raw.ps2" } else { "logical.ps2" });
-            fs::write(&card, card_fixture(raw)).unwrap();
+            fs::write(&card, memory_card(raw)).unwrap();
             let saves = list_pcsx2_memory_card_saves(&card).unwrap();
             assert_eq!(saves.len(), 1);
             assert_eq!(saves[0].directory_name, "BASLUS-12345SAVE");
@@ -2444,7 +2576,7 @@ mod tests {
     fn folder_and_raw_members_share_the_same_manifest_contract() {
         let directory = tempfile::tempdir().unwrap();
         let card = directory.path().join("raw.ps2");
-        fs::write(&card, card_fixture(true)).unwrap();
+        fs::write(&card, memory_card(true)).unwrap();
         let extracted = directory.path().join("raw-member");
         let raw = extract_pcsx2_memory_card_save(&card, "BASLUS-12345SAVE", &extracted).unwrap();
 
@@ -2472,7 +2604,7 @@ mod tests {
         let memcards = emulator_root.join("memcards");
         fs::create_dir_all(&memcards).unwrap();
         let card = memcards.join("Mcd001.ps2");
-        fs::write(&card, card_fixture(true)).unwrap();
+        fs::write(&card, memory_card(true)).unwrap();
         let emulator = emulator_root.join("pcsx2-qt");
         fs::write(&emulator, b"pcsx2").unwrap();
         let content = directory.path().join("Fixture Racer (SLUS-12345).iso");
@@ -2531,14 +2663,16 @@ mod tests {
     fn raw_restore_and_delete_build_validated_working_copies_without_touching_source() {
         let directory = tempfile::tempdir().unwrap();
         let card = directory.path().join("Mcd001.ps2");
-        let original = card_fixture(true);
+        let original = memory_card(true);
         fs::write(&card, &original).unwrap();
         let source = restore_source(directory.path(), b"replacement bytes");
 
         let restored = directory.path().join("restored.ps2");
-        let save = prepare_pcsx2_memory_card_restore(&card, &restored, "BASLUS-12345SAVE", &source)
-            .unwrap();
-        assert_eq!(save.title, "Fixture New");
+        let prepared =
+            prepare_pcsx2_memory_card_restore(&card, &restored, "BASLUS-12345SAVE", &source)
+                .unwrap();
+        assert_eq!(prepared.save.title, "Fixture New");
+        assert_eq!(prepared.freed_orphan_clusters, 0);
         assert_eq!(fs::read(&card).unwrap(), original);
         let extracted = directory.path().join("restored-member");
         extract_pcsx2_memory_card_save(&restored, "BASLUS-12345SAVE", &extracted).unwrap();
@@ -2568,6 +2702,68 @@ mod tests {
             b"replacement bytes"
         );
         assert_eq!(fs::read(&card).unwrap(), original);
+    }
+
+    #[test]
+    fn raw_card_repair_frees_only_allocated_clusters_unreachable_from_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = directory.path().join("Mcd001.ps2");
+        fs::write(&card, card_with_orphans([4, 5])).unwrap();
+
+        let freed = RawMemoryCard::open_writable(&card)
+            .unwrap()
+            .repair_orphaned_clusters()
+            .unwrap();
+
+        assert_eq!(freed, 2);
+        let repaired = RawMemoryCard::open(&card).unwrap();
+        assert_eq!(&repaired.fat[..4], &[FAT_CHAIN_END; 4]);
+        assert_eq!(repaired.fat[4], 0);
+        assert_eq!(repaired.fat[5], 0);
+        let extracted = directory.path().join("member");
+        extract_pcsx2_memory_card_save(&card, "BASLUS-12345SAVE", &extracted).unwrap();
+        assert_eq!(fs::read(extracted.join("save.bin")).unwrap(), b"save bytes");
+    }
+
+    #[test]
+    fn raw_restore_retries_after_no_space_and_reports_reclaimed_orphans() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = directory.path().join("Mcd001.ps2");
+        let original = card_with_orphans(4..ALLOCATABLE_END);
+        fs::write(&card, &original).unwrap();
+        let replacement = vec![0x5a; CLUSTER_SIZE * 2 + 1];
+        let source = restore_source(directory.path(), &replacement);
+        let restored = directory.path().join("restored.ps2");
+
+        let prepared =
+            prepare_pcsx2_memory_card_restore(&card, &restored, "BASLUS-12345SAVE", &source)
+                .unwrap();
+
+        assert_eq!(prepared.freed_orphan_clusters, ALLOCATABLE_END - 4);
+        assert_eq!(prepared.save.title, "Fixture New");
+        assert_eq!(fs::read(&card).unwrap(), original);
+        let extracted = directory.path().join("restored-member");
+        extract_pcsx2_memory_card_save(&restored, "BASLUS-12345SAVE", &extracted).unwrap();
+        assert_eq!(fs::read(extracted.join("save.bin")).unwrap(), replacement);
+    }
+
+    #[test]
+    fn raw_restore_does_not_repair_orphans_until_import_reports_no_space() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = directory.path().join("Mcd001.ps2");
+        fs::write(&card, card_with_orphans([ALLOCATABLE_END - 1])).unwrap();
+        let source = restore_source(directory.path(), b"replacement bytes");
+        let restored = directory.path().join("restored.ps2");
+
+        let prepared =
+            prepare_pcsx2_memory_card_restore(&card, &restored, "BASLUS-12345SAVE", &source)
+                .unwrap();
+
+        assert_eq!(prepared.freed_orphan_clusters, 0);
+        assert_eq!(
+            RawMemoryCard::open(&restored).unwrap().fat[ALLOCATABLE_END - 1],
+            FAT_CHAIN_END
+        );
     }
 
     #[test]
@@ -2602,7 +2798,7 @@ mod tests {
     fn logical_raw_restore_matches_1327_spare_ecc_gate_and_cleans_output() {
         let directory = tempfile::tempdir().unwrap();
         let card = directory.path().join("logical.ps2");
-        fs::write(&card, card_fixture(false)).unwrap();
+        fs::write(&card, memory_card(false)).unwrap();
         let source = restore_source(directory.path(), b"new bytes");
         let output = directory.path().join("working.ps2");
         assert!(matches!(

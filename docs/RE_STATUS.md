@@ -260,19 +260,34 @@ build a private complete folder/raw card copy, validate the mutated logical
 member, recheck archive and live-card revisions, and replace the entire card
 with a retained recovery copy. Folder-card replacement uses two sibling renames
 with explicit rollback; raw-card replacement is atomic and physical raw restore
-requires spare/ECC pages, matching recovered 13.27. A real-button offscreen
-lifecycle proves selected restore, mandatory pre-restore and pre-delete vault
-versions, active deletion, two complete-card recovery trees, unrelated-member
-retention, exact XML history, and transaction cleanup. Compressed/full
-disc-image serial extraction and PCSX2 filesystem repair/capacity recovery
-remain explicit gates.
+requires spare/ECC pages, matching recovered 13.27.
+
+The recovered `Pcsx2MemoryCardHelper.RepairFilesystem` call site is narrower
+than a general repair command. `AddSaveFile` invokes it only after a raw-card
+import reports `No free space`, then retries the import. The helper seeds
+reachability with the root FAT chain, breadth-first traverses existing
+directory entries while de-duplicating first clusters, marks file and directory
+chains, clears every allocated but unreachable FAT entry, and flushes only when
+it reclaimed clusters. The port implements that trigger and orphan-prune
+algorithm only on the already-private raw-card working copy. Its stronger
+existing boundary then validates the restored logical member and swaps the
+whole card only after archive and live revisions still match. A zero-cluster
+repair still retries and fails safely if capacity remains insufficient.
+
+A real-button offscreen raw-card lifecycle begins with 28 allocated orphan
+clusters, proves the initial import cannot fit, observes the exact recovery
+count through the Qt status, completes selected restore, commits mandatory
+pre-restore and pre-delete vault versions, deletes the active member, and
+retains both exact complete-card recovery files plus exact XML history with no
+transaction residue. Controller coverage separately retains the folder-card
+whole-tree path. Compressed/full disc-image serial extraction remains an
+explicit gate.
 The 13.27 RetroArch plugin does not override `EmulatorPlugin.RemoveSave`, so
 the Windows implementation calls the base `File.Delete` on only the persisted
 primary path. The port deliberately deletes the already-established Saturn
 ownership set instead of orphaning `.bkr`/`.smpc` companions; the mandatory
 vault copy and per-member recovery copies make that safety extension explicit.
-PCSX2 filesystem repair/capacity recovery, full PCSX2 disc-image serial
-extraction, stale-row reconciliation, automatic policy,
+Full PCSX2 disc-image serial extraction, stale-row reconciliation, automatic policy,
 repair, and the remaining adapters remain open.
 
 Historical logs from the same read-only installation supply a narrow runtime

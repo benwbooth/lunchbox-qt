@@ -661,6 +661,7 @@ dependencies = [
 name = "lb-process-fixture"
 version = "0.1.0"
 dependencies = [
+ "lb-integrations",
  "lb-platform",
  "tempfile",
 ]

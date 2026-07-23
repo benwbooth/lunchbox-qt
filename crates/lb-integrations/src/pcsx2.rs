@@ -1,10 +1,13 @@
 use crate::{DiscoveredContainerSave, DiscoveredEmulatorSave, EmulatorSaveKind};
 #[path = "pcsx2_card.rs"]
 mod card;
+#[cfg(feature = "test-fixtures")]
+pub use card::test_fixtures;
 pub use card::{
     extract_pcsx2_memory_card_save, folder_manifest_signature, list_pcsx2_memory_card_saves,
     prepare_pcsx2_memory_card_deletion, prepare_pcsx2_memory_card_restore,
     ExtractedPcsx2MemoryCardSave, Pcsx2CardError, Pcsx2MemoryCardSave,
+    PreparedPcsx2MemoryCardRestore,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
