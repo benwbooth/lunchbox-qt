@@ -135,8 +135,15 @@ source-indexed retained mappings and unknown XML, validates duplicate mappings
 and defaults, and transfers the default for a platform atomically. Delete
 freshly scans games and additional applications and refuses to orphan an
 explicit emulator reference. Application paths remain lexical LaunchBox
-strings on every host; configuration CRUD never creates, installs, updates, or
-deletes emulator binaries. Those binary/dependency workflows remain open.
+strings on every host. The same manager can scan the portable `Emulators`
+folder, native application locations, and `PATH` for evidence-reviewed
+RetroArch, Dolphin, PCSX2, and ScummVM executable names. Results show their
+native path and provenance, never execute a candidate, and require review in
+the complete editor before transactional registration. Portable paths are
+stored with LaunchBox backslashes while mapped and external paths use the
+shared cross-platform host-path boundary. Configuration and discovery never
+create, install, update, modify, run, or delete emulator binaries. Downloads,
+installation, updates, dependencies, cores, and BIOS handling remain open.
 The same sidebar now renders recovered category/platform nesting from
 `Parents.xml`, including multiple placements, recursive category game counts,
 and descendant filtering. Its category dialog edits the recovered mutable

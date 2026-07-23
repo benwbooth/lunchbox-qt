@@ -123,6 +123,13 @@ ApplicationWindow {
     property string emulatorCrudAddedId: ""
     property int emulatorCrudInitialRevision: -1
     property bool emulatorCrudSmokeFinished: false
+    property bool emulatorDiscoverySmokeTest:
+        Qt.application.arguments.indexOf("--emulator-discovery-smoke-test") >= 0
+    property int emulatorDiscoverySmokePhase: 0
+    property int emulatorDiscoveryCandidateIndex: -1
+    property int emulatorDiscoveryInitialEmulatorRevision: -1
+    property int emulatorDiscoveryInitialRevision: -1
+    property bool emulatorDiscoverySmokeFinished: false
     property int categoryCrudSmokePhase: 0
     property bool categoryCrudSmokeFinished: false
     property int playlistCrudSmokePhase: 0
@@ -1563,6 +1570,100 @@ ApplicationWindow {
                           + window.emulatorCrudSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(35)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.emulatorDiscoverySmokeTest
+                 && !window.emulatorDiscoverySmokeFinished
+        onTriggered: {
+            if (window.emulatorDiscoverySmokePhase === 0 && !controller.loading
+                    && !controller.writing && controller.library_path.length > 0) {
+                window.emulatorDiscoveryInitialEmulatorRevision =
+                    controller.emulator_revision
+                window.emulatorDiscoveryInitialRevision =
+                    controller.emulator_discovery_revision
+                window.emulatorDiscoverySmokePhase = 1
+                controller.scan_installed_emulators()
+            } else if (window.emulatorDiscoverySmokePhase === 1
+                       && !controller.emulator_discovery_scanning
+                       && controller.emulator_discovery_revision
+                          === window.emulatorDiscoveryInitialRevision + 1) {
+                let candidateIndex = -1
+                for (let index = 0;
+                        index < controller.discovered_emulator_count(); ++index) {
+                    if (controller.discovered_emulator_profile_id_at(index) === "pcsx2"
+                            && controller.discovered_emulator_source_at(index)
+                               === "LaunchBox Emulators folder"
+                            && controller.discovered_emulator_path_at(index)
+                               .endsWith("/Emulators/PCSX2/pcsx2-qt")) {
+                        candidateIndex = index
+                        break
+                    }
+                }
+                if (candidateIndex < 0
+                        || controller.discovered_emulator_registered_at(candidateIndex)) {
+                    console.error("EMULATOR_DISCOVERY_SMOKE_CANDIDATE_MISSING")
+                    Qt.exit(48)
+                    return
+                }
+                window.emulatorDiscoveryCandidateIndex = candidateIndex
+                window.emulatorDiscoverySmokePhase = 2
+                emulatorEditor.smokeDiscovered(candidateIndex)
+            } else if (window.emulatorDiscoverySmokePhase === 2
+                       && !controller.writing
+                       && controller.emulator_revision
+                          === window.emulatorDiscoveryInitialEmulatorRevision + 1
+                       && controller.emulator_discovery_revision
+                          === window.emulatorDiscoveryInitialRevision + 2) {
+                if (!controller.discovered_emulator_registered_at(
+                        window.emulatorDiscoveryCandidateIndex)) {
+                    console.error("EMULATOR_DISCOVERY_SMOKE_NOT_REGISTERED")
+                    Qt.exit(48)
+                    return
+                }
+                window.emulatorDiscoverySmokePhase = 3
+                controller.scan_installed_emulators()
+            } else if (window.emulatorDiscoverySmokePhase === 3
+                       && !controller.emulator_discovery_scanning
+                       && controller.emulator_discovery_revision
+                          === window.emulatorDiscoveryInitialRevision + 3) {
+                let candidateIndex = -1
+                for (let index = 0;
+                        index < controller.discovered_emulator_count(); ++index) {
+                    if (controller.discovered_emulator_profile_id_at(index) === "pcsx2"
+                            && controller.discovered_emulator_source_at(index)
+                               === "LaunchBox Emulators folder") {
+                        candidateIndex = index
+                        break
+                    }
+                }
+                if (candidateIndex < 0
+                        || !controller.report_emulator_discovery_smoke_success(
+                            candidateIndex,
+                            window.emulatorDiscoveryInitialEmulatorRevision,
+                            window.emulatorDiscoveryInitialRevision)) {
+                    console.error("EMULATOR_DISCOVERY_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(48)
+                    return
+                }
+                window.emulatorDiscoverySmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.emulatorDiscoverySmokeTest
+                 && !window.emulatorDiscoverySmokeFinished
+        onTriggered: {
+            console.error("EMULATOR_DISCOVERY_SMOKE_TIMEOUT phase="
+                          + window.emulatorDiscoverySmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(48)
         }
     }
 
@@ -4371,6 +4472,7 @@ ApplicationWindow {
         title: "Manage Emulators"
         standardButtons: Dialog.Close
         property int selectedIndex: -1
+        property int selectedDiscoveryIndex: -1
 
         function selectedId() {
             return selectedIndex >= 0
@@ -4384,6 +4486,8 @@ ApplicationWindow {
 
         function openManager() {
             selectedIndex = controller.emulator_entry_count() > 2 ? 0 : -1
+            selectedDiscoveryIndex =
+                controller.discovered_emulator_count() > 0 ? 0 : -1
             open()
         }
 
@@ -4399,11 +4503,20 @@ ApplicationWindow {
                 else if (emulatorManager.selectedIndex >= count)
                     emulatorManager.selectedIndex = count - 1
             }
+            function onEmulatorDiscoveryRevisionChanged() {
+                const count = controller.discovered_emulator_count()
+                if (count === 0)
+                    emulatorManager.selectedDiscoveryIndex = -1
+                else if (emulatorManager.selectedDiscoveryIndex < 0)
+                    emulatorManager.selectedDiscoveryIndex = 0
+                else if (emulatorManager.selectedDiscoveryIndex >= count)
+                    emulatorManager.selectedDiscoveryIndex = count - 1
+            }
         }
 
         contentItem: ColumnLayout {
-            implicitWidth: 680
-            implicitHeight: 460
+            implicitWidth: 760
+            implicitHeight: 620
             spacing: 10
 
             Label {
@@ -4412,10 +4525,16 @@ ApplicationWindow {
                 wrapMode: Text.Wrap
                 color: "#7fbfff"
             }
+            Label {
+                text: "Configured"
+                color: "white"
+                font.bold: true
+            }
             ListView {
                 id: emulatorList
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.minimumHeight: 130
                 clip: true
                 model: {
                     const revision = controller.emulator_revision
@@ -4476,6 +4595,113 @@ ApplicationWindow {
                 Label {
                     text: Math.max(0, controller.emulator_entry_count() - 2)
                           + " configured"
+                    color: "#7d8590"
+                }
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 1
+                color: "#30363d"
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Label {
+                    text: "Installed candidates"
+                    color: "white"
+                    font.bold: true
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: controller.emulator_discovery_scanning
+                          ? "Scanning…" : "Scan Installed"
+                    enabled: !controller.loading && !controller.import_scanning
+                             && !controller.emulator_discovery_scanning
+                             && !controller.writing && !controller.launching
+                    onClicked: controller.scan_installed_emulators()
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                text: "The scan checks the portable Emulators folder, native application locations, and PATH for reviewed executable names. It never starts or modifies a candidate. Review & Add opens the complete editor before any XML is written."
+                wrapMode: Text.Wrap
+                color: "#7d8590"
+                font.pixelSize: 11
+            }
+            ListView {
+                id: discoveredEmulatorList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumHeight: 130
+                clip: true
+                model: {
+                    const revision = controller.emulator_discovery_revision
+                    return controller.discovered_emulator_count()
+                }
+                delegate: ItemDelegate {
+                    id: discoveredEmulatorDelegate
+                    required property int index
+                    width: discoveredEmulatorList.width
+                    property string emulatorTitle:
+                        controller.discovered_emulator_title_at(index)
+                    property string executablePath:
+                        controller.discovered_emulator_path_at(index)
+                    property string discoverySource:
+                        controller.discovered_emulator_source_at(index)
+                    property bool registered:
+                        controller.discovered_emulator_registered_at(index)
+                    highlighted:
+                        emulatorManager.selectedDiscoveryIndex === index
+                    contentItem: RowLayout {
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Label {
+                                Layout.fillWidth: true
+                                text: discoveredEmulatorDelegate.emulatorTitle
+                                color: "white"
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: discoveredEmulatorDelegate.executablePath
+                                      + " · "
+                                      + discoveredEmulatorDelegate.discoverySource
+                                color: "#7d8590"
+                                font.pixelSize: 11
+                                elide: Text.ElideMiddle
+                            }
+                        }
+                        Label {
+                            text: discoveredEmulatorDelegate.registered
+                                  ? "Configured" : "Review required"
+                            color: discoveredEmulatorDelegate.registered
+                                   ? "#3fb950" : "#d29922"
+                        }
+                    }
+                    onClicked:
+                        emulatorManager.selectedDiscoveryIndex = index
+                    onDoubleClicked: {
+                        if (!registered)
+                            emulatorEditor.prepareDiscovered(index)
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    text: "Review & Add"
+                    enabled: emulatorManager.selectedDiscoveryIndex >= 0
+                             && !controller.discovered_emulator_registered_at(
+                                 emulatorManager.selectedDiscoveryIndex)
+                             && !controller.writing && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: emulatorEditor.prepareDiscovered(
+                                   emulatorManager.selectedDiscoveryIndex)
+                }
+                Item { Layout.fillWidth: true }
+                Label {
+                    text: controller.discovered_emulator_count()
+                          + " candidate(s)"
                     color: "#7d8590"
                 }
             }
@@ -4597,6 +4823,11 @@ ApplicationWindow {
 
         function prepareEdit(emulatorId) {
             loadPayload(controller.emulator_edit_payload(emulatorId), false)
+        }
+
+        function prepareDiscovered(candidateIndex) {
+            loadPayload(
+                controller.discovered_emulator_edit_payload(candidateIndex), true)
         }
 
         function editPayload() {
@@ -4725,6 +4956,11 @@ ApplicationWindow {
             emulatorUseStartupScreenCheck.checked = true
             emulatorUsePauseScreenCheck.checked = true
             addMapping()
+            Qt.callLater(function() { emulatorEditor.accept() })
+        }
+
+        function smokeDiscovered(candidateIndex) {
+            prepareDiscovered(candidateIndex)
             Qt.callLater(function() { emulatorEditor.accept() })
         }
 

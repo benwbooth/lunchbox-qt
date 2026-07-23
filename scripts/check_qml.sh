@@ -124,6 +124,7 @@ import_root=$(mktemp -d)
 import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
 emulator_crud_root=$(mktemp -d)
+emulator_discovery_root=$(mktemp -d)
 category_crud_root=$(mktemp -d)
 playlist_crud_root=$(mktemp -d)
 game_grouping_root=$(mktemp -d)
@@ -134,7 +135,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -1938,6 +1939,96 @@ if find "$emulator_crud_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox dialog-driven full emulator and platform-mapping editing, generated immutable IDs, default handoff, reference gating, lexical Windows paths, unknown XML, exact backups, and binary-directory isolation validated."
+
+cp -R fixtures/launchbox/Data "$emulator_discovery_root/Data"
+find "$emulator_discovery_root/Data" -type f -name '*.xml' \
+  ! -name 'Emulators.xml' -exec \
+  sed -i 's/Fixture Console/Sony PlayStation 2/g' {} +
+emulator_discovery_document="$emulator_discovery_root/Data/Emulators.xml"
+sed -i \
+  '/<Title>Fixture Emulator<\/Title>/a\    <FutureEmulatorDiscoveryField>keep-discovery-data</FutureEmulatorDiscoveryField>' \
+  "$emulator_discovery_document"
+emulator_discovery_original="$emulator_discovery_root/original-emulators.xml"
+cp "$emulator_discovery_document" "$emulator_discovery_original"
+mkdir -p "$emulator_discovery_root/Emulators/PCSX2"
+emulator_discovery_candidate="$emulator_discovery_root/Emulators/PCSX2/pcsx2-qt"
+cp fixtures/runtime/noop.sh "$emulator_discovery_candidate"
+chmod +x "$emulator_discovery_candidate"
+emulator_discovery_candidate_sha=$(
+  sha256sum "$emulator_discovery_candidate" | awk '{print $1}'
+)
+emulator_discovery_candidate_mode=$(stat -c '%a' "$emulator_discovery_candidate")
+
+emulator_discovery_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$emulator_discovery_root" --emulator-discovery-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$emulator_discovery_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'EMULATOR_DISCOVERY_SMOKE_COMPLETE emulator=.* candidates=[0-9]+ writes=1 emulator_revision=[0-9]+ discovery_revision=[0-9]+' \
+  <<< "$emulator_discovery_output"; then
+  printf '%s\n' "$emulator_discovery_output" >&2
+  echo "LaunchBox did not validate reviewed installed-emulator discovery and registration." >&2
+  exit 1
+fi
+for expected in \
+  '<Title>PCSX2</Title>' \
+  '<ApplicationPath>Emulators\PCSX2\pcsx2-qt</ApplicationPath>' \
+  '<CommandLine>-fullscreen -nogui</CommandLine>' \
+  '<AutoExtract>false</AutoExtract>' \
+  '<ForcefulPauseScreenActivation>true</ForcefulPauseScreenActivation>' \
+  '<HideConsole>false</HideConsole>' \
+  '<HideMouseCursorInGame>true</HideMouseCursorInGame>' \
+  '<StartupLoadDelay>5000</StartupLoadDelay>' \
+  '<SuspendProcessOnPause>true</SuspendProcessOnPause>' \
+  '<UsePauseScreen>true</UsePauseScreen>' \
+  '<UseStartupScreen>true</UseStartupScreen>' \
+  '<Platform>Sony PlayStation 2</Platform>' \
+  '<Default>true</Default>' \
+  '<M3uDiscLoadEnabled>false</M3uDiscLoadEnabled>' \
+  '<FutureEmulatorDiscoveryField>keep-discovery-data</FutureEmulatorDiscoveryField>'; do
+  if ! rg -q -F "$expected" "$emulator_discovery_document"; then
+    echo "Emulator discovery registration did not retain expected XML: $expected" >&2
+    exit 1
+  fi
+done
+if [[ $(rg -c '^  <Emulator>$' "$emulator_discovery_document") -ne 2 ]] \
+  || [[ $(rg -c '^  <EmulatorPlatform>$' "$emulator_discovery_document") -ne 2 ]]; then
+  echo "Emulator discovery registration did not append exactly one definition and mapping." >&2
+  exit 1
+fi
+mapfile -t emulator_discovery_backups < <(
+  find "$emulator_discovery_root/Data" -maxdepth 1 -type f \
+    -name 'Emulators.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#emulator_discovery_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${emulator_discovery_backups[0]}" "$emulator_discovery_original"; then
+  echo "Emulator discovery registration did not retain one exact pre-write backup." >&2
+  exit 1
+fi
+if [[ $(sha256sum "$emulator_discovery_candidate" | awk '{print $1}') \
+      != "$emulator_discovery_candidate_sha" ]] \
+  || [[ $(stat -c '%a' "$emulator_discovery_candidate") \
+      != "$emulator_discovery_candidate_mode" ]]; then
+  echo "Emulator discovery executed or modified the candidate executable." >&2
+  exit 1
+fi
+if [[ $(find "$emulator_discovery_root/Emulators" -mindepth 1 -maxdepth 1 \
+        -type d | wc -l) -ne 1 ]] \
+  || [[ $(find "$emulator_discovery_root/Emulators" -type f | wc -l) -ne 1 ]]; then
+  echo "Emulator discovery created an unexpected emulator directory or binary." >&2
+  exit 1
+fi
+if find "$emulator_discovery_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful emulator discovery registration left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox reviewed RetroArch/Dolphin/PCSX2/ScummVM executable discovery, candidate provenance, full-editor registration, portable path storage, recovered defaults, exact backup, and candidate immutability validated."
 
 cp -R fixtures/launchbox/Data "$category_crud_root/Data"
 category_crud_catalog="$category_crud_root/Data/Platforms.xml"

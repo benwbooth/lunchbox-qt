@@ -6,6 +6,7 @@
 //! those transactions.
 
 pub mod dolphin;
+pub mod emulator_discovery;
 pub mod pcsx2;
 pub mod retroarch;
 

@@ -254,8 +254,16 @@ additional application pins the emulator. The Linux offscreen scenario proves
 edit/create/blocked-delete/delete, three exact backup states, unknown XML
 retention, optimistic revision notification, and that Windows-style executable
 paths neither become host paths nor create or delete emulator directories.
-Binary discovery, installation, updating, dependencies, and BIOS management
-remain open under `RUN-003` and `RUN-004`. The ROM importer now resolves
+The first `RUN-003` subset now discovers evidence-reviewed RetroArch, Dolphin,
+PCSX2, and ScummVM executable identities from a bounded portable tree,
+OS-native application locations, and `PATH` without executing or modifying
+them. The Qt manager shows native paths, provenance, and registration state,
+then sends a selected candidate through the full typed editor with recovered
+13.27 defaults and shared reverse host-path conversion. Deterministic
+deduplication, the Unix `dolphin` name collision, existing platform defaults,
+candidate immutability, exact XML backup, and binary-directory isolation are
+tested. Downloads, installation, updating, dependencies, cores, and BIOS
+management remain open under `RUN-003` and `RUN-004`. The ROM importer now resolves
 primary and alternate filenames through the local database, combines matching
 stable IDs into one deterministic game, recovers separator-neutral
 version/region qualifiers, and retains every ROM including the primary as an

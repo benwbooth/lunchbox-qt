@@ -29,6 +29,7 @@ pub mod qobject {
         #[qproperty(QString, platform_filter)]
         #[qproperty(bool, loading)]
         #[qproperty(bool, import_scanning)]
+        #[qproperty(bool, emulator_discovery_scanning)]
         #[qproperty(bool, writing)]
         #[qproperty(bool, launching)]
         #[qproperty(bool, launch_session_active)]
@@ -43,6 +44,7 @@ pub mod qobject {
         #[qproperty(QString, navigation_filter_key)]
         #[qproperty(i32, platform_revision)]
         #[qproperty(i32, emulator_revision)]
+        #[qproperty(i32, emulator_discovery_revision)]
         #[qproperty(i32, additional_application_revision)]
         #[qproperty(i32, game_save_revision)]
         #[qproperty(i32, game_grouping_revision)]
@@ -144,6 +146,30 @@ pub mod qobject {
 
         #[qinvokable]
         fn emulator_edit_payload(self: &LibraryController, emulator_id: QString) -> QString;
+
+        #[qinvokable]
+        fn scan_installed_emulators(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn discovered_emulator_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn discovered_emulator_profile_id_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn discovered_emulator_title_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn discovered_emulator_path_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn discovered_emulator_source_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn discovered_emulator_registered_at(self: &LibraryController, index: i32) -> bool;
+
+        #[qinvokable]
+        fn discovered_emulator_edit_payload(self: &LibraryController, index: i32) -> QString;
 
         #[qinvokable]
         fn add_emulator(self: Pin<&mut LibraryController>, edit_payload: QString);
@@ -598,6 +624,14 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_emulator_discovery_smoke_success(
+            self: &LibraryController,
+            candidate_index: i32,
+            initial_emulator_revision: i32,
+            initial_discovery_revision: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_category_crud_smoke_success(
             self: &LibraryController,
             category_name: QString,
@@ -776,6 +810,10 @@ use lb_import::{
 };
 use lb_integrations::dolphin::{
     default_dolphin_user_directories, discover_dolphin_saves, is_dolphin_emulator, DolphinContent,
+};
+use lb_integrations::emulator_discovery::{
+    discover_emulator_executables, DiscoveredEmulatorExecutable, EmulatorDiscoveryProfile,
+    EmulatorDiscoveryRequest, EmulatorDiscoverySource,
 };
 use lb_integrations::pcsx2::{
     default_pcsx2_data_directories, discover_pcsx2_saves, extract_pcsx2_memory_card_save,
@@ -959,6 +997,7 @@ pub struct LibraryControllerRust {
     platform_filter: QString,
     loading: bool,
     import_scanning: bool,
+    emulator_discovery_scanning: bool,
     writing: bool,
     launching: bool,
     launch_session_active: bool,
@@ -973,6 +1012,7 @@ pub struct LibraryControllerRust {
     navigation_filter_key: QString,
     platform_revision: i32,
     emulator_revision: i32,
+    emulator_discovery_revision: i32,
     additional_application_revision: i32,
     game_save_revision: i32,
     game_grouping_revision: i32,
@@ -1017,6 +1057,7 @@ pub struct LibraryControllerRust {
     library_root: Option<PathBuf>,
     launchbox_root: Option<PathBuf>,
     emulator_configuration: Option<EmulatorConfiguration>,
+    discovered_emulators: Vec<DiscoveredEmulatorExecutable>,
     path_mapping_settings_file: Option<PathBuf>,
     path_mappings: HostPathMappings,
     path_mappings_initialized: bool,
@@ -6030,6 +6071,94 @@ fn new_emulator_payload(platform_names: &[String]) -> Result<String, EmulatorWri
     .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
 }
 
+fn discovered_emulator_payload(
+    candidate: &DiscoveredEmulatorExecutable,
+    launchbox_root: &Path,
+    resolver: &HostPathResolver,
+    platform_names: &[String],
+    configuration: Option<&EmulatorConfiguration>,
+) -> Result<String, EmulatorWriteFailure> {
+    if candidate_is_registered(candidate, launchbox_root, resolver, configuration) {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "{} at {} is already registered",
+            candidate.profile.title(),
+            candidate.executable.display()
+        )));
+    }
+    let application_path = resolver
+        .stored_path_for_host_path(launchbox_root, &candidate.executable)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulator_id = Uuid::new_v4().to_string();
+    let mappings = candidate
+        .profile
+        .supported_platforms()
+        .iter()
+        .filter_map(|supported| {
+            platform_names
+                .iter()
+                .find(|platform| platform.eq_ignore_ascii_case(supported))
+        })
+        .map(|platform| {
+            let has_default = configuration.is_some_and(|configuration| {
+                configuration.platforms.iter().any(|mapping| {
+                    mapping.default && mapping.platform.eq_ignore_ascii_case(platform)
+                })
+            });
+            EmulatorPlatformEditPayload {
+                source_index: None,
+                platform: platform.clone(),
+                command_line: None,
+                default: !has_default,
+                auto_extract: None,
+                m3u_disc_load_enabled: false,
+            }
+        })
+        .collect();
+    serde_json::to_string(&EmulatorEditPayload {
+        version: EMULATOR_EDIT_PAYLOAD_VERSION,
+        emulator: Emulator {
+            id: emulator_id,
+            title: candidate.profile.title().to_string(),
+            application_path,
+            command_line: candidate.profile.command_line().map(str::to_string),
+            auto_extract: candidate.profile.auto_extract(),
+            hide_console: candidate.profile.hide_console(),
+            use_startup_screen: true,
+            use_pause_screen: true,
+            hide_mouse_cursor_in_game: true,
+            suspend_process_on_pause: true,
+            forceful_pause_screen_activation: true,
+            startup_load_delay: 5_000,
+            ..Emulator::default()
+        },
+        platforms: mappings,
+        available_platforms: platform_names.to_vec(),
+    })
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+}
+
+fn candidate_is_registered(
+    candidate: &DiscoveredEmulatorExecutable,
+    launchbox_root: &Path,
+    resolver: &HostPathResolver,
+    configuration: Option<&EmulatorConfiguration>,
+) -> bool {
+    configuration.is_some_and(|configuration| {
+        configuration.emulators.iter().any(|emulator| {
+            resolver
+                .resolve(launchbox_root, &emulator.application_path)
+                .is_ok_and(|path| native_paths_equal(&path, &candidate.executable))
+        })
+    })
+}
+
+fn native_paths_equal(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 fn load_emulator_edit_payload(
     root: &Path,
     emulator_id: &str,
@@ -7826,6 +7955,7 @@ impl qobject::LibraryController {
 
     pub fn load_library(mut self: Pin<&mut Self>, path: QString) {
         if *self.as_ref().import_scanning()
+            || *self.as_ref().emulator_discovery_scanning()
             || *self.as_ref().writing()
             || *self.as_ref().launching()
         {
@@ -7882,6 +8012,7 @@ impl qobject::LibraryController {
     pub fn preview_rom_import(mut self: Pin<&mut Self>, request_payload: QString) {
         if *self.as_ref().loading()
             || *self.as_ref().import_scanning()
+            || *self.as_ref().emulator_discovery_scanning()
             || *self.as_ref().writing()
             || *self.as_ref().launching()
         {
@@ -10908,6 +11039,71 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_emulator_discovery_smoke_success(
+        &self,
+        candidate_index: i32,
+        initial_emulator_revision: i32,
+        initial_discovery_revision: i32,
+    ) -> bool {
+        let Some(candidate) = self.discovered_emulator_at(candidate_index) else {
+            return false;
+        };
+        let rust = self.rust();
+        let emulator_id = self.last_added_emulator_id().to_string();
+        let configuration = rust.emulator_configuration.as_ref();
+        let emulator = configuration.and_then(|configuration| {
+            configuration
+                .emulators
+                .iter()
+                .find(|emulator| emulator.id == emulator_id)
+        });
+        let mapping = configuration.and_then(|configuration| {
+            configuration.platforms.iter().find(|mapping| {
+                mapping.emulator_id == emulator_id
+                    && mapping.platform.eq_ignore_ascii_case("Sony PlayStation 2")
+            })
+        });
+        let success = candidate.profile == EmulatorDiscoveryProfile::Pcsx2
+            && candidate.source == EmulatorDiscoverySource::PortableLibrary
+            && self.discovered_emulator_registered_at(candidate_index)
+            && emulator.is_some_and(|emulator| {
+                emulator.title == "PCSX2"
+                    && emulator.application_path == r"Emulators\PCSX2\pcsx2-qt"
+                    && emulator.command_line.as_deref() == Some("-fullscreen -nogui")
+                    && !emulator.auto_extract
+                    && !emulator.hide_console
+                    && emulator.use_startup_screen
+                    && emulator.use_pause_screen
+                    && emulator.hide_mouse_cursor_in_game
+                    && emulator.suspend_process_on_pause
+                    && emulator.forceful_pause_screen_activation
+                    && emulator.startup_load_delay == 5_000
+            })
+            && mapping.is_some_and(|mapping| {
+                mapping.default
+                    && mapping.command_line.is_none()
+                    && mapping.auto_extract.is_none()
+                    && !mapping.m3u_disc_load_enabled
+            })
+            && rust.emulator_write_notifications == 1
+            && *self.emulator_revision() == initial_emulator_revision.saturating_add(1)
+            && *self.emulator_discovery_revision() == initial_discovery_revision.saturating_add(3)
+            && !*self.emulator_discovery_scanning()
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "EMULATOR_DISCOVERY_SMOKE_COMPLETE emulator={emulator_id} candidates={} writes={} emulator_revision={} discovery_revision={}",
+                rust.discovered_emulators.len(),
+                rust.emulator_write_notifications,
+                self.emulator_revision(),
+                self.emulator_discovery_revision()
+            );
+        }
+        success
+    }
+
     pub fn report_category_crud_smoke_success(
         &self,
         category_name: QString,
@@ -11462,6 +11658,118 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn scan_installed_emulators(mut self: Pin<&mut Self>) {
+        if *self.as_ref().loading()
+            || *self.as_ref().import_scanning()
+            || *self.as_ref().emulator_discovery_scanning()
+            || *self.as_ref().writing()
+            || *self.as_ref().launching()
+        {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Emulator discovery requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        let request = EmulatorDiscoveryRequest::for_current_host(&root);
+        self.as_mut().set_emulator_discovery_scanning(true);
+        self.as_mut().set_status_message(qstring(
+            "Scanning reviewed native emulator locations without executing any candidates...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-emulator-discovery".to_string())
+            .spawn(move || {
+                let candidates = discover_emulator_executables(&request);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_emulator_discovery(generation, candidates);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_discovery_scanning(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start emulator discovery: {error}"
+            )));
+        }
+    }
+
+    pub fn discovered_emulator_count(&self) -> i32 {
+        saturating_i32(self.rust().discovered_emulators.len())
+    }
+
+    pub fn discovered_emulator_profile_id_at(&self, index: i32) -> QString {
+        self.discovered_emulator_at(index)
+            .map(|candidate| qstring(candidate.profile.id()))
+            .unwrap_or_default()
+    }
+
+    pub fn discovered_emulator_title_at(&self, index: i32) -> QString {
+        self.discovered_emulator_at(index)
+            .map(|candidate| qstring(candidate.profile.title()))
+            .unwrap_or_default()
+    }
+
+    pub fn discovered_emulator_path_at(&self, index: i32) -> QString {
+        self.discovered_emulator_at(index)
+            .map(|candidate| qstring(candidate.executable.to_string_lossy()))
+            .unwrap_or_default()
+    }
+
+    pub fn discovered_emulator_source_at(&self, index: i32) -> QString {
+        self.discovered_emulator_at(index)
+            .map(|candidate| qstring(candidate.source.label()))
+            .unwrap_or_default()
+    }
+
+    pub fn discovered_emulator_registered_at(&self, index: i32) -> bool {
+        let Some(candidate) = self.discovered_emulator_at(index) else {
+            return false;
+        };
+        let Some(root) = self.rust().launchbox_root.as_deref() else {
+            return false;
+        };
+        candidate_is_registered(
+            candidate,
+            root,
+            &self.rust().path_resolver,
+            self.rust().emulator_configuration.as_ref(),
+        )
+    }
+
+    pub fn discovered_emulator_edit_payload(&self, index: i32) -> QString {
+        let Some(candidate) = self.discovered_emulator_at(index) else {
+            return QString::default();
+        };
+        let Some(root) = self.rust().launchbox_root.as_deref() else {
+            return QString::default();
+        };
+        match discovered_emulator_payload(
+            candidate,
+            root,
+            &self.rust().path_resolver,
+            &self.rust().platform_names,
+            self.rust().emulator_configuration.as_ref(),
+        ) {
+            Ok(payload) => qstring(payload),
+            Err(error) => {
+                eprintln!(
+                    "Could not prepare discovered emulator: {}",
+                    describe_emulator_write_failure(&error)
+                );
+                QString::default()
+            }
+        }
+    }
+
     pub fn new_emulator_edit_payload(&self) -> QString {
         match new_emulator_payload(&self.rust().platform_names) {
             Ok(payload) => qstring(payload),
@@ -11629,6 +11937,12 @@ impl qobject::LibraryController {
                 "Could not start emulator deletion: {error}"
             )));
         }
+    }
+
+    fn discovered_emulator_at(&self, index: i32) -> Option<&DiscoveredEmulatorExecutable> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().discovered_emulators.get(index))
     }
 
     pub fn additional_application_count(&self, row: i32, game_id: QString) -> i32 {
@@ -11809,6 +12123,7 @@ impl qobject::LibraryController {
     fn begin_library_mutation(mut self: Pin<&mut Self>) -> bool {
         if *self.as_ref().loading()
             || *self.as_ref().import_scanning()
+            || *self.as_ref().emulator_discovery_scanning()
             || *self.as_ref().writing()
             || *self.as_ref().launching()
         {
@@ -12870,6 +13185,33 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_emulator_discovery(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        candidates: Vec<DiscoveredEmulatorExecutable>,
+    ) {
+        self.as_mut().set_emulator_discovery_scanning(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        let count = candidates.len();
+        self.as_mut().rust_mut().discovered_emulators = candidates;
+        let revision = self
+            .as_ref()
+            .emulator_discovery_revision()
+            .saturating_add(1);
+        self.as_mut().set_emulator_discovery_revision(revision);
+        let registered = (0..count)
+            .filter(|index| {
+                self.as_ref()
+                    .discovered_emulator_registered_at(*index as i32)
+            })
+            .count();
+        self.as_mut().set_status_message(qstring(format!(
+            "Found {count} reviewed emulator executable(s); {registered} already registered. Candidates were not executed or modified."
+        )));
+    }
+
     fn finish_emulator_write(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -12895,6 +13237,12 @@ impl qobject::LibraryController {
                 }
                 let revision = self.as_ref().emulator_revision().saturating_add(1);
                 self.as_mut().set_emulator_revision(revision);
+                let discovery_revision = self
+                    .as_ref()
+                    .emulator_discovery_revision()
+                    .saturating_add(1);
+                self.as_mut()
+                    .set_emulator_discovery_revision(discovery_revision);
                 if operation == EmulatorWriteOperation::Create {
                     self.as_mut()
                         .set_last_added_emulator_id(qstring(&success.emulator.id));
@@ -13654,6 +14002,7 @@ impl qobject::LibraryController {
             rust.library_root = library_root;
             rust.launchbox_root = launchbox_root;
             rust.emulator_configuration = emulator_configuration;
+            rust.discovered_emulators.clear();
             rust.model_reset_notifications = 1;
             rust.data_change_notifications = 0;
             rust.row_insert_notifications = 0;
@@ -13671,6 +14020,7 @@ impl qobject::LibraryController {
         self.as_mut().end_reset_model();
         self.as_mut().set_library_name(qstring(name));
         self.as_mut().set_status_message(qstring(message));
+        self.as_mut().set_emulator_discovery_scanning(false);
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_filtered_count(game_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
@@ -13682,6 +14032,13 @@ impl qobject::LibraryController {
         self.as_mut().set_platform_revision(revision);
         let emulator_revision = self.as_ref().rust().emulator_revision.wrapping_add(1);
         self.as_mut().set_emulator_revision(emulator_revision);
+        let emulator_discovery_revision = self
+            .as_ref()
+            .rust()
+            .emulator_discovery_revision
+            .wrapping_add(1);
+        self.as_mut()
+            .set_emulator_discovery_revision(emulator_discovery_revision);
         self.as_mut()
             .set_pending_recovery_count(saturating_i32(pending_recovery_count));
         self.as_mut().set_delete_blocker_count(0);
@@ -14455,6 +14812,128 @@ mod tests {
             failure,
             GameWriteFailure::PendingRecovery { count: 2, .. }
         ));
+    }
+
+    #[test]
+    fn discovered_emulator_payload_uses_portable_paths_and_reviewed_defaults() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let executable = directory.path().join("Emulators/PCSX2/pcsx2-qt");
+        let candidate = DiscoveredEmulatorExecutable {
+            profile: EmulatorDiscoveryProfile::Pcsx2,
+            executable,
+            source: EmulatorDiscoverySource::PortableLibrary,
+        };
+        let platforms = vec![
+            "Nintendo GameCube".to_string(),
+            "Sony PlayStation 2".to_string(),
+        ];
+        let serialized = discovered_emulator_payload(
+            &candidate,
+            directory.path(),
+            &HostPathResolver::default(),
+            &platforms,
+            None,
+        )
+        .expect("discovery payload");
+        let payload: EmulatorEditPayload =
+            serde_json::from_str(&serialized).expect("typed discovery payload");
+
+        assert_eq!(payload.version, EMULATOR_EDIT_PAYLOAD_VERSION);
+        assert_eq!(payload.emulator.title, "PCSX2");
+        assert_eq!(
+            payload.emulator.application_path,
+            r"Emulators\PCSX2\pcsx2-qt"
+        );
+        assert_eq!(
+            payload.emulator.command_line.as_deref(),
+            Some("-fullscreen -nogui")
+        );
+        assert!(!payload.emulator.auto_extract);
+        assert!(!payload.emulator.hide_console);
+        assert!(payload.emulator.use_startup_screen);
+        assert!(payload.emulator.use_pause_screen);
+        assert!(payload.emulator.hide_mouse_cursor_in_game);
+        assert!(payload.emulator.suspend_process_on_pause);
+        assert!(payload.emulator.forceful_pause_screen_activation);
+        assert_eq!(payload.emulator.startup_load_delay, 5_000);
+        assert_eq!(
+            payload.platforms,
+            vec![EmulatorPlatformEditPayload {
+                source_index: None,
+                platform: "Sony PlayStation 2".into(),
+                command_line: None,
+                default: true,
+                auto_extract: None,
+                m3u_disc_load_enabled: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn discovered_emulator_payload_respects_existing_defaults_and_registration() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let executable = directory.path().join("Emulators/PCSX2/pcsx2-qt");
+        let candidate = DiscoveredEmulatorExecutable {
+            profile: EmulatorDiscoveryProfile::Pcsx2,
+            executable,
+            source: EmulatorDiscoverySource::PortableLibrary,
+        };
+        let configuration = EmulatorConfiguration {
+            emulators: vec![Emulator {
+                id: "existing".into(),
+                title: "Existing".into(),
+                application_path: r"Emulators\Other\other".into(),
+                ..Emulator::default()
+            }],
+            platforms: vec![EmulatorPlatform {
+                emulator_id: "existing".into(),
+                platform: "Sony PlayStation 2".into(),
+                default: true,
+                ..EmulatorPlatform::default()
+            }],
+            ..EmulatorConfiguration::default()
+        };
+        let serialized = discovered_emulator_payload(
+            &candidate,
+            directory.path(),
+            &HostPathResolver::default(),
+            &["Sony PlayStation 2".into()],
+            Some(&configuration),
+        )
+        .expect("discovery payload");
+        let payload: EmulatorEditPayload =
+            serde_json::from_str(&serialized).expect("typed discovery payload");
+        assert!(!payload.platforms[0].default);
+        assert!(!candidate_is_registered(
+            &candidate,
+            directory.path(),
+            &HostPathResolver::default(),
+            Some(&configuration)
+        ));
+
+        let registered = EmulatorConfiguration {
+            emulators: vec![Emulator {
+                id: "pcsx2".into(),
+                title: "PCSX2".into(),
+                application_path: r"Emulators\PCSX2\pcsx2-qt".into(),
+                ..Emulator::default()
+            }],
+            ..EmulatorConfiguration::default()
+        };
+        assert!(candidate_is_registered(
+            &candidate,
+            directory.path(),
+            &HostPathResolver::default(),
+            Some(&registered)
+        ));
+        assert!(discovered_emulator_payload(
+            &candidate,
+            directory.path(),
+            &HostPathResolver::default(),
+            &["Sony PlayStation 2".into()],
+            Some(&registered)
+        )
+        .is_err());
     }
 
     #[test]
