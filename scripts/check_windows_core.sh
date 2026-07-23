@@ -6,6 +6,7 @@ cargo_command=${CARGO:-cargo}
 
 "$cargo_command" check --target "$target" \
   -p lb-domain \
+  -p lb-import \
   -p lb-platform \
   -p lb-query \
   -p lb-storage

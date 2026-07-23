@@ -42,11 +42,32 @@ impl FileRevision {
 
     pub fn read(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref();
-        let bytes = fs::read(path).map_err(|source| StorageError::Read {
+        let mut file = fs::File::open(path).map_err(|source| StorageError::Read {
             path: path.to_path_buf(),
             source,
         })?;
-        Ok(Self::from_bytes(&bytes))
+        let mut digest = Sha256::new();
+        let mut byte_len = 0_u64;
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|source| StorageError::Read {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            if read == 0 {
+                break;
+            }
+            digest.update(&buffer[..read]);
+            byte_len = byte_len.saturating_add(read.try_into().unwrap_or(u64::MAX));
+        }
+        let digest = digest.finalize();
+        let mut sha256 = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            write!(&mut sha256, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        Ok(Self { byte_len, sha256 })
     }
 }
 
@@ -54,8 +75,14 @@ impl FileRevision {
 struct PendingChange {
     target: PathBuf,
     operation: TransactionOperation,
-    candidate: Option<Vec<u8>>,
+    candidate: Option<PendingCandidate>,
     expected: Option<FileRevision>,
+}
+
+#[derive(Clone, Debug)]
+enum PendingCandidate {
+    Bytes(Vec<u8>),
+    SourceFile(PathBuf),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -226,6 +253,39 @@ impl LibraryTransaction {
         self.stage_delete(document.source_path(), expected)
     }
 
+    /// Stages a streamed copy of one regular file into a new path under the
+    /// library root. The source may live outside the library. Its bytes are
+    /// copied into the transaction's durable staging file during commit, so
+    /// large ROM and disc images are never buffered in memory.
+    pub fn stage_file_copy(
+        &mut self,
+        source: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+    ) -> Result<(), TransactionError> {
+        let supplied_source = source.as_ref();
+        let metadata =
+            fs::symlink_metadata(supplied_source).map_err(|source| TransactionError::Io {
+                path: supplied_source.to_path_buf(),
+                source,
+            })?;
+        if !metadata.file_type().is_file() {
+            return Err(TransactionError::SourceNotFile {
+                path: supplied_source.to_path_buf(),
+            });
+        }
+        let source = fs::canonicalize(supplied_source).map_err(|source| TransactionError::Io {
+            path: supplied_source.to_path_buf(),
+            source,
+        })?;
+        let target = self.checked_new_target(target.as_ref())?;
+        self.push_change(PendingChange {
+            target,
+            operation: TransactionOperation::Create,
+            candidate: Some(PendingCandidate::SourceFile(source)),
+            expected: None,
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.changes.len()
     }
@@ -248,7 +308,7 @@ impl LibraryTransaction {
         self.push_change(PendingChange {
             target,
             operation: TransactionOperation::Replace,
-            candidate: Some(candidate),
+            candidate: Some(PendingCandidate::Bytes(candidate)),
             expected: Some(expected),
         })
     }
@@ -258,7 +318,7 @@ impl LibraryTransaction {
         self.push_change(PendingChange {
             target,
             operation: TransactionOperation::Create,
-            candidate: Some(candidate),
+            candidate: Some(PendingCandidate::Bytes(candidate)),
             expected: None,
         })
     }
@@ -582,9 +642,9 @@ fn prepare_change(change: &PendingChange) -> Result<PreparedChange, TransactionE
             let metadata = regular_target_metadata(&change.target)?;
             let candidate = change
                 .candidate
-                .as_deref()
+                .as_ref()
                 .expect("replace pending change has candidate data");
-            let staged =
+            let (staged, candidate_revision) =
                 prepare_staged_candidate(&change.target, candidate, Some(metadata.permissions()))?;
             let backup = match prepare_backup(&change.target, &metadata) {
                 Ok(backup) => backup,
@@ -599,22 +659,23 @@ fn prepare_change(change: &PendingChange) -> Result<PreparedChange, TransactionE
                 backup: Some(backup),
                 staged: Some(staged),
                 original_revision: change.expected.clone(),
-                candidate_revision: Some(FileRevision::from_bytes(candidate)),
+                candidate_revision: Some(candidate_revision),
             })
         }
         TransactionOperation::Create => {
             let candidate = change
                 .candidate
-                .as_deref()
+                .as_ref()
                 .expect("create pending change has candidate data");
-            let staged = prepare_staged_candidate(&change.target, candidate, None)?;
+            let (staged, candidate_revision) =
+                prepare_staged_candidate(&change.target, candidate, None)?;
             Ok(PreparedChange {
                 operation: change.operation,
                 target: change.target.clone(),
                 backup: None,
                 staged: Some(staged),
                 original_revision: None,
-                candidate_revision: Some(FileRevision::from_bytes(candidate)),
+                candidate_revision: Some(candidate_revision),
             })
         }
         TransactionOperation::Delete => {
@@ -647,28 +708,57 @@ fn regular_target_metadata(path: &Path) -> Result<fs::Metadata, TransactionError
 
 fn prepare_staged_candidate(
     target: &Path,
-    candidate: &[u8],
+    candidate: &PendingCandidate,
     permissions: Option<fs::Permissions>,
-) -> Result<PathBuf, TransactionError> {
+) -> Result<(PathBuf, FileRevision), TransactionError> {
     let (staged_path, mut staged) = create_unique_sibling(target, "transaction-stage", true)?;
-    let result = staged
-        .write_all(candidate)
-        .and_then(|()| staged.flush())
-        .and_then(|()| {
-            if let Some(permissions) = permissions {
-                staged.set_permissions(permissions)?;
+    let result = (|| {
+        let revision = match candidate {
+            PendingCandidate::Bytes(bytes) => {
+                staged.write_all(bytes)?;
+                FileRevision::from_bytes(bytes)
             }
-            staged.sync_all()
-        });
-    if let Err(source) = result {
-        let _ = fs::remove_file(&staged_path);
-        return Err(TransactionError::Io {
-            path: staged_path,
-            source,
-        });
-    }
+            PendingCandidate::SourceFile(source) => {
+                let mut source_file = fs::File::open(source)?;
+                let mut digest = Sha256::new();
+                let mut byte_len = 0_u64;
+                let mut buffer = vec![0_u8; 1024 * 1024];
+                loop {
+                    let read = source_file.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    staged.write_all(&buffer[..read])?;
+                    digest.update(&buffer[..read]);
+                    byte_len = byte_len.saturating_add(read.try_into().unwrap_or(u64::MAX));
+                }
+                let digest = digest.finalize();
+                let mut sha256 = String::with_capacity(digest.len() * 2);
+                for byte in digest {
+                    write!(&mut sha256, "{byte:02x}").expect("writing to a String cannot fail");
+                }
+                FileRevision { byte_len, sha256 }
+            }
+        };
+        staged.flush()?;
+        if let Some(permissions) = permissions {
+            staged.set_permissions(permissions)?;
+        }
+        staged.sync_all()?;
+        Ok::<_, std::io::Error>(revision)
+    })();
+    let revision = match result {
+        Ok(revision) => revision,
+        Err(source) => {
+            let _ = fs::remove_file(&staged_path);
+            return Err(TransactionError::Io {
+                path: staged_path,
+                source,
+            });
+        }
+    };
     drop(staged);
-    Ok(staged_path)
+    Ok((staged_path, revision))
 }
 
 fn prepare_backup(target: &Path, metadata: &fs::Metadata) -> Result<PathBuf, TransactionError> {
@@ -1041,6 +1131,8 @@ pub enum TransactionError {
     RootNotDirectory { path: PathBuf },
     #[error("transaction target is not a regular file: {path}")]
     TargetNotFile { path: PathBuf },
+    #[error("transaction copy source is not a regular file: {path}")]
+    SourceNotFile { path: PathBuf },
     #[error("transaction target {path} is outside root {root}")]
     TargetOutsideRoot { root: PathBuf, path: PathBuf },
     #[error("document {path} was not loaded from a file and has no source revision")]
@@ -1650,6 +1742,78 @@ mod tests {
             Err(TransactionError::CommitRolledBack { .. })
         ));
         assert_eq!(fs::read(&empty_path).unwrap(), original_empty);
+    }
+
+    #[test]
+    fn streams_file_creation_in_the_same_recoverable_transaction_as_xml() {
+        let (directory, platform_path, _) = fixture_tree();
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("disc-image.bin");
+        let mut expected = vec![0_u8; 2 * 1024 * 1024 + 17];
+        for (index, byte) in expected.iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        fs::write(&source, &expected).unwrap();
+        let target_directory = directory.path().join("Games/Fixture Console");
+        fs::create_dir_all(&target_directory).unwrap();
+        let target = target_directory.join("disc-image.bin");
+        let mut platform = PlatformDocument::load(&platform_path).unwrap();
+        platform
+            .set_game_title("fixture-adventure", "Imported Adventure")
+            .unwrap();
+
+        let mut transaction = LibraryTransaction::new(directory.path()).unwrap();
+        transaction.stage_file_copy(&source, &target).unwrap();
+        transaction.stage_platform(&platform).unwrap();
+        let report = transaction.commit().unwrap();
+
+        assert_eq!(report.created_targets, vec![target.clone()]);
+        assert_eq!(fs::read(&target).unwrap(), expected);
+        assert_eq!(
+            PlatformDocument::load(&platform_path)
+                .unwrap()
+                .library()
+                .games[0]
+                .title,
+            "Imported Adventure"
+        );
+    }
+
+    #[test]
+    fn peer_failure_removes_a_streamed_file_and_restores_xml() {
+        let (directory, platform_path, _) = fixture_tree();
+        let original_platform = fs::read(&platform_path).unwrap();
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("game.rom");
+        fs::write(&source, b"source rom bytes").unwrap();
+        let target_directory = directory.path().join("Games/Fixture Console");
+        fs::create_dir_all(&target_directory).unwrap();
+        let target = target_directory.join("game.rom");
+        let mut platform = PlatformDocument::load(&platform_path).unwrap();
+        platform
+            .set_game_title("fixture-adventure", "Never Committed")
+            .unwrap();
+
+        let mut transaction = LibraryTransaction::new(directory.path()).unwrap();
+        transaction.stage_file_copy(&source, &target).unwrap();
+        transaction.stage_platform(&platform).unwrap();
+        assert!(matches!(
+            transaction.commit_with_apply(
+                |index, entry| {
+                    if index == 1 {
+                        Err(std::io::Error::other("injected XML failure"))
+                    } else {
+                        apply_prepared_change(entry)
+                    }
+                },
+                true,
+            ),
+            Err(TransactionError::CommitRolledBack { .. })
+        ));
+
+        assert!(!target.exists());
+        assert_eq!(fs::read(&platform_path).unwrap(), original_platform);
+        assert_eq!(fs::read(&source).unwrap(), b"source rom bytes");
     }
 
     #[test]

@@ -498,6 +498,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lb-import"
+version = "0.1.0"
+dependencies = [
+ "lb-domain",
+ "lb-platform",
+ "lb-storage",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
+ "uuid",
+]
+
+[[package]]
 name = "lb-platform"
 version = "0.1.0"
 dependencies = [
@@ -526,6 +539,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "lb-domain",
+ "lb-import",
  "lb-platform",
  "lb-query",
  "lb-storage",

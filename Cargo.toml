@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "apps/lb-shell",
     "crates/lb-domain",
+    "crates/lb-import",
     "crates/lb-platform",
     "crates/lb-query",
     "crates/lb-storage",
@@ -23,6 +24,7 @@ cxx-qt-build = "0.8.1"
 cxx-qt-lib = { version = "0.8.1", features = ["qt_full"] }
 fs2 = "0.4"
 lb-domain = { path = "crates/lb-domain" }
+lb-import = { path = "crates/lb-import" }
 lb-platform = { path = "crates/lb-platform" }
 lb-query = { path = "crates/lb-query" }
 lb-storage = { path = "crates/lb-storage" }

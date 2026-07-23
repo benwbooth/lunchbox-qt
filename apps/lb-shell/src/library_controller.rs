@@ -28,6 +28,7 @@ pub mod qobject {
         #[qproperty(QString, search_text)]
         #[qproperty(QString, platform_filter)]
         #[qproperty(bool, loading)]
+        #[qproperty(bool, import_scanning)]
         #[qproperty(bool, writing)]
         #[qproperty(bool, launching)]
         #[qproperty(bool, launch_session_active)]
@@ -45,6 +46,10 @@ pub mod qobject {
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
         #[qproperty(QString, last_added_game_id)]
+        #[qproperty(QString, import_preview_json)]
+        #[qproperty(i32, last_import_count)]
+        #[qproperty(i32, last_import_created_file_count)]
+        #[qproperty(i32, last_import_moved_file_count)]
         #[qproperty(QString, last_launch_game_id)]
         #[qproperty(QString, last_launch_target_id)]
         #[qproperty(QString, path_mapping_settings_path)]
@@ -59,6 +64,18 @@ pub mod qobject {
 
         #[qinvokable]
         fn load_library(self: Pin<&mut LibraryController>, path: QString);
+
+        #[qinvokable]
+        fn local_path_from_url(self: &LibraryController, value: QString) -> QString;
+
+        #[qinvokable]
+        fn preview_rom_import(self: Pin<&mut LibraryController>, request_payload: QString);
+
+        #[qinvokable]
+        fn clear_rom_import_preview(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn import_roms(self: Pin<&mut LibraryController>, selection_payload: QString);
 
         #[qinvokable]
         fn configure_windows_drive_mapping(
@@ -340,6 +357,14 @@ pub mod qobject {
         fn report_big_box_navigation_smoke_success(self: &LibraryController) -> bool;
 
         #[qinvokable]
+        fn report_import_smoke_success(
+            self: &LibraryController,
+            expected_count: i32,
+            expected_created_files: i32,
+            expected_moved_files: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_launch_smoke_success(self: &LibraryController, game_id: QString) -> bool;
 
         #[qinvokable]
@@ -471,13 +496,17 @@ use chrono::{DateTime, Local};
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{
-    QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QVariant,
+    QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QUrl, QVariant,
 };
 use lb_domain::{
     AdditionalApplication, AlternateName, CustomField, EmulatorConfiguration, Game,
     GameLaunchConfiguration, GameMetadata, Mount, NavigationMetadata, ParentRelationship,
     PlatformCategory, PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument,
     PlaylistFilter, PlaylistGame, UNASSIGNED_EMULATOR_ID,
+};
+use lb_import::{
+    execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
+    ManualImportRequest, ManualImportSelection,
 };
 use lb_platform::{
     default_host_path_mappings_path, default_platform_folders, execute_launch_sequence,
@@ -641,6 +670,7 @@ pub struct LibraryControllerRust {
     search_text: QString,
     platform_filter: QString,
     loading: bool,
+    import_scanning: bool,
     writing: bool,
     launching: bool,
     launch_session_active: bool,
@@ -658,6 +688,10 @@ pub struct LibraryControllerRust {
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
     last_added_game_id: QString,
+    import_preview_json: QString,
+    last_import_count: i32,
+    last_import_created_file_count: i32,
+    last_import_moved_file_count: i32,
     last_launch_game_id: QString,
     last_launch_target_id: QString,
     path_mapping_settings_path: QString,
@@ -700,6 +734,7 @@ pub struct LibraryControllerRust {
     playlist_write_notifications: u64,
     last_playlist_detached_children: usize,
     last_playlist_cache_rows_removed: usize,
+    last_imported_game_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1050,6 +1085,11 @@ struct GameAddSuccess {
     game: Game,
     source: PathBuf,
     backup: PathBuf,
+}
+
+struct RomImportSuccess {
+    report: ManualImportReport,
+    source: PathBuf,
 }
 
 struct GameDeleteSuccess {
@@ -3940,7 +3980,10 @@ impl qobject::LibraryController {
     }
 
     pub fn load_library(mut self: Pin<&mut Self>, path: QString) {
-        if *self.as_ref().writing() || *self.as_ref().launching() {
+        if *self.as_ref().import_scanning()
+            || *self.as_ref().writing()
+            || *self.as_ref().launching()
+        {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return;
@@ -3983,6 +4026,131 @@ impl qobject::LibraryController {
             self.as_mut().set_loading(false);
             self.as_mut()
                 .set_status_message(qstring(format!("Could not start library loader: {error}")));
+        }
+    }
+
+    pub fn local_path_from_url(&self, value: QString) -> QString {
+        let url = QUrl::from_user_input(&value, &QString::default());
+        url.to_local_file().unwrap_or_default()
+    }
+
+    pub fn preview_rom_import(mut self: Pin<&mut Self>, request_payload: QString) {
+        if *self.as_ref().loading()
+            || *self.as_ref().import_scanning()
+            || *self.as_ref().writing()
+            || *self.as_ref().launching()
+        {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let request =
+            match serde_json::from_str::<ManualImportRequest>(&request_payload.to_string()) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.as_mut().set_status_message(qstring(format!(
+                        "Could not preview ROM import: invalid request: {error}"
+                    )));
+                    return;
+                }
+            };
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "ROM import requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_import_preview_json(QString::default());
+        self.as_mut().set_import_scanning(true);
+        self.as_mut().set_status_message(qstring(
+            "Scanning ROM import locations in the background...",
+        ));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-rom-import-preview".to_string())
+            .spawn(move || {
+                let result = match preview_manual_import(root, &resolver, request) {
+                    Ok(preview) => {
+                        let count = preview.importable_count;
+                        serde_json::to_string(&preview)
+                            .map(|json| (json, count))
+                            .map_err(|error| error.to_string())
+                    }
+                    Err(error) => Err(error.to_string()),
+                };
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_rom_import_preview(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_import_scanning(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start ROM import scanner: {error}"
+            )));
+        }
+    }
+
+    pub fn clear_rom_import_preview(mut self: Pin<&mut Self>) {
+        if !*self.as_ref().import_scanning() {
+            self.as_mut().set_import_preview_json(QString::default());
+        }
+    }
+
+    pub fn import_roms(mut self: Pin<&mut Self>, selection_payload: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let selection =
+            match serde_json::from_str::<ManualImportSelection>(&selection_payload.to_string()) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    self.as_mut().set_status_message(qstring(format!(
+                        "Could not import ROMs: invalid selection: {error}"
+                    )));
+                    return;
+                }
+            };
+        let platform = selection.request.platform.clone();
+        let Some((source, root)) = self.as_ref().platform_write_target(&platform) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected platform has no loaded writable platform document.",
+            ));
+            return;
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_last_import_count(0);
+        self.as_mut().set_last_import_created_file_count(0);
+        self.as_mut().set_last_import_moved_file_count(0);
+        self.as_mut().rust_mut().last_imported_game_ids.clear();
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Importing ROMs into {platform} in the background..."
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-rom-import".to_string())
+            .spawn(move || {
+                let result = execute_manual_import(&root, &source, &resolver, selection)
+                    .map(|report| RomImportSuccess { report, source });
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_rom_import(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not start ROM importer: {error}")));
         }
     }
 
@@ -5436,6 +5604,37 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_import_smoke_success(
+        &self,
+        expected_count: i32,
+        expected_created_files: i32,
+        expected_moved_files: i32,
+    ) -> bool {
+        let rust = self.rust();
+        let imported_games_present = rust.last_imported_game_ids.iter().all(|id| {
+            rust.games
+                .iter()
+                .any(|game| game.id == *id && game.platform == "Fixture Console")
+        });
+        let success = *self.last_import_count() == expected_count
+            && *self.last_import_created_file_count() == expected_created_files
+            && *self.last_import_moved_file_count() == expected_moved_files
+            && saturating_i32(rust.last_imported_game_ids.len()) == expected_count
+            && imported_games_present
+            && !*self.import_scanning()
+            && !*self.loading()
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "IMPORT_SMOKE_COMPLETE imported={expected_count} created={expected_created_files} moved={expected_moved_files} model_games={}",
+                rust.games.len()
+            );
+        }
+        success
+    }
+
     pub fn report_launch_smoke_success(&self, game_id: QString) -> bool {
         let game_id = game_id.to_string();
         let rust = self.rust();
@@ -5862,7 +6061,11 @@ impl qobject::LibraryController {
     }
 
     fn begin_library_mutation(mut self: Pin<&mut Self>) -> bool {
-        if *self.as_ref().loading() || *self.as_ref().writing() || *self.as_ref().launching() {
+        if *self.as_ref().loading()
+            || *self.as_ref().import_scanning()
+            || *self.as_ref().writing()
+            || *self.as_ref().launching()
+        {
             self.as_mut()
                 .set_status_message(qstring("Wait for the current library operation to finish."));
             return false;
@@ -5919,6 +6122,108 @@ impl qobject::LibraryController {
                 eprintln!("Could not load library: {error}");
                 self.as_mut()
                     .set_status_message(qstring(format!("Could not load library: {error}")));
+            }
+        }
+    }
+
+    fn finish_rom_import_preview(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<(String, usize), String>,
+    ) {
+        self.as_mut().set_import_scanning(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok((json, count)) => {
+                self.as_mut().set_import_preview_json(qstring(json));
+                self.as_mut().set_status_message(qstring(format!(
+                    "ROM import preview ready: {count} file(s) selected for import."
+                )));
+            }
+            Err(error) => {
+                self.as_mut().set_import_preview_json(QString::default());
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not preview ROM import: {error}")));
+            }
+        }
+    }
+
+    fn finish_rom_import(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<RomImportSuccess, ImportError>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(imported) => {
+                let RomImportSuccess { report, source } = imported;
+                let count = report.games.len();
+                let created_count = report.created_files.len();
+                let moved_count = report.moved_sources.len();
+                let game_ids = report
+                    .games
+                    .iter()
+                    .map(|game| game.id.clone())
+                    .collect::<Vec<_>>();
+                let last_id = game_ids.last().cloned().unwrap_or_default();
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.games.extend(report.games);
+                    rust.game_sources.extend(std::iter::repeat_n(source, count));
+                    rust.last_imported_game_ids = game_ids;
+                }
+                self.as_mut().refresh_filtered_games();
+                self.as_mut().update_library_counts();
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_last_added_game_id(qstring(last_id));
+                self.as_mut().set_last_import_count(saturating_i32(count));
+                self.as_mut()
+                    .set_last_import_created_file_count(saturating_i32(created_count));
+                self.as_mut()
+                    .set_last_import_moved_file_count(saturating_i32(moved_count));
+                self.as_mut().set_import_preview_json(QString::default());
+                let mut message = format!(
+                    "Imported {count} game(s). Exact platform backup: {}",
+                    report.platform_backup.display()
+                );
+                if created_count > 0 {
+                    message.push_str(&format!(" Created {created_count} library file(s)."));
+                }
+                if moved_count > 0 {
+                    message.push_str(&format!(" Removed {moved_count} verified source file(s)."));
+                }
+                if !report.cleanup_warnings.is_empty() {
+                    message.push_str(&format!(
+                        " Cleanup warning(s): {}",
+                        report.cleanup_warnings.join("; ")
+                    ));
+                }
+                self.as_mut().set_status_message(qstring(message));
+            }
+            Err(ImportError::Transaction(TransactionError::Conflict { path, .. })) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict while importing ROMs at {}. Reload and preview again.",
+                    path.display()
+                )));
+            }
+            Err(ImportError::Transaction(TransactionError::PendingRecovery {
+                manifests, ..
+            })) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(manifests.len()));
+                self.as_mut().set_status_message(qstring(
+                    "An interrupted transaction requires recovery before ROM import can continue.",
+                ));
+            }
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not import ROMs: {error}")));
             }
         }
     }
@@ -7025,6 +7330,12 @@ impl qobject::LibraryController {
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
         self.as_mut().set_last_added_game_id(QString::default());
+        self.as_mut().set_import_scanning(false);
+        self.as_mut().set_import_preview_json(QString::default());
+        self.as_mut().set_last_import_count(0);
+        self.as_mut().set_last_import_created_file_count(0);
+        self.as_mut().set_last_import_moved_file_count(0);
+        self.as_mut().rust_mut().last_imported_game_ids.clear();
         self.as_mut().set_launching(false);
         self.as_mut().set_last_launch_succeeded(false);
         self.as_mut().set_last_launch_game_id(QString::default());

@@ -160,6 +160,20 @@ reparented to the nearest visible level.
 Interrupted transactions require an explicit Recover action; conflicts require
 a reload and never offer a blind overwrite.
 
+LaunchBox also has a three-page manual ROM importer backed by the reusable
+`lb-import` crate. It accepts multiple native files and folders, optional
+recursive discovery and extension filters, file- or folder-derived editable
+titles, duplicate handling, and leave/copy/move policies. The review page is a
+real Rust-generated plan, and execution re-plans it before writing. Portable
+copies use `Games\<platform>\<file>` regardless of host separator; leave-in-
+place paths use the shared reverse path-mapping service. Large files stream
+into the same durable transaction as the platform XML rather than being held
+in memory. Copy never overwrites a destination. Move commits the copy and XML
+first, then removes a source only after both files have matching SHA-256
+revisions; a cleanup failure retains the source and reports a warning.
+Metadata/media lookup, multi-disc combining, MAME-specific options, and the
+remaining import families are still open.
+
 Both front ends now expose a shared launch vertical. A launch plan selects
 an explicit or single default emulator mapping (or a direct executable), keeps
 LaunchBox's explicit unassigned-emulator sentinel distinct from a missing

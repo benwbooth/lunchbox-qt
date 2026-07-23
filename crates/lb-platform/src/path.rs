@@ -198,6 +198,101 @@ impl HostPathResolver {
         );
         Ok(self)
     }
+
+    /// Converts one absolute native host path back into persisted LaunchBox
+    /// syntax without leaking native separators into portable paths.
+    ///
+    /// Paths under the LaunchBox root are stored as relative backslash-delimited
+    /// values. Paths under a configured Windows mapping recover their original
+    /// drive or UNC prefix. Other absolute paths remain native host paths.
+    pub fn stored_path_for_host_path(
+        &self,
+        launchbox_root: &Path,
+        host_path: &Path,
+    ) -> Result<String, LaunchPathError> {
+        if !launchbox_root.is_absolute() {
+            return Err(LaunchPathError::LaunchBoxRootNotAbsolute {
+                root: launchbox_root.to_path_buf(),
+            });
+        }
+        if !host_path.is_absolute() {
+            return Err(LaunchPathError::HostPathNotAbsolute {
+                path: host_path.to_path_buf(),
+            });
+        }
+        if let Ok(relative) = host_path.strip_prefix(launchbox_root) {
+            return portable_stored_path(relative);
+        }
+
+        let mut mapped = Vec::new();
+        for (drive, root) in &self.windows_drives {
+            if let Ok(relative) = host_path.strip_prefix(root) {
+                mapped.push((
+                    root.components().count(),
+                    format!("{drive}:\\{}", portable_stored_path(relative)?),
+                ));
+            }
+        }
+        for ((server, share), root) in &self.windows_unc_roots {
+            if let Ok(relative) = host_path.strip_prefix(root) {
+                mapped.push((
+                    root.components().count(),
+                    format!("\\\\{server}\\{share}\\{}", portable_stored_path(relative)?),
+                ));
+            }
+        }
+        if let Some((_, path)) = mapped
+            .into_iter()
+            .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)))
+        {
+            return Ok(path);
+        }
+
+        host_path
+            .to_str()
+            .map(str::to_string)
+            .ok_or_else(|| LaunchPathError::NonUnicodeHostPath {
+                path: host_path.to_path_buf(),
+            })
+    }
+}
+
+/// Encodes a safe relative native path as LaunchBox's portable lexical path.
+/// This is the only separator conversion needed when persisting paths created
+/// below the library root.
+pub fn portable_stored_path(relative: &Path) -> Result<String, LaunchPathError> {
+    if relative.is_absolute() {
+        return Err(LaunchPathError::UnsafePortableRelativePath {
+            path: relative.to_path_buf(),
+        });
+    }
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                parts.push(
+                    part.to_str()
+                        .ok_or_else(|| LaunchPathError::NonUnicodeHostPath {
+                            path: relative.to_path_buf(),
+                        })?,
+                );
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(LaunchPathError::UnsafePortableRelativePath {
+                    path: relative.to_path_buf(),
+                });
+            }
+        }
+    }
+    if parts.is_empty() {
+        return Err(LaunchPathError::UnsafePortableRelativePath {
+            path: relative.to_path_buf(),
+        });
+    }
+    Ok(parts.join("\\"))
 }
 
 impl LaunchPathResolver for HostPathResolver {
@@ -273,6 +368,14 @@ pub enum LaunchPathError {
     UnmappedWindowsUnc { server: String, share: String },
     #[error("Windows UNC path has no server and share")]
     InvalidWindowsUncPath,
+    #[error("LaunchBox root must be absolute when persisting a path: {root}")]
+    LaunchBoxRootNotAbsolute { root: PathBuf },
+    #[error("host path must be absolute when persisting it: {path}")]
+    HostPathNotAbsolute { path: PathBuf },
+    #[error("host path cannot be represented as LaunchBox Unicode path data: {path}")]
+    NonUnicodeHostPath { path: PathBuf },
+    #[error("portable LaunchBox path must be a non-empty safe relative path: {path}")]
+    UnsafePortableRelativePath { path: PathBuf },
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -483,6 +586,58 @@ mod tests {
             Err(LaunchPathError::HostMappingRootNotAbsolute {
                 root: PathBuf::from("relative/root"),
             })
+        );
+    }
+
+    #[test]
+    fn persisted_paths_are_portable_below_the_library_root() {
+        let resolver = HostPathResolver::default();
+        assert_eq!(
+            resolver
+                .stored_path_for_host_path(
+                    Path::new("/library"),
+                    Path::new("/library/Games/Fixture Console/game.rom"),
+                )
+                .unwrap(),
+            r"Games\Fixture Console\game.rom"
+        );
+        assert_eq!(
+            portable_stored_path(Path::new("Games/Fixture Console/game.rom")).unwrap(),
+            r"Games\Fixture Console\game.rom"
+        );
+        assert!(matches!(
+            portable_stored_path(Path::new("../outside.rom")),
+            Err(LaunchPathError::UnsafePortableRelativePath { .. })
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn persisted_paths_recover_the_most_specific_windows_mapping() {
+        let resolver = HostPathResolver::default()
+            .with_windows_drive_mapping('D', "/mnt/windows")
+            .unwrap()
+            .with_windows_drive_mapping('E', "/mnt/windows/roms")
+            .unwrap()
+            .with_windows_unc_mapping("SERVER", "Archive", "/net/archive")
+            .unwrap();
+        assert_eq!(
+            resolver
+                .stored_path_for_host_path(
+                    Path::new("/library"),
+                    Path::new("/mnt/windows/roms/Arcade/game.zip"),
+                )
+                .unwrap(),
+            r"E:\Arcade\game.zip"
+        );
+        assert_eq!(
+            resolver
+                .stored_path_for_host_path(
+                    Path::new("/library"),
+                    Path::new("/net/archive/Console/game.chd"),
+                )
+                .unwrap(),
+            r"\\server\archive\Console\game.chd"
         );
     }
 

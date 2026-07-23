@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtQml.Models
 import LaunchBoxPort
@@ -30,6 +31,8 @@ ApplicationWindow {
         Qt.application.arguments.indexOf("--category-crud-smoke-test") >= 0
     property bool playlistCrudSmokeTest:
         Qt.application.arguments.indexOf("--playlist-crud-smoke-test") >= 0
+    property bool importSmokeTest:
+        Qt.application.arguments.indexOf("--import-smoke-test") >= 0
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
     property bool pathMappingSmokeTest:
         Qt.application.arguments.indexOf("--path-mapping-smoke-test") >= 0
@@ -49,6 +52,8 @@ ApplicationWindow {
     property bool categoryCrudSmokeFinished: false
     property int playlistCrudSmokePhase: 0
     property bool playlistCrudSmokeFinished: false
+    property int importSmokePhase: 0
+    property bool importSmokeFinished: false
     property string playlistCrudParentId: ""
     property string playlistCrudChildId: ""
     property int launchSmokePhase: 0
@@ -341,6 +346,52 @@ ApplicationWindow {
         onTriggered: {
             console.error("MODEL_ROLE_SMOKE_TIMEOUT rows=" + gameGrid.count)
             Qt.exit(4)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.importSmokeTest && !window.importSmokeFinished
+        onTriggered: {
+            if (window.importSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const first = window.argumentValue("--import-rom-1")
+                const second = window.argumentValue("--import-rom-2")
+                if (first.length === 0 || second.length === 0) {
+                    console.error("IMPORT_SMOKE_MISSING_SOURCE_ARGUMENTS")
+                    Qt.exit(12)
+                    return
+                }
+                window.importSmokePhase = 1
+                romImportDialog.smokePrepare([first, second], "Fixture Console")
+            } else if (window.importSmokePhase === 1
+                       && !controller.import_scanning
+                       && controller.import_preview_json.length > 0) {
+                window.importSmokePhase = 2
+                romImportDialog.smokeSubmitPreview()
+            } else if (window.importSmokePhase === 2
+                       && !controller.writing
+                       && controller.last_import_count === 2) {
+                if (!controller.report_import_smoke_success(2, 2, 0)) {
+                    console.error("IMPORT_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(12)
+                    return
+                }
+                window.importSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.importSmokeTest && !window.importSmokeFinished
+        onTriggered: {
+            console.error("IMPORT_SMOKE_TIMEOUT phase=" + window.importSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(12)
         }
     }
 
@@ -1072,10 +1123,21 @@ ApplicationWindow {
                         color: "#8b949e"
                     }
                     Button {
+                        text: "Import ROMs"
+                        enabled: controller.library_path.length > 0
+                                 && controller.platform_entry_count > 0
+                                 && !controller.loading && !controller.import_scanning
+                                 && !controller.writing && !controller.launching
+                                 && !controller.write_conflict
+                                 && controller.pending_recovery_count === 0
+                        onClicked: romImportDialog.prepare()
+                    }
+                    Button {
                         text: "Add Game"
                         enabled: controller.library_path.length > 0
                                  && controller.platform_entry_count > 0
-                                 && !controller.loading && !controller.writing
+                                 && !controller.loading && !controller.import_scanning
+                                 && !controller.writing
                                  && !controller.launching
                                  && !controller.write_conflict
                                  && controller.pending_recovery_count === 0
@@ -3248,6 +3310,456 @@ ApplicationWindow {
             width: 540
             text: "This permanently deletes ALL INSTANCES of the playlist. To remove only one location, edit its hierarchy placements instead. Direct children are detached to root and matching list-cache rows are removed. No games, game XML, media files, or media directories are deleted."
             wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: romImportDialog
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        title: "Import ROM Files"
+        standardButtons: Dialog.NoButton
+
+        property int page: 0
+        property bool awaitingPreview: false
+        property var previewRequest: null
+
+        function addLocation(path, kind) {
+            if (path.length === 0)
+                return
+            for (let index = 0; index < importLocations.count; ++index) {
+                if (importLocations.get(index).path === path)
+                    return
+            }
+            importLocations.append({ "path": path, "kind": kind })
+        }
+
+        function selectPlatform(platformName) {
+            let selectedIndex = 0
+            for (let index = 0; index < controller.platform_entry_count; ++index) {
+                if (window.platformName(index) === platformName) {
+                    selectedIndex = index
+                    break
+                }
+            }
+            importPlatform.currentIndex = selectedIndex
+        }
+
+        function prepare() {
+            page = 0
+            awaitingPreview = false
+            previewRequest = null
+            importLocations.clear()
+            importPreviewRows.clear()
+            recursiveFolders.checked = true
+            folderTitles.checked = false
+            duplicateFiles.checked = false
+            importFilePolicy.currentIndex = 1
+            extensionFilter.text = ""
+            selectPlatform(window.selectedPlatform)
+            controller.clear_rom_import_preview()
+            open()
+        }
+
+        function smokePrepare(paths, platformName) {
+            prepare()
+            for (let index = 0; index < paths.length; ++index)
+                addLocation(paths[index], "file")
+            selectPlatform(platformName)
+            importFilePolicy.currentIndex = 1
+            page = 1
+            requestPreview()
+        }
+
+        function filePolicy() {
+            if (importFilePolicy.currentIndex === 1)
+                return "copy"
+            if (importFilePolicy.currentIndex === 2)
+                return "move"
+            return "leave"
+        }
+
+        function requestObject() {
+            const locations = []
+            for (let index = 0; index < importLocations.count; ++index) {
+                const location = importLocations.get(index)
+                locations.push({ "path": location.path, "kind": location.kind })
+            }
+            const extensions = extensionFilter.text.split(",")
+                  .map(function(value) { return value.trim() })
+                  .filter(function(value) { return value.length > 0 })
+            return {
+                "platform": window.platformName(importPlatform.currentIndex),
+                "locations": locations,
+                "recursive": recursiveFolders.checked,
+                "use_folder_names": folderTitles.checked,
+                "file_policy": filePolicy(),
+                "duplicate_policy": duplicateFiles.checked ? "import" : "skip",
+                "extensions": extensions
+            }
+        }
+
+        function requestPreview() {
+            if (importLocations.count === 0 || importPlatform.currentIndex < 0)
+                return
+            awaitingPreview = true
+            importPreviewRows.clear()
+            controller.preview_rom_import(JSON.stringify(requestObject()))
+        }
+
+        function loadPreview() {
+            if (controller.import_preview_json.length === 0)
+                return false
+            const preview = JSON.parse(controller.import_preview_json)
+            previewRequest = preview.request
+            importPreviewRows.clear()
+            for (let index = 0; index < preview.rows.length; ++index) {
+                const row = preview.rows[index]
+                importPreviewRows.append({
+                    "sourcePath": row.source_path,
+                    "title": row.title,
+                    "extension": row.extension,
+                    "destinationPath": row.destination_path === null
+                                       ? "" : row.destination_path,
+                    "applicationPath": row.application_path,
+                    "rowState": row.state,
+                    "included": row.included,
+                    "message": row.message
+                })
+            }
+            awaitingPreview = false
+            page = 2
+            return true
+        }
+
+        function submitPreview() {
+            if (previewRequest === null || importPreviewRows.count === 0)
+                return
+            const rows = []
+            for (let index = 0; index < importPreviewRows.count; ++index) {
+                const row = importPreviewRows.get(index)
+                rows.push({
+                    "source_path": row.sourcePath,
+                    "title": row.title,
+                    "included": row.included
+                })
+            }
+            controller.import_roms(JSON.stringify({
+                "request": previewRequest,
+                "rows": rows
+            }))
+            close()
+        }
+
+        function smokeSubmitPreview() {
+            if (previewRequest === null && !loadPreview())
+                return
+            submitPreview()
+        }
+
+        onClosed: {
+            awaitingPreview = false
+            controller.clear_rom_import_preview()
+        }
+
+        Timer {
+            interval: 25
+            repeat: true
+            running: romImportDialog.visible && romImportDialog.awaitingPreview
+                     && !controller.import_scanning
+            onTriggered: {
+                if (controller.import_preview_json.length > 0)
+                    romImportDialog.loadPreview()
+                else
+                    romImportDialog.awaitingPreview = false
+            }
+        }
+
+        ListModel { id: importLocations }
+        ListModel { id: importPreviewRows }
+
+        contentItem: ColumnLayout {
+            implicitWidth: 820
+            implicitHeight: 610
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: romImportDialog.page === 0
+                      ? "1 of 3 — Choose files and folders"
+                      : romImportDialog.page === 1
+                        ? "2 of 3 — Platform and file handling"
+                        : "3 of 3 — Review and edit"
+                color: "#7fbfff"
+                font.bold: true
+            }
+
+            StackLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                currentIndex: romImportDialog.page
+
+                ColumnLayout {
+                    spacing: 8
+                    RowLayout {
+                        Button {
+                            text: "Add Files…"
+                            onClicked: importFileDialog.open()
+                        }
+                        Button {
+                            text: "Add Folder…"
+                            onClicked: importFolderDialog.open()
+                        }
+                        Button {
+                            text: "Clear"
+                            enabled: importLocations.count > 0
+                            onClicked: importLocations.clear()
+                        }
+                        Item { Layout.fillWidth: true }
+                        CheckBox {
+                            id: recursiveFolders
+                            text: "Include subfolders"
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        color: "#101318"
+                        border.color: "#30363d"
+                        ListView {
+                            anchors.fill: parent
+                            anchors.margins: 4
+                            clip: true
+                            model: importLocations
+                            delegate: RowLayout {
+                                required property int index
+                                required property string path
+                                required property string kind
+                                width: ListView.view.width
+                                Label {
+                                    text: kind === "folder" ? "Folder" : "File"
+                                    color: "#7fbfff"
+                                    Layout.preferredWidth: 62
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: path
+                                    elide: Text.ElideMiddle
+                                }
+                                ToolButton {
+                                    text: "Remove"
+                                    onClicked: importLocations.remove(index)
+                                }
+                            }
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Native host paths stay native in the picker. The importer stores library-relative LaunchBox paths, or reverses an explicit Windows drive/UNC mapping when applicable."
+                        wrapMode: Text.Wrap
+                        color: "#7d8590"
+                    }
+                }
+
+                ColumnLayout {
+                    spacing: 10
+                    Label { text: "Platform" }
+                    ComboBox {
+                        id: importPlatform
+                        Layout.fillWidth: true
+                        model: controller.platform_entry_count
+                        displayText: currentIndex >= 0
+                                     ? window.platformName(currentIndex) : ""
+                        delegate: ItemDelegate {
+                            required property int index
+                            width: importPlatform.width
+                            text: window.platformName(index)
+                        }
+                    }
+                    Label { text: "What should happen to the selected files?" }
+                    ComboBox {
+                        id: importFilePolicy
+                        Layout.fillWidth: true
+                        model: [
+                            "Use files in their current locations",
+                            "Copy files into the LaunchBox Games folder",
+                            "Move files into the LaunchBox Games folder"
+                        ]
+                    }
+                    CheckBox {
+                        id: folderTitles
+                        text: "Use the containing folder name as the game title"
+                    }
+                    CheckBox {
+                        id: duplicateFiles
+                        text: "Import files already referenced by another game"
+                    }
+                    Label { text: "File extensions (optional, comma-separated)" }
+                    TextField {
+                        id: extensionFilter
+                        Layout.fillWidth: true
+                        placeholderText: "zip, 7z, cue, chd, iso, rom"
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: importFilePolicy.currentIndex === 2
+                              ? "Move first copies every file into the recoverable library transaction. Original files are removed only after the XML commit and a byte-for-byte revision check."
+                              : importFilePolicy.currentIndex === 1
+                                ? "ROM copies and platform XML are committed under one durable recovery manifest. Existing destination files are never overwritten."
+                                : "Files outside the library remain host-specific unless a configured Windows path mapping can be reversed."
+                        wrapMode: Text.Wrap
+                        color: "#7d8590"
+                    }
+                    Item { Layout.fillHeight: true }
+                    ProgressBar {
+                        Layout.fillWidth: true
+                        indeterminate: true
+                        visible: controller.import_scanning
+                    }
+                }
+
+                ColumnLayout {
+                    spacing: 8
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label {
+                            Layout.fillWidth: true
+                            text: importPreviewRows.count + " discovered file(s)"
+                            font.bold: true
+                        }
+                        Label {
+                            text: "Titles are editable before import"
+                            color: "#7d8590"
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        color: "#101318"
+                        border.color: "#30363d"
+                        ListView {
+                            anchors.fill: parent
+                            anchors.margins: 4
+                            spacing: 4
+                            clip: true
+                            model: importPreviewRows
+                            delegate: Rectangle {
+                                id: importPreviewDelegate
+                                required property int index
+                                required property string sourcePath
+                                required property string title
+                                required property string extension
+                                required property string destinationPath
+                                required property string applicationPath
+                                required property string rowState
+                                required property bool included
+                                required property string message
+                                width: ListView.view.width
+                                height: 92
+                                color: index % 2 === 0 ? "#171b22" : "#14181e"
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 6
+                                    CheckBox {
+                                        checked: importPreviewDelegate.included
+                                        enabled: importPreviewDelegate.rowState === "ready"
+                                                 || importPreviewDelegate.rowState === "duplicate"
+                                        onToggled: importPreviewRows.setProperty(
+                                                       importPreviewDelegate.index,
+                                                       "included", checked)
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        TextField {
+                                            Layout.fillWidth: true
+                                            text: importPreviewDelegate.title
+                                            enabled: importPreviewDelegate.rowState === "ready"
+                                                     || importPreviewDelegate.rowState === "duplicate"
+                                            onEditingFinished: importPreviewRows.setProperty(
+                                                                   importPreviewDelegate.index,
+                                                                   "title", text)
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: importPreviewDelegate.sourcePath
+                                            elide: Text.ElideMiddle
+                                            color: "#8b949e"
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: importPreviewDelegate.message
+                                                  + " — stored as "
+                                                  + importPreviewDelegate.applicationPath
+                                            elide: Text.ElideRight
+                                            color: importPreviewDelegate.rowState === "ready"
+                                                   ? "#7ee787"
+                                                   : importPreviewDelegate.rowState === "duplicate"
+                                                     ? "#d2a8ff"
+                                                   : "#f2cc60"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    text: "Cancel"
+                    onClicked: romImportDialog.close()
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Back"
+                    visible: romImportDialog.page > 0
+                    enabled: !controller.import_scanning
+                    onClicked: romImportDialog.page -= 1
+                }
+                Button {
+                    text: romImportDialog.page === 0 ? "Next"
+                          : romImportDialog.page === 1 ? "Preview"
+                          : "Import Selected"
+                    enabled: !controller.import_scanning
+                             && (romImportDialog.page !== 0
+                                 || importLocations.count > 0)
+                    onClicked: {
+                        if (romImportDialog.page === 0)
+                            romImportDialog.page = 1
+                        else if (romImportDialog.page === 1)
+                            romImportDialog.requestPreview()
+                        else
+                            romImportDialog.submitPreview()
+                    }
+                }
+            }
+        }
+    }
+
+    FileDialog {
+        id: importFileDialog
+        title: "Choose ROM files"
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["All files (*)"]
+        onAccepted: {
+            for (let index = 0; index < selectedFiles.length; ++index) {
+                const path = controller.local_path_from_url(
+                               selectedFiles[index].toString())
+                romImportDialog.addLocation(path, "file")
+            }
+        }
+    }
+
+    FolderDialog {
+        id: importFolderDialog
+        title: "Choose a ROM folder"
+        onAccepted: {
+            const path = controller.local_path_from_url(selectedFolder.toString())
+            romImportDialog.addLocation(path, "folder")
         }
     }
 

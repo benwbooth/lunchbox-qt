@@ -94,6 +94,8 @@ echo "BigBox category/platform/playlist navigation and exact membership filterin
 
 edit_root=$(mktemp -d)
 crud_root=$(mktemp -d)
+import_root=$(mktemp -d)
+import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
 category_crud_root=$(mktemp -d)
 playlist_crud_root=$(mktemp -d)
@@ -104,7 +106,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -304,6 +306,62 @@ if find "$crud_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox reference-gated add/remove CRUD and targeted Qt row signals validated."
+
+cp -R fixtures/launchbox/Data "$import_root/Data"
+printf 'alpha-import-bytes' > "$import_source_root/Alpha Import.rom"
+printf 'beta-import-bytes' > "$import_source_root/Beta Import.zip"
+import_platform="$import_root/Data/Platforms/Fixture Console.xml"
+import_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$import_root" --import-smoke-test \
+    --import-rom-1 "$import_source_root/Alpha Import.rom" \
+    --import-rom-2 "$import_source_root/Beta Import.zip" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$import_output" >&2
+  exit 1
+}
+if ! rg -q 'IMPORT_SMOKE_COMPLETE imported=2 created=2 moved=0 model_games=5' \
+  <<< "$import_output"; then
+  printf '%s\n' "$import_output" >&2
+  echo "LaunchBox did not complete the dialog-driven ROM import preview and copy." >&2
+  exit 1
+fi
+for expected in \
+  '<Title>Alpha Import</Title>' \
+  '<ApplicationPath>Games\Fixture Console\Alpha Import.rom</ApplicationPath>' \
+  '<Title>Beta Import</Title>' \
+  '<ApplicationPath>Games\Fixture Console\Beta Import.zip</ApplicationPath>' \
+  '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>'; do
+  if ! rg -q -F "$expected" "$import_platform"; then
+    echo "ROM import platform XML is missing: $expected" >&2
+    exit 1
+  fi
+done
+for file_name in 'Alpha Import.rom' 'Beta Import.zip'; do
+  if ! cmp -s "$import_source_root/$file_name" \
+    "$import_root/Games/Fixture Console/$file_name"; then
+    echo "ROM import did not preserve exact bytes for $file_name." >&2
+    exit 1
+  fi
+done
+mapfile -t import_backups < <(
+  find "$import_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#import_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${import_backups[0]}" \
+    'fixtures/launchbox/Data/Platforms/Fixture Console.xml'; then
+  echo "ROM import did not retain exactly one exact platform XML backup." >&2
+  exit 1
+fi
+if find "$import_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful ROM import left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-driven ROM import preview, editable batch selection, portable copied paths, exact streamed bytes, shared transaction recovery, and source preservation validated."
 
 cp -R fixtures/launchbox/Data "$platform_crud_root/Data"
 platform_crud_catalog="$platform_crud_root/Data/Platforms.xml"

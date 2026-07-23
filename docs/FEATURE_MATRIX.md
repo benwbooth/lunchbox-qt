@@ -46,6 +46,15 @@ and detach-to-root deletion all pass real-dialog and storage gates. Unique-name
 and ID rename remain gated by the getter-only 13.27 contract. The `BB-002`
 subset now provides keyboard-first category/platform/playlist navigation,
 exact membership filtering, active-filter state, and `HideInBigBox` handling.
+The first `IMP-001` vertical is also implemented: the LaunchBox shell accepts
+multiple files or folders, recursively discovers candidates, applies an
+optional extension filter, derives editable file- or folder-based titles,
+detects already referenced sources and portable destination collisions, and
+previews leave/copy/move policies before one revalidated batch commit. Copied
+files stream through the same durable transaction as the platform XML; move
+deletes each source only after that commit and a byte-revision match. Metadata
+and media downloads, multi-disc combining, emulator selection, cancellation,
+and runtime-oracle edge-case parity remain open, so `IMP-001` is not complete.
 Playlist generation (`LIB-009`) and theme-specific playlist views remain open.
 Persisted Windows-style paths remain lexical until the cross-platform launch
 service resolves them. None of those complete their family: bulk editing, all

@@ -10,6 +10,7 @@ cxx.workspace = true
 cxx-qt.workspace = true
 cxx-qt-lib.workspace = true
 lb-domain.workspace = true
+lb-import.workspace = true
 lb-platform.workspace = true
 lb-query.workspace = true
 lb-storage.workspace = true

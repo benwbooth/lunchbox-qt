@@ -1,0 +1,16 @@
+[package]
+name = "lb-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lb-domain.workspace = true
+lb-platform.workspace = true
+lb-storage.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

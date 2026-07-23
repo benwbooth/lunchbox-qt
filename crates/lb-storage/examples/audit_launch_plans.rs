@@ -485,6 +485,7 @@ fn additional_path_error_key(scope: &str, error: &lb_platform::LaunchPathError) 
         (_, LaunchPathError::HostMappingRootNotAbsolute { .. }) => {
             "additional_plans.errors.host_mapping_root_not_absolute"
         }
+        _ => "additional_plans.errors.path_other",
     }
 }
 
