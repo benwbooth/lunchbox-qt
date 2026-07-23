@@ -1,11 +1,11 @@
 #[cfg(test)]
 use lb_domain::GAME_XML_FIELDS;
 use lb_domain::{
-    AdditionalApplication, AlternateName, CatalogValidationError, CustomField, Game,
-    GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave, Mount,
-    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
-    PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
-    ValidationError,
+    AdditionalApplication, AdditionalApplicationEdit, AlternateName, CatalogValidationError,
+    CustomField, Game, GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave,
+    Mount, NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory,
+    PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument,
+    PlaylistFilter, PlaylistGame, ValidationError,
 };
 use serde::Deserialize;
 use std::fs;
@@ -1841,6 +1841,125 @@ impl PlatformDocument {
         self.library
             .additional_applications
             .push(application.clone());
+        self.library.validate()?;
+        Ok(application)
+    }
+
+    /// Replaces the 13.27 editor surface for one additional application while
+    /// retaining its immutable identity, owner, storefront/cloud fields, and
+    /// every unknown XML child on the source record.
+    pub fn set_additional_application(
+        &mut self,
+        id: &str,
+        edit: AdditionalApplicationEdit,
+    ) -> Result<AdditionalApplication, StorageError> {
+        let application_index = self
+            .library
+            .additional_applications
+            .iter()
+            .position(|application| application.id == id)
+            .ok_or_else(|| StorageError::AdditionalApplicationNotFound { id: id.to_string() })?;
+        let original = self.library.additional_applications[application_index].clone();
+        let updated = edit.apply_to(&original);
+        updated.validate()?;
+
+        let element = find_record_element_mut(&mut self.root, "AdditionalApplication", "Id", id)
+            .ok_or_else(|| StorageError::AdditionalApplicationNotFound { id: id.to_string() })?;
+        macro_rules! update_text {
+            ($field:ident, $element_name:literal) => {
+                if original.$field != updated.$field {
+                    set_child_text(element, $element_name, &updated.$field.to_string());
+                }
+            };
+        }
+        macro_rules! update_optional_text {
+            ($field:ident, $element_name:literal) => {
+                if original.$field != updated.$field {
+                    set_optional_child_text(element, $element_name, updated.$field.as_deref());
+                }
+            };
+        }
+
+        if original.name != updated.name {
+            set_child_text(element, "Name", &updated.name);
+        }
+        if original.application_path != updated.application_path {
+            set_child_text(element, "ApplicationPath", &updated.application_path);
+        }
+        update_optional_text!(command_line, "CommandLine");
+        update_text!(auto_run_before, "AutoRunBefore");
+        update_text!(auto_run_after, "AutoRunAfter");
+        update_text!(wait_for_exit, "WaitForExit");
+        update_text!(use_emulator, "UseEmulator");
+        update_optional_text!(emulator_id, "EmulatorId");
+        update_text!(use_dos_box, "UseDosBox");
+        update_text!(priority, "Priority");
+        update_text!(play_count, "PlayCount");
+        update_text!(play_time_seconds, "PlayTime");
+        if original.disc != updated.disc {
+            let disc = updated.disc.map(|value| value.to_string());
+            set_optional_child_text(element, "Disc", disc.as_deref());
+        }
+        update_text!(side_a, "SideA");
+        update_text!(side_b, "SideB");
+        update_optional_text!(developer, "Developer");
+        update_optional_text!(publisher, "Publisher");
+        update_optional_text!(region, "Region");
+        update_optional_text!(release_date, "ReleaseDate");
+        update_optional_text!(version, "Version");
+        update_optional_text!(status, "Status");
+        if original.installed != updated.installed {
+            let installed = updated.installed.map(|value| value.to_string());
+            set_optional_child_text(element, "Installed", installed.as_deref());
+        }
+        update_optional_text!(last_played, "LastPlayed");
+
+        self.library.additional_applications[application_index] = updated.clone();
+        self.library.validate()?;
+        Ok(updated)
+    }
+
+    /// Removes one additional application without deleting files or save
+    /// history. LaunchBox game-save records can explicitly own an additional
+    /// application ID, so those references must be remediated first.
+    pub fn remove_additional_application(
+        &mut self,
+        id: &str,
+    ) -> Result<AdditionalApplication, StorageError> {
+        let reference_count = self
+            .library
+            .game_saves
+            .iter()
+            .filter(|save| save.additional_application_id.as_deref() == Some(id))
+            .count();
+        if reference_count > 0 {
+            return Err(StorageError::AdditionalApplicationHasReferences {
+                id: id.to_string(),
+                count: reference_count,
+            });
+        }
+        let application_index = self
+            .library
+            .additional_applications
+            .iter()
+            .position(|application| application.id == id)
+            .ok_or_else(|| StorageError::AdditionalApplicationNotFound { id: id.to_string() })?;
+        let element_index = self
+            .root
+            .children
+            .iter()
+            .position(|node| {
+                node.as_element().is_some_and(|element| {
+                    element.name == "AdditionalApplication"
+                        && child_text(element, "Id").as_deref() == Some(id)
+                })
+            })
+            .ok_or_else(|| StorageError::AdditionalApplicationNotFound { id: id.to_string() })?;
+        self.root.children.remove(element_index);
+        let application = self
+            .library
+            .additional_applications
+            .remove(application_index);
         self.library.validate()?;
         Ok(application)
     }
@@ -4939,6 +5058,8 @@ pub enum StorageError {
     AdditionalApplicationNotFound { id: String },
     #[error("additional application ID {id} already exists")]
     DuplicateAdditionalApplicationId { id: String },
+    #[error("additional application {id} has {count} dependent game-save records")]
+    AdditionalApplicationHasReferences { id: String, count: usize },
     #[error("last-played timestamp cannot be empty")]
     EmptyLastPlayedTimestamp,
     #[error("{record} {id} {field} would overflow its persisted integer type")]
@@ -5421,6 +5542,98 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn additional_application_editor_preserves_identity_provider_and_unknown_xml() {
+        let mut document = PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes())
+            .expect("parse fixture");
+        let original = document
+            .library()
+            .additional_applications
+            .iter()
+            .find(|application| application.id == "fixture-adventure-manual")
+            .expect("fixture application")
+            .clone();
+        let edit = AdditionalApplicationEdit {
+            name: "Fixture Bonus Campaign".into(),
+            application_path: r"Games\Fixture Adventure\bonus.rom".into(),
+            command_line: Some("--bonus \"two words\"".into()),
+            auto_run_before: true,
+            auto_run_after: false,
+            wait_for_exit: true,
+            use_emulator: true,
+            emulator_id: Some("fixture-emulator".into()),
+            use_dos_box: false,
+            priority: 3,
+            play_count: 7,
+            play_time_seconds: 1234,
+            disc: Some(2),
+            side_a: false,
+            side_b: true,
+            developer: Some("Fixture Forge".into()),
+            publisher: Some("Fixture Press".into()),
+            region: Some("Europe".into()),
+            release_date: Some("2004-05-06".into()),
+            version: Some("Rev 2".into()),
+            status: Some("Imported ROM".into()),
+            installed: Some(true),
+            last_played: Some("2026-07-22T12:34:56.0000000-07:00".into()),
+        };
+        let updated = document
+            .set_additional_application("fixture-adventure-manual", edit.clone())
+            .expect("edit additional application");
+        assert_eq!(AdditionalApplicationEdit::from(&updated), edit);
+        assert_eq!(updated.id, original.id);
+        assert_eq!(updated.game_id, original.game_id);
+        assert_eq!(updated.gog_app_id, original.gog_app_id);
+        assert_eq!(updated.origin_app_id, original.origin_app_id);
+        assert_eq!(updated.origin_install_path, original.origin_install_path);
+        assert_eq!(updated.has_cloud_synced, original.has_cloud_synced);
+
+        let bytes = document.to_xml_bytes().expect("serialize edit");
+        let xml = String::from_utf8_lossy(&bytes);
+        assert!(xml.contains(
+            "<FutureAdditionalApplicationElement>keep-additional-app-data</FutureAdditionalApplicationElement>"
+        ));
+        let reparsed = PlatformDocument::from_reader("Fixture Console.xml", bytes.as_slice())
+            .expect("reparse edit");
+        let reparsed = reparsed
+            .library()
+            .additional_applications
+            .iter()
+            .find(|application| application.id == "fixture-adventure-manual")
+            .expect("reparsed application");
+        assert_eq!(AdditionalApplicationEdit::from(reparsed), edit);
+    }
+
+    #[test]
+    fn additional_application_removal_refuses_game_save_references() {
+        let referenced = FIXTURE.replacen(
+            "<GameId>fixture-adventure</GameId>",
+            "<GameId>fixture-adventure</GameId><AdditionalApplicationId>fixture-adventure-manual</AdditionalApplicationId>",
+            1,
+        );
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", referenced.as_bytes())
+                .expect("parse referenced fixture");
+        assert!(matches!(
+            document.remove_additional_application("fixture-adventure-manual"),
+            Err(StorageError::AdditionalApplicationHasReferences { count: 1, .. })
+        ));
+        assert_eq!(document.library().additional_applications.len(), 1);
+
+        let mut document = PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes())
+            .expect("parse unreferenced fixture");
+        let removed = document
+            .remove_additional_application("fixture-adventure-manual")
+            .expect("remove unreferenced application");
+        assert_eq!(removed.id, "fixture-adventure-manual");
+        assert!(document.library().additional_applications.is_empty());
+        let bytes = document.to_xml_bytes().expect("serialize removal");
+        assert!(!String::from_utf8_lossy(&bytes).contains("<AdditionalApplication>"));
+        assert!(String::from_utf8_lossy(&bytes)
+            .contains("<FutureRootElement>preserve-me</FutureRootElement>"));
     }
 
     #[test]

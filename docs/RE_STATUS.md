@@ -35,6 +35,16 @@ stored paths, accounts, or license data. It found 37 platform files, 35,869
 games, 16,752 additional applications, 20,739 alternate names, 54 playlists,
 zero custom-field records, and no XML parse errors.
 
+The census now includes a value-free additional-application shape audit. All
+16,752 records have parseable nonnegative priorities ranging from 0 through 26;
+12 have an empty application path. Five game-save rows reference additional
+applications and all five references resolve, so deletion cannot safely treat
+these records as independent. In this particular 13.24 installation every
+emulated record has an emulator ID, no direct record retains one, and no
+additional application enables DOSBox, automatic before/after execution, or
+wait-for-exit. Those zero counts describe this installation only; the recovered
+13.27 editor and plugin contracts still require those fields.
+
 The same value-free census now measures the persisted combined-ROM contract.
 The 13.24 library contains 6,261 games with at least two `Play … Version...`
 additional applications and 15,430 such records. Every group includes an
@@ -70,6 +80,16 @@ the meanings of automatic before/after and wait-for-exit flags, while the
 installed 3.1 changelog supplies the 30-second before-app wait ceiling. These
 sources and deterministic native fixtures specify the current implementation;
 13.27 runtime parity remains unverified while the Wine oracle cannot run.
+
+The recovered 13.27 editor contract exposes name/path/command line,
+before/after/wait behavior, emulator and DOSBox choice, priority, disc and side,
+developer/publisher/region/date/version/status, installed state, play count,
+play time, and last played. ID and owning game are getter-only, while storefront
+and cloud state are outside the editor. The port therefore edits exactly that
+typed subset, retains identity/owner/provider/cloud values and unknown XML,
+allows the 12 observed empty paths, and refuses deletion when a game-save
+reference exists. Save management and Make Default are separate upstream
+surfaces and remain unimplemented.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

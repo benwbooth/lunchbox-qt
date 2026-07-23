@@ -42,10 +42,12 @@ pub mod qobject {
         #[qproperty(QString, navigation_filter_kind)]
         #[qproperty(QString, navigation_filter_key)]
         #[qproperty(i32, platform_revision)]
+        #[qproperty(i32, additional_application_revision)]
         #[qproperty(i32, pending_recovery_count)]
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
         #[qproperty(QString, last_added_game_id)]
+        #[qproperty(QString, last_added_additional_application_id)]
         #[qproperty(QString, import_preview_json)]
         #[qproperty(i32, last_import_count)]
         #[qproperty(i32, last_import_created_file_count)]
@@ -257,6 +259,46 @@ pub mod qobject {
         ) -> QString;
 
         #[qinvokable]
+        fn new_additional_application_edit_payload(
+            self: &LibraryController,
+            row: i32,
+            game_id: QString,
+        ) -> QString;
+
+        #[qinvokable]
+        fn additional_application_edit_payload(
+            self: &LibraryController,
+            row: i32,
+            game_id: QString,
+            application_id: QString,
+        ) -> QString;
+
+        #[qinvokable]
+        fn add_additional_application(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            edit_payload: QString,
+        );
+
+        #[qinvokable]
+        fn save_additional_application(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            application_id: QString,
+            edit_payload: QString,
+        );
+
+        #[qinvokable]
+        fn delete_additional_application(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            application_id: QString,
+        );
+
+        #[qinvokable]
         fn alternate_name_count(self: &LibraryController, row: i32, game_id: QString) -> i32;
 
         #[qinvokable]
@@ -329,6 +371,12 @@ pub mod qobject {
             self: &LibraryController,
             added_game_id: QString,
             blocked_references: i32,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_additional_application_crud_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
         ) -> bool;
 
         #[qinvokable]
@@ -499,10 +547,10 @@ use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QUrl, QVariant,
 };
 use lb_domain::{
-    AdditionalApplication, AlternateName, CustomField, EmulatorConfiguration, Game,
-    GameLaunchConfiguration, GameMetadata, Mount, NavigationMetadata, ParentRelationship,
-    PlatformCategory, PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument,
-    PlaylistFilter, PlaylistGame, UNASSIGNED_EMULATOR_ID,
+    AdditionalApplication, AdditionalApplicationEdit, AlternateName, CustomField,
+    EmulatorConfiguration, Game, GameLaunchConfiguration, GameMetadata, Mount, NavigationMetadata,
+    ParentRelationship, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
+    PlaylistDocument, PlaylistFilter, PlaylistGame, UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -684,10 +732,12 @@ pub struct LibraryControllerRust {
     navigation_filter_kind: QString,
     navigation_filter_key: QString,
     platform_revision: i32,
+    additional_application_revision: i32,
     pending_recovery_count: i32,
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
     last_added_game_id: QString,
+    last_added_additional_application_id: QString,
     import_preview_json: QString,
     last_import_count: i32,
     last_import_created_file_count: i32,
@@ -729,6 +779,7 @@ pub struct LibraryControllerRust {
     launch_notifications: u64,
     session_stats_writes: u64,
     session_stats_error: Option<String>,
+    additional_application_write_notifications: u64,
     category_write_notifications: u64,
     last_category_detached_children: usize,
     playlist_write_notifications: u64,
@@ -1098,6 +1149,34 @@ struct GameDeleteSuccess {
     backup: PathBuf,
 }
 
+struct AdditionalApplicationWriteSuccess {
+    operation: AdditionalApplicationWriteOperation,
+    application: AdditionalApplication,
+    source: PathBuf,
+    backup: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdditionalApplicationWriteOperation {
+    Create,
+    Edit,
+    Delete,
+}
+
+enum AdditionalApplicationWriteRequest {
+    Create {
+        id: String,
+        edit: AdditionalApplicationEdit,
+    },
+    Edit {
+        id: String,
+        edit: AdditionalApplicationEdit,
+    },
+    Delete {
+        id: String,
+    },
+}
+
 struct PlatformCreateSuccess {
     name: String,
     platform: PlatformDefinition,
@@ -1238,6 +1317,7 @@ enum PlatformWriteFailure {
 }
 
 const GAME_EDIT_PAYLOAD_VERSION: u32 = 3;
+const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
@@ -1269,6 +1349,13 @@ struct GameEditPayload {
     favorite: bool,
     completed: bool,
     star_rating: u8,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct AdditionalApplicationEditPayload {
+    version: u32,
+    application: AdditionalApplicationEdit,
 }
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -1430,6 +1517,71 @@ struct PlaylistEditPayload {
     parents: Vec<CategoryParentEditPayload>,
     available_parent_targets: Vec<CategoryParentTargetPayload>,
     available_games: Vec<PlaylistAvailableGamePayload>,
+}
+
+fn parse_additional_application_edit_payload(
+    payload: &str,
+) -> Result<AdditionalApplicationEditPayload, String> {
+    let mut payload: AdditionalApplicationEditPayload = serde_json::from_str(payload)
+        .map_err(|error| format!("invalid additional-application editor payload: {error}"))?;
+    if payload.version != ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION {
+        return Err(format!(
+            "unsupported additional-application editor payload version {}; expected {}",
+            payload.version, ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION
+        ));
+    }
+    if payload.application.name.trim().is_empty() {
+        return Err("an application name cannot be empty".into());
+    }
+    if payload.application.priority < 0 {
+        return Err("application priority cannot be negative".into());
+    }
+    payload.application.command_line = canonical_optional_text(payload.application.command_line);
+    payload.application.emulator_id = canonical_optional_text(payload.application.emulator_id);
+    payload.application.developer = canonical_optional_text(payload.application.developer);
+    payload.application.publisher = canonical_optional_text(payload.application.publisher);
+    payload.application.region = canonical_optional_text(payload.application.region);
+    payload.application.release_date = canonical_optional_text(payload.application.release_date);
+    payload.application.version = canonical_optional_text(payload.application.version);
+    payload.application.status = canonical_optional_text(payload.application.status);
+    payload.application.last_played = canonical_optional_text(payload.application.last_played);
+    if !payload.application.use_emulator {
+        payload.application.emulator_id = None;
+    }
+    Ok(payload)
+}
+
+fn canonicalize_additional_application_emulator(
+    edit: &mut AdditionalApplicationEdit,
+    configuration: Option<&EmulatorConfiguration>,
+    existing_emulator_id: Option<&str>,
+) -> Result<(), String> {
+    if !edit.use_emulator {
+        edit.emulator_id = None;
+        return Ok(());
+    }
+    let Some(selected_id) = edit.emulator_id.as_deref() else {
+        return Ok(());
+    };
+    if selected_id.eq_ignore_ascii_case(UNASSIGNED_EMULATOR_ID) {
+        edit.use_emulator = false;
+        edit.emulator_id = None;
+        return Ok(());
+    }
+    if let Some(emulator) = configuration
+        .into_iter()
+        .flat_map(|configuration| &configuration.emulators)
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(selected_id))
+    {
+        edit.emulator_id = Some(emulator.id.clone());
+        return Ok(());
+    }
+    if existing_emulator_id.is_some_and(|existing| existing.eq_ignore_ascii_case(selected_id)) {
+        return Ok(());
+    }
+    Err(format!(
+        "selected emulator {selected_id} is not present in the loaded Emulators.xml"
+    ))
 }
 
 fn parse_game_edit_payload(payload: &str) -> Result<GameEditPayload, String> {
@@ -2521,6 +2673,102 @@ fn add_game_to_platform(
         .ok_or_else(|| GameWriteFailure::Other("transaction reported no platform write".into()))?;
     Ok(GameAddSuccess {
         game,
+        source,
+        backup,
+    })
+}
+
+fn write_additional_application(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    request: AdditionalApplicationWriteRequest,
+) -> Result<AdditionalApplicationWriteSuccess, GameWriteFailure> {
+    let mut document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    if !document
+        .library()
+        .games
+        .iter()
+        .any(|game| game.id == game_id)
+    {
+        return Err(GameWriteFailure::Other(format!(
+            "game {game_id} disappeared before the additional-application edit"
+        )));
+    }
+
+    let (operation, application) = match request {
+        AdditionalApplicationWriteRequest::Create { id, edit } => {
+            let base = AdditionalApplication {
+                id,
+                game_id: game_id.clone(),
+                ..AdditionalApplication::default()
+            };
+            let application = document
+                .add_additional_application(edit.apply_to(&base))
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            (AdditionalApplicationWriteOperation::Create, application)
+        }
+        AdditionalApplicationWriteRequest::Edit { id, edit } => {
+            let owner = document
+                .library()
+                .additional_applications
+                .iter()
+                .find(|application| application.id == id)
+                .map(|application| application.game_id.as_str())
+                .ok_or_else(|| {
+                    GameWriteFailure::Other(format!(
+                        "additional application {id} disappeared before the edit"
+                    ))
+                })?;
+            if owner != game_id {
+                return Err(GameWriteFailure::Other(format!(
+                    "additional application {id} belongs to game {owner}, not {game_id}"
+                )));
+            }
+            let application = document
+                .set_additional_application(&id, edit)
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            (AdditionalApplicationWriteOperation::Edit, application)
+        }
+        AdditionalApplicationWriteRequest::Delete { id } => {
+            let owner = document
+                .library()
+                .additional_applications
+                .iter()
+                .find(|application| application.id == id)
+                .map(|application| application.game_id.as_str())
+                .ok_or_else(|| {
+                    GameWriteFailure::Other(format!(
+                        "additional application {id} disappeared before deletion"
+                    ))
+                })?;
+            if owner != game_id {
+                return Err(GameWriteFailure::Other(format!(
+                    "additional application {id} belongs to game {owner}, not {game_id}"
+                )));
+            }
+            let application = document
+                .remove_additional_application(&id)
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            (AdditionalApplicationWriteOperation::Delete, application)
+        }
+    };
+
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&document)
+        .map_err(classify_transaction_error)?;
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .next()
+        .map(|write| write.backup)
+        .ok_or_else(|| GameWriteFailure::Other("transaction reported no platform write".into()))?;
+    Ok(AdditionalApplicationWriteSuccess {
+        operation,
+        application,
         source,
         backup,
     })
@@ -4286,6 +4534,197 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn add_additional_application(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        edit_payload: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let mut payload = match parse_additional_application_edit_payload(&edit_payload.to_string())
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not add additional application: {error}."
+                )));
+                return;
+            }
+        };
+        if let Err(error) = canonicalize_additional_application_emulator(
+            &mut payload.application,
+            self.as_ref().rust().emulator_configuration.as_ref(),
+            None,
+        ) {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not add additional application: {error}."
+            )));
+            return;
+        }
+        let game_id = game_id.to_string();
+        let Some((source, root)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let name = payload.application.name.clone();
+        let request = AdditionalApplicationWriteRequest::Create {
+            id: Uuid::new_v4().to_string(),
+            edit: payload.application,
+        };
+        self.as_mut().start_additional_application_write(
+            root,
+            source,
+            game_id,
+            request,
+            format!("Adding {name} in the background..."),
+        );
+    }
+
+    pub fn save_additional_application(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        application_id: QString,
+        edit_payload: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let application_id = application_id.to_string();
+        let existing = self
+            .as_ref()
+            .additional_applications_for_model(row, &game_id)
+            .and_then(|applications| {
+                applications
+                    .iter()
+                    .find(|application| application.id == application_id)
+            })
+            .cloned();
+        let Some(existing) = existing else {
+            self.as_mut().set_status_message(qstring(
+                "The selected additional application no longer matches this game; reload and try again.",
+            ));
+            return;
+        };
+        let mut payload = match parse_additional_application_edit_payload(&edit_payload.to_string())
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save additional application: {error}."
+                )));
+                return;
+            }
+        };
+        if let Err(error) = canonicalize_additional_application_emulator(
+            &mut payload.application,
+            self.as_ref().rust().emulator_configuration.as_ref(),
+            existing.emulator_id.as_deref(),
+        ) {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not save additional application: {error}."
+            )));
+            return;
+        }
+        let Some((source, root)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let name = payload.application.name.clone();
+        let request = AdditionalApplicationWriteRequest::Edit {
+            id: application_id,
+            edit: payload.application,
+        };
+        self.as_mut().start_additional_application_write(
+            root,
+            source,
+            game_id,
+            request,
+            format!("Saving {name} in the background..."),
+        );
+    }
+
+    pub fn delete_additional_application(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        application_id: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let application_id = application_id.to_string();
+        let existing = self
+            .as_ref()
+            .additional_applications_for_model(row, &game_id)
+            .and_then(|applications| {
+                applications
+                    .iter()
+                    .find(|application| application.id == application_id)
+            })
+            .cloned();
+        let Some(existing) = existing else {
+            self.as_mut().set_status_message(qstring(
+                "The selected additional application no longer matches this game; reload and try again.",
+            ));
+            return;
+        };
+        let Some((source, root)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let request = AdditionalApplicationWriteRequest::Delete { id: application_id };
+        self.as_mut().start_additional_application_write(
+            root,
+            source,
+            game_id,
+            request,
+            format!("Deleting {} in the background...", existing.name),
+        );
+    }
+
+    fn start_additional_application_write(
+        mut self: Pin<&mut Self>,
+        root: PathBuf,
+        source: PathBuf,
+        game_id: String,
+        request: AdditionalApplicationWriteRequest,
+        status: String,
+    ) {
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(status));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-additional-application-write".to_string())
+            .spawn(move || {
+                let result = write_additional_application(root, source, game_id, request);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_additional_application_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start additional-application writer: {error}"
+            )));
+        }
+    }
+
     pub fn add_game(
         mut self: Pin<&mut Self>,
         title: QString,
@@ -5476,6 +5915,63 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_additional_application_crud_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let application = rust
+            .additional_applications_by_game
+            .get(&game_id)
+            .and_then(|applications| applications.as_slice().first());
+        let success = rust
+            .additional_applications_by_game
+            .get(&game_id)
+            .is_some_and(|applications| applications.len() == 1)
+            && application.is_some_and(|application| {
+                application.id == "fixture-adventure-manual"
+                    && application.name == "Edited Fixture Manual"
+                    && application.application_path == r"Games\Fixture Adventure\edited-manual.pdf"
+                    && application.command_line.as_deref() == Some("--page 3")
+                    && application.auto_run_before
+                    && !application.auto_run_after
+                    && application.wait_for_exit
+                    && !application.use_emulator
+                    && application.emulator_id.is_none()
+                    && !application.use_dos_box
+                    && application.priority == 4
+                    && application.play_count == 5
+                    && application.play_time_seconds == 321
+                    && application.disc == Some(2)
+                    && application.side_a
+                    && !application.side_b
+                    && application.developer.as_deref() == Some("Qt Docs")
+                    && application.publisher.as_deref() == Some("Port Press")
+                    && application.region.as_deref() == Some("Europe")
+                    && application.release_date.as_deref() == Some("2005-06-07")
+                    && application.version.as_deref() == Some("Rev 3")
+                    && application.status.as_deref() == Some("Installed")
+                    && application.installed == Some(true)
+                    && application.last_played.as_deref()
+                        == Some("2026-07-22T13:14:15.0000000-07:00")
+            })
+            && rust.additional_application_write_notifications == 3
+            && *self.additional_application_revision() == 3
+            && self.last_added_additional_application_id().is_empty()
+            && rust.model_reset_notifications == 1
+            && rust.data_change_notifications == 3
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "ADDITIONAL_APPLICATION_CRUD_SMOKE_COMPLETE writes={} revision={} data_changes={}",
+                rust.additional_application_write_notifications,
+                self.additional_application_revision(),
+                rust.data_change_notifications
+            );
+        }
+        success
+    }
+
     pub fn report_platform_crud_smoke_success(
         &self,
         platform_name: QString,
@@ -6044,6 +6540,57 @@ impl qobject::LibraryController {
             .unwrap_or_default()
     }
 
+    pub fn new_additional_application_edit_payload(&self, row: i32, game_id: QString) -> QString {
+        let next_priority = self
+            .additional_applications_for_model(row, &game_id.to_string())
+            .and_then(|applications| {
+                applications
+                    .iter()
+                    .map(|application| application.priority)
+                    .max()
+            })
+            .unwrap_or(-1)
+            .saturating_add(1)
+            .max(0);
+        let payload = AdditionalApplicationEditPayload {
+            version: ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION,
+            application: AdditionalApplicationEdit {
+                priority: next_priority,
+                ..AdditionalApplicationEdit::default()
+            },
+        };
+        serde_json::to_string(&payload)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn additional_application_edit_payload(
+        &self,
+        row: i32,
+        game_id: QString,
+        application_id: QString,
+    ) -> QString {
+        let game_id = game_id.to_string();
+        let application_id = application_id.to_string();
+        let Some(application) = self
+            .additional_applications_for_model(row, &game_id)
+            .and_then(|applications| {
+                applications
+                    .iter()
+                    .find(|application| application.id == application_id)
+            })
+        else {
+            return QString::default();
+        };
+        let payload = AdditionalApplicationEditPayload {
+            version: ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION,
+            application: AdditionalApplicationEdit::from(application),
+        };
+        serde_json::to_string(&payload)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
     pub fn alternate_name_count(&self, row: i32, game_id: QString) -> i32 {
         self.alternate_names_for_model(row, &game_id.to_string())
             .map(|alternate_names| saturating_i32(alternate_names.len()))
@@ -6408,6 +6955,192 @@ impl qobject::LibraryController {
                     references.len()
                 )));
             }
+        }
+    }
+
+    fn finish_additional_application_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<AdditionalApplicationWriteSuccess, GameWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let AdditionalApplicationWriteSuccess {
+                    operation,
+                    application,
+                    source,
+                    backup,
+                } = success;
+                let game_id = application.game_id.clone();
+                let actual_index = self
+                    .as_ref()
+                    .rust()
+                    .games
+                    .iter()
+                    .zip(&self.as_ref().rust().game_sources)
+                    .position(|(game, candidate_source)| {
+                        game.id == game_id && *candidate_source == source
+                    });
+                let Some(actual_index) = actual_index else {
+                    self.as_mut().set_status_message(qstring(
+                        "The edited additional application's game is no longer present in the loaded model; reload required.",
+                    ));
+                    return;
+                };
+
+                match operation {
+                    AdditionalApplicationWriteOperation::Create => {
+                        self.as_mut()
+                            .rust_mut()
+                            .additional_applications_by_game
+                            .entry(game_id.clone())
+                            .or_default()
+                            .push(application.clone());
+                        self.as_mut()
+                            .set_last_added_additional_application_id(qstring(&application.id));
+                    }
+                    AdditionalApplicationWriteOperation::Edit => {
+                        let updated = {
+                            let mut rust = self.as_mut().rust_mut();
+                            rust.additional_applications_by_game
+                                .get_mut(&game_id)
+                                .and_then(|applications| {
+                                    applications
+                                        .iter_mut()
+                                        .find(|candidate| candidate.id == application.id)
+                                })
+                                .map(|existing| *existing = application.clone())
+                                .is_some()
+                        };
+                        if !updated {
+                            self.as_mut().set_status_message(qstring(
+                                "The edited additional application is no longer present in the loaded model; reload required.",
+                            ));
+                            return;
+                        }
+                    }
+                    AdditionalApplicationWriteOperation::Delete => {
+                        let deleted = {
+                            let mut rust = self.as_mut().rust_mut();
+                            rust.additional_applications_by_game
+                                .get_mut(&game_id)
+                                .map(|applications| {
+                                    let previous_count = applications.len();
+                                    applications.retain(|candidate| candidate.id != application.id);
+                                    applications.len() != previous_count
+                                })
+                                .unwrap_or(false)
+                        };
+                        if !deleted {
+                            self.as_mut().set_status_message(qstring(
+                                "The deleted additional application is no longer present in the loaded model; reload required.",
+                            ));
+                            return;
+                        }
+                        if self
+                            .as_ref()
+                            .last_added_additional_application_id()
+                            .to_string()
+                            == application.id
+                        {
+                            self.as_mut()
+                                .set_last_added_additional_application_id(QString::default());
+                        }
+                    }
+                }
+                let remove_empty_group = self
+                    .as_ref()
+                    .rust()
+                    .additional_applications_by_game
+                    .get(&game_id)
+                    .is_some_and(Vec::is_empty);
+                if remove_empty_group {
+                    self.as_mut()
+                        .rust_mut()
+                        .additional_applications_by_game
+                        .remove(&game_id);
+                } else if let Some(applications) = self
+                    .as_mut()
+                    .rust_mut()
+                    .additional_applications_by_game
+                    .get_mut(&game_id)
+                {
+                    applications.sort_by(|left, right| {
+                        left.priority
+                            .cmp(&right.priority)
+                            .then_with(|| left.id.cmp(&right.id))
+                    });
+                }
+
+                let revision = self
+                    .as_ref()
+                    .additional_application_revision()
+                    .saturating_add(1);
+                self.as_mut().set_additional_application_revision(revision);
+                self.as_mut()
+                    .rust_mut()
+                    .additional_application_write_notifications = self
+                    .as_ref()
+                    .rust()
+                    .additional_application_write_notifications
+                    .saturating_add(1);
+                if let Some(filtered_row) = self
+                    .as_ref()
+                    .rust()
+                    .filtered_indices
+                    .iter()
+                    .position(|index| *index == actual_index)
+                {
+                    let row = saturating_i32(filtered_row);
+                    let parent = QModelIndex::default();
+                    let index = self.as_ref().model_index(row, 0, &parent);
+                    let mut roles = QList::<i32>::default();
+                    roles.append(GAME_ADDITIONAL_APPLICATION_COUNT_ROLE);
+                    self.as_mut().rust_mut().data_change_notifications = self
+                        .as_ref()
+                        .rust()
+                        .data_change_notifications
+                        .saturating_add(1);
+                    self.as_mut().emit_data_changed(&index, &index, &roles);
+                }
+                self.as_mut().set_write_conflict(false);
+                let verb = match operation {
+                    AdditionalApplicationWriteOperation::Create => "Added",
+                    AdditionalApplicationWriteOperation::Edit => "Saved",
+                    AdditionalApplicationWriteOperation::Delete => "Deleted",
+                };
+                self.as_mut().set_status_message(qstring(format!(
+                    "{verb} {}. Exact backup: {}",
+                    application.name,
+                    backup.display()
+                )));
+            }
+            Err(GameWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict while changing additional application: {message}. Reload before retrying."
+                )));
+            }
+            Err(GameWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(GameWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not change additional application: {} unexpected dependent records were reported.",
+                    references.len()
+                )));
+            }
+            Err(GameWriteFailure::Other(message)) => self.as_mut().set_status_message(qstring(
+                format!("Could not change additional application: {message}"),
+            )),
         }
     }
 
@@ -7384,6 +8117,7 @@ impl qobject::LibraryController {
             rust.row_insert_notifications = 0;
             rust.row_remove_notifications = 0;
             rust.launch_notifications = 0;
+            rust.additional_application_write_notifications = 0;
             rust.category_write_notifications = 0;
             rust.last_category_detached_children = 0;
             rust.playlist_write_notifications = 0;
@@ -9293,6 +10027,77 @@ mod tests {
         assert!(parse_game_edit_payload(&valid.replace(
             "\"favorite\": true",
             "\"unknown\": true, \"favorite\": true"
+        ))
+        .unwrap_err()
+        .contains("unknown field"));
+    }
+
+    #[test]
+    fn additional_application_edit_payload_is_versioned_typed_and_canonicalized() {
+        let payload = AdditionalApplicationEditPayload {
+            version: ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION,
+            application: AdditionalApplicationEdit {
+                name: "Fixture Manual".into(),
+                application_path: r"Games\Fixture\manual.pdf".into(),
+                command_line: Some("   ".into()),
+                use_emulator: false,
+                emulator_id: Some("ignored-for-direct-launch".into()),
+                developer: Some("Fixture Labs".into()),
+                publisher: Some(" ".into()),
+                region: Some("Europe".into()),
+                release_date: Some("2005-06-07".into()),
+                version: Some("Rev 3".into()),
+                status: Some("Installed".into()),
+                last_played: Some(" ".into()),
+                ..AdditionalApplicationEdit::default()
+            },
+        };
+        let valid = serde_json::to_string(&payload).expect("serialize editor payload");
+        let parsed =
+            parse_additional_application_edit_payload(&valid).expect("valid editor payload");
+        assert_eq!(parsed.application.name, "Fixture Manual");
+        assert_eq!(
+            parsed.application.application_path,
+            r"Games\Fixture\manual.pdf"
+        );
+        assert_eq!(parsed.application.command_line, None);
+        assert_eq!(parsed.application.emulator_id, None);
+        assert_eq!(
+            parsed.application.developer.as_deref(),
+            Some("Fixture Labs")
+        );
+        assert_eq!(parsed.application.publisher, None);
+        assert_eq!(parsed.application.region.as_deref(), Some("Europe"));
+        assert_eq!(parsed.application.last_played, None);
+
+        let mut wrong_version = payload.clone();
+        wrong_version.version += 1;
+        assert!(parse_additional_application_edit_payload(
+            &serde_json::to_string(&wrong_version).unwrap()
+        )
+        .unwrap_err()
+        .contains("unsupported additional-application editor payload version"));
+
+        let mut missing_name = payload.clone();
+        missing_name.application.name = "   ".into();
+        assert!(parse_additional_application_edit_payload(
+            &serde_json::to_string(&missing_name).unwrap()
+        )
+        .unwrap_err()
+        .contains("name cannot be empty"));
+
+        let mut negative_priority = payload;
+        negative_priority.application.priority = -1;
+        assert!(parse_additional_application_edit_payload(
+            &serde_json::to_string(&negative_priority).unwrap()
+        )
+        .unwrap_err()
+        .contains("priority cannot be negative"));
+
+        assert!(parse_additional_application_edit_payload(&valid.replacen(
+            "\"application\":",
+            "\"future\":true,\"application\":",
+            1
         ))
         .unwrap_err()
         .contains("unknown field"));

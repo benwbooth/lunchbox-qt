@@ -90,13 +90,13 @@ parity remain open.
 | LIB-001 | Create, edit, delete, and launch games | DV add/edit game pages; PA `IGame`; DM play/edit/delete |
 | LIB-002 | Rich game metadata, notes, sort titles, regions, versions, and status | DV metadata/notes/sort-title pages; PA game/additional-app fields |
 | LIB-003 | Alternate names and custom fields | DV alternate-name/custom-field pages; PA `IAlternateName`, `ICustomField` |
-| LIB-004 | Additional applications and documents per game | DV additional-app editor; PA `IAdditionalApplication`; BigBox selection actions |
+| LIB-004 | Additional applications and documents per game | DV additional-app editor; PA `IAdditionalApplication`; BigBox selection actions; port subset has typed/lossless add/edit/delete and launch selection, while Make Default and save management remain open |
 | LIB-005 | Game controller support metadata | DV controller-support editor; PA controller APIs |
 | LIB-006 | Platforms and platform folders | DV platform management; PA `IPlatform`, `IPlatformFolder` |
 | LIB-007 | Nested platform categories | DV category editor; PA `IPlatformCategory`, `IParent` |
 | LIB-008 | Manual and auto-populated playlists | DV playlist editor; PA manual/automatic playlist and criteria contracts |
 | LIB-009 | Child-playlist generation and arcade playlist creation | DV generator; DM generate child/create arcade playlists |
-| LIB-010 | Combined games, versions, and expand/collapse | DM combine, show versions, expand games |
+| LIB-010 | Combined games, versions, and expand/collapse | DM combine, show versions, expand games; port importer combines recovered matching-title/version groups, while manual combine/expand/collapse remain open |
 | LIB-011 | Favorites, completed/broken/hidden/installed state | PA game state; search/filter menus; BigBox state resources |
 | LIB-012 | Play count, last played, completion, local/community star ratings | PA game/additional-app state; DM reset counters/download ratings; BV rating popup |
 | LIB-013 | Search, sort, arrange, filters, random selection, and suggestions | DM arrange/search/random; DV search/suggestion/filter options |

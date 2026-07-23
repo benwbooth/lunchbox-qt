@@ -44,6 +44,12 @@ ApplicationWindow {
     property int crudBlockedReferences: 0
     property string crudAddedGameId: ""
     property bool crudSmokeFinished: false
+    property bool additionalApplicationCrudSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--additional-application-crud-smoke-test") >= 0
+    property int additionalApplicationCrudSmokePhase: 0
+    property bool additionalApplicationCrudSmokeFinished: false
+    property string additionalApplicationCrudSmokeAddedId: ""
     property int platformCrudSmokePhase: 0
     property int platformCrudBlockedReferences: 0
     property string platformCrudAddedGameId: ""
@@ -486,6 +492,75 @@ ApplicationWindow {
             console.error("CRUD_SMOKE_TIMEOUT phase=" + window.crudSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(6)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.additionalApplicationCrudSmokeTest
+                 && !window.additionalApplicationCrudSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-adventure"
+            const applicationId = "fixture-adventure-manual"
+            if (window.additionalApplicationCrudSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0
+                        || controller.additional_application_count(row, gameId) !== 1) {
+                    console.error("ADDITIONAL_APPLICATION_CRUD_SMOKE_MISSING_FIXTURE")
+                    Qt.exit(14)
+                    return
+                }
+                additionalApplicationManager.prepare(
+                    row, gameId, "Fixture Adventure")
+                window.additionalApplicationCrudSmokePhase = 1
+                additionalApplicationEditor.smokeEdit(row, gameId, applicationId)
+            } else if (window.additionalApplicationCrudSmokePhase === 1
+                       && !controller.writing
+                       && controller.additional_application_revision === 1) {
+                const editRow = controller.row_for_game_id(gameId)
+                window.additionalApplicationCrudSmokePhase = 2
+                additionalApplicationEditor.smokeCreate(editRow, gameId)
+            } else if (window.additionalApplicationCrudSmokePhase === 2
+                       && !controller.writing
+                       && controller.additional_application_revision === 2
+                       && controller.last_added_additional_application_id.length > 0) {
+                window.additionalApplicationCrudSmokeAddedId =
+                    controller.last_added_additional_application_id
+                const deleteRow = controller.row_for_game_id(gameId)
+                window.additionalApplicationCrudSmokePhase = 3
+                additionalApplicationDeleteDialog.smokeDelete(
+                    deleteRow, gameId,
+                    window.additionalApplicationCrudSmokeAddedId,
+                    "Temporary Fixture Application")
+            } else if (window.additionalApplicationCrudSmokePhase === 3
+                       && !controller.writing
+                       && controller.additional_application_revision === 3) {
+                if (!controller.report_additional_application_crud_smoke_success(
+                        gameId)) {
+                    console.error(
+                        "ADDITIONAL_APPLICATION_CRUD_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(14)
+                    return
+                }
+                window.additionalApplicationCrudSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.additionalApplicationCrudSmokeTest
+                 && !window.additionalApplicationCrudSmokeFinished
+        onTriggered: {
+            console.error("ADDITIONAL_APPLICATION_CRUD_SMOKE_TIMEOUT phase="
+                          + window.additionalApplicationCrudSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(14)
         }
     }
 
@@ -1376,6 +1451,20 @@ ApplicationWindow {
                                            index, gameId, gameTitle,
                                            gameAdditionalApplicationCount)
                         }
+                        Button {
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 8
+                            z: 2
+                            text: "Apps (" + gameAdditionalApplicationCount + ")"
+                            enabled: controller.library_path.length > 0
+                                     && !controller.loading && !controller.writing
+                                     && !controller.launching
+                                     && controller.pending_recovery_count === 0
+                                     && !controller.write_conflict
+                            onClicked: additionalApplicationManager.prepare(
+                                           index, gameId, gameTitle)
+                        }
                     }
                 }
             }
@@ -1541,6 +1630,511 @@ ApplicationWindow {
                     const gameId = launchWithDialog.gameId
                     launchWithDialog.close()
                     controller.launch_additional_application(row, gameId, applicationId)
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: additionalApplicationManager
+        anchors.centerIn: parent
+        modal: true
+        title: "Additional Applications — " + gameTitle
+        standardButtons: Dialog.Close
+        property int modelRow: -1
+        property string gameId: ""
+        property string gameTitle: ""
+        property int applicationCount: 0
+        property int selectedIndex: -1
+        property int observedRevision: controller.additional_application_revision
+
+        onObservedRevisionChanged: {
+            if (visible)
+                refresh()
+        }
+
+        function refresh() {
+            applicationCount = controller.additional_application_count(modelRow, gameId)
+            if (applicationCount === 0)
+                selectedIndex = -1
+            else if (selectedIndex < 0 || selectedIndex >= applicationCount)
+                selectedIndex = 0
+        }
+
+        function prepare(row, id, title) {
+            modelRow = row
+            gameId = id
+            gameTitle = title
+            selectedIndex = -1
+            refresh()
+            open()
+        }
+
+        function selectedApplicationId() {
+            return selectedIndex >= 0
+                   ? controller.additional_application_id_at(
+                         modelRow, gameId, selectedIndex) : ""
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.preferredWidth: 620
+                text: "Applications are stored in LaunchBox priority order. Editing or deleting a record never deletes its target file."
+                wrapMode: Text.Wrap
+                color: "#aeb8c5"
+            }
+            ListView {
+                id: additionalApplicationList
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.max(
+                                            80, Math.min(320, contentHeight))
+                clip: true
+                spacing: 4
+                model: additionalApplicationManager.applicationCount
+                delegate: ItemDelegate {
+                    required property int index
+                    width: ListView.view.width
+                    highlighted: index === additionalApplicationManager.selectedIndex
+                    text: controller.additional_application_name_at(
+                              additionalApplicationManager.modelRow,
+                              additionalApplicationManager.gameId, index)
+                    onClicked: additionalApplicationManager.selectedIndex = index
+                    onDoubleClicked: {
+                        const applicationId =
+                            additionalApplicationManager.selectedApplicationId()
+                        if (applicationId.length > 0)
+                            additionalApplicationEditor.prepareEdit(
+                                additionalApplicationManager.modelRow,
+                                additionalApplicationManager.gameId,
+                                applicationId)
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    text: "Add"
+                    enabled: !controller.writing
+                    onClicked: additionalApplicationEditor.prepareCreate(
+                                   additionalApplicationManager.modelRow,
+                                   additionalApplicationManager.gameId)
+                }
+                Button {
+                    text: "Edit"
+                    enabled: additionalApplicationManager.selectedIndex >= 0
+                             && !controller.writing
+                    onClicked: additionalApplicationEditor.prepareEdit(
+                                   additionalApplicationManager.modelRow,
+                                   additionalApplicationManager.gameId,
+                                   additionalApplicationManager.selectedApplicationId())
+                }
+                Button {
+                    text: "Delete"
+                    enabled: additionalApplicationManager.selectedIndex >= 0
+                             && !controller.writing
+                    onClicked: additionalApplicationDeleteDialog.prepare(
+                                   additionalApplicationManager.modelRow,
+                                   additionalApplicationManager.gameId,
+                                   additionalApplicationManager.selectedApplicationId(),
+                                   controller.additional_application_name_at(
+                                       additionalApplicationManager.modelRow,
+                                       additionalApplicationManager.gameId,
+                                       additionalApplicationManager.selectedIndex))
+                }
+                Item { Layout.fillWidth: true }
+                Label {
+                    text: additionalApplicationManager.applicationCount
+                          + " application(s)"
+                    color: "#7d8590"
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: additionalApplicationDeleteDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Delete Additional Application"
+        standardButtons: Dialog.Yes | Dialog.No
+        property int modelRow: -1
+        property string gameId: ""
+        property string applicationId: ""
+        property string applicationName: ""
+
+        function prepare(row, id, appId, appName) {
+            modelRow = row
+            gameId = id
+            applicationId = appId
+            applicationName = appName
+            open()
+        }
+
+        function smokeDelete(row, id, appId, appName) {
+            prepare(row, id, appId, appName)
+            Qt.callLater(function() {
+                additionalApplicationDeleteDialog.accept()
+            })
+        }
+
+        onAccepted: controller.delete_additional_application(
+                        modelRow, gameId, applicationId)
+
+        contentItem: Label {
+            width: 460
+            text: "Delete “" + additionalApplicationDeleteDialog.applicationName
+                  + "” from this game? Its target file and media will not be deleted. "
+                  + "Deletion is refused while a game-save record references it."
+            wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: additionalApplicationEditor
+        anchors.centerIn: parent
+        modal: true
+        title: creating ? "Add Additional Application"
+                        : "Edit Additional Application"
+        standardButtons: Dialog.Save | Dialog.Cancel
+        property int modelRow: -1
+        property string gameId: ""
+        property string applicationId: ""
+        property bool creating: false
+        property bool useEmulator: false
+        property string selectedEmulatorId: ""
+
+        function optionalText(value) {
+            return value.trim().length > 0 ? value : null
+        }
+
+        function selectEmulator(useEmulatorValue, emulatorId) {
+            useEmulator = useEmulatorValue
+            selectedEmulatorId = emulatorId || ""
+            additionalApplicationEmulatorChoice.currentIndex = -1
+            if (!useEmulatorValue) {
+                additionalApplicationEmulatorChoice.currentIndex = 1
+                return
+            }
+            if (selectedEmulatorId.length === 0) {
+                additionalApplicationEmulatorChoice.currentIndex = 0
+                return
+            }
+            for (let index = 2; index < controller.emulator_entry_count(); ++index) {
+                if (controller.emulator_id_at(index) === selectedEmulatorId) {
+                    additionalApplicationEmulatorChoice.currentIndex = index
+                    return
+                }
+            }
+        }
+
+        function loadPayload(payloadText) {
+            if (payloadText.length === 0)
+                return false
+            const payload = JSON.parse(payloadText)
+            const app = payload.application
+            applicationNameField.text = app.name
+            additionalApplicationPathField.text = app.application_path
+            additionalApplicationCommandLineField.text = app.command_line || ""
+            runBeforeCheck.checked = app.auto_run_before
+            runAfterCheck.checked = app.auto_run_after
+            waitForExitCheck.checked = app.wait_for_exit
+            selectEmulator(app.use_emulator, app.emulator_id)
+            additionalApplicationUseDosBoxCheck.checked = app.use_dos_box
+            priorityField.value = app.priority
+            playCountField.value = app.play_count
+            playTimeField.value = app.play_time_seconds
+            hasDiscCheck.checked = app.disc !== null
+            discField.value = app.disc !== null ? app.disc : 0
+            sideACheck.checked = app.side_a
+            sideBCheck.checked = app.side_b
+            additionalApplicationDeveloperField.text = app.developer || ""
+            additionalApplicationPublisherField.text = app.publisher || ""
+            additionalApplicationRegionField.text = app.region || ""
+            additionalApplicationReleaseDateField.text = app.release_date || ""
+            additionalApplicationVersionField.text = app.version || ""
+            additionalApplicationStatusField.text = app.status || ""
+            installedChoice.currentIndex = app.installed === null
+                                           ? 0 : (app.installed ? 1 : 2)
+            lastPlayedField.text = app.last_played || ""
+            return true
+        }
+
+        function prepareCreate(row, id) {
+            modelRow = row
+            gameId = id
+            applicationId = ""
+            creating = true
+            if (loadPayload(controller.new_additional_application_edit_payload(row, id)))
+                open()
+        }
+
+        function prepareEdit(row, id, appId) {
+            modelRow = row
+            gameId = id
+            applicationId = appId
+            creating = false
+            if (loadPayload(controller.additional_application_edit_payload(
+                                row, id, appId)))
+                open()
+        }
+
+        function smokeEdit(row, id, appId) {
+            prepareEdit(row, id, appId)
+            applicationNameField.text = "Edited Fixture Manual"
+            additionalApplicationPathField.text =
+                "Games\\Fixture Adventure\\edited-manual.pdf"
+            additionalApplicationCommandLineField.text = "--page 3"
+            runBeforeCheck.checked = true
+            runAfterCheck.checked = false
+            waitForExitCheck.checked = true
+            selectEmulator(false, "")
+            additionalApplicationUseDosBoxCheck.checked = false
+            priorityField.value = 4
+            playCountField.value = 5
+            playTimeField.value = 321
+            hasDiscCheck.checked = true
+            discField.value = 2
+            sideACheck.checked = true
+            sideBCheck.checked = false
+            additionalApplicationDeveloperField.text = "Qt Docs"
+            additionalApplicationPublisherField.text = "Port Press"
+            additionalApplicationRegionField.text = "Europe"
+            additionalApplicationReleaseDateField.text = "2005-06-07"
+            additionalApplicationVersionField.text = "Rev 3"
+            additionalApplicationStatusField.text = "Installed"
+            installedChoice.currentIndex = 1
+            lastPlayedField.text = "2026-07-22T13:14:15.0000000-07:00"
+            Qt.callLater(function() { additionalApplicationEditor.accept() })
+        }
+
+        function smokeCreate(row, id) {
+            prepareCreate(row, id)
+            applicationNameField.text = "Temporary Fixture Application"
+            additionalApplicationPathField.text =
+                "Games\\Fixture Adventure\\temporary-tool.exe"
+            additionalApplicationCommandLineField.text = "--temporary"
+            priorityField.value = 9
+            Qt.callLater(function() { additionalApplicationEditor.accept() })
+        }
+
+        function editPayload() {
+            return JSON.stringify({
+                version: 1,
+                application: {
+                    name: applicationNameField.text,
+                    application_path: additionalApplicationPathField.text,
+                    command_line: optionalText(
+                                      additionalApplicationCommandLineField.text),
+                    auto_run_before: runBeforeCheck.checked,
+                    auto_run_after: runAfterCheck.checked,
+                    wait_for_exit: waitForExitCheck.checked,
+                    use_emulator: useEmulator,
+                    emulator_id: useEmulator
+                                 ? optionalText(selectedEmulatorId) : null,
+                    use_dos_box: additionalApplicationUseDosBoxCheck.checked,
+                    priority: priorityField.value,
+                    play_count: playCountField.value,
+                    play_time_seconds: playTimeField.value,
+                    disc: hasDiscCheck.checked ? discField.value : null,
+                    side_a: sideACheck.checked,
+                    side_b: sideBCheck.checked,
+                    developer: optionalText(
+                                   additionalApplicationDeveloperField.text),
+                    publisher: optionalText(
+                                   additionalApplicationPublisherField.text),
+                    region: optionalText(additionalApplicationRegionField.text),
+                    release_date: optionalText(
+                                      additionalApplicationReleaseDateField.text),
+                    version: optionalText(additionalApplicationVersionField.text),
+                    status: optionalText(additionalApplicationStatusField.text),
+                    installed: installedChoice.currentIndex === 0
+                               ? null : installedChoice.currentIndex === 1,
+                    last_played: optionalText(lastPlayedField.text)
+                }
+            })
+        }
+
+        onAccepted: {
+            if (creating)
+                controller.add_additional_application(
+                    modelRow, gameId, editPayload())
+            else
+                controller.save_additional_application(
+                    modelRow, gameId, applicationId, editPayload())
+        }
+
+        contentItem: ScrollView {
+            id: additionalApplicationEditorScroll
+            implicitWidth: 720
+            implicitHeight: Math.min(700, window.height - 120)
+            contentWidth: availableWidth
+            clip: true
+
+            ColumnLayout {
+                width: additionalApplicationEditorScroll.availableWidth
+                spacing: 12
+                Label {
+                    Layout.fillWidth: true
+                    text: "Stored paths remain lexical LaunchBox data. Windows drive, UNC, and separator syntax is interpreted only by the cross-platform launch service."
+                    wrapMode: Text.Wrap
+                    color: "#7fbfff"
+                }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+
+                    Label { text: "Application name" }
+                    TextField {
+                        id: applicationNameField
+                        Layout.fillWidth: true
+                        placeholderText: "Required display name"
+                    }
+                    Label { text: "Application path" }
+                    TextField {
+                        id: additionalApplicationPathField
+                        Layout.fillWidth: true
+                        placeholderText: "LaunchBox path or URL"
+                    }
+                    Label { text: "Command line" }
+                    TextField {
+                        id: additionalApplicationCommandLineField
+                        Layout.fillWidth: true
+                        placeholderText: "Optional arguments"
+                    }
+                    Label { text: "Emulator choice" }
+                    ComboBox {
+                        id: additionalApplicationEmulatorChoice
+                        Layout.fillWidth: true
+                        model: controller.emulator_entry_count()
+                        displayText: currentIndex >= 0
+                                     ? controller.emulator_title_at(currentIndex)
+                                     : "Unavailable stored emulator"
+                        delegate: ItemDelegate {
+                            required property int index
+                            width: ListView.view ? ListView.view.width : implicitWidth
+                            text: controller.emulator_title_at(index)
+                        }
+                        onActivated: function(index) {
+                            if (index === 1) {
+                                additionalApplicationEditor.useEmulator = false
+                                additionalApplicationEditor.selectedEmulatorId = ""
+                            } else {
+                                additionalApplicationEditor.useEmulator = true
+                                additionalApplicationEditor.selectedEmulatorId =
+                                    controller.emulator_id_at(index)
+                            }
+                        }
+                    }
+                    Label { text: "Priority" }
+                    SpinBox {
+                        id: priorityField
+                        from: 0
+                        to: 2147483647
+                        editable: true
+                    }
+                    Label { text: "Disc" }
+                    RowLayout {
+                        CheckBox {
+                            id: hasDiscCheck
+                            text: "Set"
+                        }
+                        SpinBox {
+                            id: discField
+                            from: 0
+                            to: 999
+                            editable: true
+                            enabled: hasDiscCheck.checked
+                        }
+                    }
+                    Label { text: "Developer" }
+                    TextField {
+                        id: additionalApplicationDeveloperField
+                        Layout.fillWidth: true
+                    }
+                    Label { text: "Publisher" }
+                    TextField {
+                        id: additionalApplicationPublisherField
+                        Layout.fillWidth: true
+                    }
+                    Label { text: "Region" }
+                    TextField {
+                        id: additionalApplicationRegionField
+                        Layout.fillWidth: true
+                    }
+                    Label { text: "Release date" }
+                    TextField {
+                        id: additionalApplicationReleaseDateField
+                        Layout.fillWidth: true
+                        placeholderText: "Stored LaunchBox date value"
+                    }
+                    Label { text: "Version" }
+                    TextField {
+                        id: additionalApplicationVersionField
+                        Layout.fillWidth: true
+                    }
+                    Label { text: "Status" }
+                    TextField {
+                        id: additionalApplicationStatusField
+                        Layout.fillWidth: true
+                    }
+                    Label { text: "Installed" }
+                    ComboBox {
+                        id: installedChoice
+                        Layout.fillWidth: true
+                        model: ["Unknown", "Installed", "Not installed"]
+                    }
+                    Label { text: "Play count" }
+                    SpinBox {
+                        id: playCountField
+                        from: 0
+                        to: 2147483647
+                        editable: true
+                    }
+                    Label { text: "Play time (seconds)" }
+                    SpinBox {
+                        id: playTimeField
+                        from: 0
+                        to: 2147483647
+                        editable: true
+                    }
+                    Label { text: "Last played" }
+                    TextField {
+                        id: lastPlayedField
+                        Layout.fillWidth: true
+                        placeholderText: "Stored LaunchBox timestamp"
+                    }
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    CheckBox {
+                        id: runBeforeCheck
+                        text: "Run before main application"
+                    }
+                    CheckBox {
+                        id: runAfterCheck
+                        text: "Run after main application"
+                    }
+                    CheckBox {
+                        id: waitForExitCheck
+                        text: "Wait for exit"
+                        enabled: runBeforeCheck.checked
+                    }
+                    CheckBox {
+                        id: additionalApplicationUseDosBoxCheck
+                        text: "Use DOSBox"
+                    }
+                    CheckBox {
+                        id: sideACheck
+                        text: "Side A"
+                    }
+                    CheckBox {
+                        id: sideBCheck
+                        text: "Side B"
+                    }
                 }
             }
         }

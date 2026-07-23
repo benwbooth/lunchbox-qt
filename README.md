@@ -234,7 +234,20 @@ primary child starts, the shared controller transactionally increments its
 game or selected additional application's play count and records a seven-digit
 local-offset LastPlayed timestamp. When that child returns, its elapsed whole
 seconds are added to PlayTime; every write retains an exact backup and reports
-conflicts or pending recovery through both front ends. Emulator
+conflicts or pending recovery through both front ends.
+
+LaunchBox's per-game `Apps` manager now adds, edits, and deletes additional
+application records through a versioned typed payload. The editor covers the
+recovered 13.27 application, launch-order, emulator/DOSBox, disc/side,
+descriptive metadata, installation, and play-statistics fields. Identity,
+ownership, storefront, and cloud fields remain immutable and are retained
+losslessly, as are unknown XML children. Stored Windows, UNC, and mixed-
+separator paths stay lexical; only the launch service resolves them for the
+host OS. Delete removes the XML record only, never its target or media, and is
+refused while a game-save row references the application. Make Default, save
+management, and manual combine/expand remain open.
+
+Emulator
 auto-extraction invokes 7-Zip without a shell for ZIP, 7z, and RAR inputs,
 rejects unsafe/encrypted/ambiguous archives, preserves an archive-named
 temporary folder, expands ROM variables against the extracted file, and leases

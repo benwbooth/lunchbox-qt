@@ -421,6 +421,106 @@ impl AdditionalApplication {
     }
 }
 
+/// Fields exposed by LaunchBox 13.27's additional-application editor.
+///
+/// Identity, ownership, storefront identifiers, and cloud state are excluded:
+/// those values are retained from the source record rather than being
+/// user-editable. Persisted paths and timestamps remain lexical LaunchBox
+/// strings; the platform layer interprets paths only when launching.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdditionalApplicationEdit {
+    pub name: String,
+    pub application_path: String,
+    pub command_line: Option<String>,
+    pub auto_run_before: bool,
+    pub auto_run_after: bool,
+    pub wait_for_exit: bool,
+    pub use_emulator: bool,
+    pub emulator_id: Option<String>,
+    pub use_dos_box: bool,
+    pub priority: i32,
+    pub play_count: u32,
+    pub play_time_seconds: u64,
+    pub disc: Option<u32>,
+    pub side_a: bool,
+    pub side_b: bool,
+    pub developer: Option<String>,
+    pub publisher: Option<String>,
+    pub region: Option<String>,
+    pub release_date: Option<String>,
+    pub version: Option<String>,
+    pub status: Option<String>,
+    pub installed: Option<bool>,
+    pub last_played: Option<String>,
+}
+
+impl AdditionalApplicationEdit {
+    pub fn apply_to(&self, application: &AdditionalApplication) -> AdditionalApplication {
+        AdditionalApplication {
+            id: application.id.clone(),
+            game_id: application.game_id.clone(),
+            name: self.name.clone(),
+            application_path: self.application_path.clone(),
+            command_line: self.command_line.clone(),
+            auto_run_before: self.auto_run_before,
+            auto_run_after: self.auto_run_after,
+            wait_for_exit: self.wait_for_exit,
+            use_emulator: self.use_emulator,
+            emulator_id: self.emulator_id.clone(),
+            use_dos_box: self.use_dos_box,
+            priority: self.priority,
+            play_count: self.play_count,
+            play_time_seconds: self.play_time_seconds,
+            disc: self.disc,
+            side_a: self.side_a,
+            side_b: self.side_b,
+            developer: self.developer.clone(),
+            publisher: self.publisher.clone(),
+            region: self.region.clone(),
+            release_date: self.release_date.clone(),
+            version: self.version.clone(),
+            status: self.status.clone(),
+            installed: self.installed,
+            last_played: self.last_played.clone(),
+            gog_app_id: application.gog_app_id.clone(),
+            origin_app_id: application.origin_app_id.clone(),
+            origin_install_path: application.origin_install_path.clone(),
+            has_cloud_synced: application.has_cloud_synced,
+        }
+    }
+}
+
+impl From<&AdditionalApplication> for AdditionalApplicationEdit {
+    fn from(application: &AdditionalApplication) -> Self {
+        Self {
+            name: application.name.clone(),
+            application_path: application.application_path.clone(),
+            command_line: application.command_line.clone(),
+            auto_run_before: application.auto_run_before,
+            auto_run_after: application.auto_run_after,
+            wait_for_exit: application.wait_for_exit,
+            use_emulator: application.use_emulator,
+            emulator_id: application.emulator_id.clone(),
+            use_dos_box: application.use_dos_box,
+            priority: application.priority,
+            play_count: application.play_count,
+            play_time_seconds: application.play_time_seconds,
+            disc: application.disc,
+            side_a: application.side_a,
+            side_b: application.side_b,
+            developer: application.developer.clone(),
+            publisher: application.publisher.clone(),
+            region: application.region.clone(),
+            release_date: application.release_date.clone(),
+            version: application.version.clone(),
+            status: application.status.clone(),
+            installed: application.installed,
+            last_played: application.last_played.clone(),
+        }
+    }
+}
+
 /// A DOSBox drive or image mount associated with a game. These strings remain
 /// in LaunchBox's persisted vocabulary; host-path interpretation belongs to
 /// the launch platform layer.

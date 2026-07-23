@@ -27,6 +27,21 @@
     "Platforms",
     "Playlists"
   ],
+  "additional_applications": {
+    "auto_run_after_records": 0,
+    "auto_run_before_records": 0,
+    "direct_records_with_emulator_id": 0,
+    "dosbox_records": 0,
+    "emulated_records_without_emulator_id": 0,
+    "game_save_references": 5,
+    "records": 16752,
+    "records_with_empty_application_path": 12,
+    "records_with_invalid_priority": 0,
+    "resolved_game_save_references": 5,
+    "wait_for_exit_records": 0,
+    "minimum_priority": 0,
+    "maximum_priority": 26
+  },
   "combined_roms": {
     "groups_using_exact_version_name_formula": 2601,
     "groups_with_contiguous_one_based_priorities": 5763,

@@ -105,6 +105,96 @@ def combined_rom_census(data_root: Path) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def additional_application_census(
+    data_root: Path,
+) -> dict[str, int | None]:
+    """Count editor-relevant shapes without retaining IDs, paths, or names."""
+    counts: Counter[str] = Counter()
+    application_ids: set[str] = set()
+    referenced_application_ids: list[str] = []
+    priorities: list[int] = []
+    for path in sorted((data_root / "Platforms").glob("*.xml")):
+        try:
+            root = ET.parse(path).getroot()
+        except (ET.ParseError, OSError):
+            continue
+        for application in root.findall("AdditionalApplication"):
+            counts["records"] += 1
+            application_id = application.findtext("Id", default="").strip()
+            if application_id:
+                application_ids.add(application_id)
+            if not application.findtext("ApplicationPath", default="").strip():
+                counts["records_with_empty_application_path"] += 1
+            try:
+                priorities.append(
+                    int(application.findtext("Priority", default="0"))
+                )
+            except ValueError:
+                counts["records_with_invalid_priority"] += 1
+            use_emulator = (
+                application.findtext("UseEmulator", default="").lower()
+                == "true"
+            )
+            emulator_id = application.findtext(
+                "EmulatorId", default=""
+            ).strip()
+            if use_emulator and not emulator_id:
+                counts["emulated_records_without_emulator_id"] += 1
+            if not use_emulator and emulator_id:
+                counts["direct_records_with_emulator_id"] += 1
+            if (
+                application.findtext("UseDosBox", default="").lower()
+                == "true"
+            ):
+                counts["dosbox_records"] += 1
+            if (
+                application.findtext("AutoRunBefore", default="").lower()
+                == "true"
+            ):
+                counts["auto_run_before_records"] += 1
+            if (
+                application.findtext("AutoRunAfter", default="").lower()
+                == "true"
+            ):
+                counts["auto_run_after_records"] += 1
+            if (
+                application.findtext("WaitForExit", default="").lower()
+                == "true"
+            ):
+                counts["wait_for_exit_records"] += 1
+        for game_save in root.findall("GameSave"):
+            application_id = game_save.findtext(
+                "AdditionalApplicationId", default=""
+            ).strip()
+            if application_id:
+                referenced_application_ids.append(application_id)
+
+    counts["game_save_references"] = len(referenced_application_ids)
+    counts["resolved_game_save_references"] = sum(
+        application_id in application_ids
+        for application_id in referenced_application_ids
+    )
+    count_names = (
+        "records",
+        "records_with_empty_application_path",
+        "records_with_invalid_priority",
+        "emulated_records_without_emulator_id",
+        "direct_records_with_emulator_id",
+        "dosbox_records",
+        "auto_run_before_records",
+        "auto_run_after_records",
+        "wait_for_exit_records",
+        "game_save_references",
+        "resolved_game_save_references",
+    )
+    result: dict[str, int | None] = {
+        name: counts[name] for name in sorted(count_names)
+    }
+    result["minimum_priority"] = min(priorities, default=None)
+    result["maximum_priority"] = max(priorities, default=None)
+    return result
+
+
 def build_census(install_root: Path) -> dict[str, object]:
     data_root = install_root / "Data"
     if not data_root.is_dir():
@@ -168,6 +258,7 @@ def build_census(install_root: Path) -> dict[str, object]:
         "launchbox_version": launchbox_version(install_root),
         "install_layout_directories": sorted_directory_names(install_root),
         "data_layout_directories": sorted_directory_names(data_root),
+        "additional_applications": additional_application_census(data_root),
         "combined_roms": combined_rom_census(data_root),
         "document_groups": serializable_groups,
     }
