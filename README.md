@@ -244,8 +244,11 @@ ownership, storefront, and cloud fields remain immutable and are retained
 losslessly, as are unknown XML children. Stored Windows, UNC, and mixed-
 separator paths stay lexical; only the launch service resolves them for the
 host OS. Delete removes the XML record only, never its target or media, and is
-refused while a game-save row references the application. Make Default, save
-management, and manual combine/expand remain open.
+refused while a game-save row references the application. Make Default retains
+the selected additional-application row and transactionally copies its shared
+launch, emulator, version metadata, provider/cloud, and play-statistics fields
+onto the owning game while preserving game identity and game-only data. Save
+management and manual combine/expand remain open.
 
 Emulator
 auto-extraction invokes 7-Zip without a shell for ZIP, 7z, and RAR inputs,

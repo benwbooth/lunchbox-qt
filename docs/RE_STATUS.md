@@ -88,8 +88,34 @@ play time, and last played. ID and owning game are getter-only, while storefront
 and cloud state are outside the editor. The port therefore edits exactly that
 typed subset, retains identity/owner/provider/cloud values and unknown XML,
 allows the 12 observed empty paths, and refuses deletion when a game-save
-reference exists. Save management and Make Default are separate upstream
-surfaces and remain unimplemented.
+reference exists.
+
+Make Default is a distinct recovered upstream command. The
+[official help page](https://feedback.launchbox-app.com/help/articles/2413817-additional-apps)
+states that the selected additional application becomes the default under the
+Launching section, and LaunchBox's founder described the operation as replacing
+the game's application path
+[along with other fields](https://forums.launchbox-app.com/topic/35543-77-beta-6-released/).
+The protected 13.27 view model exposes the command, label, and
+`OnAdditionalAppMadeDefault` event, while the surviving data contracts expose
+conversion helpers in both directions between a game and an additional
+application. The real-install combined-version census also proves that the
+primary/default path remains represented by an additional-application row, so
+the selected row must not be consumed.
+
+The implemented conversion copies every launch/version field representable on
+both record types: path, command line, emulator selection, DOSBox mode,
+developer/publisher/region/date/version/status, installed state, play
+statistics, storefront identifiers, install path, and cloud state. Direct
+launch maps to LaunchBox's explicit all-zero unassigned-emulator sentinel.
+Because an additional application cannot express legacy ScummVM mode, the game
+mode flag is cleared while its latent game-only ScummVM settings remain
+untouched. Game identity, title, platform, presentation/media/input settings,
+and unknown XML remain on the game, and the selected additional-application
+record remains unchanged. A read-only comparison of 25 historical real-library
+backup snapshots found no observed Make Default transition, so this field map
+is static-contract- and documentation-derived rather than a claimed live 13.27
+runtime oracle. Save management remains unimplemented.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

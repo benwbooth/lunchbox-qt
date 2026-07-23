@@ -95,6 +95,7 @@ echo "BigBox category/platform/playlist navigation and exact membership filterin
 edit_root=$(mktemp -d)
 crud_root=$(mktemp -d)
 additional_application_crud_root=$(mktemp -d)
+additional_application_default_root=$(mktemp -d)
 import_root=$(mktemp -d)
 import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
@@ -107,7 +108,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -403,6 +404,105 @@ if find "$additional_application_crud_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox additional-application dialog editing, lexical paths, add/delete, targeted Qt updates, backup chain, and unknown XML preservation validated."
+
+cp -R fixtures/launchbox/Data "$additional_application_default_root/Data"
+additional_application_default_platform="$additional_application_default_root/Data/Platforms/Fixture Console.xml"
+additional_application_default_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$additional_application_default_root" \
+    --additional-application-default-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$additional_application_default_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'ADDITIONAL_APPLICATION_DEFAULT_SMOKE_COMPLETE writes=2 revision=1 resets=2 data_changes=1' \
+  <<< "$additional_application_default_output"; then
+  printf '%s\n' "$additional_application_default_output" >&2
+  echo "LaunchBox did not validate dialog-driven Make Default behavior." >&2
+  exit 1
+fi
+for expected in \
+  '<ID>fixture-adventure</ID>' \
+  '<Title>Fixture Adventure</Title>' \
+  '<CommandLine>--page 3</CommandLine>' \
+  '<Emulator>00000000-0000-0000-0000-000000000000</Emulator>' \
+  '<UseDosBox>false</UseDosBox>' \
+  '<UseScummVM>false</UseScummVM>' \
+  '<ScummVMGameType>fixture-scumm-id</ScummVMGameType>' \
+  '<Developer>Qt Docs</Developer>' \
+  '<Publisher>Port Press</Publisher>' \
+  '<Region>Europe</Region>' \
+  '<ReleaseDate>2005-06-07</ReleaseDate>' \
+  '<Version>Rev 3</Version>' \
+  '<Status>Installed</Status>' \
+  '<Installed>true</Installed>' \
+  '<PlayCount>5</PlayCount>' \
+  '<PlayTime>321</PlayTime>' \
+  '<LastPlayedDate>2026-07-22T13:14:15.0000000-07:00</LastPlayedDate>' \
+  '<Id>fixture-adventure-manual</Id>' \
+  '<Name>Edited Fixture Manual</Name>' \
+  '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>' \
+  '<FutureAdditionalApplicationElement>keep-additional-app-data</FutureAdditionalApplicationElement>'; do
+  if ! rg -q -F "$expected" "$additional_application_default_platform"; then
+    echo "Additional-application Make Default did not persist: $expected" >&2
+    exit 1
+  fi
+done
+if [[ $(rg -c -F \
+  '<ApplicationPath>Games\Fixture Adventure\edited-manual.pdf</ApplicationPath>' \
+  "$additional_application_default_platform") -ne 2 ]]; then
+  echo "Make Default did not retain the app while copying its lexical path to the game." >&2
+  exit 1
+fi
+if rg -q -F \
+  '<ApplicationPath>Games\Fixture Adventure\adventure.rom</ApplicationPath>' \
+  "$additional_application_default_platform"; then
+  echo "Make Default retained the game's previous default application path." >&2
+  exit 1
+fi
+if [[ $(rg -c '<AdditionalApplication>' \
+  "$additional_application_default_platform") -ne 1 ]]; then
+  echo "Make Default changed the additional-application record count." >&2
+  exit 1
+fi
+
+mapfile -t additional_application_default_backups < <(
+  find "$additional_application_default_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#additional_application_default_backups[@]} -ne 2 ]]; then
+  echo "Additional-application Make Default did not retain exactly two transaction backups." >&2
+  exit 1
+fi
+additional_application_default_original_backups=0
+additional_application_default_edited_backups=0
+for backup in "${additional_application_default_backups[@]}"; do
+  if cmp -s "$backup" \
+    'fixtures/launchbox/Data/Platforms/Fixture Console.xml'; then
+    ((additional_application_default_original_backups += 1))
+  elif rg -q -F \
+    '<ApplicationPath>Games\Fixture Adventure\adventure.rom</ApplicationPath>' \
+    "$backup" \
+    && [[ $(rg -c -F \
+      '<ApplicationPath>Games\Fixture Adventure\edited-manual.pdf</ApplicationPath>' \
+      "$backup") -eq 1 ]]; then
+    ((additional_application_default_edited_backups += 1))
+  fi
+done
+if [[ $additional_application_default_original_backups -ne 1 \
+  || $additional_application_default_edited_backups -ne 1 ]]; then
+  echo "Make Default backups do not prove the expected edit/default chain." >&2
+  exit 1
+fi
+if find "$additional_application_default_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful Make Default smoke left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox Make Default copying, retained app records, exact backup chain, lexical Windows paths, and unknown XML preservation validated."
 
 cp -R fixtures/launchbox/Data "$import_root/Data"
 mkdir -p "$import_root/Metadata"

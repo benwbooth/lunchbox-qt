@@ -419,6 +419,41 @@ impl AdditionalApplication {
         }
         Ok(())
     }
+
+    /// Applies the fields represented by an additional application to the
+    /// owning game's default launch/version record.
+    ///
+    /// LaunchBox retains the additional-application row when it is made
+    /// default. Game-only identity, presentation, media, and input fields stay
+    /// on the game, while the shared launch, version metadata, provider/cloud,
+    /// and per-version statistics come from the selected application.
+    pub fn apply_as_default_to(&self, game: &Game) -> Game {
+        let mut updated = game.clone();
+        updated.application_path = self.application_path.clone();
+        updated.command_line = self.command_line.clone();
+        updated.emulator_id = if self.use_emulator {
+            self.emulator_id.clone()
+        } else {
+            Some(UNASSIGNED_EMULATOR_ID.to_string())
+        };
+        updated.use_dos_box = self.use_dos_box;
+        updated.use_scumm_vm = false;
+        updated.developer = self.developer.clone();
+        updated.publisher = self.publisher.clone();
+        updated.region = self.region.clone();
+        updated.release_date = self.release_date.clone();
+        updated.version = self.version.clone();
+        updated.status = self.status.clone();
+        updated.installed = self.installed;
+        updated.play_count = self.play_count;
+        updated.play_time_seconds = self.play_time_seconds;
+        updated.last_played_date = self.last_played.clone();
+        updated.gog_app_id = self.gog_app_id.clone();
+        updated.origin_app_id = self.origin_app_id.clone();
+        updated.origin_install_path = self.origin_install_path.clone();
+        updated.has_cloud_synced = self.has_cloud_synced;
+        updated
+    }
 }
 
 /// Fields exposed by LaunchBox 13.27's additional-application editor.
@@ -833,5 +868,57 @@ mod tests {
             "00000000-0000-0000-0000-000000000000"
         ));
         assert!(!is_unassigned_emulator_id("emulator-id"));
+    }
+
+    #[test]
+    fn additional_application_default_maps_launch_fields_without_replacing_identity() {
+        let original = Game {
+            id: "game-1".into(),
+            title: "Fixture Game".into(),
+            platform: "Fixture Platform".into(),
+            application_path: r"Games\Fixture\original.rom".into(),
+            notes: Some("keep game-only metadata".into()),
+            use_scumm_vm: true,
+            scumm_vm_game_type: Some("keep-latent-scummvm-settings".into()),
+            ..Game::default()
+        };
+        let mut application = AdditionalApplication {
+            id: "version-1".into(),
+            game_id: "game-1".into(),
+            name: "Alternate Version".into(),
+            application_path: r"Games\Fixture\alternate.rom".into(),
+            command_line: Some("--alternate".into()),
+            use_emulator: false,
+            emulator_id: Some("ignored-while-direct".into()),
+            developer: Some("Version Developer".into()),
+            play_count: 7,
+            ..AdditionalApplication::default()
+        };
+
+        let direct = application.apply_as_default_to(&original);
+        assert_eq!(direct.id, original.id);
+        assert_eq!(direct.title, original.title);
+        assert_eq!(direct.platform, original.platform);
+        assert_eq!(direct.notes, original.notes);
+        assert_eq!(direct.scumm_vm_game_type, original.scumm_vm_game_type);
+        assert_eq!(direct.application_path, application.application_path);
+        assert_eq!(direct.command_line, application.command_line);
+        assert_eq!(direct.emulator_id.as_deref(), Some(UNASSIGNED_EMULATOR_ID));
+        assert!(!direct.use_scumm_vm);
+        assert_eq!(direct.developer, application.developer);
+        assert_eq!(direct.play_count, 7);
+
+        application.use_emulator = true;
+        application.emulator_id = None;
+        assert_eq!(application.apply_as_default_to(&original).emulator_id, None);
+
+        application.emulator_id = Some("specific-emulator".into());
+        assert_eq!(
+            application
+                .apply_as_default_to(&original)
+                .emulator_id
+                .as_deref(),
+            Some("specific-emulator")
+        );
     }
 }

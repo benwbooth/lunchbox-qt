@@ -48,6 +48,7 @@ pub mod qobject {
         #[qproperty(QString, delete_blocker_summary)]
         #[qproperty(QString, last_added_game_id)]
         #[qproperty(QString, last_added_additional_application_id)]
+        #[qproperty(QString, last_default_additional_application_id)]
         #[qproperty(QString, import_preview_json)]
         #[qproperty(i32, last_import_count)]
         #[qproperty(i32, last_import_created_file_count)]
@@ -299,6 +300,14 @@ pub mod qobject {
         );
 
         #[qinvokable]
+        fn make_additional_application_default(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            application_id: QString,
+        );
+
+        #[qinvokable]
         fn alternate_name_count(self: &LibraryController, row: i32, game_id: QString) -> i32;
 
         #[qinvokable]
@@ -377,6 +386,13 @@ pub mod qobject {
         fn report_additional_application_crud_smoke_success(
             self: &LibraryController,
             game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_additional_application_default_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            application_id: QString,
         ) -> bool;
 
         #[qinvokable]
@@ -738,6 +754,7 @@ pub struct LibraryControllerRust {
     delete_blocker_summary: QString,
     last_added_game_id: QString,
     last_added_additional_application_id: QString,
+    last_default_additional_application_id: QString,
     import_preview_json: QString,
     last_import_count: i32,
     last_import_created_file_count: i32,
@@ -1152,6 +1169,7 @@ struct GameDeleteSuccess {
 struct AdditionalApplicationWriteSuccess {
     operation: AdditionalApplicationWriteOperation,
     application: AdditionalApplication,
+    game: Option<Game>,
     source: PathBuf,
     backup: PathBuf,
 }
@@ -1161,6 +1179,7 @@ enum AdditionalApplicationWriteOperation {
     Create,
     Edit,
     Delete,
+    MakeDefault,
 }
 
 enum AdditionalApplicationWriteRequest {
@@ -1173,6 +1192,9 @@ enum AdditionalApplicationWriteRequest {
         edit: AdditionalApplicationEdit,
     },
     Delete {
+        id: String,
+    },
+    MakeDefault {
         id: String,
     },
 }
@@ -2697,7 +2719,7 @@ fn write_additional_application(
         )));
     }
 
-    let (operation, application) = match request {
+    let (operation, application, game) = match request {
         AdditionalApplicationWriteRequest::Create { id, edit } => {
             let base = AdditionalApplication {
                 id,
@@ -2707,7 +2729,11 @@ fn write_additional_application(
             let application = document
                 .add_additional_application(edit.apply_to(&base))
                 .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
-            (AdditionalApplicationWriteOperation::Create, application)
+            (
+                AdditionalApplicationWriteOperation::Create,
+                application,
+                None,
+            )
         }
         AdditionalApplicationWriteRequest::Edit { id, edit } => {
             let owner = document
@@ -2729,7 +2755,7 @@ fn write_additional_application(
             let application = document
                 .set_additional_application(&id, edit)
                 .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
-            (AdditionalApplicationWriteOperation::Edit, application)
+            (AdditionalApplicationWriteOperation::Edit, application, None)
         }
         AdditionalApplicationWriteRequest::Delete { id } => {
             let owner = document
@@ -2751,7 +2777,38 @@ fn write_additional_application(
             let application = document
                 .remove_additional_application(&id)
                 .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
-            (AdditionalApplicationWriteOperation::Delete, application)
+            (
+                AdditionalApplicationWriteOperation::Delete,
+                application,
+                None,
+            )
+        }
+        AdditionalApplicationWriteRequest::MakeDefault { id } => {
+            let application = document
+                .library()
+                .additional_applications
+                .iter()
+                .find(|application| application.id == id)
+                .cloned()
+                .ok_or_else(|| {
+                    GameWriteFailure::Other(format!(
+                        "additional application {id} disappeared before it could be made default"
+                    ))
+                })?;
+            if application.game_id != game_id {
+                return Err(GameWriteFailure::Other(format!(
+                    "additional application {id} belongs to game {}, not {game_id}",
+                    application.game_id
+                )));
+            }
+            let game = document
+                .make_additional_application_default(&id)
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            (
+                AdditionalApplicationWriteOperation::MakeDefault,
+                application,
+                Some(game),
+            )
         }
     };
 
@@ -2769,6 +2826,7 @@ fn write_additional_application(
     Ok(AdditionalApplicationWriteSuccess {
         operation,
         application,
+        game,
         source,
         backup,
     })
@@ -4693,6 +4751,48 @@ impl qobject::LibraryController {
         );
     }
 
+    pub fn make_additional_application_default(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        application_id: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let application_id = application_id.to_string();
+        let existing = self
+            .as_ref()
+            .additional_applications_for_model(row, &game_id)
+            .and_then(|applications| {
+                applications
+                    .iter()
+                    .find(|application| application.id == application_id)
+            })
+            .cloned();
+        let Some(existing) = existing else {
+            self.as_mut().set_status_message(qstring(
+                "The selected additional application no longer matches this game; reload and try again.",
+            ));
+            return;
+        };
+        let Some((source, root)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let request = AdditionalApplicationWriteRequest::MakeDefault { id: application_id };
+        self.as_mut().start_additional_application_write(
+            root,
+            source,
+            game_id,
+            request,
+            format!("Making {} the default in the background...", existing.name),
+        );
+    }
+
     fn start_additional_application_write(
         mut self: Pin<&mut Self>,
         root: PathBuf,
@@ -5972,6 +6072,71 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_additional_application_default_smoke_success(
+        &self,
+        game_id: QString,
+        application_id: QString,
+    ) -> bool {
+        let game_id = game_id.to_string();
+        let application_id = application_id.to_string();
+        let rust = self.rust();
+        let game = rust.games.iter().find(|game| game.id == game_id);
+        let applications = rust.additional_applications_by_game.get(&game_id);
+        let application = applications.and_then(|applications| {
+            applications
+                .iter()
+                .find(|application| application.id == application_id)
+        });
+        let success = game.is_some_and(|game| {
+            game.title == "Fixture Adventure"
+                && game.platform == "Fixture Console"
+                && game.notes.as_deref()
+                    == Some("A synthetic adventure used to verify LaunchBox XML compatibility.")
+                && game.application_path == r"Games\Fixture Adventure\edited-manual.pdf"
+                && game.command_line.as_deref() == Some("--page 3")
+                && game.emulator_id.as_deref() == Some(UNASSIGNED_EMULATOR_ID)
+                && !game.use_dos_box
+                && !game.use_scumm_vm
+                && game.scumm_vm_game_type.as_deref() == Some("fixture-scumm-id")
+                && game.developer.as_deref() == Some("Qt Docs")
+                && game.publisher.as_deref() == Some("Port Press")
+                && game.region.as_deref() == Some("Europe")
+                && game.release_date.as_deref() == Some("2005-06-07")
+                && game.version.as_deref() == Some("Rev 3")
+                && game.status.as_deref() == Some("Installed")
+                && game.installed == Some(true)
+                && game.play_count == 5
+                && game.play_time_seconds == 321
+                && game.last_played_date.as_deref() == Some("2026-07-22T13:14:15.0000000-07:00")
+        }) && applications.is_some_and(|applications| applications.len() == 1)
+            && application.is_some_and(|application| {
+                application.name == "Edited Fixture Manual"
+                    && application.application_path == r"Games\Fixture Adventure\edited-manual.pdf"
+                    && application.command_line.as_deref() == Some("--page 3")
+                    && application.play_count == 5
+                    && application.play_time_seconds == 321
+            })
+            && rust.additional_application_write_notifications == 2
+            && *self.additional_application_revision() == 1
+            && self.last_added_additional_application_id().is_empty()
+            && self.last_default_additional_application_id().to_string() == application_id
+            && rust.model_reset_notifications == 2
+            && rust.data_change_notifications == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "ADDITIONAL_APPLICATION_DEFAULT_SMOKE_COMPLETE writes={} revision={} resets={} data_changes={}",
+                rust.additional_application_write_notifications,
+                self.additional_application_revision(),
+                rust.model_reset_notifications,
+                rust.data_change_notifications
+            );
+        }
+        success
+    }
+
     pub fn report_platform_crud_smoke_success(
         &self,
         platform_name: QString,
@@ -6972,6 +7137,7 @@ impl qobject::LibraryController {
                 let AdditionalApplicationWriteSuccess {
                     operation,
                     application,
+                    game,
                     source,
                     backup,
                 } = success;
@@ -6992,6 +7158,7 @@ impl qobject::LibraryController {
                     return;
                 };
 
+                let mut refresh_games = false;
                 match operation {
                     AdditionalApplicationWriteOperation::Create => {
                         self.as_mut()
@@ -7051,36 +7218,36 @@ impl qobject::LibraryController {
                                 .set_last_added_additional_application_id(QString::default());
                         }
                     }
+                    AdditionalApplicationWriteOperation::MakeDefault => {
+                        let Some(game) = game else {
+                            self.as_mut().set_status_message(qstring(
+                                "The additional-application writer returned no default game; reload required.",
+                            ));
+                            return;
+                        };
+                        if game.id != game_id
+                            || !self
+                                .as_ref()
+                                .rust()
+                                .additional_applications_by_game
+                                .get(&game_id)
+                                .is_some_and(|applications| {
+                                    applications
+                                        .iter()
+                                        .any(|candidate| candidate.id == application.id)
+                                })
+                        {
+                            self.as_mut().set_status_message(qstring(
+                                "The defaulted additional application no longer matches the loaded model; reload required.",
+                            ));
+                            return;
+                        }
+                        self.as_mut().rust_mut().games[actual_index] = game;
+                        self.as_mut()
+                            .set_last_default_additional_application_id(qstring(&application.id));
+                        refresh_games = true;
+                    }
                 }
-                let remove_empty_group = self
-                    .as_ref()
-                    .rust()
-                    .additional_applications_by_game
-                    .get(&game_id)
-                    .is_some_and(Vec::is_empty);
-                if remove_empty_group {
-                    self.as_mut()
-                        .rust_mut()
-                        .additional_applications_by_game
-                        .remove(&game_id);
-                } else if let Some(applications) = self
-                    .as_mut()
-                    .rust_mut()
-                    .additional_applications_by_game
-                    .get_mut(&game_id)
-                {
-                    applications.sort_by(|left, right| {
-                        left.priority
-                            .cmp(&right.priority)
-                            .then_with(|| left.id.cmp(&right.id))
-                    });
-                }
-
-                let revision = self
-                    .as_ref()
-                    .additional_application_revision()
-                    .saturating_add(1);
-                self.as_mut().set_additional_application_revision(revision);
                 self.as_mut()
                     .rust_mut()
                     .additional_application_write_notifications = self
@@ -7088,36 +7255,83 @@ impl qobject::LibraryController {
                     .rust()
                     .additional_application_write_notifications
                     .saturating_add(1);
-                if let Some(filtered_row) = self
-                    .as_ref()
-                    .rust()
-                    .filtered_indices
-                    .iter()
-                    .position(|index| *index == actual_index)
-                {
-                    let row = saturating_i32(filtered_row);
-                    let parent = QModelIndex::default();
-                    let index = self.as_ref().model_index(row, 0, &parent);
-                    let mut roles = QList::<i32>::default();
-                    roles.append(GAME_ADDITIONAL_APPLICATION_COUNT_ROLE);
-                    self.as_mut().rust_mut().data_change_notifications = self
+
+                if refresh_games {
+                    self.as_mut().refresh_filtered_games();
+                } else {
+                    let remove_empty_group = self
                         .as_ref()
                         .rust()
-                        .data_change_notifications
+                        .additional_applications_by_game
+                        .get(&game_id)
+                        .is_some_and(Vec::is_empty);
+                    if remove_empty_group {
+                        self.as_mut()
+                            .rust_mut()
+                            .additional_applications_by_game
+                            .remove(&game_id);
+                    } else if let Some(applications) = self
+                        .as_mut()
+                        .rust_mut()
+                        .additional_applications_by_game
+                        .get_mut(&game_id)
+                    {
+                        applications.sort_by(|left, right| {
+                            left.priority
+                                .cmp(&right.priority)
+                                .then_with(|| left.id.cmp(&right.id))
+                        });
+                    }
+
+                    let revision = self
+                        .as_ref()
+                        .additional_application_revision()
                         .saturating_add(1);
-                    self.as_mut().emit_data_changed(&index, &index, &roles);
+                    self.as_mut().set_additional_application_revision(revision);
+                    if let Some(filtered_row) = self
+                        .as_ref()
+                        .rust()
+                        .filtered_indices
+                        .iter()
+                        .position(|index| *index == actual_index)
+                    {
+                        let row = saturating_i32(filtered_row);
+                        let parent = QModelIndex::default();
+                        let index = self.as_ref().model_index(row, 0, &parent);
+                        let mut roles = QList::<i32>::default();
+                        roles.append(GAME_ADDITIONAL_APPLICATION_COUNT_ROLE);
+                        self.as_mut().rust_mut().data_change_notifications = self
+                            .as_ref()
+                            .rust()
+                            .data_change_notifications
+                            .saturating_add(1);
+                        self.as_mut().emit_data_changed(&index, &index, &roles);
+                    }
                 }
                 self.as_mut().set_write_conflict(false);
-                let verb = match operation {
-                    AdditionalApplicationWriteOperation::Create => "Added",
-                    AdditionalApplicationWriteOperation::Edit => "Saved",
-                    AdditionalApplicationWriteOperation::Delete => "Deleted",
+                let status = match operation {
+                    AdditionalApplicationWriteOperation::Create => format!(
+                        "Added {}. Exact backup: {}",
+                        application.name,
+                        backup.display()
+                    ),
+                    AdditionalApplicationWriteOperation::Edit => format!(
+                        "Saved {}. Exact backup: {}",
+                        application.name,
+                        backup.display()
+                    ),
+                    AdditionalApplicationWriteOperation::Delete => format!(
+                        "Deleted {}. Exact backup: {}",
+                        application.name,
+                        backup.display()
+                    ),
+                    AdditionalApplicationWriteOperation::MakeDefault => format!(
+                        "Made {} the default. Exact backup: {}",
+                        application.name,
+                        backup.display()
+                    ),
                 };
-                self.as_mut().set_status_message(qstring(format!(
-                    "{verb} {}. Exact backup: {}",
-                    application.name,
-                    backup.display()
-                )));
+                self.as_mut().set_status_message(qstring(status));
             }
             Err(GameWriteFailure::Conflict(message)) => {
                 self.as_mut().set_write_conflict(true);
@@ -8141,6 +8355,10 @@ impl qobject::LibraryController {
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
         self.as_mut().set_last_added_game_id(QString::default());
+        self.as_mut()
+            .set_last_added_additional_application_id(QString::default());
+        self.as_mut()
+            .set_last_default_additional_application_id(QString::default());
         self.as_mut().set_import_scanning(false);
         self.as_mut().set_import_preview_json(QString::default());
         self.as_mut().set_last_import_count(0);

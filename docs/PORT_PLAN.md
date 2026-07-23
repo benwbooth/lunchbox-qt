@@ -274,8 +274,12 @@ additional-application manager now covers the recovered editable field set
 through a versioned payload and transactional worker. Its real-dialog smoke
 proves edit/add/delete ordering, targeted model updates, three exact backup
 states, lexical Windows paths, immutable provider/cloud state, unknown XML,
-game-save reference refusal, and target/media isolation. Make Default and save
-management remain open, as do the manual combine/expand actions in `LIB-010`.
+game-save reference refusal, and target/media isolation. Its Make Default action
+retains the selected row and transactionally copies the evidence-derived shared
+launch/version fields onto the owning game; a second real-dialog smoke proves
+the edit/default backup chain, direct-launch sentinel, model refresh, lexical
+Windows path, and game-only/unknown-data retention. Save management remains
+open, as do the manual combine/expand actions in `LIB-010`.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:
@@ -286,7 +290,7 @@ Phase 0/1 evidence and product-safety gates:
    and map them to feature-matrix IDs.
 4. Expand desktop editing beyond the now-working additional-application,
    platform, nested-category, and playlist create/edit/delete workflows into
-   Make Default, save management, manual combine/expand, and reviewed
+   save management, manual combine/expand, and reviewed
    cascade/remediation choices for dependencies. Category and playlist deletion now follow
    the recovered detach-to-root behavior without deleting child records or
    media. Alternate names and custom fields now pass typed storage and real-dialog runtime gates. The

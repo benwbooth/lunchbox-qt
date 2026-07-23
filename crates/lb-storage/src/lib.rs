@@ -1919,6 +1919,78 @@ impl PlatformDocument {
         Ok(updated)
     }
 
+    /// Copies one additional application's shared launch/version fields to its
+    /// owning game while retaining both records and all game-only/unknown XML.
+    pub fn make_additional_application_default(&mut self, id: &str) -> Result<Game, StorageError> {
+        let application = self
+            .library
+            .additional_applications
+            .iter()
+            .find(|application| application.id == id)
+            .cloned()
+            .ok_or_else(|| StorageError::AdditionalApplicationNotFound { id: id.to_string() })?;
+        let game_index = self
+            .library
+            .games
+            .iter()
+            .position(|game| game.id == application.game_id)
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: application.game_id.clone(),
+            })?;
+        let original = self.library.games[game_index].clone();
+        let updated = application.apply_as_default_to(&original);
+        GameLaunchConfiguration::from(&updated).validate_for_game(&updated.id)?;
+        updated.validate()?;
+
+        let element = find_record_element_mut(&mut self.root, "Game", "ID", &updated.id)
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: updated.id.clone(),
+            })?;
+        macro_rules! update_text {
+            ($field:ident, $element_name:literal) => {
+                if original.$field != updated.$field {
+                    set_child_text(element, $element_name, &updated.$field.to_string());
+                }
+            };
+        }
+        macro_rules! update_optional_text {
+            ($field:ident, $element_name:literal) => {
+                if original.$field != updated.$field {
+                    set_optional_child_text(element, $element_name, updated.$field.as_deref());
+                }
+            };
+        }
+
+        if original.application_path != updated.application_path {
+            set_child_text(element, "ApplicationPath", &updated.application_path);
+        }
+        update_optional_text!(command_line, "CommandLine");
+        update_optional_text!(emulator_id, "Emulator");
+        update_text!(use_dos_box, "UseDosBox");
+        update_text!(use_scumm_vm, "UseScummVM");
+        update_optional_text!(developer, "Developer");
+        update_optional_text!(publisher, "Publisher");
+        update_optional_text!(region, "Region");
+        update_optional_text!(release_date, "ReleaseDate");
+        update_optional_text!(version, "Version");
+        update_optional_text!(status, "Status");
+        if original.installed != updated.installed {
+            let installed = updated.installed.map(|value| value.to_string());
+            set_optional_child_text(element, "Installed", installed.as_deref());
+        }
+        update_text!(play_count, "PlayCount");
+        update_text!(play_time_seconds, "PlayTime");
+        update_optional_text!(last_played_date, "LastPlayedDate");
+        update_optional_text!(gog_app_id, "GogAppId");
+        update_optional_text!(origin_app_id, "OriginAppId");
+        update_optional_text!(origin_install_path, "OriginInstallPath");
+        update_text!(has_cloud_synced, "HasCloudSynced");
+
+        self.library.games[game_index] = updated.clone();
+        self.library.validate()?;
+        Ok(updated)
+    }
+
     /// Removes one additional application without deleting files or save
     /// history. LaunchBox game-save records can explicitly own an additional
     /// application ID, so those references must be remediated first.
@@ -5605,6 +5677,104 @@ mod tests {
             .find(|application| application.id == "fixture-adventure-manual")
             .expect("reparsed application");
         assert_eq!(AdditionalApplicationEdit::from(reparsed), edit);
+    }
+
+    #[test]
+    fn additional_application_becomes_default_without_removing_either_record() {
+        let mut document = PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes())
+            .expect("parse fixture");
+        let application = AdditionalApplication {
+            id: "fixture-default-version".into(),
+            game_id: "fixture-adventure".into(),
+            name: "Play European Version...".into(),
+            application_path: r"Games\Fixture Adventure\europe.rom".into(),
+            command_line: Some("--region europe".into()),
+            use_emulator: false,
+            emulator_id: Some("ignored-for-direct-launch".into()),
+            use_dos_box: false,
+            play_count: 11,
+            play_time_seconds: 9876,
+            developer: Some("Version Developer".into()),
+            publisher: Some("Version Publisher".into()),
+            region: Some("Europe".into()),
+            release_date: Some("2004-05-06".into()),
+            version: Some("Rev 4".into()),
+            status: Some("Installed".into()),
+            installed: Some(true),
+            last_played: Some("2026-07-22T16:17:18.0000000-07:00".into()),
+            gog_app_id: Some("gog-version".into()),
+            origin_app_id: Some("origin-version".into()),
+            origin_install_path: Some(r"C:\Games\Fixture Version".into()),
+            has_cloud_synced: true,
+            ..AdditionalApplication::default()
+        };
+        document
+            .add_additional_application(application.clone())
+            .expect("add selectable version");
+
+        let updated = document
+            .make_additional_application_default(&application.id)
+            .expect("make version default");
+        assert_eq!(updated.id, "fixture-adventure");
+        assert_eq!(updated.title, "Fixture Adventure");
+        assert_eq!(
+            updated.application_path,
+            r"Games\Fixture Adventure\europe.rom"
+        );
+        assert_eq!(updated.command_line.as_deref(), Some("--region europe"));
+        assert_eq!(
+            updated.emulator_id.as_deref(),
+            Some(lb_domain::UNASSIGNED_EMULATOR_ID)
+        );
+        assert!(!updated.use_dos_box);
+        assert!(!updated.use_scumm_vm);
+        assert_eq!(updated.developer.as_deref(), Some("Version Developer"));
+        assert_eq!(updated.publisher.as_deref(), Some("Version Publisher"));
+        assert_eq!(updated.region.as_deref(), Some("Europe"));
+        assert_eq!(updated.release_date.as_deref(), Some("2004-05-06"));
+        assert_eq!(updated.version.as_deref(), Some("Rev 4"));
+        assert_eq!(updated.status.as_deref(), Some("Installed"));
+        assert_eq!(updated.installed, Some(true));
+        assert_eq!(updated.play_count, 11);
+        assert_eq!(updated.play_time_seconds, 9876);
+        assert_eq!(
+            updated.last_played_date.as_deref(),
+            Some("2026-07-22T16:17:18.0000000-07:00")
+        );
+        assert_eq!(updated.gog_app_id.as_deref(), Some("gog-version"));
+        assert_eq!(updated.origin_app_id.as_deref(), Some("origin-version"));
+        assert_eq!(
+            updated.origin_install_path.as_deref(),
+            Some(r"C:\Games\Fixture Version")
+        );
+        assert!(updated.has_cloud_synced);
+        assert_eq!(
+            document
+                .library()
+                .additional_applications
+                .iter()
+                .find(|candidate| candidate.id == application.id),
+            Some(&application)
+        );
+
+        let bytes = document.to_xml_bytes().expect("serialize default change");
+        let xml = String::from_utf8_lossy(&bytes);
+        assert!(
+            xml.contains("<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>")
+        );
+        assert!(xml.contains(
+            "<FutureAdditionalApplicationElement>keep-additional-app-data</FutureAdditionalApplicationElement>"
+        ));
+        let reparsed = PlatformDocument::from_reader("Fixture Console.xml", bytes.as_slice())
+            .expect("reparse default change");
+        let reparsed_game = reparsed
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "fixture-adventure")
+            .expect("reparsed owner");
+        assert_eq!(reparsed_game, &updated);
+        assert_eq!(reparsed.library().additional_applications.len(), 2);
     }
 
     #[test]

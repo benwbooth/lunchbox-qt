@@ -50,6 +50,11 @@ ApplicationWindow {
     property int additionalApplicationCrudSmokePhase: 0
     property bool additionalApplicationCrudSmokeFinished: false
     property string additionalApplicationCrudSmokeAddedId: ""
+    property bool additionalApplicationDefaultSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--additional-application-default-smoke-test") >= 0
+    property int additionalApplicationDefaultSmokePhase: 0
+    property bool additionalApplicationDefaultSmokeFinished: false
     property int platformCrudSmokePhase: 0
     property int platformCrudBlockedReferences: 0
     property string platformCrudAddedGameId: ""
@@ -561,6 +566,66 @@ ApplicationWindow {
                           + window.additionalApplicationCrudSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(14)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.additionalApplicationDefaultSmokeTest
+                 && !window.additionalApplicationDefaultSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-adventure"
+            const applicationId = "fixture-adventure-manual"
+            if (window.additionalApplicationDefaultSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0
+                        || controller.additional_application_count(row, gameId) !== 1) {
+                    console.error(
+                        "ADDITIONAL_APPLICATION_DEFAULT_SMOKE_MISSING_FIXTURE")
+                    Qt.exit(15)
+                    return
+                }
+                additionalApplicationManager.prepare(
+                    row, gameId, "Fixture Adventure")
+                window.additionalApplicationDefaultSmokePhase = 1
+                additionalApplicationEditor.smokeEdit(row, gameId, applicationId)
+            } else if (window.additionalApplicationDefaultSmokePhase === 1
+                       && !controller.writing
+                       && controller.additional_application_revision === 1) {
+                const defaultRow = controller.row_for_game_id(gameId)
+                window.additionalApplicationDefaultSmokePhase = 2
+                additionalApplicationDefaultDialog.smokeMakeDefault(
+                    defaultRow, gameId, applicationId, "Edited Fixture Manual")
+            } else if (window.additionalApplicationDefaultSmokePhase === 2
+                       && !controller.writing
+                       && controller.last_default_additional_application_id
+                          === applicationId) {
+                if (!controller.report_additional_application_default_smoke_success(
+                        gameId, applicationId)) {
+                    console.error(
+                        "ADDITIONAL_APPLICATION_DEFAULT_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(15)
+                    return
+                }
+                window.additionalApplicationDefaultSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.additionalApplicationDefaultSmokeTest
+                 && !window.additionalApplicationDefaultSmokeFinished
+        onTriggered: {
+            console.error("ADDITIONAL_APPLICATION_DEFAULT_SMOKE_TIMEOUT phase="
+                          + window.additionalApplicationDefaultSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(15)
         }
     }
 
@@ -1730,6 +1795,19 @@ ApplicationWindow {
                                    additionalApplicationManager.selectedApplicationId())
                 }
                 Button {
+                    text: "Make Default"
+                    enabled: additionalApplicationManager.selectedIndex >= 0
+                             && !controller.writing
+                    onClicked: additionalApplicationDefaultDialog.prepare(
+                                   additionalApplicationManager.modelRow,
+                                   additionalApplicationManager.gameId,
+                                   additionalApplicationManager.selectedApplicationId(),
+                                   controller.additional_application_name_at(
+                                       additionalApplicationManager.modelRow,
+                                       additionalApplicationManager.gameId,
+                                       additionalApplicationManager.selectedIndex))
+                }
+                Button {
                     text: "Delete"
                     enabled: additionalApplicationManager.selectedIndex >= 0
                              && !controller.writing
@@ -1749,6 +1827,47 @@ ApplicationWindow {
                     color: "#7d8590"
                 }
             }
+        }
+    }
+
+    Dialog {
+        id: additionalApplicationDefaultDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Make Additional Application Default"
+        standardButtons: Dialog.Yes | Dialog.No
+        property int modelRow: -1
+        property string gameId: ""
+        property string applicationId: ""
+        property string applicationName: ""
+
+        function prepare(row, id, appId, appName) {
+            modelRow = row
+            gameId = id
+            applicationId = appId
+            applicationName = appName
+            open()
+        }
+
+        function smokeMakeDefault(row, id, appId, appName) {
+            prepare(row, id, appId, appName)
+            Qt.callLater(function() {
+                additionalApplicationDefaultDialog.accept()
+            })
+        }
+
+        onAccepted: controller.make_additional_application_default(
+                        modelRow, gameId, applicationId)
+
+        contentItem: Label {
+            width: 500
+            text: "Make “"
+                  + additionalApplicationDefaultDialog.applicationName
+                  + "” this game’s default launch? Its launch, emulator, version "
+                  + "metadata, and play statistics will replace the game’s current "
+                  + "defaults. The additional-application record and target files "
+                  + "will remain in place."
+            wrapMode: Text.Wrap
         }
     }
 
