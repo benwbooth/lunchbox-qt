@@ -24,7 +24,8 @@ diagnostics=$(
     apps/lb-shell/qml/LaunchBoxWindow.qml \
     apps/lb-shell/qml/BigBoxWindow.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
-    apps/lb-shell/qml/LaunchShutdownOverlay.qml 2>&1
+    apps/lb-shell/qml/LaunchShutdownOverlay.qml \
+    apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
 ) || {
   printf '%s\n' "$diagnostics" >&2
   exit 1
@@ -2716,6 +2717,63 @@ run_launch_lifecycle_smoke launchbox "$disabled_lifecycle_root" false
 run_launch_lifecycle_smoke launchbox "$short_lifecycle_root" true true
 echo "LaunchBox and BigBox frontend-global startup/shutdown policy, exact pre-launch delay, minimum display timing including a short-lived primary, disabled bypass, rendered overlays, exact argv, and supervised session statistics validated."
 
+run_launch_pause_smoke() {
+  local shell_name=$1
+  local pause_log="$emulator_launch_root/$shell_name-pause-arguments.txt"
+  local pause_screenshot="$emulator_launch_root/$shell_name-pause-overlay.png"
+  local theme="Fixture Desktop Pause"
+  if [[ "$shell_name" == bigbox ]]; then
+    theme="Fixture BigBox Pause"
+  fi
+  local -a arguments=(
+    --library "$emulator_launch_root"
+    --launch-pause-smoke-test
+    --launch-pause-screenshot "$pause_screenshot"
+    --path-mappings-file "$empty_path_mappings"
+  )
+  if [[ "$shell_name" == bigbox ]]; then
+    arguments+=(--windowed)
+  fi
+  rm -f "$pause_log" "$pause_screenshot"
+  local output
+  output=$(
+    LBPORT_LAUNCH_SMOKE_LOG="$pause_log" \
+      LBPORT_LAUNCH_SMOKE_SLEEP=1.6 \
+      QT_QPA_PLATFORM=offscreen \
+      "$binary_dir/$shell_name" "${arguments[@]}" 2>&1
+  ) || {
+    printf '%s\n' "$output" >&2
+    exit 1
+  }
+  if ! rg -q -F \
+    "LAUNCH_PAUSE_SMOKE_COMPLETE id=fixture-racer presentations=1 suspensions=1 resumptions=1 theme=\"$theme\" source=\"emulator default\"" \
+    <<< "$output"; then
+    printf '%s\n' "$output" >&2
+    echo "$shell_name did not validate its pause/resume process lifecycle." >&2
+    exit 1
+  fi
+  if ! cmp -s "$pause_log" \
+    <(printf '%s\n' \
+      --platform fixture \
+      "$emulator_launch_root/Games/Fixture Racer/racer.rom"); then
+    printf 'Pause lifecycle arguments for %s were:\n' "$shell_name" >&2
+    sed 's/^/  /' "$pause_log" >&2 || true
+    exit 1
+  fi
+  if [[ ! -s "$pause_screenshot" ]] \
+    || [[ $(wc -c < "$pause_screenshot") -lt 1024 ]] \
+    || [[ $(od -An -tx1 -N8 "$pause_screenshot" | tr -d ' \n') \
+      != 89504e470d0a1a0a ]]; then
+    printf '%s\n' "$output" >&2
+    echo "$shell_name did not render a valid pause-overlay PNG." >&2
+    exit 1
+  fi
+}
+
+run_launch_pause_smoke launchbox
+run_launch_pause_smoke bigbox
+echo "LaunchBox and BigBox frontend-global pause policy, emulator-default inheritance, direct-child suspension/resumption, shared rendered overlay, exact argv, and session persistence validated."
+
 direct_log="$direct_launch_root/direct-arguments.txt"
 run_launch_smoke launchbox "$direct_launch_root" fixture-direct "$direct_log" \
   --direct "two words"
@@ -3239,7 +3297,7 @@ assert_play_stats() {
 
 assert_play_stats \
   "$emulator_launch_root/Data/Platforms/Fixture Console.xml" \
-  Game ID fixture-racer 12 14404 LastPlayedDate
+  Game ID fixture-racer 14 14406 LastPlayedDate
 assert_play_stats \
   "$disabled_lifecycle_root/Data/Platforms/Fixture Console.xml" \
   Game ID fixture-racer 9 14401 LastPlayedDate

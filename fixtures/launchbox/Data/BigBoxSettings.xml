@@ -8,5 +8,9 @@
     <MinimumStartupScreenDisplayTime>700</MinimumStartupScreenDisplayTime>
     <MinimumShutdownScreenDisplayTime>450</MinimumShutdownScreenDisplayTime>
     <HideMouseCursorOnStartupScreens>false</HideMouseCursorOnStartupScreens>
+    <UsePauseScreen>true</UsePauseScreen>
+    <PauseTheme>Fixture BigBox Pause</PauseTheme>
+    <PauseScreenMuting>true</PauseScreenMuting>
+    <PauseScreenFading>true</PauseScreenFading>
   </BigBoxSettings>
 </LaunchBox>

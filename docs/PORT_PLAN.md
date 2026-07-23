@@ -309,8 +309,14 @@ overlays enforce the frontend-specific minimums, apply the startup-screen
 cursor setting, and honor effective `DisableShutdownScreen`; disabling startup
 screens globally bypasses both presentation and delay. LaunchBox and BigBox
 real-process smokes measure the timing boundaries, render both overlays,
-compare exact arguments, and verify statistics. Theme/media asset selection,
-window/focus behavior, detached descendants, and pause remain open.
+compare exact arguments, and verify statistics. The first `RUN-010` subset now
+resolves game-override/emulator-default/direct-game pause policy, combines it
+with separate LaunchBox/BigBox global enable/theme settings, and sends typed
+pause/resume commands to the supervising worker. Unix controls the exact
+primary PID; Windows controls its current threads. Both shells render and
+verify the shared pause overlay. Theme/media asset selection, pause scripts,
+global input/focus behavior, mute/fade behavior, detached descendants, and
+pause-excluded play time remain open.
 Source-indexed alternate names and custom fields
 now edit through the same real Qt dialog and transaction; retained rows keep
 unknown XML, new rows survive reload, and the custom-field fixture is explicitly
@@ -411,9 +417,10 @@ Phase 0/1 evidence and product-safety gates:
 5. Extend the launcher beyond the now-working direct/default-emulator, Launch
    With, automatic additional-app, persisted host-mapping, archive
    auto-extraction, multi-disc/M3U, DOSBox mount, legacy ScummVM, and inherited
-   frontend-specific startup/shutdown-overlay paths into scripts, theme/media
-   selection, focus/window handling, pause behavior, descendant-process
-   supervision, and focus-aware play-time parity.
+   frontend-specific startup/shutdown-overlay and direct-child pause/resume
+   paths into scripts, theme/media selection, global/controller pause input,
+   focus/window handling, descendant-process supervision, and focus-aware
+   pause-excluded play-time parity.
 6. Run the native Qt shell and transaction scenarios on Windows as well as
    Linux; the current Windows gate covers the non-Qt core crates.
 

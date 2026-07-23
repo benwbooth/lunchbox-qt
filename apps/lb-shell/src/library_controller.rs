@@ -43,6 +43,8 @@ pub mod qobject {
         #[qproperty(i32, frontend_minimum_startup_screen_ms)]
         #[qproperty(i32, frontend_minimum_shutdown_screen_ms)]
         #[qproperty(bool, frontend_hide_mouse_on_startup_screens)]
+        #[qproperty(bool, frontend_pause_screen_enabled)]
+        #[qproperty(QString, frontend_pause_theme)]
         #[qproperty(bool, startup_screen_active)]
         #[qproperty(bool, startup_screen_primary_started)]
         #[qproperty(i32, startup_screen_delay_ms)]
@@ -51,6 +53,12 @@ pub mod qobject {
         #[qproperty(bool, shutdown_screen_active)]
         #[qproperty(QString, shutdown_screen_game_title)]
         #[qproperty(QString, shutdown_screen_settings_source)]
+        #[qproperty(bool, pause_screen_available)]
+        #[qproperty(bool, pause_screen_active)]
+        #[qproperty(bool, pause_screen_process_suspended)]
+        #[qproperty(bool, pause_screen_forceful_activation)]
+        #[qproperty(QString, pause_screen_game_title)]
+        #[qproperty(QString, pause_screen_settings_source)]
         #[qproperty(bool, last_launch_succeeded)]
         #[qproperty(bool, write_conflict)]
         #[qproperty(i32, game_count)]
@@ -216,6 +224,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn dismiss_shutdown_screen(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn pause_launch_session(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn resume_launch_session(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
         fn add_emulator(self: Pin<&mut LibraryController>, edit_payload: QString);
@@ -730,6 +744,13 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_launch_pause_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            presentation_flags: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_additional_application_launch_smoke_success(
             self: &LibraryController,
             game_id: QString,
@@ -904,12 +925,13 @@ use lb_integrations::retroarch::{
 };
 use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
 use lb_platform::{
-    default_host_path_mappings_path, default_platform_folders, execute_launch_sequence,
+    default_host_path_mappings_path, default_platform_folders, execute_launch_sequence_controlled,
     navigation_document_file_name, platform_document_file_name, portable_storage_name,
     prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
-    select_emulator_for_game, ArchiveExtractor, FrontendLaunchScreenPolicy, HostPathMappings,
-    HostPathResolver, LaunchContext, LaunchKind, LaunchPathResolver, LaunchSequence,
+    select_emulator_for_game, ArchiveExtractor, FrontendLaunchScreenPolicy,
+    FrontendPauseScreenPolicy, HostPathMappings, HostPathResolver, LaunchContext,
+    LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence,
     LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy,
     LaunchTarget,
 };
@@ -932,6 +954,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
+    mpsc::{self, Sender},
     Arc,
 };
 use std::time::{Duration, Instant, SystemTime};
@@ -1094,6 +1117,8 @@ pub struct LibraryControllerRust {
     frontend_minimum_startup_screen_ms: i32,
     frontend_minimum_shutdown_screen_ms: i32,
     frontend_hide_mouse_on_startup_screens: bool,
+    frontend_pause_screen_enabled: bool,
+    frontend_pause_theme: QString,
     startup_screen_active: bool,
     startup_screen_primary_started: bool,
     startup_screen_delay_ms: i32,
@@ -1102,6 +1127,12 @@ pub struct LibraryControllerRust {
     shutdown_screen_active: bool,
     shutdown_screen_game_title: QString,
     shutdown_screen_settings_source: QString,
+    pause_screen_available: bool,
+    pause_screen_active: bool,
+    pause_screen_process_suspended: bool,
+    pause_screen_forceful_activation: bool,
+    pause_screen_game_title: QString,
+    pause_screen_settings_source: QString,
     pending_shutdown_screen: Option<(String, LaunchShutdownPolicy)>,
     last_launch_succeeded: bool,
     write_conflict: bool,
@@ -1165,6 +1196,9 @@ pub struct LibraryControllerRust {
     emulator_configuration: Option<EmulatorConfiguration>,
     launchbox_launch_screen_policy: FrontendLaunchScreenPolicy,
     big_box_launch_screen_policy: FrontendLaunchScreenPolicy,
+    launchbox_pause_screen_policy: FrontendPauseScreenPolicy,
+    big_box_pause_screen_policy: FrontendPauseScreenPolicy,
+    launch_control_sender: Option<Sender<LaunchControlCommand>>,
     discovered_emulators: Vec<DiscoveredEmulatorExecutable>,
     emulator_bios_audit: Option<Pcsx2BiosAudit>,
     emulator_bios_emulator_id: Option<String>,
@@ -1184,6 +1218,9 @@ pub struct LibraryControllerRust {
     startup_screen_timer_dismissals: u64,
     shutdown_screen_presentations: u64,
     shutdown_screen_timer_dismissals: u64,
+    pause_screen_presentations: u64,
+    pause_process_suspensions: u64,
+    pause_process_resumptions: u64,
     session_stats_writes: u64,
     session_stats_error: Option<String>,
     pending_post_reload_message: Option<String>,
@@ -1251,6 +1288,8 @@ struct LoadedLibrary {
     emulator_configuration: Option<EmulatorConfiguration>,
     launchbox_launch_screen_policy: FrontendLaunchScreenPolicy,
     big_box_launch_screen_policy: FrontendLaunchScreenPolicy,
+    launchbox_pause_screen_policy: FrontendPauseScreenPolicy,
+    big_box_pause_screen_policy: FrontendPauseScreenPolicy,
 }
 
 struct LibraryReplacement {
@@ -1269,6 +1308,8 @@ struct LibraryReplacement {
     emulator_configuration: Option<EmulatorConfiguration>,
     launchbox_launch_screen_policy: FrontendLaunchScreenPolicy,
     big_box_launch_screen_policy: FrontendLaunchScreenPolicy,
+    launchbox_pause_screen_policy: FrontendPauseScreenPolicy,
+    big_box_pause_screen_policy: FrontendPauseScreenPolicy,
     name: String,
     message: String,
     pending_recovery_count: usize,
@@ -1330,6 +1371,8 @@ impl LoadedLibrary {
                 emulator_configuration: None,
                 launchbox_launch_screen_policy: FrontendLaunchScreenPolicy::default(),
                 big_box_launch_screen_policy: FrontendLaunchScreenPolicy::default(),
+                launchbox_pause_screen_policy: FrontendPauseScreenPolicy::default(),
+                big_box_pause_screen_policy: FrontendPauseScreenPolicy::default(),
             });
         }
 
@@ -1339,6 +1382,12 @@ impl LoadedLibrary {
                 .map_err(|error| error.to_string())?;
         let big_box_launch_screen_policy =
             FrontendLaunchScreenPolicy::from_settings(data.big_box_settings())
+                .map_err(|error| error.to_string())?;
+        let launchbox_pause_screen_policy =
+            FrontendPauseScreenPolicy::from_settings(data.settings())
+                .map_err(|error| error.to_string())?;
+        let big_box_pause_screen_policy =
+            FrontendPauseScreenPolicy::from_settings(data.big_box_settings())
                 .map_err(|error| error.to_string())?;
         let emulator_configuration = data.emulator_configuration().cloned();
         let (platform_names, platform_sources) = platform_state_from_data(&data)?;
@@ -1403,6 +1452,8 @@ impl LoadedLibrary {
             emulator_configuration,
             launchbox_launch_screen_policy,
             big_box_launch_screen_policy,
+            launchbox_pause_screen_policy,
+            big_box_pause_screen_policy,
         })
     }
 }
@@ -8645,13 +8696,19 @@ impl qobject::LibraryController {
     }
 
     fn refresh_frontend_launch_screen_policy(mut self: Pin<&mut Self>) {
-        let policy = {
+        let (policy, pause_policy) = {
             let this = self.as_ref();
             let rust = this.rust();
             if *this.frontend_is_big_box() {
-                rust.big_box_launch_screen_policy.clone()
+                (
+                    rust.big_box_launch_screen_policy.clone(),
+                    rust.big_box_pause_screen_policy.clone(),
+                )
             } else {
-                rust.launchbox_launch_screen_policy.clone()
+                (
+                    rust.launchbox_launch_screen_policy.clone(),
+                    rust.launchbox_pause_screen_policy.clone(),
+                )
             }
         };
         self.as_mut()
@@ -8668,6 +8725,10 @@ impl qobject::LibraryController {
             ));
         self.as_mut()
             .set_frontend_hide_mouse_on_startup_screens(policy.hide_mouse_cursor);
+        self.as_mut()
+            .set_frontend_pause_screen_enabled(pause_policy.enabled);
+        self.as_mut()
+            .set_frontend_pause_theme(qstring(pause_policy.theme));
     }
 
     pub fn initialize_host_path_mappings(mut self: Pin<&mut Self>) -> bool {
@@ -8925,6 +8986,8 @@ impl qobject::LibraryController {
                     emulator_configuration: None,
                     launchbox_launch_screen_policy: FrontendLaunchScreenPolicy::default(),
                     big_box_launch_screen_policy: FrontendLaunchScreenPolicy::default(),
+                    launchbox_pause_screen_policy: FrontendPauseScreenPolicy::default(),
+                    big_box_pause_screen_policy: FrontendPauseScreenPolicy::default(),
                     name: "Fixture Console".into(),
                     message: "Embedded compatibility fixture".into(),
                     pending_recovery_count: 0,
@@ -11029,7 +11092,15 @@ impl qobject::LibraryController {
     }
 
     fn start_launch(mut self: Pin<&mut Self>, game: Game, selection: LaunchSelection) {
-        let (root, source, configuration, path_resolver, mounts, frontend_policy) = {
+        let (
+            root,
+            source,
+            configuration,
+            path_resolver,
+            mounts,
+            frontend_policy,
+            frontend_pause_policy,
+        ) = {
             let this = self.as_ref();
             let rust = this.rust();
             let Some(root) = rust.launchbox_root.clone() else {
@@ -11064,6 +11135,11 @@ impl qobject::LibraryController {
                 } else {
                     rust.launchbox_launch_screen_policy.clone()
                 },
+                if *this.frontend_is_big_box() {
+                    rust.big_box_pause_screen_policy.clone()
+                } else {
+                    rust.launchbox_pause_screen_policy.clone()
+                },
             )
         };
         let generation = self.as_ref().rust().request_generation;
@@ -11082,6 +11158,14 @@ impl qobject::LibraryController {
             .set_shutdown_screen_game_title(QString::default());
         self.as_mut()
             .set_shutdown_screen_settings_source(QString::default());
+        self.as_mut().set_pause_screen_available(false);
+        self.as_mut().set_pause_screen_active(false);
+        self.as_mut().set_pause_screen_process_suspended(false);
+        self.as_mut().set_pause_screen_forceful_activation(false);
+        self.as_mut()
+            .set_pause_screen_game_title(QString::default());
+        self.as_mut()
+            .set_pause_screen_settings_source(QString::default());
         self.as_mut().set_last_launch_succeeded(false);
         self.as_mut().set_last_launch_game_id(QString::default());
         self.as_mut().set_last_launch_target_id(QString::default());
@@ -11093,8 +11177,13 @@ impl qobject::LibraryController {
             rust.startup_screen_timer_dismissals = 0;
             rust.shutdown_screen_presentations = 0;
             rust.shutdown_screen_timer_dismissals = 0;
+            rust.pause_screen_presentations = 0;
+            rust.pause_process_suspensions = 0;
+            rust.pause_process_resumptions = 0;
             rust.pending_shutdown_screen = None;
         }
+        let (launch_control_sender, launch_control_receiver) = mpsc::channel();
+        self.as_mut().rust_mut().launch_control_sender = Some(launch_control_sender);
         self.as_mut()
             .set_status_message(qstring(format!("Launching {title} in the background...")));
 
@@ -11147,7 +11236,7 @@ impl qobject::LibraryController {
                 let mut shutdown = LaunchShutdownPolicy::disabled();
                 let mut shutdown_title = title.clone();
                 let mut session_stats_errors = Vec::new();
-                let result = sequence.and_then(|sequence| {
+                let result = sequence.and_then(|mut sequence| {
                     let startup = LaunchStartupPolicy {
                         enabled: frontend_policy.enabled && sequence.startup.enabled,
                         ..sequence.startup
@@ -11156,8 +11245,21 @@ impl qobject::LibraryController {
                         enabled: frontend_policy.enabled && sequence.shutdown.enabled,
                         ..sequence.shutdown
                     };
+                    sequence.pause.enabled =
+                        frontend_pause_policy.enabled && sequence.pause.enabled;
                     shutdown_title.clone_from(&sequence.game_title);
                     let startup_title = sequence.game_title.clone();
+                    let pause_title = sequence.game_title.clone();
+                    let pause = sequence.pause;
+                    event_thread
+                        .queue(move |mut controller| {
+                            controller
+                                .as_mut()
+                                .begin_pause_session(generation, pause_title, pause);
+                        })
+                        .map_err(|error| {
+                            format!("could not configure the pause screen: {error}")
+                        })?;
                     event_thread
                         .queue(move |mut controller| {
                             controller.as_mut().begin_startup_screen(
@@ -11173,7 +11275,10 @@ impl qobject::LibraryController {
                         std::thread::sleep(startup.load_delay);
                     }
                     let template = primary_launch_template(&sequence)?;
-                    let report = execute_launch_sequence(&sequence, |event| match event {
+                    let report = execute_launch_sequence_controlled(
+                        &sequence,
+                        &launch_control_receiver,
+                        |event| match event {
                         LaunchSequenceEvent::StepStarted {
                             role,
                             target,
@@ -11216,8 +11321,40 @@ impl qobject::LibraryController {
                                 timeout.as_secs_f64()
                             );
                         }
+                        LaunchSequenceEvent::PrimaryPaused { process_suspended } => {
+                            event_thread
+                                .queue(move |mut controller| {
+                                    controller.as_mut().finish_pause_transition(
+                                        generation,
+                                        true,
+                                        process_suspended,
+                                    );
+                                })
+                                .ok();
+                        }
+                        LaunchSequenceEvent::PrimaryResumed { process_resumed } => {
+                            event_thread
+                                .queue(move |mut controller| {
+                                    controller.as_mut().finish_pause_transition(
+                                        generation,
+                                        false,
+                                        process_resumed,
+                                    );
+                                })
+                                .ok();
+                        }
+                        LaunchSequenceEvent::PrimaryControlFailed { action, message } => {
+                            event_thread
+                                .queue(move |mut controller| {
+                                    controller.as_mut().finish_pause_control_failure(
+                                        generation, action, message,
+                                    );
+                                })
+                                .ok();
+                        }
                         _ => {}
-                    })
+                    },
+                    )
                     .map_err(|error| error.to_string())?;
 
                     if report.primary_runtime.as_secs() > 0 {
@@ -11255,14 +11392,147 @@ impl qobject::LibraryController {
                     .ok();
             });
         if let Err(error) = spawn_result {
+            self.as_mut().rust_mut().launch_control_sender = None;
             self.as_mut().set_launching(false);
             self.as_mut().set_launch_session_active(false);
             self.as_mut().set_startup_screen_active(false);
             self.as_mut().set_startup_screen_primary_started(false);
             self.as_mut().set_shutdown_screen_active(false);
+            self.as_mut().set_pause_screen_available(false);
+            self.as_mut().set_pause_screen_active(false);
+            self.as_mut().set_pause_screen_process_suspended(false);
             self.as_mut()
                 .set_status_message(qstring(format!("Could not start game launcher: {error}")));
         }
+    }
+
+    fn begin_pause_session(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        game_title: String,
+        pause: LaunchPausePolicy,
+    ) {
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        self.as_mut().set_pause_screen_available(pause.enabled);
+        self.as_mut().set_pause_screen_active(false);
+        self.as_mut().set_pause_screen_process_suspended(false);
+        self.as_mut()
+            .set_pause_screen_forceful_activation(pause.forceful_activation);
+        self.as_mut()
+            .set_pause_screen_game_title(qstring(game_title));
+        self.as_mut()
+            .set_pause_screen_settings_source(qstring(pause.source.label()));
+    }
+
+    pub fn pause_launch_session(mut self: Pin<&mut Self>) {
+        if !*self.as_ref().pause_screen_available()
+            || !*self.as_ref().launch_session_active()
+            || *self.as_ref().pause_screen_active()
+        {
+            return;
+        }
+        let result = self
+            .as_ref()
+            .rust()
+            .launch_control_sender
+            .as_ref()
+            .ok_or_else(|| "the launch worker is no longer available".to_string())
+            .and_then(|sender| {
+                sender
+                    .send(LaunchControlCommand::Pause)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(()) => self
+                .as_mut()
+                .set_status_message(qstring("Pausing the active game session...")),
+            Err(error) => self
+                .as_mut()
+                .set_status_message(qstring(format!("Could not pause the game: {error}"))),
+        }
+    }
+
+    pub fn resume_launch_session(mut self: Pin<&mut Self>) {
+        if !*self.as_ref().pause_screen_active() {
+            return;
+        }
+        let result = self
+            .as_ref()
+            .rust()
+            .launch_control_sender
+            .as_ref()
+            .ok_or_else(|| "the launch worker is no longer available".to_string())
+            .and_then(|sender| {
+                sender
+                    .send(LaunchControlCommand::Resume)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(()) => self
+                .as_mut()
+                .set_status_message(qstring("Resuming the active game session...")),
+            Err(error) => self
+                .as_mut()
+                .set_status_message(qstring(format!("Could not resume the game: {error}"))),
+        }
+    }
+
+    fn finish_pause_transition(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        paused: bool,
+        process_transitioned: bool,
+    ) {
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        if paused {
+            self.as_mut()
+                .set_pause_screen_process_suspended(process_transitioned);
+            self.as_mut().set_pause_screen_active(true);
+            {
+                let mut rust = self.as_mut().rust_mut();
+                rust.pause_screen_presentations = rust.pause_screen_presentations.saturating_add(1);
+                if process_transitioned {
+                    rust.pause_process_suspensions =
+                        rust.pause_process_suspensions.saturating_add(1);
+                }
+            }
+            self.as_mut()
+                .set_status_message(qstring("The active game session is paused."));
+        } else {
+            self.as_mut().set_pause_screen_active(false);
+            self.as_mut().set_pause_screen_process_suspended(false);
+            if process_transitioned {
+                self.as_mut().rust_mut().pause_process_resumptions = self
+                    .as_ref()
+                    .rust()
+                    .pause_process_resumptions
+                    .saturating_add(1);
+            }
+            self.as_mut()
+                .set_status_message(qstring("The active game session resumed."));
+        }
+    }
+
+    fn finish_pause_control_failure(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        action: LaunchControlCommand,
+        message: String,
+    ) {
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        let action = match action {
+            LaunchControlCommand::Pause => "pause",
+            LaunchControlCommand::Resume => "resume",
+        };
+        self.as_mut().set_status_message(qstring(format!(
+            "Could not {action} the active game process: {message}"
+        )));
     }
 
     fn begin_startup_screen(
@@ -12622,6 +12892,55 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_launch_pause_smoke_success(
+        &self,
+        game_id: QString,
+        presentation_flags: i32,
+    ) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let pause_visible_seen = presentation_flags & 1 != 0;
+        let process_suspended_seen = presentation_flags & 2 != 0;
+        let resume_seen = presentation_flags & 4 != 0;
+        let expected_theme = if *self.frontend_is_big_box() {
+            "Fixture BigBox Pause"
+        } else {
+            "Fixture Desktop Pause"
+        };
+        let success = rust.launch_notifications == 1
+            && rust.session_stats_writes >= 1
+            && rust.session_stats_error.is_none()
+            && rust.pause_screen_presentations == 1
+            && rust.pause_process_suspensions == 1
+            && rust.pause_process_resumptions == 1
+            && pause_visible_seen
+            && process_suspended_seen
+            && resume_seen
+            && *self.frontend_pause_screen_enabled()
+            && self.frontend_pause_theme().to_string() == expected_theme
+            && self.pause_screen_game_title().to_string() == "Fixture Racer"
+            && self.pause_screen_settings_source().to_string() == "emulator default"
+            && self.last_launch_game_id().to_string() == game_id
+            && self.last_launch_target_id().to_string() == game_id
+            && *self.last_launch_succeeded()
+            && !*self.launching()
+            && !*self.launch_session_active()
+            && !*self.pause_screen_available()
+            && !*self.pause_screen_active()
+            && !*self.pause_screen_process_suspended();
+        if success {
+            eprintln!(
+                "LAUNCH_PAUSE_SMOKE_COMPLETE id={game_id} presentations={} suspensions={} resumptions={} theme=\"{}\" source=\"{}\"",
+                rust.pause_screen_presentations,
+                rust.pause_process_suspensions,
+                rust.pause_process_resumptions,
+                self.frontend_pause_theme(),
+                self.pause_screen_settings_source(),
+            );
+        }
+        success
+    }
+
     pub fn report_additional_application_launch_smoke_success(
         &self,
         game_id: QString,
@@ -13785,6 +14104,8 @@ impl qobject::LibraryController {
                     emulator_configuration: loaded.emulator_configuration,
                     launchbox_launch_screen_policy: loaded.launchbox_launch_screen_policy,
                     big_box_launch_screen_policy: loaded.big_box_launch_screen_policy,
+                    launchbox_pause_screen_policy: loaded.launchbox_pause_screen_policy,
+                    big_box_pause_screen_policy: loaded.big_box_pause_screen_policy,
                     name: loaded.name,
                     message: loaded.message,
                     pending_recovery_count: loaded.pending_recovery_count,
@@ -14622,7 +14943,11 @@ impl qobject::LibraryController {
         if self.as_ref().rust().request_generation != generation {
             return;
         }
+        self.as_mut().rust_mut().launch_control_sender = None;
         self.as_mut().set_launch_session_active(false);
+        self.as_mut().set_pause_screen_available(false);
+        self.as_mut().set_pause_screen_active(false);
+        self.as_mut().set_pause_screen_process_suspended(false);
         self.as_mut().rust_mut().pending_shutdown_screen = None;
         if primary_started && *self.as_ref().startup_screen_active() {
             if shutdown.enabled {
@@ -15846,6 +16171,8 @@ impl qobject::LibraryController {
             emulator_configuration,
             launchbox_launch_screen_policy,
             big_box_launch_screen_policy,
+            launchbox_pause_screen_policy,
+            big_box_pause_screen_policy,
             name,
             message,
             pending_recovery_count,
@@ -15887,6 +16214,9 @@ impl qobject::LibraryController {
             rust.emulator_configuration = emulator_configuration;
             rust.launchbox_launch_screen_policy = launchbox_launch_screen_policy;
             rust.big_box_launch_screen_policy = big_box_launch_screen_policy;
+            rust.launchbox_pause_screen_policy = launchbox_pause_screen_policy;
+            rust.big_box_pause_screen_policy = big_box_pause_screen_policy;
+            rust.launch_control_sender = None;
             rust.discovered_emulators.clear();
             rust.emulator_bios_audit = None;
             rust.emulator_bios_emulator_id = None;
@@ -15903,6 +16233,9 @@ impl qobject::LibraryController {
             rust.startup_screen_timer_dismissals = 0;
             rust.shutdown_screen_presentations = 0;
             rust.shutdown_screen_timer_dismissals = 0;
+            rust.pause_screen_presentations = 0;
+            rust.pause_process_suspensions = 0;
+            rust.pause_process_resumptions = 0;
             rust.pending_shutdown_screen = None;
             rust.emulator_write_notifications = 0;
             rust.emulator_bios_scan_notifications = 0;
@@ -15936,6 +16269,14 @@ impl qobject::LibraryController {
             .set_shutdown_screen_game_title(QString::default());
         self.as_mut()
             .set_shutdown_screen_settings_source(QString::default());
+        self.as_mut().set_pause_screen_available(false);
+        self.as_mut().set_pause_screen_active(false);
+        self.as_mut().set_pause_screen_process_suspended(false);
+        self.as_mut().set_pause_screen_forceful_activation(false);
+        self.as_mut()
+            .set_pause_screen_game_title(QString::default());
+        self.as_mut()
+            .set_pause_screen_settings_source(QString::default());
         self.as_mut()
             .set_emulator_bios_audit_json(QString::default());
         self.as_mut().set_emulator_release_json(QString::default());

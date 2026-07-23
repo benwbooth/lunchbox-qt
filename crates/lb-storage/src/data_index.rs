@@ -973,7 +973,7 @@ mod tests {
 
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         let settings = index.settings().expect("LaunchBox settings");
-        assert_eq!(settings.entries.len(), 8);
+        assert_eq!(settings.entries.len(), 12);
         assert_eq!(settings.get("Theme"), Some("Fixture Theme"));
         assert_eq!(settings.get_bool("DebugLog"), Some(false));
         assert_eq!(settings.get_bool("UseStartupScreen"), Some(true));
@@ -990,11 +990,15 @@ mod tests {
             settings.get_bool("HideMouseCursorOnStartupScreens"),
             Some(true)
         );
+        assert_eq!(settings.get_bool("UsePauseScreen"), Some(true));
+        assert_eq!(settings.get("PauseTheme"), Some("Fixture Desktop Pause"));
+        assert_eq!(settings.get_bool("PauseScreenMuting"), Some(true));
+        assert_eq!(settings.get_bool("PauseScreenFading"), Some(true));
         assert_eq!(settings.get("EmptyValue"), Some(""));
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 7);
+        assert_eq!(big_box.entries.len(), 11);
         assert_eq!(big_box.get_bool("EnableAttractMode"), Some(true));
         assert_eq!(big_box.get_bool("UseStartupScreen"), Some(true));
         assert_eq!(big_box.get("StartupTheme"), Some("Fixture BigBox Startup"));
@@ -1004,5 +1008,9 @@ mod tests {
             big_box.get_bool("HideMouseCursorOnStartupScreens"),
             Some(false)
         );
+        assert_eq!(big_box.get_bool("UsePauseScreen"), Some(true));
+        assert_eq!(big_box.get("PauseTheme"), Some("Fixture BigBox Pause"));
+        assert_eq!(big_box.get_bool("PauseScreenMuting"), Some(true));
+        assert_eq!(big_box.get_bool("PauseScreenFading"), Some(true));
     }
 }

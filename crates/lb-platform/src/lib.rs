@@ -28,6 +28,7 @@ use lb_domain::{
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
@@ -64,6 +65,31 @@ pub struct LaunchStartupPolicy {
 pub struct LaunchShutdownPolicy {
     pub enabled: bool,
     pub source: LaunchStartupSettingsSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LaunchPausePolicy {
+    pub enabled: bool,
+    pub suspend_process: bool,
+    pub forceful_activation: bool,
+    pub source: LaunchStartupSettingsSource,
+}
+
+impl LaunchPausePolicy {
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            suspend_process: false,
+            forceful_activation: false,
+            source: LaunchStartupSettingsSource::DirectGame,
+        }
+    }
+}
+
+impl Default for LaunchPausePolicy {
+    fn default() -> Self {
+        Self::disabled()
+    }
 }
 
 impl LaunchShutdownPolicy {
@@ -127,6 +153,43 @@ impl Default for FrontendLaunchScreenPolicy {
             minimum_startup_display: Duration::ZERO,
             minimum_shutdown_display: Duration::ZERO,
             hide_mouse_cursor: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendPauseScreenPolicy {
+    pub enabled: bool,
+    pub theme: String,
+    pub mute_frontend_audio: bool,
+    pub fade_frontend: bool,
+}
+
+impl FrontendPauseScreenPolicy {
+    pub fn from_settings(settings: Option<&FrontendSettings>) -> Result<Self, LaunchPlanError> {
+        let Some(settings) = settings else {
+            return Ok(Self::default());
+        };
+        Ok(Self {
+            enabled: frontend_bool_setting(settings, "UsePauseScreen", true)?,
+            theme: settings
+                .get("PauseTheme")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("Default")
+                .to_string(),
+            mute_frontend_audio: frontend_bool_setting(settings, "PauseScreenMuting", true)?,
+            fade_frontend: frontend_bool_setting(settings, "PauseScreenFading", true)?,
+        })
+    }
+}
+
+impl Default for FrontendPauseScreenPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            theme: "Default".to_string(),
+            mute_frontend_audio: true,
+            fade_frontend: true,
         }
     }
 }
@@ -268,6 +331,7 @@ pub struct LaunchSequence {
     pub game_title: String,
     pub startup: LaunchStartupPolicy,
     pub shutdown: LaunchShutdownPolicy,
+    pub pause: LaunchPausePolicy,
     pub steps: Vec<LaunchStep>,
 }
 
@@ -1007,7 +1071,7 @@ fn build_game_launch_sequence_internal<'a>(
             path_resolver,
         )?
     };
-    let (startup, shutdown) = launch_screen_policies(game, &main_plan, configuration)?;
+    let (startup, shutdown, pause) = launch_screen_policies(game, &main_plan, configuration)?;
     steps.push(LaunchStep {
         role: LaunchStepRole::MainGame,
         wait_for_exit: applications
@@ -1054,6 +1118,7 @@ fn build_game_launch_sequence_internal<'a>(
         game_title: game.title.clone(),
         startup,
         shutdown,
+        pause,
         steps,
     })
 }
@@ -1095,12 +1160,13 @@ pub fn build_selected_additional_application_sequence_with_mounts_context_and_re
         context,
         path_resolver,
     )?;
-    let (startup, shutdown) = launch_screen_policies(game, &plan, configuration)?;
+    let (startup, shutdown, pause) = launch_screen_policies(game, &plan, configuration)?;
     Ok(LaunchSequence {
         game_id: game.id.clone(),
         game_title: game.title.clone(),
         startup,
         shutdown,
+        pause,
         steps: vec![LaunchStep {
             role: LaunchStepRole::SelectedAdditionalApplication,
             wait_for_exit: false,
@@ -1151,12 +1217,13 @@ pub fn prepare_selected_additional_application_sequence_with_mounts_context_and_
         path_resolver,
         archive_extractor,
     )?;
-    let (startup, shutdown) = launch_screen_policies(game, &plan, configuration)?;
+    let (startup, shutdown, pause) = launch_screen_policies(game, &plan, configuration)?;
     Ok(LaunchSequence {
         game_id: game.id.clone(),
         game_title: game.title.clone(),
         startup,
         shutdown,
+        pause,
         steps: vec![LaunchStep {
             role: LaunchStepRole::SelectedAdditionalApplication,
             wait_for_exit: false,
@@ -1169,60 +1236,90 @@ fn launch_screen_policies(
     game: &Game,
     primary_plan: &LaunchPlan,
     configuration: Option<&EmulatorConfiguration>,
-) -> Result<(LaunchStartupPolicy, LaunchShutdownPolicy), LaunchPlanError> {
-    if game.override_default_startup_screen_settings {
+) -> Result<(LaunchStartupPolicy, LaunchShutdownPolicy, LaunchPausePolicy), LaunchPlanError> {
+    let emulator = if let LaunchKind::Emulator { id, .. } = &primary_plan.kind {
+        Some(
+            configuration
+                .and_then(|configuration| {
+                    configuration
+                        .emulators
+                        .iter()
+                        .find(|emulator| emulator.id.eq_ignore_ascii_case(id))
+                })
+                .ok_or_else(|| LaunchPlanError::EmulatorNotFound {
+                    game_id: game.id.clone(),
+                    emulator_id: id.clone(),
+                })?,
+        )
+    } else {
+        None
+    };
+
+    let (startup, shutdown) = if game.override_default_startup_screen_settings {
         let startup = LaunchStartupPolicy {
             enabled: game.use_startup_screen,
             load_delay: Duration::from_millis(u64::from(game.startup_load_delay)),
             source: LaunchStartupSettingsSource::GameOverride,
         };
-        return Ok((
+        (
             startup,
             LaunchShutdownPolicy {
                 enabled: startup.enabled && !game.disable_shutdown_screen,
                 source: startup.source,
             },
-        ));
-    }
-
-    if let LaunchKind::Emulator { id, .. } = &primary_plan.kind {
-        let emulator = configuration
-            .and_then(|configuration| {
-                configuration
-                    .emulators
-                    .iter()
-                    .find(|emulator| emulator.id.eq_ignore_ascii_case(id))
-            })
-            .ok_or_else(|| LaunchPlanError::EmulatorNotFound {
-                game_id: game.id.clone(),
-                emulator_id: id.clone(),
-            })?;
+        )
+    } else if let Some(emulator) = emulator {
         let startup = LaunchStartupPolicy {
             enabled: emulator.use_startup_screen,
             load_delay: Duration::from_millis(emulator.startup_load_delay),
             source: LaunchStartupSettingsSource::EmulatorDefault,
         };
-        return Ok((
+        (
             startup,
             LaunchShutdownPolicy {
                 enabled: startup.enabled && !emulator.disable_shutdown_screen,
                 source: startup.source,
             },
-        ));
-    }
-
-    let startup = LaunchStartupPolicy {
-        enabled: game.use_startup_screen,
-        load_delay: Duration::from_millis(u64::from(game.startup_load_delay)),
-        source: LaunchStartupSettingsSource::DirectGame,
+        )
+    } else {
+        let startup = LaunchStartupPolicy {
+            enabled: game.use_startup_screen,
+            load_delay: Duration::from_millis(u64::from(game.startup_load_delay)),
+            source: LaunchStartupSettingsSource::DirectGame,
+        };
+        (
+            startup,
+            LaunchShutdownPolicy {
+                enabled: startup.enabled && !game.disable_shutdown_screen,
+                source: startup.source,
+            },
+        )
     };
-    Ok((
-        startup,
-        LaunchShutdownPolicy {
-            enabled: startup.enabled && !game.disable_shutdown_screen,
-            source: startup.source,
-        },
-    ))
+
+    let pause = if game.override_default_pause_screen_settings {
+        LaunchPausePolicy {
+            enabled: game.use_pause_screen,
+            suspend_process: game.suspend_process_on_pause,
+            forceful_activation: game.forceful_pause_screen_activation,
+            source: LaunchStartupSettingsSource::GameOverride,
+        }
+    } else if let Some(emulator) = emulator {
+        LaunchPausePolicy {
+            enabled: emulator.use_pause_screen,
+            suspend_process: emulator.suspend_process_on_pause,
+            forceful_activation: emulator.forceful_pause_screen_activation,
+            source: LaunchStartupSettingsSource::EmulatorDefault,
+        }
+    } else {
+        LaunchPausePolicy {
+            enabled: game.use_pause_screen,
+            suspend_process: game.suspend_process_on_pause,
+            forceful_activation: game.forceful_pause_screen_activation,
+            source: LaunchStartupSettingsSource::DirectGame,
+        }
+    };
+
+    Ok((startup, shutdown, pause))
 }
 
 fn select_emulator<'a>(
@@ -1479,19 +1576,196 @@ pub trait LaunchProcess: Send + 'static {
     fn id(&self) -> u32;
     fn wait(&mut self) -> std::io::Result<ExitStatus>;
     fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>>;
+    fn suspend(&mut self) -> std::io::Result<()>;
+    fn resume(&mut self) -> std::io::Result<()>;
 }
 
-impl LaunchProcess for Child {
+pub struct SystemLaunchProcess {
+    child: Child,
+    #[cfg(unix)]
+    suspended: bool,
+    #[cfg(windows)]
+    suspended_threads: Vec<u32>,
+}
+
+impl LaunchProcess for SystemLaunchProcess {
     fn id(&self) -> u32 {
-        Child::id(self)
+        self.child.id()
     }
 
     fn wait(&mut self) -> std::io::Result<ExitStatus> {
-        Child::wait(self)
+        self.child.wait()
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-        Child::try_wait(self)
+        self.child.try_wait()
+    }
+
+    #[cfg(unix)]
+    fn suspend(&mut self) -> std::io::Result<()> {
+        if self.suspended {
+            return Ok(());
+        }
+        signal_process(self.child.id(), libc::SIGSTOP)?;
+        self.suspended = true;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn resume(&mut self) -> std::io::Result<()> {
+        if !self.suspended {
+            return Ok(());
+        }
+        signal_process(self.child.id(), libc::SIGCONT)?;
+        self.suspended = false;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn suspend(&mut self) -> std::io::Result<()> {
+        if !self.suspended_threads.is_empty() {
+            return Ok(());
+        }
+        let thread_ids = windows_process_thread_ids(self.child.id())?;
+        let mut suspended = Vec::with_capacity(thread_ids.len());
+        for thread_id in thread_ids {
+            if let Err(error) = windows_adjust_thread(thread_id, true) {
+                self.suspended_threads = suspended;
+                let _ = self.resume();
+                return Err(error);
+            }
+            suspended.push(thread_id);
+        }
+        if suspended.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("process {} has no controllable threads", self.child.id()),
+            ));
+        }
+        self.suspended_threads = suspended;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn resume(&mut self) -> std::io::Result<()> {
+        if self.suspended_threads.is_empty() {
+            return Ok(());
+        }
+        let live_threads = windows_process_thread_ids(self.child.id())?;
+        let mut remaining = Vec::new();
+        let mut first_error = None;
+        for thread_id in std::mem::take(&mut self.suspended_threads) {
+            if !live_threads.contains(&thread_id) {
+                continue;
+            }
+            if let Err(error) = windows_adjust_thread(thread_id, false) {
+                remaining.push(thread_id);
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        self.suspended_threads = remaining;
+        first_error.map_or(Ok(()), Err)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn suspend(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "pausing a launched process is not supported on this host",
+        ))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn resume(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for SystemLaunchProcess {
+    fn drop(&mut self) {
+        let _ = <Self as LaunchProcess>::resume(self);
+    }
+}
+
+#[cfg(unix)]
+fn signal_process(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
+    let pid = libc::pid_t::try_from(pid).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("process identifier {pid} does not fit pid_t"),
+        )
+    })?;
+    // SAFETY: `pid` came from a live `std::process::Child`, and `signal` is
+    // restricted by callers to SIGSTOP or SIGCONT.
+    if unsafe { libc::kill(pid, signal) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn windows_process_thread_ids(pid: u32) -> std::io::Result<Vec<u32>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+
+    // SAFETY: the snapshot handle is checked and closed on every path; the
+    // initialized THREADENTRY32 is kept alive for each Win32 call.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..THREADENTRY32::default()
+        };
+        let mut thread_ids = Vec::new();
+        if Thread32First(snapshot, &mut entry) != 0 {
+            loop {
+                if entry.th32OwnerProcessID == pid {
+                    thread_ids.push(entry.th32ThreadID);
+                }
+                if Thread32Next(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        Ok(thread_ids)
+    }
+}
+
+#[cfg(windows)]
+fn windows_adjust_thread(thread_id: u32, suspend: bool) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenThread, ResumeThread, SuspendThread, THREAD_SUSPEND_RESUME,
+    };
+
+    // SAFETY: OpenThread returns a checked owned handle, which is closed after
+    // the single suspend-count adjustment.
+    unsafe {
+        let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, thread_id);
+        if thread.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let previous_count = if suspend {
+            SuspendThread(thread)
+        } else {
+            ResumeThread(thread)
+        };
+        let result = if previous_count == u32::MAX {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        };
+        CloseHandle(thread);
+        result
     }
 }
 
@@ -1515,7 +1789,7 @@ fn system_process_command(request: &LaunchRequest) -> (PathBuf, Vec<OsString>) {
 }
 
 impl ProcessLauncher for SystemProcessLauncher {
-    type Handle = Child;
+    type Handle = SystemLaunchProcess;
 
     fn launch(&self, request: &LaunchRequest) -> Result<Self::Handle, LaunchError> {
         let (executable, arguments) = system_process_command(request);
@@ -1535,9 +1809,16 @@ impl ProcessLauncher for SystemProcessLauncher {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        command.spawn().map_err(|source| LaunchError::Spawn {
+        let child = command.spawn().map_err(|source| LaunchError::Spawn {
             executable: request.executable.clone(),
             source,
+        })?;
+        Ok(SystemLaunchProcess {
+            child,
+            #[cfg(unix)]
+            suspended: false,
+            #[cfg(windows)]
+            suspended_threads: Vec::new(),
         })
     }
 }
@@ -1570,6 +1851,22 @@ pub enum LaunchSequenceEvent {
         target: LaunchTarget,
         timeout: Duration,
     },
+    PrimaryPaused {
+        process_suspended: bool,
+    },
+    PrimaryResumed {
+        process_resumed: bool,
+    },
+    PrimaryControlFailed {
+        action: LaunchControlCommand,
+        message: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaunchControlCommand {
+    Pause,
+    Resume,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1595,10 +1892,28 @@ pub fn execute_launch_sequence(
     sequence: &LaunchSequence,
     mut on_event: impl FnMut(LaunchSequenceEvent),
 ) -> Result<LaunchSequenceReport, LaunchSequenceError> {
-    execute_launch_sequence_with(
+    execute_launch_sequence_with_control(
         sequence,
         &SystemProcessLauncher,
         AUTO_RUN_BEFORE_WAIT_TIMEOUT,
+        None,
+        &mut on_event,
+    )
+}
+
+/// Executes a launch sequence while accepting pause/resume commands for its
+/// one primary child. Dropping the sender while paused causes the worker to
+/// resume the child before it continues supervising the session.
+pub fn execute_launch_sequence_controlled(
+    sequence: &LaunchSequence,
+    control: &Receiver<LaunchControlCommand>,
+    mut on_event: impl FnMut(LaunchSequenceEvent),
+) -> Result<LaunchSequenceReport, LaunchSequenceError> {
+    execute_launch_sequence_with_control(
+        sequence,
+        &SystemProcessLauncher,
+        AUTO_RUN_BEFORE_WAIT_TIMEOUT,
+        Some(control),
         &mut on_event,
     )
 }
@@ -1607,6 +1922,25 @@ pub fn execute_launch_sequence_with<L>(
     sequence: &LaunchSequence,
     launcher: &L,
     before_wait_timeout: Duration,
+    mut on_event: impl FnMut(LaunchSequenceEvent),
+) -> Result<LaunchSequenceReport, LaunchSequenceError>
+where
+    L: ProcessLauncher,
+{
+    execute_launch_sequence_with_control(
+        sequence,
+        launcher,
+        before_wait_timeout,
+        None,
+        &mut on_event,
+    )
+}
+
+pub fn execute_launch_sequence_with_control<L>(
+    sequence: &LaunchSequence,
+    launcher: &L,
+    before_wait_timeout: Duration,
+    control: Option<&Receiver<LaunchControlCommand>>,
     mut on_event: impl FnMut(LaunchSequenceEvent),
 ) -> Result<LaunchSequenceReport, LaunchSequenceError>
 where
@@ -1681,13 +2015,20 @@ where
                 }
             }
         } else if step.wait_for_exit || step.role.is_primary() {
-            let status = process
-                .wait()
-                .map_err(|source| LaunchSequenceError::WaitForStep {
-                    role: step.role,
-                    target: step.plan.target.clone(),
-                    source,
-                })?;
+            let status = if step.role.is_primary() {
+                if let Some(control) = control {
+                    wait_for_primary_exit(&mut process, sequence.pause, control, &mut on_event)
+                } else {
+                    process.wait()
+                }
+            } else {
+                process.wait()
+            }
+            .map_err(|source| LaunchSequenceError::WaitForStep {
+                role: step.role,
+                target: step.plan.target.clone(),
+                source,
+            })?;
             on_event(LaunchSequenceEvent::StepExited {
                 role: step.role,
                 target: step.plan.target.clone(),
@@ -1734,6 +2075,75 @@ where
         automatic_after_started,
         before_wait_timeouts,
     })
+}
+
+fn wait_for_primary_exit<P: LaunchProcess>(
+    process: &mut P,
+    pause_policy: LaunchPausePolicy,
+    control: &Receiver<LaunchControlCommand>,
+    on_event: &mut impl FnMut(LaunchSequenceEvent),
+) -> std::io::Result<ExitStatus> {
+    let mut paused = false;
+    let mut process_suspended = false;
+    let mut control_connected = true;
+    loop {
+        if let Some(status) = process.try_wait()? {
+            return Ok(status);
+        }
+
+        if control_connected {
+            loop {
+                match control.try_recv() {
+                    Ok(LaunchControlCommand::Pause) if pause_policy.enabled && !paused => {
+                        if pause_policy.suspend_process {
+                            match process.suspend() {
+                                Ok(()) => process_suspended = true,
+                                Err(error) => {
+                                    let _ = process.resume();
+                                    on_event(LaunchSequenceEvent::PrimaryControlFailed {
+                                        action: LaunchControlCommand::Pause,
+                                        message: error.to_string(),
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                        paused = true;
+                        on_event(LaunchSequenceEvent::PrimaryPaused { process_suspended });
+                    }
+                    Ok(LaunchControlCommand::Resume) if paused => {
+                        if process_suspended {
+                            if let Err(error) = process.resume() {
+                                on_event(LaunchSequenceEvent::PrimaryControlFailed {
+                                    action: LaunchControlCommand::Resume,
+                                    message: error.to_string(),
+                                });
+                                continue;
+                            }
+                        }
+                        let was_suspended = process_suspended;
+                        paused = false;
+                        process_suspended = false;
+                        on_event(LaunchSequenceEvent::PrimaryResumed {
+                            process_resumed: was_suspended,
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        control_connected = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !control_connected && paused && (!process_suspended || process.resume().is_ok()) {
+            paused = false;
+            process_suspended = false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn wait_for_exit_until<P: LaunchProcess>(
@@ -2118,11 +2528,91 @@ mod tests {
     }
 
     #[test]
-    fn selected_additional_application_uses_its_effective_emulator_startup_defaults() {
+    fn pause_policy_uses_game_override_emulator_default_or_direct_game_settings() {
+        let mut configuration = configuration();
+        configuration.emulators[0].use_pause_screen = true;
+        configuration.emulators[0].suspend_process_on_pause = true;
+        configuration.emulators[0].forceful_pause_screen_activation = true;
+
+        let mut emulated_game = game();
+        emulated_game.use_pause_screen = false;
+        let sequence = build_game_launch_sequence_with_context_and_resolver(
+            Path::new("/launchbox"),
+            &emulated_game,
+            [],
+            Some(&configuration),
+            &LaunchContext::default(),
+            &HostPathResolver::default(),
+        )
+        .expect("build emulator-default pause sequence");
+        assert_eq!(
+            sequence.pause,
+            LaunchPausePolicy {
+                enabled: true,
+                suspend_process: true,
+                forceful_activation: true,
+                source: LaunchStartupSettingsSource::EmulatorDefault,
+            }
+        );
+
+        emulated_game.override_default_pause_screen_settings = true;
+        emulated_game.use_pause_screen = true;
+        emulated_game.suspend_process_on_pause = false;
+        emulated_game.forceful_pause_screen_activation = false;
+        let sequence = build_game_launch_sequence_with_context_and_resolver(
+            Path::new("/launchbox"),
+            &emulated_game,
+            [],
+            Some(&configuration),
+            &LaunchContext::default(),
+            &HostPathResolver::default(),
+        )
+        .expect("build game-override pause sequence");
+        assert_eq!(
+            sequence.pause,
+            LaunchPausePolicy {
+                enabled: true,
+                suspend_process: false,
+                forceful_activation: false,
+                source: LaunchStartupSettingsSource::GameOverride,
+            }
+        );
+
+        let mut direct_game = emulated_game;
+        direct_game.override_default_pause_screen_settings = false;
+        direct_game.emulator_id = Some(UNASSIGNED_EMULATOR_ID.into());
+        direct_game.use_pause_screen = true;
+        direct_game.suspend_process_on_pause = true;
+        direct_game.forceful_pause_screen_activation = true;
+        let sequence = build_game_launch_sequence_with_context_and_resolver(
+            Path::new("/launchbox"),
+            &direct_game,
+            [],
+            Some(&configuration),
+            &LaunchContext::default(),
+            &HostPathResolver::default(),
+        )
+        .expect("build direct-game pause sequence");
+        assert_eq!(
+            sequence.pause,
+            LaunchPausePolicy {
+                enabled: true,
+                suspend_process: true,
+                forceful_activation: true,
+                source: LaunchStartupSettingsSource::DirectGame,
+            }
+        );
+    }
+
+    #[test]
+    fn selected_additional_application_uses_its_effective_emulator_screen_defaults() {
         let mut configuration = configuration();
         configuration.emulators[0].use_startup_screen = true;
         configuration.emulators[0].startup_load_delay = 640;
         configuration.emulators[0].disable_shutdown_screen = true;
+        configuration.emulators[0].use_pause_screen = true;
+        configuration.emulators[0].suspend_process_on_pause = true;
+        configuration.emulators[0].forceful_pause_screen_activation = true;
         let mut application = additional_application("version", 0);
         application.use_emulator = true;
         application.emulator_id = Some("emulator-id".into());
@@ -2149,6 +2639,15 @@ mod tests {
             sequence.shutdown,
             LaunchShutdownPolicy {
                 enabled: false,
+                source: LaunchStartupSettingsSource::EmulatorDefault,
+            }
+        );
+        assert_eq!(
+            sequence.pause,
+            LaunchPausePolicy {
+                enabled: true,
+                suspend_process: true,
+                forceful_activation: true,
                 source: LaunchStartupSettingsSource::EmulatorDefault,
             }
         );
@@ -2206,6 +2705,58 @@ mod tests {
             FrontendLaunchScreenPolicy::from_settings(Some(&invalid)),
             Err(LaunchPlanError::InvalidFrontendLaunchSetting {
                 key: "MinimumStartupScreenDisplayTime",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn frontend_pause_policy_parses_independent_launchbox_and_bigbox_settings() {
+        let settings = FrontendSettings {
+            record_name: "BigBoxSettings".into(),
+            entries: vec![
+                lb_domain::SettingEntry {
+                    key: "UsePauseScreen".into(),
+                    value: "false".into(),
+                },
+                lb_domain::SettingEntry {
+                    key: "PauseTheme".into(),
+                    value: "Fixture Pause".into(),
+                },
+                lb_domain::SettingEntry {
+                    key: "PauseScreenMuting".into(),
+                    value: "false".into(),
+                },
+                lb_domain::SettingEntry {
+                    key: "PauseScreenFading".into(),
+                    value: "true".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            FrontendPauseScreenPolicy::from_settings(Some(&settings))
+                .expect("parse frontend pause-screen settings"),
+            FrontendPauseScreenPolicy {
+                enabled: false,
+                theme: "Fixture Pause".into(),
+                mute_frontend_audio: false,
+                fade_frontend: true,
+            }
+        );
+
+        let invalid = FrontendSettings {
+            record_name: "Settings".into(),
+            entries: vec![lb_domain::SettingEntry {
+                key: "PauseScreenFading".into(),
+                value: "sometimes".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert!(matches!(
+            FrontendPauseScreenPolicy::from_settings(Some(&invalid)),
+            Err(LaunchPlanError::InvalidFrontendLaunchSetting {
+                key: "PauseScreenFading",
                 ..
             })
         ));
@@ -2426,6 +2977,166 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn controlled_executor_stops_and_resumes_the_real_primary_pid() {
+        let sequence = LaunchSequence {
+            game_id: "game-id".into(),
+            game_title: "Game Title".into(),
+            startup: LaunchStartupPolicy::disabled(),
+            shutdown: LaunchShutdownPolicy::disabled(),
+            pause: LaunchPausePolicy {
+                enabled: true,
+                suspend_process: true,
+                forceful_activation: false,
+                source: LaunchStartupSettingsSource::DirectGame,
+            },
+            steps: vec![LaunchStep {
+                role: LaunchStepRole::MainGame,
+                wait_for_exit: false,
+                plan: LaunchPlan {
+                    game_id: "game-id".into(),
+                    game_title: "Game Title".into(),
+                    target: LaunchTarget::MainGame,
+                    kind: LaunchKind::Direct,
+                    request: LaunchRequest::new("/bin/sh").arg("-c").arg("exec sleep 30"),
+                    resource_leases: Vec::new(),
+                },
+            }],
+        };
+        let (command_tx, command_rx) = std::sync::mpsc::channel();
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            execute_launch_sequence_controlled(&sequence, &command_rx, |event| {
+                event_tx.send(event).expect("send launch event");
+            })
+        });
+
+        let pid = loop {
+            match event_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("primary process start event")
+            {
+                LaunchSequenceEvent::StepStarted { role, pid, .. } if role.is_primary() => {
+                    break pid;
+                }
+                _ => {}
+            }
+        };
+        command_tx
+            .send(LaunchControlCommand::Pause)
+            .expect("request pause");
+        loop {
+            if matches!(
+                event_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("primary pause event"),
+                LaunchSequenceEvent::PrimaryPaused {
+                    process_suspended: true
+                }
+            ) {
+                break;
+            }
+        }
+        let stopped_status =
+            std::fs::read_to_string(format!("/proc/{pid}/status")).expect("read stopped status");
+
+        command_tx
+            .send(LaunchControlCommand::Resume)
+            .expect("request resume");
+        loop {
+            if matches!(
+                event_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("primary resume event"),
+                LaunchSequenceEvent::PrimaryResumed {
+                    process_resumed: true
+                }
+            ) {
+                break;
+            }
+        }
+        let resume_started = Instant::now();
+        let resumed_status = loop {
+            let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
+                .expect("read resumed status");
+            if status
+                .lines()
+                .any(|line| line.starts_with("State:") && !line.contains("T (stopped)"))
+            {
+                break status;
+            }
+            assert!(
+                resume_started.elapsed() < Duration::from_secs(2),
+                "primary did not resume:\n{status}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        command_tx
+            .send(LaunchControlCommand::Pause)
+            .expect("request second pause");
+        loop {
+            if matches!(
+                event_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("second primary pause event"),
+                LaunchSequenceEvent::PrimaryPaused {
+                    process_suspended: true
+                }
+            ) {
+                break;
+            }
+        }
+        drop(command_tx);
+        let disconnect_started = Instant::now();
+        let disconnected_status = loop {
+            let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
+                .expect("read disconnect-resumed status");
+            if status
+                .lines()
+                .any(|line| line.starts_with("State:") && !line.contains("T (stopped)"))
+            {
+                break status;
+            }
+            assert!(
+                disconnect_started.elapsed() < Duration::from_secs(2),
+                "sender loss did not resume the primary:\n{status}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        let native_pid = libc::pid_t::try_from(pid).expect("test PID fits pid_t");
+        // SAFETY: `pid` is the exact child reported by the executor and is
+        // terminated only after the resume event.
+        assert_eq!(unsafe { libc::kill(native_pid, libc::SIGTERM) }, 0);
+        let report = worker
+            .join()
+            .expect("join controlled launch worker")
+            .expect("supervise terminated primary");
+
+        assert!(
+            stopped_status
+                .lines()
+                .any(|line| line.starts_with("State:") && line.contains("T (stopped)")),
+            "primary was not stopped:\n{stopped_status}"
+        );
+        assert!(
+            resumed_status
+                .lines()
+                .any(|line| line.starts_with("State:") && !line.contains("T (stopped)")),
+            "primary did not resume:\n{resumed_status}"
+        );
+        assert!(
+            disconnected_status
+                .lines()
+                .any(|line| line.starts_with("State:") && !line.contains("T (stopped)")),
+            "primary remained stopped after sender loss:\n{disconnected_status}"
+        );
+        assert_eq!(report.primary_pid, pid);
+        assert!(!report.primary_exit_success);
+    }
+
     #[cfg(unix)]
     #[test]
     fn sequence_executor_runs_waited_before_main_and_after_in_order() {
@@ -2464,6 +3175,7 @@ mod tests {
             game_title: "Game Title".into(),
             startup: LaunchStartupPolicy::disabled(),
             shutdown: LaunchShutdownPolicy::disabled(),
+            pause: LaunchPausePolicy::disabled(),
             steps: vec![
                 step(LaunchStepRole::AutomaticBefore, true, "before"),
                 step(LaunchStepRole::MainGame, true, "main"),
@@ -2543,6 +3255,7 @@ mod tests {
             game_title: "Game Title".into(),
             startup: LaunchStartupPolicy::disabled(),
             shutdown: LaunchShutdownPolicy::disabled(),
+            pause: LaunchPausePolicy::disabled(),
             steps: vec![before, main],
         };
         let mut timed_out = false;
@@ -2570,6 +3283,7 @@ mod tests {
             game_title: "Game Title".into(),
             startup: LaunchStartupPolicy::disabled(),
             shutdown: LaunchShutdownPolicy::disabled(),
+            pause: LaunchPausePolicy::disabled(),
             steps: vec![LaunchStep {
                 role: LaunchStepRole::MainGame,
                 wait_for_exit: false,

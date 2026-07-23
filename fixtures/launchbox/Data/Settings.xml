@@ -8,6 +8,10 @@
     <MinimumStartupScreenDisplayTime>600</MinimumStartupScreenDisplayTime>
     <MinimumShutdownScreenDisplayTime>350</MinimumShutdownScreenDisplayTime>
     <HideMouseCursorOnStartupScreens>true</HideMouseCursorOnStartupScreens>
+    <UsePauseScreen>true</UsePauseScreen>
+    <PauseTheme>Fixture Desktop Pause</PauseTheme>
+    <PauseScreenMuting>true</PauseScreenMuting>
+    <PauseScreenFading>true</PauseScreenFading>
     <EmptyValue />
   </Settings>
   <ImageTypeSettings>

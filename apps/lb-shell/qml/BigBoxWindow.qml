@@ -43,6 +43,16 @@ ApplicationWindow {
         argumentValue("--launch-lifecycle-screenshot")
     property string launchLifecycleShutdownScreenshotPath:
         argumentValue("--launch-lifecycle-shutdown-screenshot")
+    property bool launchPauseSmokeTest:
+        Qt.application.arguments.indexOf("--launch-pause-smoke-test") >= 0
+    property int launchPauseSmokePhase: 0
+    property bool launchPauseSmokeFinished: false
+    property bool launchPauseVisibleSeen: false
+    property bool launchPauseProcessSuspendedSeen: false
+    property bool launchPauseResumeSeen: false
+    property bool launchPauseScreenshotRequested: false
+    property string launchPauseScreenshotPath:
+        argumentValue("--launch-pause-screenshot")
     property string activeNavigationName: "All Games"
     property string launchSmokeGameId: {
         const requested = argumentValue("--launch-game-id")
@@ -230,6 +240,31 @@ ApplicationWindow {
                        && window.launchLifecycleShutdownPresentedAt > 0
                        && window.launchLifecycleShutdownDismissedAt === 0) {
                 window.launchLifecycleShutdownDismissedAt = Date.now()
+            }
+        }
+
+        function onPause_screen_activeChanged() {
+            if (!window.launchPauseSmokeTest)
+                return
+            if (controller.pause_screen_active) {
+                window.launchPauseVisibleSeen = true
+                window.launchPauseProcessSuspendedSeen =
+                    controller.pause_screen_process_suspended
+                if (window.launchPauseScreenshotPath.length > 0
+                        && !window.launchPauseScreenshotRequested) {
+                    window.launchPauseScreenshotRequested = true
+                    Qt.callLater(function() {
+                        launchPauseOverlay.grabToImage(function(result) {
+                            if (!result.saveToFile(
+                                    window.launchPauseScreenshotPath))
+                                console.error(
+                                    "LAUNCH_PAUSE_SCREENSHOT_SAVE_FAILED path="
+                                    + window.launchPauseScreenshotPath)
+                        })
+                    })
+                }
+            } else if (window.launchPauseVisibleSeen) {
+                window.launchPauseResumeSeen = true
             }
         }
     }
@@ -508,6 +543,87 @@ ApplicationWindow {
                           + " shutdown=" + controller.shutdown_screen_active
                           + " session=" + controller.launch_session_active
                           + " status=" + controller.status_message)
+            Qt.exit(7)
+        }
+    }
+
+    Timer {
+        interval: 10
+        repeat: true
+        running: window.launchPauseSmokeTest
+                 && !window.launchPauseSmokeFinished
+        onTriggered: {
+            if (window.launchPauseSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0
+                    && controller.game_count > 0) {
+                const row = controller.row_for_game_id("fixture-racer")
+                if (row < 0) {
+                    console.error("LAUNCH_PAUSE_SMOKE_MISSING_GAME")
+                    Qt.exit(7)
+                    return
+                }
+                window.launchPauseSmokePhase = 1
+                controller.launch_game(row, "fixture-racer")
+            } else if (window.launchPauseSmokePhase === 1
+                       && controller.pause_screen_available
+                       && controller.last_launch_succeeded
+                       && !controller.startup_screen_active
+                       && controller.launch_session_active) {
+                window.launchPauseSmokePhase = 2
+                controller.pause_launch_session()
+            } else if (window.launchPauseSmokePhase === 2
+                       && controller.pause_screen_active) {
+                window.launchPauseSmokePhase = 3
+                launchPauseHoldTimer.restart()
+            } else if (window.launchPauseSmokePhase >= 3
+                       && !controller.launching
+                       && !controller.launch_session_active
+                       && !controller.pause_screen_active
+                       && !controller.startup_screen_active
+                       && !controller.shutdown_screen_active) {
+                const presentationFlags =
+                    (window.launchPauseVisibleSeen ? 1 : 0)
+                    | (window.launchPauseProcessSuspendedSeen ? 2 : 0)
+                    | (window.launchPauseResumeSeen ? 4 : 0)
+                if (!controller.report_launch_pause_smoke_success(
+                            "fixture-racer", presentationFlags)) {
+                    console.error(
+                        "LAUNCH_PAUSE_SMOKE_FAILED visible="
+                        + window.launchPauseVisibleSeen
+                        + " suspended="
+                        + window.launchPauseProcessSuspendedSeen
+                        + " resumed=" + window.launchPauseResumeSeen
+                        + " status=" + controller.status_message)
+                    Qt.exit(7)
+                    return
+                }
+                window.launchPauseSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        id: launchPauseHoldTimer
+        interval: 300
+        repeat: false
+        onTriggered: controller.resume_launch_session()
+    }
+
+    Timer {
+        interval: 15000
+        running: window.launchPauseSmokeTest
+                 && !window.launchPauseSmokeFinished
+        onTriggered: {
+            console.error(
+                "LAUNCH_PAUSE_SMOKE_TIMEOUT phase="
+                + window.launchPauseSmokePhase
+                + " available=" + controller.pause_screen_available
+                + " active=" + controller.pause_screen_active
+                + " suspended="
+                + controller.pause_screen_process_suspended
+                + " session=" + controller.launch_session_active
+                + " status=" + controller.status_message)
             Qt.exit(7)
         }
     }
@@ -803,6 +919,34 @@ ApplicationWindow {
 
     LaunchShutdownOverlay {
         id: launchShutdownOverlay
+        anchors.fill: parent
+        controller: controller
+    }
+
+    Button {
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: 22
+        z: 9000
+        visible: controller.pause_screen_available
+                 && !controller.pause_screen_active
+        text: "PAUSE GAME  CTRL+P"
+        onClicked: controller.pause_launch_session()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+P"
+        enabled: controller.pause_screen_available
+        onActivated: {
+            if (controller.pause_screen_active)
+                controller.resume_launch_session()
+            else
+                controller.pause_launch_session()
+        }
+    }
+
+    LaunchPauseOverlay {
+        id: launchPauseOverlay
         anchors.fill: parent
         controller: controller
     }

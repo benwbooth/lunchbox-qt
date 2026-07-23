@@ -6,6 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/BigBoxWindow.qml");
     println!("cargo:rerun-if-changed=qml/LaunchStartupOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchShutdownOverlay.qml");
+    println!("cargo:rerun-if-changed=qml/LaunchPauseOverlay.qml");
 
     CxxQtBuilder::new_qml_module(
         QmlModule::new("LaunchBoxPort")
@@ -15,6 +16,7 @@ fn main() {
                 "qml/BigBoxWindow.qml",
                 "qml/LaunchStartupOverlay.qml",
                 "qml/LaunchShutdownOverlay.qml",
+                "qml/LaunchPauseOverlay.qml",
             ]),
     )
     .qt_module("Quick")

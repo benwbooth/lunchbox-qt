@@ -649,6 +649,7 @@ name = "lb-platform"
 version = "0.1.0"
 dependencies = [
  "lb-domain",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

@@ -285,6 +285,20 @@ settings. The port therefore treats load delay as a pre-process delay and the
 two minima as frontend presentation policy rather than conflating these three
 values.
 
+Pause recovery has a similarly explicit boundary. `MainPauseViewModel`
+receives separate pause and resume scripts plus
+`suspendProcessOnPause` and `forcefulActivation`; the shared
+`MainPauseView` exposes `Display`, `CloseAndDispose`, and the static
+`PauseInProcess` guard while importing foreground/window APIs. LaunchBox and
+BigBox each persist `UsePauseScreen`, `PauseTheme`, `PauseScreenMuting`, and
+`PauseScreenFading`, while emulator plugin defaults independently set
+`UsePauseScreen`, `SuspendProcessOnPause`, and
+`ForcefulPauseScreenActivation`. The port therefore resolves pause policy
+separately from startup/shutdown policy. Protected bodies still prevent a
+claim about exact AutoHotkey script order, cross-window forceful activation,
+mute/fade timing, or controller/global-key behavior; those remain oracle
+tasks.
+
 The port keeps these stored Windows paths lexical in LaunchBox XML. A separate
 versioned host-mapping document translates drive and UNC roots only at the
 platform/process boundary. Windows path classification, separator handling,
