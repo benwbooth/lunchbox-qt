@@ -36,6 +36,7 @@ pub mod qobject {
         #[qproperty(i32, game_count)]
         #[qproperty(i32, filtered_count)]
         #[qproperty(i32, platform_entry_count)]
+        #[qproperty(i32, navigation_entry_count)]
         #[qproperty(i32, platform_revision)]
         #[qproperty(i32, pending_recovery_count)]
         #[qproperty(i32, delete_blocker_count)]
@@ -115,6 +116,13 @@ pub mod qobject {
         );
 
         #[qinvokable]
+        fn apply_category_filter(
+            self: Pin<&mut LibraryController>,
+            search_text: QString,
+            category: QString,
+        );
+
+        #[qinvokable]
         fn save_game(
             self: Pin<&mut LibraryController>,
             row: i32,
@@ -145,6 +153,25 @@ pub mod qobject {
 
         #[qinvokable]
         fn delete_platform(self: Pin<&mut LibraryController>, name: QString);
+
+        #[qinvokable]
+        fn new_category_edit_payload(self: &LibraryController) -> QString;
+
+        #[qinvokable]
+        fn category_edit_payload(self: &LibraryController, name: QString) -> QString;
+
+        #[qinvokable]
+        fn add_category(self: Pin<&mut LibraryController>, edit_payload: QString);
+
+        #[qinvokable]
+        fn save_category(
+            self: Pin<&mut LibraryController>,
+            original_name: QString,
+            edit_payload: QString,
+        );
+
+        #[qinvokable]
+        fn delete_category(self: Pin<&mut LibraryController>, name: QString);
 
         #[qinvokable]
         fn delete_game(self: Pin<&mut LibraryController>, row: i32, game_id: QString);
@@ -266,6 +293,13 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_category_crud_smoke_success(
+            self: &LibraryController,
+            category_name: QString,
+            detached_children: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_launch_smoke_success(self: &LibraryController, game_id: QString) -> bool;
 
         #[qinvokable]
@@ -290,6 +324,21 @@ pub mod qobject {
 
         #[qinvokable]
         fn platform_game_count_at(self: &LibraryController, index: i32) -> i32;
+
+        #[qinvokable]
+        fn navigation_entry_kind_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn navigation_entry_key_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn navigation_entry_name_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn navigation_entry_depth_at(self: &LibraryController, index: i32) -> i32;
+
+        #[qinvokable]
+        fn navigation_entry_game_count_at(self: &LibraryController, index: i32) -> i32;
     }
 
     unsafe extern "RustQt" {
@@ -371,8 +420,8 @@ use cxx_qt_lib::{
 };
 use lb_domain::{
     AdditionalApplication, AlternateName, CustomField, EmulatorConfiguration, Game,
-    GameLaunchConfiguration, GameMetadata, Mount, NavigationMetadata, PlatformDefinition,
-    PlatformFolder, UNASSIGNED_EMULATOR_ID,
+    GameLaunchConfiguration, GameMetadata, Mount, NavigationMetadata, ParentRelationship,
+    PlatformCategory, PlatformDefinition, PlatformFolder, PlaylistDocument, UNASSIGNED_EMULATOR_ID,
 };
 use lb_platform::{
     default_host_path_mappings_path, default_platform_folders, execute_launch_sequence,
@@ -389,7 +438,7 @@ use lb_storage::{
     PlatformReference, StorageError, TransactionError,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -543,6 +592,7 @@ pub struct LibraryControllerRust {
     game_count: i32,
     filtered_count: i32,
     platform_entry_count: i32,
+    navigation_entry_count: i32,
     platform_revision: i32,
     pending_recovery_count: i32,
     delete_blocker_count: i32,
@@ -562,6 +612,10 @@ pub struct LibraryControllerRust {
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
+    navigation_catalog: NavigationCatalog,
+    navigation_entries: Vec<NavigationEntry>,
+    category_platforms: BTreeMap<String, BTreeSet<String>>,
+    category_filter: Option<String>,
     library_root: Option<PathBuf>,
     launchbox_root: Option<PathBuf>,
     emulator_configuration: Option<EmulatorConfiguration>,
@@ -577,12 +631,52 @@ pub struct LibraryControllerRust {
     launch_notifications: u64,
     session_stats_writes: u64,
     session_stats_error: Option<String>,
+    category_write_notifications: u64,
+    last_category_detached_children: usize,
 }
 
 #[derive(Clone, Debug)]
 struct PlatformCount {
     name: String,
     count: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct NavigationCatalog {
+    categories: Vec<PlatformCategory>,
+    parents: Vec<ParentRelationship>,
+    playlists: Vec<PlaylistNavigation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PlaylistNavigation {
+    id: String,
+    name: String,
+}
+
+impl From<&PlaylistDocument> for PlaylistNavigation {
+    fn from(document: &PlaylistDocument) -> Self {
+        Self {
+            id: document.playlist.id.clone(),
+            name: document.playlist.metadata.name.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum NavigationNodeKey {
+    Category(String),
+    Platform(String),
+    Playlist(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NavigationEntry {
+    kind: &'static str,
+    key: String,
+    name: String,
+    depth: usize,
+    game_count: usize,
 }
 
 struct LoadedLibrary {
@@ -598,6 +692,7 @@ struct LoadedLibrary {
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
+    navigation_catalog: NavigationCatalog,
     pending_recovery_count: usize,
     launchbox_root: Option<PathBuf>,
     emulator_configuration: Option<EmulatorConfiguration>,
@@ -612,6 +707,7 @@ struct LibraryReplacement {
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
+    navigation_catalog: NavigationCatalog,
     library_root: Option<PathBuf>,
     launchbox_root: Option<PathBuf>,
     emulator_configuration: Option<EmulatorConfiguration>,
@@ -667,6 +763,7 @@ impl LoadedLibrary {
                 custom_fields_by_game,
                 platform_names,
                 platform_sources,
+                navigation_catalog: NavigationCatalog::default(),
                 pending_recovery_count,
                 launchbox_root: None,
                 emulator_configuration: None,
@@ -676,6 +773,18 @@ impl LoadedLibrary {
         let data = LaunchBoxDataIndex::load(&path).map_err(|error| error.to_string())?;
         let emulator_configuration = data.emulator_configuration().cloned();
         let (platform_names, platform_sources) = platform_state_from_data(&data)?;
+        let navigation_catalog = NavigationCatalog {
+            categories: data
+                .platform_catalog()
+                .map(|catalog| catalog.categories.clone())
+                .unwrap_or_default(),
+            parents: data.parents().to_vec(),
+            playlists: data
+                .playlists()
+                .iter()
+                .map(PlaylistNavigation::from)
+                .collect(),
+        };
         let platform_count = platform_names.len();
         let (games, game_sources) = collect_games_and_sources(data.platforms());
         let additional_applications_by_game =
@@ -716,6 +825,7 @@ impl LoadedLibrary {
             custom_fields_by_game,
             platform_names,
             platform_sources,
+            navigation_catalog,
             pending_recovery_count,
             launchbox_root,
             emulator_configuration,
@@ -915,6 +1025,24 @@ struct PlatformDeleteSuccess {
     folder_count: usize,
 }
 
+struct CategoryWriteSuccess {
+    name: String,
+    categories: Vec<PlatformCategory>,
+    parents: Vec<ParentRelationship>,
+    catalog_backup: PathBuf,
+    parents_backup: PathBuf,
+    placement_count: usize,
+    removed_placements: usize,
+    detached_children: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CategoryWriteOperation {
+    Create,
+    Edit,
+    Delete,
+}
+
 #[derive(Clone)]
 struct GameLaunchSuccess {
     game_id: String,
@@ -994,6 +1122,7 @@ enum PlatformWriteFailure {
 
 const GAME_EDIT_PAYLOAD_VERSION: u32 = 3;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
+const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -1038,6 +1167,66 @@ struct PlatformEditPayload {
     version: u32,
     platform: PlatformDefinition,
     folders: Vec<PlatformFolderEditPayload>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PlatformCategoryEditFields {
+    name: String,
+    nested_name: Option<String>,
+    sort_title: Option<String>,
+    notes: Option<String>,
+    video_path: Option<String>,
+    image_type: Option<String>,
+    hide_in_big_box: bool,
+}
+
+impl From<&PlatformCategory> for PlatformCategoryEditFields {
+    fn from(category: &PlatformCategory) -> Self {
+        Self {
+            name: category.metadata.name.clone(),
+            nested_name: category.metadata.nested_name.clone(),
+            sort_title: category.metadata.sort_title.clone(),
+            notes: category.metadata.notes.clone(),
+            video_path: category.metadata.video_path.clone(),
+            image_type: category.metadata.image_type.clone(),
+            hide_in_big_box: category.metadata.hide_in_big_box,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+enum CategoryParentKind {
+    Root,
+    PlatformCategory,
+    Platform,
+    Playlist,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct CategoryParentEditPayload {
+    source_index: Option<usize>,
+    target_kind: CategoryParentKind,
+    target_key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct CategoryParentTargetPayload {
+    target_kind: CategoryParentKind,
+    target_key: String,
+    label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct CategoryEditPayload {
+    version: u32,
+    category: PlatformCategoryEditFields,
+    parents: Vec<CategoryParentEditPayload>,
+    available_parent_targets: Vec<CategoryParentTargetPayload>,
 }
 
 fn parse_game_edit_payload(payload: &str) -> Result<GameEditPayload, String> {
@@ -1131,6 +1320,312 @@ fn parse_platform_edit_payload(
         .map_err(|error| error.to_string())?;
     }
     Ok(payload)
+}
+
+fn parse_category_edit_payload(
+    original_name: Option<&str>,
+    payload: &str,
+) -> Result<CategoryEditPayload, String> {
+    let mut payload: CategoryEditPayload = serde_json::from_str(payload)
+        .map_err(|error| format!("invalid platform category editor payload: {error}"))?;
+    if payload.version != CATEGORY_EDIT_PAYLOAD_VERSION {
+        return Err(format!(
+            "unsupported platform category editor payload version {}; expected {}",
+            payload.version, CATEGORY_EDIT_PAYLOAD_VERSION
+        ));
+    }
+    if let Some(original_name) = original_name {
+        if payload.category.name != original_name {
+            return Err(format!(
+                "platform category identity cannot be changed from {original_name} to {} without verified rename semantics",
+                payload.category.name
+            ));
+        }
+    } else {
+        payload.category.name = payload.category.name.trim().to_string();
+    }
+    if payload.category.name.is_empty() {
+        return Err("a platform category name is required".into());
+    }
+    payload.category.nested_name = canonical_optional_text(payload.category.nested_name);
+    payload.category.sort_title = canonical_optional_text(payload.category.sort_title);
+    payload.category.notes = canonical_optional_text(payload.category.notes);
+    payload.category.video_path = canonical_optional_text(payload.category.video_path);
+    payload.category.image_type = canonical_optional_text(payload.category.image_type);
+    if payload.parents.is_empty() {
+        return Err("a platform category must have at least one hierarchy placement".into());
+    }
+    let mut targets = BTreeSet::new();
+    let mut previous = None;
+    let mut saw_new = false;
+    for parent in &mut payload.parents {
+        parent.target_key = parent.target_key.trim().to_string();
+        if parent.target_kind == CategoryParentKind::Root {
+            if !parent.target_key.is_empty() {
+                return Err("the root parent placement cannot have a target key".into());
+            }
+        } else if parent.target_key.is_empty() {
+            return Err("a non-root parent placement requires a target key".into());
+        }
+        match parent.source_index {
+            None => saw_new = true,
+            Some(index) => {
+                if saw_new {
+                    return Err("new parent placements must follow retained source rows".into());
+                }
+                if previous.is_some_and(|previous| previous >= index) {
+                    return Err(
+                        "parent source indices must be unique and remain in source order".into(),
+                    );
+                }
+                previous = Some(index);
+            }
+        }
+        let target = (parent.target_kind, parent.target_key.to_lowercase());
+        if !targets.insert(target) {
+            return Err("a parent placement cannot occur more than once".into());
+        }
+    }
+    Ok(payload)
+}
+
+fn category_edit_fields_to_domain(
+    fields: &PlatformCategoryEditFields,
+    original: Option<&PlatformCategory>,
+) -> PlatformCategory {
+    let mut category = original.cloned().unwrap_or_default();
+    category.metadata.name = fields.name.clone();
+    category.metadata.nested_name = fields.nested_name.clone();
+    category.metadata.sort_title = fields.sort_title.clone();
+    category.metadata.notes = fields.notes.clone();
+    category.metadata.video_path = fields.video_path.clone();
+    category.metadata.image_type = fields.image_type.clone();
+    category.metadata.hide_in_big_box = fields.hide_in_big_box;
+    category
+}
+
+fn category_parent_relationships(
+    category_name: &str,
+    parents: &[CategoryParentEditPayload],
+) -> Vec<IndexedPlatformRecordEdit<ParentRelationship>> {
+    parents
+        .iter()
+        .map(|parent| {
+            let mut relationship = ParentRelationship {
+                platform_category_name: Some(category_name.to_string()),
+                ..ParentRelationship::default()
+            };
+            match parent.target_kind {
+                CategoryParentKind::Root => {}
+                CategoryParentKind::PlatformCategory => {
+                    relationship.parent_platform_category_name = Some(parent.target_key.clone());
+                }
+                CategoryParentKind::Platform => {
+                    relationship.parent_platform_name = Some(parent.target_key.clone());
+                }
+                CategoryParentKind::Playlist => {
+                    relationship.parent_playlist_id = Some(parent.target_key.clone());
+                }
+            }
+            IndexedPlatformRecordEdit {
+                source_index: parent.source_index,
+                record: relationship,
+            }
+        })
+        .collect()
+}
+
+fn category_parent_payload(
+    source_index: usize,
+    relationship: &ParentRelationship,
+) -> CategoryParentEditPayload {
+    if let Some(name) = relationship
+        .parent_platform_category_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        CategoryParentEditPayload {
+            source_index: Some(source_index),
+            target_kind: CategoryParentKind::PlatformCategory,
+            target_key: name.to_string(),
+        }
+    } else if let Some(name) = relationship
+        .parent_platform_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        CategoryParentEditPayload {
+            source_index: Some(source_index),
+            target_kind: CategoryParentKind::Platform,
+            target_key: name.to_string(),
+        }
+    } else if let Some(id) = relationship
+        .parent_playlist_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        CategoryParentEditPayload {
+            source_index: Some(source_index),
+            target_kind: CategoryParentKind::Playlist,
+            target_key: id.to_string(),
+        }
+    } else {
+        CategoryParentEditPayload {
+            source_index: Some(source_index),
+            target_kind: CategoryParentKind::Root,
+            target_key: String::new(),
+        }
+    }
+}
+
+fn category_parent_targets(
+    catalog: &NavigationCatalog,
+    platform_names: &[String],
+    edited_category: Option<&str>,
+) -> Vec<CategoryParentTargetPayload> {
+    let mut targets = vec![CategoryParentTargetPayload {
+        target_kind: CategoryParentKind::Root,
+        target_key: String::new(),
+        label: "Root".into(),
+    }];
+    targets.extend(
+        catalog
+            .categories
+            .iter()
+            .filter(|category| {
+                edited_category
+                    .is_none_or(|edited| !category.metadata.name.eq_ignore_ascii_case(edited))
+            })
+            .map(|category| CategoryParentTargetPayload {
+                target_kind: CategoryParentKind::PlatformCategory,
+                target_key: category.metadata.name.clone(),
+                label: format!("Category — {}", category.metadata.name),
+            }),
+    );
+    targets.extend(
+        platform_names
+            .iter()
+            .map(|platform| CategoryParentTargetPayload {
+                target_kind: CategoryParentKind::Platform,
+                target_key: platform.clone(),
+                label: format!("Platform — {platform}"),
+            }),
+    );
+    targets.extend(
+        catalog
+            .playlists
+            .iter()
+            .map(|playlist| CategoryParentTargetPayload {
+                target_kind: CategoryParentKind::Playlist,
+                target_key: playlist.id.clone(),
+                label: format!("Playlist — {}", playlist.name),
+            }),
+    );
+    targets[1..].sort_by(|left, right| {
+        left.label
+            .to_lowercase()
+            .cmp(&right.label.to_lowercase())
+            .then_with(|| left.target_key.cmp(&right.target_key))
+    });
+    targets
+}
+
+fn validate_category_hierarchy_edit(
+    catalog: &NavigationCatalog,
+    platform_names: &[String],
+    payload: &CategoryEditPayload,
+    creating: bool,
+) -> Result<(), String> {
+    let category_name = &payload.category.name;
+    let existing = catalog
+        .categories
+        .iter()
+        .find(|category| category.metadata.name.eq_ignore_ascii_case(category_name));
+    if creating && existing.is_some() {
+        return Err(format!("platform category already exists: {category_name}"));
+    }
+    if !creating && existing.is_none() {
+        return Err(format!("platform category was not found: {category_name}"));
+    }
+    let category_names = catalog
+        .categories
+        .iter()
+        .map(|category| category.metadata.name.as_str())
+        .collect::<Vec<_>>();
+    let playlist_ids = catalog
+        .playlists
+        .iter()
+        .map(|playlist| playlist.id.as_str())
+        .collect::<Vec<_>>();
+    for parent in &payload.parents {
+        let exists = match parent.target_kind {
+            CategoryParentKind::Root => true,
+            CategoryParentKind::PlatformCategory => category_names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&parent.target_key)),
+            CategoryParentKind::Platform => platform_names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&parent.target_key)),
+            CategoryParentKind::Playlist => playlist_ids
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case(&parent.target_key)),
+        };
+        if !exists {
+            return Err(format!(
+                "parent target is no longer available: {:?} {}",
+                parent.target_kind, parent.target_key
+            ));
+        }
+    }
+
+    let category_key = NavigationNodeKey::Category(category_name.to_lowercase());
+    let mut parent_graph = BTreeMap::<NavigationNodeKey, BTreeSet<NavigationNodeKey>>::new();
+    for relationship in &catalog.parents {
+        let Some(child) = relationship_child_key(relationship) else {
+            continue;
+        };
+        if child == category_key {
+            continue;
+        }
+        if let Some(parent) = relationship_parent_key(relationship) {
+            parent_graph.entry(child).or_default().insert(parent);
+        }
+    }
+    for edit in category_parent_relationships(category_name, &payload.parents) {
+        if let Some(parent) = relationship_parent_key(&edit.record) {
+            parent_graph
+                .entry(category_key.clone())
+                .or_default()
+                .insert(parent);
+        }
+    }
+    let mut path = BTreeSet::new();
+    if hierarchy_reaches(&category_key, &category_key, &parent_graph, &mut path, true) {
+        return Err("the selected parent placements would create a hierarchy cycle".into());
+    }
+    Ok(())
+}
+
+fn hierarchy_reaches(
+    node: &NavigationNodeKey,
+    target: &NavigationNodeKey,
+    parent_graph: &BTreeMap<NavigationNodeKey, BTreeSet<NavigationNodeKey>>,
+    path: &mut BTreeSet<NavigationNodeKey>,
+    initial: bool,
+) -> bool {
+    if !initial && node == target {
+        return true;
+    }
+    if !path.insert(node.clone()) {
+        return false;
+    }
+    let reaches = parent_graph.get(node).is_some_and(|parents| {
+        parents
+            .iter()
+            .any(|parent| hierarchy_reaches(parent, target, parent_graph, path, false))
+    });
+    path.remove(node);
+    reaches
 }
 
 fn canonicalize_platform_definition(platform: &mut PlatformDefinition) {
@@ -1418,6 +1913,292 @@ fn platform_catalog_path(root: &Path) -> Result<PathBuf, PlatformWriteFailure> {
                 root.display()
             ))
         })
+}
+
+fn parents_document_path(root: &Path) -> Result<PathBuf, PlatformWriteFailure> {
+    [root.join("Data/Parents.xml"), root.join("Parents.xml")]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(format!(
+                "could not find a writable Parents.xml under {}",
+                root.display()
+            ))
+        })
+}
+
+fn new_category_payload(
+    catalog: &NavigationCatalog,
+    platform_names: &[String],
+) -> Result<String, PlatformWriteFailure> {
+    serde_json::to_string(&CategoryEditPayload {
+        version: CATEGORY_EDIT_PAYLOAD_VERSION,
+        category: PlatformCategoryEditFields {
+            name: String::new(),
+            nested_name: None,
+            sort_title: None,
+            notes: None,
+            video_path: None,
+            image_type: None,
+            hide_in_big_box: false,
+        },
+        parents: vec![CategoryParentEditPayload {
+            source_index: None,
+            target_kind: CategoryParentKind::Root,
+            target_key: String::new(),
+        }],
+        available_parent_targets: category_parent_targets(catalog, platform_names, None),
+    })
+    .map_err(|error| PlatformWriteFailure::Other(error.to_string()))
+}
+
+fn load_category_edit_payload(
+    root: &Path,
+    name: &str,
+    base_catalog: &NavigationCatalog,
+    platform_names: &[String],
+) -> Result<String, PlatformWriteFailure> {
+    let catalog_document = AuxiliaryDocument::load(platform_catalog_path(root)?)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let parents_document = AuxiliaryDocument::load(parents_document_path(root)?)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let platform_catalog = catalog_document
+        .platform_catalog()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let category = platform_catalog
+        .categories
+        .iter()
+        .find(|category| category.metadata.name.eq_ignore_ascii_case(name))
+        .cloned()
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(format!("platform category was not found: {name}"))
+        })?;
+    let exact_name = category.metadata.name.clone();
+    let mut parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?
+        .into_iter()
+        .filter(|relationship| {
+            relationship
+                .platform_category_name
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(&exact_name))
+        })
+        .enumerate()
+        .map(|(source_index, relationship)| category_parent_payload(source_index, &relationship))
+        .collect::<Vec<_>>();
+    if parents.is_empty() {
+        parents.push(CategoryParentEditPayload {
+            source_index: None,
+            target_kind: CategoryParentKind::Root,
+            target_key: String::new(),
+        });
+    }
+    let mut current_catalog = base_catalog.clone();
+    current_catalog.categories = platform_catalog.categories;
+    current_catalog.parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    serde_json::to_string(&CategoryEditPayload {
+        version: CATEGORY_EDIT_PAYLOAD_VERSION,
+        category: PlatformCategoryEditFields::from(&category),
+        parents,
+        available_parent_targets: category_parent_targets(
+            &current_catalog,
+            platform_names,
+            Some(&exact_name),
+        ),
+    })
+    .map_err(|error| PlatformWriteFailure::Other(error.to_string()))
+}
+
+fn create_category_in_library(
+    root: PathBuf,
+    payload: CategoryEditPayload,
+    mut navigation_catalog: NavigationCatalog,
+    platform_names: Vec<String>,
+) -> Result<CategoryWriteSuccess, PlatformWriteFailure> {
+    let catalog_path = platform_catalog_path(&root)?;
+    let parents_path = parents_document_path(&root)?;
+    let mut catalog_document = AuxiliaryDocument::load(&catalog_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let mut parents_document = AuxiliaryDocument::load(&parents_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let current_catalog = catalog_document
+        .platform_catalog()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    navigation_catalog.categories = current_catalog.categories.clone();
+    navigation_catalog.parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    validate_category_hierarchy_edit(&navigation_catalog, &platform_names, &payload, true)
+        .map_err(PlatformWriteFailure::Other)?;
+    let category = category_edit_fields_to_domain(&payload.category, None);
+    let name = category.metadata.name.clone();
+    catalog_document
+        .add_platform_category(category)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let parent_edits = category_parent_relationships(&name, &payload.parents);
+    let placement_count = parent_edits.len();
+    parents_document
+        .set_platform_category_parents(&name, parent_edits)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    finish_category_documents(
+        &root,
+        catalog_path,
+        parents_path,
+        catalog_document,
+        parents_document,
+        name,
+        placement_count,
+        0,
+        0,
+    )
+}
+
+fn edit_category_in_library(
+    root: PathBuf,
+    original_name: String,
+    payload: CategoryEditPayload,
+    mut navigation_catalog: NavigationCatalog,
+    platform_names: Vec<String>,
+) -> Result<CategoryWriteSuccess, PlatformWriteFailure> {
+    let catalog_path = platform_catalog_path(&root)?;
+    let parents_path = parents_document_path(&root)?;
+    let mut catalog_document = AuxiliaryDocument::load(&catalog_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let mut parents_document = AuxiliaryDocument::load(&parents_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let current_catalog = catalog_document
+        .platform_catalog()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let original = current_catalog
+        .categories
+        .iter()
+        .find(|category| category.metadata.name.eq_ignore_ascii_case(&original_name))
+        .cloned()
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(format!("platform category was not found: {original_name}"))
+        })?;
+    navigation_catalog.categories = current_catalog.categories;
+    navigation_catalog.parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    validate_category_hierarchy_edit(&navigation_catalog, &platform_names, &payload, false)
+        .map_err(PlatformWriteFailure::Other)?;
+    let category = category_edit_fields_to_domain(&payload.category, Some(&original));
+    let name = original.metadata.name;
+    catalog_document
+        .set_platform_category(&name, category)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let parent_edits = category_parent_relationships(&name, &payload.parents);
+    let placement_count = parent_edits.len();
+    parents_document
+        .set_platform_category_parents(&name, parent_edits)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    finish_category_documents(
+        &root,
+        catalog_path,
+        parents_path,
+        catalog_document,
+        parents_document,
+        name,
+        placement_count,
+        0,
+        0,
+    )
+}
+
+fn delete_category_from_library(
+    root: PathBuf,
+    name: String,
+) -> Result<CategoryWriteSuccess, PlatformWriteFailure> {
+    let catalog_path = platform_catalog_path(&root)?;
+    let parents_path = parents_document_path(&root)?;
+    let mut catalog_document = AuxiliaryDocument::load(&catalog_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let mut parents_document = AuxiliaryDocument::load(&parents_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let category = catalog_document
+        .remove_platform_category(&name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let exact_name = category.metadata.name;
+    let removed = parents_document
+        .remove_platform_category_relationships(&exact_name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    finish_category_documents(
+        &root,
+        catalog_path,
+        parents_path,
+        catalog_document,
+        parents_document,
+        exact_name,
+        0,
+        removed.removed_placements,
+        removed.detached_children,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_category_documents(
+    root: &Path,
+    catalog_path: PathBuf,
+    parents_path: PathBuf,
+    catalog_document: AuxiliaryDocument,
+    parents_document: AuxiliaryDocument,
+    name: String,
+    placement_count: usize,
+    removed_placements: usize,
+    detached_children: usize,
+) -> Result<CategoryWriteSuccess, PlatformWriteFailure> {
+    let categories = catalog_document
+        .platform_catalog()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?
+        .categories;
+    let parents = parents_document
+        .parent_relationships()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let mut transaction =
+        LibraryTransaction::new(root).map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&catalog_document)
+        .map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&parents_document)
+        .map_err(classify_platform_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_platform_transaction_error)?;
+    let catalog_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == catalog_path)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(
+                "platform category transaction reported no catalog write".into(),
+            )
+        })?;
+    let parents_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == parents_path)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(
+                "platform category transaction reported no hierarchy write".into(),
+            )
+        })?;
+    Ok(CategoryWriteSuccess {
+        name,
+        categories,
+        parents,
+        catalog_backup,
+        parents_backup,
+        placement_count,
+        removed_placements,
+        detached_children,
+    })
 }
 
 fn load_platform_edit_payload(root: &Path, name: &str) -> Result<String, PlatformWriteFailure> {
@@ -2094,6 +2875,7 @@ impl qobject::LibraryController {
                     custom_fields_by_game,
                     platform_names: vec![document.library().name.clone()],
                     platform_sources: BTreeMap::new(),
+                    navigation_catalog: NavigationCatalog::default(),
                     library_root: None,
                     launchbox_root: None,
                     emulator_configuration: None,
@@ -2158,6 +2940,31 @@ impl qobject::LibraryController {
     pub fn apply_filters(mut self: Pin<&mut Self>, search_text: QString, platform: QString) {
         self.as_mut().set_search_text(search_text);
         self.as_mut().set_platform_filter(platform);
+        self.as_mut().rust_mut().category_filter = None;
+        self.as_mut().refresh_filtered_games();
+    }
+
+    pub fn apply_category_filter(
+        mut self: Pin<&mut Self>,
+        search_text: QString,
+        category: QString,
+    ) {
+        let category = category.to_string();
+        let category_key = category.to_lowercase();
+        if !self
+            .as_ref()
+            .rust()
+            .category_platforms
+            .contains_key(&category_key)
+        {
+            self.as_mut().set_status_message(qstring(format!(
+                "Platform category is no longer available: {category}"
+            )));
+            return;
+        }
+        self.as_mut().set_search_text(search_text);
+        self.as_mut().set_platform_filter(QString::default());
+        self.as_mut().rust_mut().category_filter = Some(category_key);
         self.as_mut().refresh_filtered_games();
     }
 
@@ -2426,6 +3233,220 @@ impl qobject::LibraryController {
             self.as_mut().set_writing(false);
             self.as_mut().set_status_message(qstring(format!(
                 "Could not start platform deletion: {error}"
+            )));
+        }
+    }
+
+    pub fn new_category_edit_payload(&self) -> QString {
+        match new_category_payload(&self.rust().navigation_catalog, &self.rust().platform_names) {
+            Ok(payload) => qstring(payload),
+            Err(error) => {
+                eprintln!(
+                    "Could not prepare new platform category editor: {}",
+                    describe_platform_write_failure(&error)
+                );
+                QString::default()
+            }
+        }
+    }
+
+    pub fn category_edit_payload(&self, name: QString) -> QString {
+        let Some(root) = self.rust().launchbox_root.as_deref() else {
+            return QString::default();
+        };
+        match load_category_edit_payload(
+            root,
+            name.to_string().trim(),
+            &self.rust().navigation_catalog,
+            &self.rust().platform_names,
+        ) {
+            Ok(payload) => qstring(payload),
+            Err(error) => {
+                eprintln!(
+                    "Could not prepare platform category editor: {}",
+                    describe_platform_write_failure(&error)
+                );
+                QString::default()
+            }
+        }
+    }
+
+    pub fn add_category(mut self: Pin<&mut Self>, edit_payload: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let payload = match parse_category_edit_payload(None, &edit_payload.to_string()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not create platform category: {error}."
+                )));
+                return;
+            }
+        };
+        if let Err(error) = validate_category_hierarchy_edit(
+            &self.as_ref().rust().navigation_catalog,
+            &self.as_ref().rust().platform_names,
+            &payload,
+            true,
+        ) {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not create platform category: {error}."
+            )));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Platform category creation requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let name = payload.category.name.clone();
+        let navigation_catalog = self.as_ref().rust().navigation_catalog.clone();
+        let platform_names = self.as_ref().rust().platform_names.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Creating platform category {name}...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-category-create".to_string())
+            .spawn(move || {
+                let result =
+                    create_category_in_library(root, payload, navigation_catalog, platform_names);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_category_write(
+                            generation,
+                            CategoryWriteOperation::Create,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start platform category creation: {error}"
+            )));
+        }
+    }
+
+    pub fn save_category(mut self: Pin<&mut Self>, original_name: QString, edit_payload: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let original_name = original_name.to_string().trim().to_string();
+        let payload =
+            match parse_category_edit_payload(Some(&original_name), &edit_payload.to_string()) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.as_mut().set_status_message(qstring(format!(
+                        "Could not save platform category: {error}."
+                    )));
+                    return;
+                }
+            };
+        if let Err(error) = validate_category_hierarchy_edit(
+            &self.as_ref().rust().navigation_catalog,
+            &self.as_ref().rust().platform_names,
+            &payload,
+            false,
+        ) {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not save platform category: {error}."
+            )));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Platform category editing requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let navigation_catalog = self.as_ref().rust().navigation_catalog.clone();
+        let platform_names = self.as_ref().rust().platform_names.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Saving platform category {original_name}..."
+        )));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-category-edit".to_string())
+            .spawn(move || {
+                let result = edit_category_in_library(
+                    root,
+                    original_name,
+                    payload,
+                    navigation_catalog,
+                    platform_names,
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_category_write(
+                            generation,
+                            CategoryWriteOperation::Edit,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start platform category writer: {error}"
+            )));
+        }
+    }
+
+    pub fn delete_category(mut self: Pin<&mut Self>, name: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let name = name.to_string().trim().to_string();
+        if !self
+            .as_ref()
+            .rust()
+            .navigation_catalog
+            .categories
+            .iter()
+            .any(|category| category.metadata.name.eq_ignore_ascii_case(&name))
+        {
+            self.as_mut().set_status_message(qstring(format!(
+                "Platform category is no longer available: {name}"
+            )));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Platform category deletion requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Deleting platform category {name}...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-category-delete".to_string())
+            .spawn(move || {
+                let result = delete_category_from_library(root, name);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_category_write(
+                            generation,
+                            CategoryWriteOperation::Delete,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start platform category deletion: {error}"
             )));
         }
     }
@@ -2993,6 +4014,34 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_category_crud_smoke_success(
+        &self,
+        category_name: QString,
+        detached_children: i32,
+    ) -> bool {
+        let category_name = category_name.to_string();
+        let rust = self.rust();
+        let expected_detached = usize::try_from(detached_children).unwrap_or(usize::MAX);
+        let success = !rust
+            .navigation_catalog
+            .categories
+            .iter()
+            .any(|category| category.metadata.name.eq_ignore_ascii_case(&category_name))
+            && rust.category_write_notifications == 3
+            && rust.last_category_detached_children == expected_detached
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "CATEGORY_CRUD_SMOKE_COMPLETE category=\"{category_name}\" writes={} detached={detached_children} navigation_entries={}",
+                rust.category_write_notifications,
+                rust.navigation_entries.len()
+            );
+        }
+        success
+    }
+
     pub fn report_launch_smoke_success(&self, game_id: QString) -> bool {
         let game_id = game_id.to_string();
         let rust = self.rust();
@@ -3209,6 +4258,36 @@ impl qobject::LibraryController {
             .unwrap_or_default()
     }
 
+    pub fn navigation_entry_kind_at(&self, index: i32) -> QString {
+        self.navigation_entry_at(index)
+            .map(|entry| qstring(entry.kind))
+            .unwrap_or_default()
+    }
+
+    pub fn navigation_entry_key_at(&self, index: i32) -> QString {
+        self.navigation_entry_at(index)
+            .map(|entry| qstring(&entry.key))
+            .unwrap_or_default()
+    }
+
+    pub fn navigation_entry_name_at(&self, index: i32) -> QString {
+        self.navigation_entry_at(index)
+            .map(|entry| qstring(&entry.name))
+            .unwrap_or_default()
+    }
+
+    pub fn navigation_entry_depth_at(&self, index: i32) -> i32 {
+        self.navigation_entry_at(index)
+            .map(|entry| saturating_i32(entry.depth))
+            .unwrap_or_default()
+    }
+
+    pub fn navigation_entry_game_count_at(&self, index: i32) -> i32 {
+        self.navigation_entry_at(index)
+            .map(|entry| saturating_i32(entry.game_count))
+            .unwrap_or_default()
+    }
+
     pub fn emulator_entry_count(&self) -> i32 {
         let configured = self
             .rust()
@@ -3401,6 +4480,7 @@ impl qobject::LibraryController {
                     custom_fields_by_game: loaded.custom_fields_by_game,
                     platform_names: loaded.platform_names,
                     platform_sources: loaded.platform_sources,
+                    navigation_catalog: loaded.navigation_catalog,
                     library_root: Some(loaded.root),
                     launchbox_root: loaded.launchbox_root,
                     emulator_configuration: loaded.emulator_configuration,
@@ -3977,6 +5057,98 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_category_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        operation: CategoryWriteOperation,
+        result: Result<CategoryWriteSuccess, PlatformWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        let operation_label = match operation {
+            CategoryWriteOperation::Create => "create",
+            CategoryWriteOperation::Edit => "edit",
+            CategoryWriteOperation::Delete => "delete",
+        };
+        match result {
+            Ok(written) => {
+                let CategoryWriteSuccess {
+                    name,
+                    categories,
+                    parents,
+                    catalog_backup,
+                    parents_backup,
+                    placement_count,
+                    removed_placements,
+                    detached_children,
+                } = written;
+                let deleting_selected_filter = matches!(operation, CategoryWriteOperation::Delete)
+                    && self
+                        .as_ref()
+                        .rust()
+                        .category_filter
+                        .as_deref()
+                        .is_some_and(|selected| selected == name.to_lowercase());
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.navigation_catalog.categories = categories;
+                    rust.navigation_catalog.parents = parents;
+                    if deleting_selected_filter {
+                        rust.category_filter = None;
+                    }
+                    rust.category_write_notifications =
+                        rust.category_write_notifications.saturating_add(1);
+                    rust.last_category_detached_children = detached_children;
+                }
+                self.as_mut().update_library_counts();
+                if self.as_ref().rust().category_filter.is_some() || deleting_selected_filter {
+                    self.as_mut().refresh_filtered_games();
+                }
+                self.as_mut().set_write_conflict(false);
+                let detail = match operation {
+                    CategoryWriteOperation::Create => format!(
+                        "Created platform category {name} with {placement_count} hierarchy placement(s)."
+                    ),
+                    CategoryWriteOperation::Edit => format!(
+                        "Saved platform category {name} with {placement_count} hierarchy placement(s)."
+                    ),
+                    CategoryWriteOperation::Delete => format!(
+                        "Deleted platform category {name}, removed {removed_placements} placement(s), and detached {detached_children} direct child placement(s) to root. No platforms, playlists, games, or media were deleted."
+                    ),
+                };
+                self.as_mut().set_status_message(qstring(format!(
+                    "{detail} Exact catalog backup: {}. Exact hierarchy backup: {}",
+                    catalog_backup.display(),
+                    parents_backup.display()
+                )));
+            }
+            Err(PlatformWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict during platform category {operation_label}: {message}. Reload before retrying."
+                )));
+            }
+            Err(PlatformWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(PlatformWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not {operation_label} platform category: unexpected reference result ({})",
+                    references.len()
+                )));
+            }
+            Err(PlatformWriteFailure::Other(message)) => self.as_mut().set_status_message(qstring(
+                format!("Could not {operation_label} platform category: {message}"),
+            )),
+        }
+    }
+
     fn finish_game_delete(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -4113,6 +5285,16 @@ impl qobject::LibraryController {
         if filter_game_indices(std::slice::from_ref(game), &filter).is_empty() {
             return None;
         }
+        if let Some(category) = self.rust().category_filter.as_deref() {
+            let visible = self
+                .rust()
+                .category_platforms
+                .get(category)
+                .is_some_and(|platforms| platforms.contains(&platform_key(&game.platform)));
+            if !visible {
+                return None;
+            }
+        }
         let key = game.display_sort_title().to_lowercase();
         Some(
             self.rust()
@@ -4137,20 +5319,35 @@ impl qobject::LibraryController {
     }
 
     fn update_library_counts(mut self: Pin<&mut Self>) {
-        let (game_count, filtered_count, platform_counts) = {
+        let (game_count, filtered_count, platform_counts, navigation_entries, category_platforms) = {
             let this = self.as_ref();
             let rust = this.rust();
+            let (navigation_entries, category_platforms) = build_navigation_entries(
+                &rust.navigation_catalog,
+                &rust.platform_names,
+                &rust.games,
+            );
             (
                 saturating_i32(rust.games.len()),
                 saturating_i32(rust.filtered_indices.len()),
                 collect_platform_counts(&rust.games, &rust.platform_names),
+                navigation_entries,
+                category_platforms,
             )
         };
         let platform_entry_count = saturating_i32(platform_counts.len());
-        self.as_mut().rust_mut().platform_counts = platform_counts;
+        let navigation_entry_count = saturating_i32(navigation_entries.len());
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.platform_counts = platform_counts;
+            rust.navigation_entries = navigation_entries;
+            rust.category_platforms = category_platforms;
+        }
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_filtered_count(filtered_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
+        self.as_mut()
+            .set_navigation_entry_count(navigation_entry_count);
         let revision = self.as_ref().rust().platform_revision.wrapping_add(1);
         self.as_mut().set_platform_revision(revision);
     }
@@ -4165,6 +5362,7 @@ impl qobject::LibraryController {
             custom_fields_by_game,
             platform_names,
             platform_sources,
+            navigation_catalog,
             library_root,
             launchbox_root,
             emulator_configuration,
@@ -4176,6 +5374,9 @@ impl qobject::LibraryController {
         let game_count = saturating_i32(games.len());
         let platform_counts = collect_platform_counts(&games, &platform_names);
         let platform_entry_count = saturating_i32(platform_counts.len());
+        let (navigation_entries, category_platforms) =
+            build_navigation_entries(&navigation_catalog, &platform_names, &games);
+        let navigation_entry_count = saturating_i32(navigation_entries.len());
         let filtered_indices = (0..games.len()).collect();
         self.as_mut().begin_reset_model();
         {
@@ -4190,6 +5391,10 @@ impl qobject::LibraryController {
             rust.platform_counts = platform_counts;
             rust.platform_names = platform_names;
             rust.platform_sources = platform_sources;
+            rust.navigation_catalog = navigation_catalog;
+            rust.navigation_entries = navigation_entries;
+            rust.category_platforms = category_platforms;
+            rust.category_filter = None;
             rust.library_root = library_root;
             rust.launchbox_root = launchbox_root;
             rust.emulator_configuration = emulator_configuration;
@@ -4198,6 +5403,8 @@ impl qobject::LibraryController {
             rust.row_insert_notifications = 0;
             rust.row_remove_notifications = 0;
             rust.launch_notifications = 0;
+            rust.category_write_notifications = 0;
+            rust.last_category_detached_children = 0;
         }
         self.as_mut().end_reset_model();
         self.as_mut().set_library_name(qstring(name));
@@ -4205,6 +5412,8 @@ impl qobject::LibraryController {
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_filtered_count(game_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
+        self.as_mut()
+            .set_navigation_entry_count(navigation_entry_count);
         let revision = self.as_ref().rust().platform_revision.wrapping_add(1);
         self.as_mut().set_platform_revision(revision);
         self.as_mut()
@@ -4224,6 +5433,7 @@ impl qobject::LibraryController {
     fn refresh_filtered_games(mut self: Pin<&mut Self>) {
         let search_text = self.as_ref().search_text().to_string();
         let platform = self.as_ref().platform_filter().to_string();
+        let category_filter = self.as_ref().rust().category_filter.clone();
         let indices = {
             let this = self.as_ref();
             let rust = this.rust();
@@ -4232,7 +5442,17 @@ impl qobject::LibraryController {
                 platform: (!platform.is_empty()).then_some(platform),
                 ..GameFilter::default()
             };
-            filter_game_indices(&rust.games, &filter)
+            let mut indices = filter_game_indices(&rust.games, &filter);
+            if let Some(category) = category_filter.as_deref() {
+                if let Some(platforms) = rust.category_platforms.get(category) {
+                    indices.retain(|index| {
+                        platforms.contains(&platform_key(&rust.games[*index].platform))
+                    });
+                } else {
+                    indices.clear();
+                }
+            }
+            indices
         };
         let count = saturating_i32(indices.len());
         self.as_mut().begin_reset_model();
@@ -4249,6 +5469,12 @@ impl qobject::LibraryController {
         let index = usize::try_from(index).ok()?;
         let game_index = *self.rust().filtered_indices.get(index)?;
         self.rust().games.get(game_index)
+    }
+
+    fn navigation_entry_at(&self, index: i32) -> Option<&NavigationEntry> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().navigation_entries.get(index))
     }
 
     fn additional_applications_for_model(
@@ -4338,6 +5564,301 @@ fn collect_platform_counts(games: &[Game], platform_names: &[String]) -> Vec<Pla
         .collect()
 }
 
+#[derive(Clone, Debug)]
+struct NavigationNodeInfo {
+    kind: &'static str,
+    key: String,
+    name: String,
+    sort_key: String,
+}
+
+fn build_navigation_entries(
+    catalog: &NavigationCatalog,
+    platform_names: &[String],
+    games: &[Game],
+) -> (Vec<NavigationEntry>, BTreeMap<String, BTreeSet<String>>) {
+    let mut nodes = BTreeMap::<NavigationNodeKey, NavigationNodeInfo>::new();
+    for category in &catalog.categories {
+        let key = category.metadata.name.to_lowercase();
+        nodes.insert(
+            NavigationNodeKey::Category(key),
+            NavigationNodeInfo {
+                kind: "category",
+                key: category.metadata.name.clone(),
+                name: category
+                    .metadata
+                    .nested_name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(&category.metadata.name)
+                    .to_string(),
+                sort_key: category
+                    .metadata
+                    .sort_title
+                    .as_deref()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or(&category.metadata.name)
+                    .to_lowercase(),
+            },
+        );
+    }
+    for platform in platform_names {
+        nodes.insert(
+            NavigationNodeKey::Platform(platform_key(platform)),
+            NavigationNodeInfo {
+                kind: "platform",
+                key: platform.clone(),
+                name: platform.clone(),
+                sort_key: platform_key(platform),
+            },
+        );
+    }
+
+    let mut placements = BTreeMap::<NavigationNodeKey, Vec<Option<NavigationNodeKey>>>::new();
+    for relationship in &catalog.parents {
+        let child = relationship_child_key(relationship);
+        let Some(child) = child.filter(|child| nodes.contains_key(child)) else {
+            continue;
+        };
+        let parent = relationship_parent_key(relationship)
+            .filter(|parent| {
+                matches!(
+                    parent,
+                    NavigationNodeKey::Category(_) | NavigationNodeKey::Platform(_)
+                )
+            })
+            .filter(|parent| nodes.contains_key(parent));
+        placements.entry(child).or_default().push(parent);
+    }
+
+    let mut roots = BTreeSet::new();
+    let mut children = BTreeMap::<NavigationNodeKey, BTreeSet<NavigationNodeKey>>::new();
+    for node in nodes.keys() {
+        match placements.get(node) {
+            None => {
+                roots.insert(node.clone());
+            }
+            Some(node_placements) => {
+                for parent in node_placements {
+                    if let Some(parent) = parent {
+                        children
+                            .entry(parent.clone())
+                            .or_default()
+                            .insert(node.clone());
+                    } else {
+                        roots.insert(node.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut category_platforms = BTreeMap::new();
+    for node in nodes.keys() {
+        let NavigationNodeKey::Category(category) = node else {
+            continue;
+        };
+        let mut platforms = BTreeSet::new();
+        let mut path = BTreeSet::new();
+        collect_descendant_platforms(node, &children, &mut path, &mut platforms);
+        category_platforms.insert(category.clone(), platforms);
+    }
+    let mut platform_game_counts = BTreeMap::<String, usize>::new();
+    for game in games {
+        *platform_game_counts
+            .entry(platform_key(&game.platform))
+            .or_default() += 1;
+    }
+
+    let mut entries = Vec::new();
+    let mut rendered = BTreeSet::new();
+    let mut sorted_roots = roots.into_iter().collect::<Vec<_>>();
+    sort_navigation_keys(&mut sorted_roots, &nodes);
+    for root in sorted_roots {
+        let mut path = BTreeSet::new();
+        flatten_navigation_node(
+            &root,
+            0,
+            &nodes,
+            &children,
+            &category_platforms,
+            &platform_game_counts,
+            &mut path,
+            &mut rendered,
+            &mut entries,
+        );
+    }
+    let mut orphaned = nodes
+        .keys()
+        .filter(|node| !rendered.contains(*node))
+        .cloned()
+        .collect::<Vec<_>>();
+    sort_navigation_keys(&mut orphaned, &nodes);
+    for root in orphaned {
+        let mut path = BTreeSet::new();
+        flatten_navigation_node(
+            &root,
+            0,
+            &nodes,
+            &children,
+            &category_platforms,
+            &platform_game_counts,
+            &mut path,
+            &mut rendered,
+            &mut entries,
+        );
+    }
+    (entries, category_platforms)
+}
+
+fn relationship_child_key(relationship: &ParentRelationship) -> Option<NavigationNodeKey> {
+    if let Some(name) = relationship
+        .platform_category_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        Some(NavigationNodeKey::Category(name.to_lowercase()))
+    } else if let Some(name) = relationship
+        .platform_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        Some(NavigationNodeKey::Platform(platform_key(name)))
+    } else {
+        relationship
+            .playlist_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| NavigationNodeKey::Playlist(id.to_lowercase()))
+    }
+}
+
+fn relationship_parent_key(relationship: &ParentRelationship) -> Option<NavigationNodeKey> {
+    if let Some(name) = relationship
+        .parent_platform_category_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        Some(NavigationNodeKey::Category(name.to_lowercase()))
+    } else if let Some(name) = relationship
+        .parent_platform_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        Some(NavigationNodeKey::Platform(platform_key(name)))
+    } else {
+        relationship
+            .parent_playlist_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| NavigationNodeKey::Playlist(id.to_lowercase()))
+    }
+}
+
+fn collect_descendant_platforms(
+    node: &NavigationNodeKey,
+    children: &BTreeMap<NavigationNodeKey, BTreeSet<NavigationNodeKey>>,
+    path: &mut BTreeSet<NavigationNodeKey>,
+    platforms: &mut BTreeSet<String>,
+) {
+    if !path.insert(node.clone()) {
+        return;
+    }
+    if let Some(node_children) = children.get(node) {
+        for child in node_children {
+            match child {
+                NavigationNodeKey::Platform(name) => {
+                    platforms.insert(name.clone());
+                }
+                NavigationNodeKey::Category(_) => {
+                    collect_descendant_platforms(child, children, path, platforms);
+                }
+                NavigationNodeKey::Playlist(_) => {}
+            }
+        }
+    }
+    path.remove(node);
+}
+
+fn sort_navigation_keys(
+    keys: &mut [NavigationNodeKey],
+    nodes: &BTreeMap<NavigationNodeKey, NavigationNodeInfo>,
+) {
+    keys.sort_by(|left, right| {
+        let left_info = &nodes[left];
+        let right_info = &nodes[right];
+        left_info
+            .sort_key
+            .cmp(&right_info.sort_key)
+            .then_with(|| left_info.kind.cmp(right_info.kind))
+            .then_with(|| left_info.key.cmp(&right_info.key))
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flatten_navigation_node(
+    node: &NavigationNodeKey,
+    depth: usize,
+    nodes: &BTreeMap<NavigationNodeKey, NavigationNodeInfo>,
+    children: &BTreeMap<NavigationNodeKey, BTreeSet<NavigationNodeKey>>,
+    category_platforms: &BTreeMap<String, BTreeSet<String>>,
+    platform_game_counts: &BTreeMap<String, usize>,
+    path: &mut BTreeSet<NavigationNodeKey>,
+    rendered: &mut BTreeSet<NavigationNodeKey>,
+    entries: &mut Vec<NavigationEntry>,
+) {
+    if !path.insert(node.clone()) {
+        return;
+    }
+    let Some(info) = nodes.get(node) else {
+        path.remove(node);
+        return;
+    };
+    rendered.insert(node.clone());
+    let game_count = match node {
+        NavigationNodeKey::Platform(name) => {
+            platform_game_counts.get(name).copied().unwrap_or_default()
+        }
+        NavigationNodeKey::Category(name) => category_platforms
+            .get(name)
+            .into_iter()
+            .flat_map(|platforms| platforms.iter())
+            .map(|platform| {
+                platform_game_counts
+                    .get(platform)
+                    .copied()
+                    .unwrap_or_default()
+            })
+            .sum(),
+        NavigationNodeKey::Playlist(_) => 0,
+    };
+    entries.push(NavigationEntry {
+        kind: info.kind,
+        key: info.key.clone(),
+        name: info.name.clone(),
+        depth,
+        game_count,
+    });
+    if let Some(node_children) = children.get(node) {
+        let mut node_children = node_children.iter().cloned().collect::<Vec<_>>();
+        sort_navigation_keys(&mut node_children, nodes);
+        for child in node_children {
+            flatten_navigation_node(
+                &child,
+                depth.saturating_add(1),
+                nodes,
+                children,
+                category_platforms,
+                platform_game_counts,
+                path,
+                rendered,
+                entries,
+            );
+        }
+    }
+    path.remove(node);
+}
+
 fn summarize_game_references(references: &[GameReference]) -> String {
     let mut counts = BTreeMap::new();
     for reference in references {
@@ -4422,6 +5943,282 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("Empty Console", 0), ("Fixture Console", 1)]
         );
+    }
+
+    #[test]
+    fn nested_navigation_flattens_categories_and_filters_descendant_platforms() {
+        let catalog = NavigationCatalog {
+            categories: vec![
+                PlatformCategory {
+                    metadata: NavigationMetadata {
+                        name: "Systems".into(),
+                        nested_name: Some("All Systems".into()),
+                        ..NavigationMetadata::default()
+                    },
+                    ..PlatformCategory::default()
+                },
+                PlatformCategory {
+                    metadata: NavigationMetadata {
+                        name: "Handhelds".into(),
+                        ..NavigationMetadata::default()
+                    },
+                    ..PlatformCategory::default()
+                },
+            ],
+            parents: vec![
+                ParentRelationship {
+                    platform_category_name: Some("Systems".into()),
+                    ..ParentRelationship::default()
+                },
+                ParentRelationship {
+                    platform_category_name: Some("Handhelds".into()),
+                    parent_platform_category_name: Some("Systems".into()),
+                    ..ParentRelationship::default()
+                },
+                ParentRelationship {
+                    platform_name: Some("Game Boy".into()),
+                    parent_platform_category_name: Some("Handhelds".into()),
+                    ..ParentRelationship::default()
+                },
+                ParentRelationship {
+                    platform_name: Some("Arcade".into()),
+                    ..ParentRelationship::default()
+                },
+            ],
+            ..NavigationCatalog::default()
+        };
+        let games = vec![
+            Game {
+                id: "handheld-game".into(),
+                platform: "Game Boy".into(),
+                ..Game::default()
+            },
+            Game {
+                id: "arcade-game".into(),
+                platform: "Arcade".into(),
+                ..Game::default()
+            },
+        ];
+        let (entries, category_platforms) =
+            build_navigation_entries(&catalog, &["Game Boy".into(), "Arcade".into()], &games);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (
+                    entry.kind,
+                    entry.key.as_str(),
+                    entry.depth,
+                    entry.game_count
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("platform", "Arcade", 0, 1),
+                ("category", "Systems", 0, 1),
+                ("category", "Handhelds", 1, 1),
+                ("platform", "Game Boy", 2, 1),
+            ]
+        );
+        assert_eq!(
+            category_platforms["systems"]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["game boy"]
+        );
+    }
+
+    #[test]
+    fn category_payload_rejects_rename_duplicates_and_hierarchy_cycles() {
+        let catalog = NavigationCatalog {
+            categories: vec![
+                PlatformCategory {
+                    metadata: NavigationMetadata {
+                        name: "Parent".into(),
+                        ..NavigationMetadata::default()
+                    },
+                    ..PlatformCategory::default()
+                },
+                PlatformCategory {
+                    metadata: NavigationMetadata {
+                        name: "Child".into(),
+                        ..NavigationMetadata::default()
+                    },
+                    ..PlatformCategory::default()
+                },
+            ],
+            parents: vec![ParentRelationship {
+                platform_category_name: Some("Child".into()),
+                parent_platform_category_name: Some("Parent".into()),
+                ..ParentRelationship::default()
+            }],
+            ..NavigationCatalog::default()
+        };
+        let mut payload: CategoryEditPayload =
+            serde_json::from_str(&new_category_payload(&catalog, &[]).unwrap()).unwrap();
+        payload.category.name = "Parent".into();
+        payload.parents[0].target_kind = CategoryParentKind::PlatformCategory;
+        payload.parents[0].target_key = "Child".into();
+        let serialized = serde_json::to_string(&payload).unwrap();
+        let parsed = parse_category_edit_payload(Some("Parent"), &serialized).unwrap();
+        assert!(validate_category_hierarchy_edit(&catalog, &[], &parsed, false).is_err());
+        assert!(parse_category_edit_payload(Some("Different"), &serialized).is_err());
+
+        payload.parents.push(payload.parents[0].clone());
+        assert!(parse_category_edit_payload(
+            Some("Parent"),
+            &serde_json::to_string(&payload).unwrap()
+        )
+        .is_err());
+        assert!(parse_category_edit_payload(
+            Some("Parent"),
+            &serialized.replace("\"version\":1", "\"version\":2")
+        )
+        .is_err());
+        assert!(parse_category_edit_payload(
+            Some("Parent"),
+            &serialized.replacen("\"parents\":", "\"future\":true,\"parents\":", 1)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn category_lifecycle_is_two_document_transactional_and_detaches_children() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data_directory = directory.path().join("Data");
+        fs::create_dir_all(&data_directory).unwrap();
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        let catalog_path = data_directory.join("Platforms.xml");
+        let parents_path = data_directory.join("Parents.xml");
+        let original_catalog = fs::read_to_string(fixture_root.join("Platforms.xml"))
+            .unwrap()
+            .replace(
+                "<Notes>A fixture category.</Notes>",
+                "<Notes>A fixture category.</Notes><FutureCategoryField>keep-category</FutureCategoryField>",
+            );
+        let original_parents = fs::read_to_string(fixture_root.join("Parents.xml"))
+            .unwrap()
+            .replace(
+                "<ParentPlatformCategoryName>Fixture Category</ParentPlatformCategoryName>",
+                "<ParentPlatformCategoryName>Collections</ParentPlatformCategoryName><FutureChildPlacement>keep-child</FutureChildPlacement>",
+            );
+        fs::write(&catalog_path, &original_catalog).unwrap();
+        fs::write(&parents_path, &original_parents).unwrap();
+        let catalog_document = AuxiliaryDocument::load(&catalog_path).unwrap();
+        let parents_document = AuxiliaryDocument::load(&parents_path).unwrap();
+        let navigation_catalog = NavigationCatalog {
+            categories: catalog_document.platform_catalog().unwrap().categories,
+            parents: parents_document.parent_relationships().unwrap(),
+            playlists: vec![PlaylistNavigation {
+                id: "fixture-playlist".into(),
+                name: "Fixture Playlist".into(),
+            }],
+        };
+        let mut create: CategoryEditPayload = serde_json::from_str(
+            &new_category_payload(&navigation_catalog, &["Fixture Console".into()]).unwrap(),
+        )
+        .unwrap();
+        create.category.name = "Collections".into();
+        create.category.nested_name = Some("Curated Collections".into());
+        create.category.notes = Some("Created by the Qt category editor.".into());
+        create.parents[0].target_kind = CategoryParentKind::PlatformCategory;
+        create.parents[0].target_key = "Fixture Category".into();
+        let create =
+            parse_category_edit_payload(None, &serde_json::to_string(&create).unwrap()).unwrap();
+        let created = create_category_in_library(
+            directory.path().to_path_buf(),
+            create,
+            navigation_catalog.clone(),
+            vec!["Fixture Console".into()],
+        )
+        .unwrap();
+        assert_eq!(created.placement_count, 1);
+        assert_eq!(
+            fs::read(&created.catalog_backup).unwrap(),
+            original_catalog.as_bytes()
+        );
+        assert_eq!(
+            fs::read(&created.parents_backup).unwrap(),
+            original_parents.as_bytes()
+        );
+        let created_catalog = fs::read(&catalog_path).unwrap();
+        let created_parents = fs::read(&parents_path).unwrap();
+
+        let current_navigation = NavigationCatalog {
+            categories: created.categories.clone(),
+            parents: created.parents.clone(),
+            playlists: navigation_catalog.playlists.clone(),
+        };
+        let serialized = load_category_edit_payload(
+            directory.path(),
+            "collections",
+            &current_navigation,
+            &["Fixture Console".into()],
+        )
+        .unwrap();
+        let mut edit = parse_category_edit_payload(Some("Collections"), &serialized).unwrap();
+        assert_eq!(edit.parents[0].source_index, Some(0));
+        edit.category.sort_title = Some("Collections, Curated".into());
+        edit.category.video_path = Some(r"Videos\Categories\collections.mp4".into());
+        edit.category.hide_in_big_box = true;
+        edit.parents.push(CategoryParentEditPayload {
+            source_index: None,
+            target_kind: CategoryParentKind::Root,
+            target_key: String::new(),
+        });
+        let edit = parse_category_edit_payload(
+            Some("Collections"),
+            &serde_json::to_string(&edit).unwrap(),
+        )
+        .unwrap();
+        let edited = edit_category_in_library(
+            directory.path().to_path_buf(),
+            "Collections".into(),
+            edit,
+            current_navigation,
+            vec!["Fixture Console".into()],
+        )
+        .unwrap();
+        assert_eq!(edited.placement_count, 2);
+        assert_eq!(fs::read(&edited.catalog_backup).unwrap(), created_catalog);
+        assert_eq!(fs::read(&edited.parents_backup).unwrap(), created_parents);
+        let edited_catalog = fs::read(&catalog_path).unwrap();
+        let edited_parents = fs::read(&parents_path).unwrap();
+        let category = edited
+            .categories
+            .iter()
+            .find(|category| category.metadata.name == "Collections")
+            .unwrap();
+        assert_eq!(
+            category.metadata.video_path.as_deref(),
+            Some(r"Videos\Categories\collections.mp4")
+        );
+        assert!(category.metadata.hide_in_big_box);
+
+        let deleted =
+            delete_category_from_library(directory.path().to_path_buf(), "Collections".into())
+                .unwrap();
+        assert_eq!(deleted.removed_placements, 2);
+        assert_eq!(deleted.detached_children, 1);
+        assert_eq!(fs::read(&deleted.catalog_backup).unwrap(), edited_catalog);
+        assert_eq!(fs::read(&deleted.parents_backup).unwrap(), edited_parents);
+        assert!(deleted
+            .categories
+            .iter()
+            .all(|category| category.metadata.name != "Collections"));
+        let child = deleted
+            .parents
+            .iter()
+            .find(|relationship| relationship.platform_name.as_deref() == Some("Fixture Console"))
+            .unwrap();
+        assert!(child.parent_platform_category_name.is_none());
+        let final_catalog = fs::read_to_string(&catalog_path).unwrap();
+        let final_parents = fs::read_to_string(&parents_path).unwrap();
+        assert!(final_catalog.contains("FutureCategoryField"));
+        assert!(final_parents.contains("FutureChildPlacement"));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

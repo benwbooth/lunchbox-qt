@@ -2,8 +2,9 @@
 use lb_domain::GAME_XML_FIELDS;
 use lb_domain::{
     AdditionalApplication, AlternateName, CatalogValidationError, CustomField, Game,
-    GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave, Mount, PlatformCatalog,
-    PlatformDefinition, PlatformFolder, PlatformLibrary, ValidationError,
+    GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave, Mount,
+    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
+    PlatformFolder, PlatformLibrary, ValidationError,
 };
 use serde::Deserialize;
 use std::fs;
@@ -129,6 +130,12 @@ pub struct NewGame {
 pub struct RemovedPlatformCatalogRecords {
     pub platform: PlatformDefinition,
     pub folders: Vec<PlatformFolder>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemovedPlatformCategoryRelationships {
+    pub removed_placements: usize,
+    pub detached_children: usize,
 }
 
 /// One row submitted by an editor for a repeated platform-document record.
@@ -896,6 +903,243 @@ impl AuxiliaryDocument {
             Ok(())
         })?;
         Ok(RemovedPlatformCatalogRecords { platform, folders })
+    }
+
+    /// Adds a category definition without inventing hierarchy placement.
+    /// Callers stage the corresponding `Parents.xml` mutation in the same
+    /// library transaction.
+    pub fn add_platform_category(
+        &mut self,
+        category: PlatformCategory,
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind("add platform category", AuxiliaryDocumentKind::Platforms)?;
+        category.validate()?;
+        let name = category.metadata.name.clone();
+        let catalog = self.platform_catalog()?;
+        if catalog
+            .categories
+            .iter()
+            .any(|existing| existing.metadata.name.eq_ignore_ascii_case(&name))
+        {
+            return Err(StorageError::DuplicatePlatformCategoryName { name });
+        }
+        self.mutate(move |root| {
+            let insertion = catalog_record_insertion_index(root, "PlatformCategory");
+            root.children.insert(
+                insertion,
+                XMLNode::Element(platform_category_element(&category)),
+            );
+            Ok(())
+        })
+    }
+
+    /// Updates the mutable category fields in place. The public 13.27
+    /// `IPlatformCategory.Name` contract is getter-only, matching platform
+    /// identity, so renaming remains gated on a runtime-proven cascade.
+    pub fn set_platform_category(
+        &mut self,
+        category_name: &str,
+        category: PlatformCategory,
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind("edit platform category", AuxiliaryDocumentKind::Platforms)?;
+        category.validate()?;
+        let catalog = self.platform_catalog()?;
+        let original = catalog
+            .categories
+            .iter()
+            .find(|candidate| candidate.metadata.name.eq_ignore_ascii_case(category_name))
+            .cloned()
+            .ok_or_else(|| StorageError::PlatformCategoryNotFound {
+                name: category_name.to_string(),
+            })?;
+        let exact_name = original.metadata.name.clone();
+        if category.metadata.name != exact_name {
+            return Err(StorageError::ImmutablePlatformCategoryName {
+                expected: exact_name,
+                actual: category.metadata.name,
+            });
+        }
+
+        self.mutate(move |root| {
+            let matches = root
+                .children
+                .iter()
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    let element = node.as_element()?;
+                    (element.name == "PlatformCategory"
+                        && child_text(element, "Name")
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&exact_name)))
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let index = match matches.as_slice() {
+                [index] => *index,
+                [] => {
+                    return Err(StorageError::PlatformCategoryNotFound {
+                        name: exact_name.clone(),
+                    })
+                }
+                _ => {
+                    return Err(StorageError::DuplicatePlatformCategoryName {
+                        name: exact_name.clone(),
+                    })
+                }
+            };
+            let element = root.children[index]
+                .as_mut_element()
+                .expect("category index must identify an element");
+            update_platform_category_element(element, &original, &category);
+            Ok(())
+        })
+    }
+
+    pub fn remove_platform_category(
+        &mut self,
+        category_name: &str,
+    ) -> Result<PlatformCategory, StorageError> {
+        self.ensure_operation_kind("remove platform category", AuxiliaryDocumentKind::Platforms)?;
+        let catalog = self.platform_catalog()?;
+        let category = catalog
+            .categories
+            .iter()
+            .find(|candidate| candidate.metadata.name.eq_ignore_ascii_case(category_name))
+            .cloned()
+            .ok_or_else(|| StorageError::PlatformCategoryNotFound {
+                name: category_name.to_string(),
+            })?;
+        let exact_name = category.metadata.name.clone();
+        self.mutate(|root| {
+            root.children.retain(|node| {
+                let Some(element) = node.as_element() else {
+                    return true;
+                };
+                element.name != "PlatformCategory"
+                    || child_text(element, "Name")
+                        .is_none_or(|name| !name.eq_ignore_ascii_case(&exact_name))
+            });
+            Ok(())
+        })?;
+        Ok(category)
+    }
+
+    pub fn parent_relationships(&self) -> Result<Vec<ParentRelationship>, StorageError> {
+        self.ensure_operation_kind("read parent relationships", AuxiliaryDocumentKind::Parents)?;
+        data_index::parse_parents(&self.root)
+    }
+
+    /// Replaces only the hierarchy placements whose child is the selected
+    /// category. Retained source-indexed rows keep unknown XML children.
+    pub fn set_platform_category_parents(
+        &mut self,
+        category_name: &str,
+        edits: Vec<IndexedPlatformRecordEdit<ParentRelationship>>,
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind(
+            "edit platform category parents",
+            AuxiliaryDocumentKind::Parents,
+        )?;
+        let original = self
+            .parent_relationships()?
+            .into_iter()
+            .filter(|relationship| {
+                relationship
+                    .platform_category_name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(category_name))
+            })
+            .collect::<Vec<_>>();
+        validate_indexed_category_parent_edits(category_name, original.len(), &edits)?;
+
+        self.mutate(move |root| {
+            let root_indices = root
+                .children
+                .iter()
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    let element = node.as_element()?;
+                    (element.name == "Parent"
+                        && child_text(element, "PlatformCategoryName")
+                            .is_some_and(|name| name.eq_ignore_ascii_case(category_name)))
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            if root_indices.len() != original.len() {
+                return Err(StorageError::InvalidPlatformCategoryParentEdit {
+                    category: category_name.to_string(),
+                    reason: format!(
+                        "typed/XML source count mismatch ({} versus {})",
+                        original.len(),
+                        root_indices.len()
+                    ),
+                });
+            }
+
+            let mut retained = vec![false; original.len()];
+            for edit in &edits {
+                let Some(source_index) = edit.source_index else {
+                    continue;
+                };
+                retained[source_index] = true;
+                let element = root.children[root_indices[source_index]]
+                    .as_mut_element()
+                    .expect("parent index must identify an element");
+                update_parent_relationship_element(element, &original[source_index], &edit.record);
+            }
+            for source_index in (0..root_indices.len()).rev() {
+                if !retained[source_index] {
+                    root.children.remove(root_indices[source_index]);
+                }
+            }
+            for edit in edits.iter().filter(|edit| edit.source_index.is_none()) {
+                root.children
+                    .push(XMLNode::Element(parent_relationship_element(&edit.record)));
+            }
+            Ok(())
+        })
+    }
+
+    /// Removes the deleted category's own placements and detaches each direct
+    /// child placement to the root, matching LaunchBox's deletion warning.
+    /// Other fields and unknown XML on those child rows are retained.
+    pub fn remove_platform_category_relationships(
+        &mut self,
+        category_name: &str,
+    ) -> Result<RemovedPlatformCategoryRelationships, StorageError> {
+        self.ensure_operation_kind(
+            "remove platform category relationships",
+            AuxiliaryDocumentKind::Parents,
+        )?;
+        let mut removed_placements = 0usize;
+        let mut detached_children = 0usize;
+        self.mutate(|root| {
+            root.children.retain_mut(|node| {
+                let Some(element) = node.as_mut_element() else {
+                    return true;
+                };
+                if element.name != "Parent" {
+                    return true;
+                }
+                if child_text(element, "PlatformCategoryName")
+                    .is_some_and(|name| name.eq_ignore_ascii_case(category_name))
+                {
+                    removed_placements = removed_placements.saturating_add(1);
+                    return false;
+                }
+                if child_text(element, "ParentPlatformCategoryName")
+                    .is_some_and(|name| name.eq_ignore_ascii_case(category_name))
+                {
+                    clear_child_text_preserving_element(element, "ParentPlatformCategoryName");
+                    detached_children = detached_children.saturating_add(1);
+                }
+                true
+            });
+            Ok(())
+        })?;
+        Ok(RemovedPlatformCategoryRelationships {
+            removed_placements,
+            detached_children,
+        })
     }
 
     /// Updates a field on the only record with `record_name`.
@@ -1963,6 +2207,103 @@ fn validate_indexed_platform_folder_edits(
                 previous = Some(index);
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_indexed_category_parent_edits(
+    category: &str,
+    original_count: usize,
+    edits: &[IndexedPlatformRecordEdit<ParentRelationship>],
+) -> Result<(), StorageError> {
+    let invalid = |reason: String| StorageError::InvalidPlatformCategoryParentEdit {
+        category: category.to_string(),
+        reason,
+    };
+    let mut previous = None;
+    let mut saw_new = false;
+    let mut targets = std::collections::BTreeSet::new();
+    for edit in edits {
+        match edit.source_index {
+            None => saw_new = true,
+            Some(index) => {
+                if saw_new {
+                    return Err(invalid(
+                        "new rows must follow retained source rows".to_string(),
+                    ));
+                }
+                if index >= original_count {
+                    return Err(invalid(format!(
+                        "source index {index} is outside 0..{original_count}"
+                    )));
+                }
+                if previous.is_some_and(|previous| previous >= index) {
+                    return Err(invalid(
+                        "source indices must be unique and remain in source order".to_string(),
+                    ));
+                }
+                previous = Some(index);
+            }
+        }
+        edit.record.validate()?;
+        if edit.record.platform_category_name.as_deref() != Some(category)
+            || edit
+                .record
+                .platform_name
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            || edit
+                .record
+                .playlist_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(invalid(
+                "every row must identify the exact edited category as its only child".to_string(),
+            ));
+        }
+        if edit
+            .record
+            .parent_platform_category_name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case(category))
+        {
+            return Err(invalid("a category cannot be its own parent".to_string()));
+        }
+        let target = if let Some(name) = edit
+            .record
+            .parent_platform_category_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            format!("category:{}", name.to_lowercase())
+        } else if let Some(name) = edit
+            .record
+            .parent_platform_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            format!("platform:{}", name.to_lowercase())
+        } else if let Some(id) = edit
+            .record
+            .parent_playlist_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+        {
+            format!("playlist:{}", id.to_lowercase())
+        } else {
+            "root".to_string()
+        };
+        if !targets.insert(target.clone()) {
+            return Err(invalid(format!(
+                "the parent placement occurs more than once: {target}"
+            )));
+        }
+    }
+    if edits.is_empty() {
+        return Err(invalid(
+            "a category must retain at least one hierarchy placement".to_string(),
+        ));
     }
     Ok(())
 }
@@ -3277,17 +3618,21 @@ fn set_optional_child_text(element: &mut Element, name: &str, value: Option<&str
     }
 }
 
-fn update_platform_definition_element(
+fn clear_child_text_preserving_element(element: &mut Element, name: &str) {
+    if let Some(child) = element.get_mut_child(name) {
+        child.children.clear();
+    }
+}
+
+fn update_navigation_metadata_element(
     element: &mut Element,
-    original: &PlatformDefinition,
-    updated: &PlatformDefinition,
+    original: &NavigationMetadata,
+    updated: &NavigationMetadata,
 ) {
-    let original_metadata = &original.metadata;
-    let updated_metadata = &updated.metadata;
     macro_rules! update_optional_text {
         ($field:ident, $element_name:literal) => {
-            if original_metadata.$field != updated_metadata.$field {
-                set_optional_child_text(element, $element_name, updated_metadata.$field.as_deref());
+            if original.$field != updated.$field {
+                set_optional_child_text(element, $element_name, updated.$field.as_deref());
             }
         };
     }
@@ -3298,21 +3643,18 @@ fn update_platform_definition_element(
     update_optional_text!(category, "Category");
     update_optional_text!(image_type, "ImageType");
     update_optional_text!(scrape_as, "ScrapeAs");
-    if original.release_date != updated.release_date {
-        set_optional_child_text(element, "ReleaseDate", updated.release_date.as_deref());
-    }
-    if original_metadata.hide_in_big_box != updated_metadata.hide_in_big_box {
+    if original.hide_in_big_box != updated.hide_in_big_box {
         set_child_text(
             element,
             "HideInBigBox",
-            &updated_metadata.hide_in_big_box.to_string(),
+            &updated.hide_in_big_box.to_string(),
         );
     }
-    if original_metadata.local_db_parsed != updated_metadata.local_db_parsed {
+    if original.local_db_parsed != updated.local_db_parsed {
         set_child_text(
             element,
             "LocalDbParsed",
-            &updated_metadata.local_db_parsed.to_string(),
+            &updated.local_db_parsed.to_string(),
         );
     }
     update_optional_text!(last_game_id, "LastGameId");
@@ -3340,6 +3682,19 @@ fn update_platform_definition_element(
     update_optional_text!(steam_banner_images_folder, "SteamBannerImagesFolder");
     update_optional_text!(video_path, "VideoPath");
     update_optional_text!(videos_folder, "VideosFolder");
+}
+
+fn update_platform_definition_element(
+    element: &mut Element,
+    original: &PlatformDefinition,
+    updated: &PlatformDefinition,
+) {
+    let original_metadata = &original.metadata;
+    let updated_metadata = &updated.metadata;
+    update_navigation_metadata_element(element, original_metadata, updated_metadata);
+    if original.release_date != updated.release_date {
+        set_optional_child_text(element, "ReleaseDate", updated.release_date.as_deref());
+    }
     if original.disable_auto_import != updated.disable_auto_import {
         set_child_text(
             element,
@@ -3347,6 +3702,52 @@ fn update_platform_definition_element(
             &updated.disable_auto_import.to_string(),
         );
     }
+}
+
+fn update_platform_category_element(
+    element: &mut Element,
+    original: &PlatformCategory,
+    updated: &PlatformCategory,
+) {
+    update_navigation_metadata_element(element, &original.metadata, &updated.metadata);
+    if original.is_autogenerated != updated.is_autogenerated {
+        set_child_text(
+            element,
+            "IsAutogenerated",
+            &updated.is_autogenerated.to_string(),
+        );
+    }
+    if original.disable_auto_import != updated.disable_auto_import {
+        set_child_text(
+            element,
+            "DisableAutoImport",
+            &updated.disable_auto_import.to_string(),
+        );
+    }
+}
+
+fn update_parent_relationship_element(
+    element: &mut Element,
+    original: &ParentRelationship,
+    updated: &ParentRelationship,
+) {
+    macro_rules! update_optional_text {
+        ($field:ident, $element_name:literal) => {
+            if original.$field != updated.$field {
+                if let Some(value) = updated.$field.as_deref() {
+                    set_child_text(element, $element_name, value);
+                } else {
+                    clear_child_text_preserving_element(element, $element_name);
+                }
+            }
+        };
+    }
+    update_optional_text!(platform_name, "PlatformName");
+    update_optional_text!(playlist_id, "PlaylistId");
+    update_optional_text!(platform_category_name, "PlatformCategoryName");
+    update_optional_text!(parent_platform_name, "ParentPlatformName");
+    update_optional_text!(parent_playlist_id, "ParentPlaylistId");
+    update_optional_text!(parent_platform_category_name, "ParentPlatformCategoryName");
 }
 
 fn platform_definition_element(platform: &PlatformDefinition) -> Element {
@@ -3427,6 +3828,118 @@ fn platform_definition_element(platform: &PlatformDefinition) -> Element {
         "DisableAutoImport",
         &platform.disable_auto_import.to_string(),
     );
+    element
+}
+
+fn platform_category_element(category: &PlatformCategory) -> Element {
+    let metadata = &category.metadata;
+    let mut element = Element::new("PlatformCategory");
+    set_child_text(&mut element, "Name", &metadata.name);
+    for (field, value) in [
+        ("NestedName", metadata.nested_name.as_deref()),
+        ("Notes", metadata.notes.as_deref()),
+        ("VideoPath", metadata.video_path.as_deref()),
+        ("SortTitle", metadata.sort_title.as_deref()),
+    ] {
+        set_optional_child_text(&mut element, field, value);
+    }
+    set_child_text(
+        &mut element,
+        "IsAutogenerated",
+        &category.is_autogenerated.to_string(),
+    );
+    for (field, value) in [
+        ("Category", metadata.category.as_deref()),
+        ("LastSelectedChild", metadata.last_selected_child.as_deref()),
+        ("Developer", metadata.developer.as_deref()),
+        ("Manufacturer", metadata.manufacturer.as_deref()),
+        ("Cpu", metadata.cpu.as_deref()),
+        ("Memory", metadata.memory.as_deref()),
+        ("Graphics", metadata.graphics.as_deref()),
+        ("Sound", metadata.sound.as_deref()),
+        ("Display", metadata.display.as_deref()),
+        ("Media", metadata.media.as_deref()),
+        ("MaxControllers", metadata.max_controllers.as_deref()),
+        ("Folder", metadata.folder.as_deref()),
+        ("VideosFolder", metadata.videos_folder.as_deref()),
+        ("FrontImagesFolder", metadata.front_images_folder.as_deref()),
+        ("BackImagesFolder", metadata.back_images_folder.as_deref()),
+        (
+            "ClearLogoImagesFolder",
+            metadata.clear_logo_images_folder.as_deref(),
+        ),
+        (
+            "FanartImagesFolder",
+            metadata.fanart_images_folder.as_deref(),
+        ),
+        (
+            "ScreenshotImagesFolder",
+            metadata.screenshot_images_folder.as_deref(),
+        ),
+        (
+            "BannerImagesFolder",
+            metadata.banner_images_folder.as_deref(),
+        ),
+        (
+            "SteamBannerImagesFolder",
+            metadata.steam_banner_images_folder.as_deref(),
+        ),
+        ("ManualsFolder", metadata.manuals_folder.as_deref()),
+        ("MusicFolder", metadata.music_folder.as_deref()),
+        ("ScrapeAs", metadata.scrape_as.as_deref()),
+        ("ImageType", metadata.image_type.as_deref()),
+        ("LastGameId", metadata.last_game_id.as_deref()),
+        ("BigBoxView", metadata.big_box_view.as_deref()),
+        ("BigBoxTheme", metadata.big_box_theme.as_deref()),
+        (
+            "AndroidThemeVideoPath",
+            metadata.android_theme_video_path.as_deref(),
+        ),
+    ] {
+        set_optional_child_text(&mut element, field, value);
+    }
+    set_child_text(
+        &mut element,
+        "LocalDbParsed",
+        &metadata.local_db_parsed.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "HideInBigBox",
+        &metadata.hide_in_big_box.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "DisableAutoImport",
+        &category.disable_auto_import.to_string(),
+    );
+    element
+}
+
+fn parent_relationship_element(relationship: &ParentRelationship) -> Element {
+    let mut element = Element::new("Parent");
+    for (field, value) in [
+        ("PlatformName", relationship.platform_name.as_deref()),
+        ("PlaylistId", relationship.playlist_id.as_deref()),
+        (
+            "PlatformCategoryName",
+            relationship.platform_category_name.as_deref(),
+        ),
+        (
+            "ParentPlatformName",
+            relationship.parent_platform_name.as_deref(),
+        ),
+        (
+            "ParentPlaylistId",
+            relationship.parent_playlist_id.as_deref(),
+        ),
+        (
+            "ParentPlatformCategoryName",
+            relationship.parent_platform_category_name.as_deref(),
+        ),
+    ] {
+        set_child_text(&mut element, field, value.unwrap_or_default());
+    }
     element
 }
 
@@ -3517,6 +4030,14 @@ pub enum StorageError {
     },
     #[error("invalid platform folder edit for {platform}: {reason}")]
     InvalidPlatformFolderEdit { platform: String, reason: String },
+    #[error("platform category name already exists: {name}")]
+    DuplicatePlatformCategoryName { name: String },
+    #[error("platform category was not found: {name}")]
+    PlatformCategoryNotFound { name: String },
+    #[error("platform category name is immutable in the recovered 13.27 contract; expected {expected}, got {actual}")]
+    ImmutablePlatformCategoryName { expected: String, actual: String },
+    #[error("invalid parent placement edit for platform category {category}: {reason}")]
+    InvalidPlatformCategoryParentEdit { category: String, reason: String },
     #[error("{path} has no {record} record")]
     MissingDocumentRecord { path: PathBuf, record: &'static str },
     #[error("{path} has more than one {record} record")]
@@ -5128,5 +5649,168 @@ mod tests {
             Err(StorageError::InvalidPlatformFolderEdit { .. })
         ));
         assert_eq!(document.to_xml_bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn platform_category_create_delete_and_detach_are_lossless_across_documents() {
+        let platform_fixture = include_str!("../../../fixtures/launchbox/Data/Platforms.xml");
+        let parent_fixture = include_str!("../../../fixtures/launchbox/Data/Parents.xml");
+        let mut catalog = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Platforms,
+            "Platforms.xml",
+            platform_fixture.as_bytes(),
+        )
+        .unwrap();
+        let mut parents = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Parents,
+            "Parents.xml",
+            parent_fixture.as_bytes(),
+        )
+        .unwrap();
+        let original_catalog = catalog.to_xml_bytes().unwrap();
+        let original_parents = parents.to_xml_bytes().unwrap();
+        let category = PlatformCategory {
+            metadata: NavigationMetadata {
+                name: "Portable Systems".into(),
+                nested_name: Some("Portable Systems".into()),
+                notes: Some("Handheld and transportable systems.".into()),
+                ..NavigationMetadata::default()
+            },
+            ..PlatformCategory::default()
+        };
+        catalog.add_platform_category(category.clone()).unwrap();
+        parents
+            .set_platform_category_parents(
+                "Portable Systems",
+                vec![IndexedPlatformRecordEdit {
+                    source_index: None,
+                    record: ParentRelationship {
+                        platform_category_name: Some("Portable Systems".into()),
+                        ..ParentRelationship::default()
+                    },
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            catalog.platform_catalog().unwrap().categories.last(),
+            Some(&category)
+        );
+        assert!(parents
+            .parent_relationships()
+            .unwrap()
+            .iter()
+            .any(
+                |relationship| relationship.platform_category_name.as_deref()
+                    == Some("Portable Systems")
+                    && relationship.parent_platform_category_name.is_none()
+                    && relationship.parent_platform_name.is_none()
+                    && relationship.parent_playlist_id.is_none()
+            ));
+
+        assert_eq!(
+            catalog
+                .remove_platform_category("portable systems")
+                .unwrap(),
+            category
+        );
+        let removed = parents
+            .remove_platform_category_relationships("portable systems")
+            .unwrap();
+        assert_eq!(removed.removed_placements, 1);
+        assert_eq!(removed.detached_children, 0);
+        assert_eq!(catalog.to_xml_bytes().unwrap(), original_catalog);
+        assert_eq!(parents.to_xml_bytes().unwrap(), original_parents);
+    }
+
+    #[test]
+    fn platform_category_edit_preserves_unknown_rows_and_delete_detaches_children() {
+        let platform_fixture = include_str!("../../../fixtures/launchbox/Data/Platforms.xml")
+            .replace(
+                "<Notes>A fixture category.</Notes>",
+                "<Notes>A fixture category.</Notes><FutureCategoryField>keep-category</FutureCategoryField>",
+            );
+        let parent_fixture = r#"<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Parent><PlatformCategoryName>Fixture Category</PlatformCategoryName><ParentPlatformName>Fixture Console</ParentPlatformName><FuturePlacement>keep-placement</FuturePlacement></Parent>
+  <Parent><ParentPlatformCategoryName>Fixture Category</ParentPlatformCategoryName><PlatformName>Fixture Console</PlatformName><FutureChildPlacement>keep-child</FutureChildPlacement></Parent>
+</LaunchBox>"#;
+        let mut catalog = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Platforms,
+            "Platforms.xml",
+            platform_fixture.as_bytes(),
+        )
+        .unwrap();
+        let mut parents = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Parents,
+            "Parents.xml",
+            parent_fixture.as_bytes(),
+        )
+        .unwrap();
+        let mut category = catalog.platform_catalog().unwrap().categories[0].clone();
+        category.metadata.nested_name = Some("Fixture Collection".into());
+        category.metadata.notes = None;
+        category.metadata.sort_title = Some("Collection, Fixture".into());
+        category.metadata.video_path = Some(r"Videos\Categories\fixture.mp4".into());
+        category.metadata.hide_in_big_box = true;
+        catalog
+            .set_platform_category("fixture category", category.clone())
+            .unwrap();
+        parents
+            .set_platform_category_parents(
+                "Fixture Category",
+                vec![
+                    IndexedPlatformRecordEdit {
+                        source_index: Some(0),
+                        record: ParentRelationship {
+                            platform_category_name: Some("Fixture Category".into()),
+                            ..ParentRelationship::default()
+                        },
+                    },
+                    IndexedPlatformRecordEdit {
+                        source_index: None,
+                        record: ParentRelationship {
+                            platform_category_name: Some("Fixture Category".into()),
+                            parent_playlist_id: Some("fixture-playlist".into()),
+                            ..ParentRelationship::default()
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(catalog.platform_catalog().unwrap().categories[0], category);
+        let edited_xml = String::from_utf8(catalog.to_xml_bytes().unwrap()).unwrap();
+        assert!(edited_xml.contains("<FutureCategoryField>keep-category</FutureCategoryField>"));
+        assert!(!edited_xml.contains("A fixture category."));
+        let parent_xml = String::from_utf8(parents.to_xml_bytes().unwrap()).unwrap();
+        assert!(parent_xml.contains("<FuturePlacement>keep-placement</FuturePlacement>"));
+        assert!(parent_xml.contains("<ParentPlaylistId>fixture-playlist</ParentPlaylistId>"));
+
+        let before = catalog.to_xml_bytes().unwrap();
+        let mut renamed = category.clone();
+        renamed.metadata.name = "Renamed Category".into();
+        assert!(matches!(
+            catalog.set_platform_category("Fixture Category", renamed),
+            Err(StorageError::ImmutablePlatformCategoryName { .. })
+        ));
+        assert_eq!(catalog.to_xml_bytes().unwrap(), before);
+
+        catalog
+            .remove_platform_category("Fixture Category")
+            .unwrap();
+        let removed = parents
+            .remove_platform_category_relationships("Fixture Category")
+            .unwrap();
+        assert_eq!(removed.removed_placements, 2);
+        assert_eq!(removed.detached_children, 1);
+        let remaining = parents.parent_relationships().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(
+            remaining[0].platform_name.as_deref(),
+            Some("Fixture Console")
+        );
+        assert!(remaining[0].parent_platform_category_name.is_none());
+        let remaining_xml = String::from_utf8(parents.to_xml_bytes().unwrap()).unwrap();
+        assert!(remaining_xml.contains("<FutureChildPlacement>keep-child</FutureChildPlacement>"));
+        assert!(!remaining_xml.contains("keep-placement"));
     }
 }

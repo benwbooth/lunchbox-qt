@@ -118,8 +118,16 @@ impl PlatformCatalog {
                 });
             }
         }
+        let mut category_names = BTreeSet::new();
         for category in &self.categories {
             category.validate()?;
+            let name = category.metadata.name.to_lowercase();
+            if !category_names.insert(name) {
+                return Err(CatalogValidationError::DuplicateName {
+                    record: "PlatformCategory",
+                    name: category.metadata.name.clone(),
+                });
+            }
         }
         for folder in &self.folders {
             folder.validate()?;
@@ -505,6 +513,42 @@ mod tests {
                 name: "arcade".into(),
             })
         );
+    }
+
+    #[test]
+    fn platform_catalog_rejects_case_insensitive_duplicate_category_names() {
+        let mut catalog = PlatformCatalog::default();
+        catalog.categories.push(PlatformCategory {
+            metadata: NavigationMetadata {
+                name: "Collections".into(),
+                ..NavigationMetadata::default()
+            },
+            ..PlatformCategory::default()
+        });
+        catalog.categories.push(PlatformCategory {
+            metadata: NavigationMetadata {
+                name: "collections".into(),
+                ..NavigationMetadata::default()
+            },
+            ..PlatformCategory::default()
+        });
+        assert_eq!(
+            catalog.validate(),
+            Err(CatalogValidationError::DuplicateName {
+                record: "PlatformCategory",
+                name: "collections".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parent_relationship_accepts_a_playlist_parent() {
+        let relationship = ParentRelationship {
+            parent_playlist_id: Some("favorites".into()),
+            platform_category_name: Some("Handhelds".into()),
+            ..ParentRelationship::default()
+        };
+        assert_eq!(relationship.validate(), Ok(()));
     }
 
     #[test]

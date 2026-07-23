@@ -447,7 +447,7 @@ fn load_parents(path: &Path) -> Result<Vec<ParentRelationship>, StorageError> {
     parse_parents(&root)
 }
 
-fn parse_parents(root: &Element) -> Result<Vec<ParentRelationship>, StorageError> {
+pub(crate) fn parse_parents(root: &Element) -> Result<Vec<ParentRelationship>, StorageError> {
     elements_named(root, "Parent")
         .map(|element| {
             let relationship = ParentRelationship {

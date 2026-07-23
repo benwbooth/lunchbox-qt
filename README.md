@@ -129,6 +129,15 @@ mappings/defaults, parents, playlists/filters, navigation state, controller
 associations, and frontend settings, requires an empty platform document, and
 removes only the catalog/folder records and XML document—never media. Empty
 catalog platforms remain visible and can receive their first game.
+The same sidebar now renders recovered category/platform nesting from
+`Parents.xml`, including multiple placements, recursive category game counts,
+and descendant filtering. Its category dialog edits the recovered mutable
+metadata and root/category/platform/playlist placements while keeping the
+getter-only category name fixed after creation. Each save transactionally
+updates both `Platforms.xml` and `Parents.xml` with exact backups. Deleting a
+category removes its placements and detaches direct child categories,
+platforms, and playlists to root; it never deletes their records, games, or
+media. All stored video paths remain lexical LaunchBox strings.
 Interrupted transactions require an explicit Recover action; conflicts require
 a reload and never offer a blind overwrite.
 

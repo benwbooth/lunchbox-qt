@@ -32,6 +32,13 @@ metadata, and source-indexed folder subset of `LIB-006` is also implemented
 with unknown-XML retention, conservative dependency refusal, and media
 isolation. Platform rename remains gated on runtime evidence because the
 installed 13.27 `IPlatform.Name` contract is getter-only.
+The nested category/sidebar subset of `LIB-007` and `DESK-003` is implemented:
+categories can be created, edited, multiply placed, recursively counted and
+filtered, and deleted through one paired `Platforms.xml`/`Parents.xml`
+transaction. Direct children detach to root without deleting platforms,
+playlists, games, or media. Category rename remains gated because the 13.27
+`IPlatformCategory.Name` contract is likewise getter-only. Playlist CRUD and
+playlist nodes in the sidebar remain open.
 Persisted Windows-style paths remain lexical until the cross-platform launch
 service resolves them. None of those complete their family: bulk editing, all
 filter/sort modes, reset commands, rating downloads, and full Windows behavior

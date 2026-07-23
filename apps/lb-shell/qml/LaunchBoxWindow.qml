@@ -17,12 +17,17 @@ ApplicationWindow {
     color: "#14171c"
 
     property string selectedPlatform: ""
+    property string selectedNavigationKind: "all"
+    property string selectedNavigationKey: ""
+    property string selectedNavigationName: "All Games"
     property bool smokeTest: Qt.application.arguments.indexOf("--smoke-test") >= 0
     property bool loadSmokeTest: Qt.application.arguments.indexOf("--load-smoke-test") >= 0
     property bool editSmokeTest: Qt.application.arguments.indexOf("--edit-smoke-test") >= 0
     property bool crudSmokeTest: Qt.application.arguments.indexOf("--crud-smoke-test") >= 0
     property bool platformCrudSmokeTest:
         Qt.application.arguments.indexOf("--platform-crud-smoke-test") >= 0
+    property bool categoryCrudSmokeTest:
+        Qt.application.arguments.indexOf("--category-crud-smoke-test") >= 0
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
     property bool pathMappingSmokeTest:
         Qt.application.arguments.indexOf("--path-mapping-smoke-test") >= 0
@@ -38,6 +43,8 @@ ApplicationWindow {
     property int platformCrudBlockedReferences: 0
     property string platformCrudAddedGameId: ""
     property bool platformCrudSmokeFinished: false
+    property int categoryCrudSmokePhase: 0
+    property bool categoryCrudSmokeFinished: false
     property int launchSmokePhase: 0
     property bool launchSmokeFinished: false
     property int pathMappingSmokePhase: 0
@@ -57,6 +64,22 @@ ApplicationWindow {
                 return index
         }
         return -1
+    }
+
+    function navigationIndex(kind, key) {
+        for (let index = 0; index < controller.navigation_entry_count; ++index) {
+            if (controller.navigation_entry_kind_at(index) === kind
+                    && controller.navigation_entry_key_at(index) === key)
+                return index
+        }
+        return -1
+    }
+
+    function applyCurrentFilter() {
+        if (selectedNavigationKind === "category")
+            controller.apply_category_filter(searchField.text, selectedNavigationKey)
+        else
+            controller.apply_filters(searchField.text, selectedPlatform)
     }
 
     function verifyModelRoles(index, gameId, gameTitle, gamePlatform, gameFavorite,
@@ -473,6 +496,88 @@ ApplicationWindow {
     Timer {
         interval: 25
         repeat: true
+        running: window.categoryCrudSmokeTest && !window.categoryCrudSmokeFinished
+        onTriggered: {
+            const categoryName = "Portable Collections"
+            if (window.categoryCrudSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0
+                    && controller.navigation_entry_count === 2) {
+                window.categoryCrudSmokePhase = 1
+                categoryEditor.smokeCreate(categoryName, "platform_category",
+                                           "Fixture Category")
+            } else if (window.categoryCrudSmokePhase === 1 && !controller.writing) {
+                const categoryIndex = window.navigationIndex("category", categoryName)
+                const platformIndex = window.navigationIndex("platform", "Fixture Console")
+                if (categoryIndex < 0 || platformIndex < 0
+                        || controller.navigation_entry_depth_at(categoryIndex) !== 1
+                        || controller.navigation_entry_depth_at(platformIndex) !== 2
+                        || controller.navigation_entry_game_count_at(categoryIndex) !== 3) {
+                    console.error("CATEGORY_CRUD_SMOKE_BAD_NESTING categoryIndex="
+                                  + categoryIndex + " platformIndex=" + platformIndex)
+                    Qt.exit(10)
+                    return
+                }
+                window.categoryCrudSmokePhase = 2
+                categoryEditor.smokeSave(categoryName)
+            } else if (window.categoryCrudSmokePhase === 2 && !controller.writing) {
+                const serialized = controller.category_edit_payload(categoryName)
+                if (serialized.length === 0) {
+                    console.error("CATEGORY_CRUD_SMOKE_EDIT_PAYLOAD_MISSING")
+                    Qt.exit(10)
+                    return
+                }
+                const payload = JSON.parse(serialized)
+                let hasRoot = false
+                for (let index = 0; index < payload.parents.length; ++index) {
+                    if (payload.parents[index].target_kind === "root")
+                        hasRoot = true
+                }
+                if (payload.category.nested_name !== "Portable"
+                        || payload.category.sort_title !== "Collections, Portable"
+                        || payload.category.notes
+                           !== "Edited through the real category dialog."
+                        || payload.category.video_path
+                           !== "Videos\\Portable Collections\\theme.mp4"
+                        || payload.category.image_type !== "Clear Logo"
+                        || !payload.category.hide_in_big_box
+                        || payload.parents.length !== 2 || !hasRoot) {
+                    console.error("CATEGORY_CRUD_SMOKE_EDIT_NOT_PERSISTED payload="
+                                  + serialized)
+                    Qt.exit(10)
+                    return
+                }
+                window.categoryCrudSmokePhase = 3
+                deleteCategoryConfirmation.smokeDelete(categoryName)
+            } else if (window.categoryCrudSmokePhase === 3 && !controller.writing
+                       && window.navigationIndex("category", categoryName) < 0) {
+                const platformIndex = window.navigationIndex("platform", "Fixture Console")
+                if (platformIndex < 0
+                        || controller.navigation_entry_depth_at(platformIndex) !== 0
+                        || !controller.report_category_crud_smoke_success(categoryName, 1)) {
+                    console.error("CATEGORY_CRUD_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(10)
+                    return
+                }
+                window.categoryCrudSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.categoryCrudSmokeTest && !window.categoryCrudSmokeFinished
+        onTriggered: {
+            console.error("CATEGORY_CRUD_SMOKE_TIMEOUT phase="
+                          + window.categoryCrudSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(10)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
         running: window.launchSmokeTest && !window.launchSmokeFinished
         onTriggered: {
             if (window.launchSmokePhase === 0 && !controller.loading
@@ -606,7 +711,7 @@ ApplicationWindow {
                 id: searchField
                 Layout.fillWidth: true
                 placeholderText: "Search title and descriptive metadata"
-                onTextChanged: controller.apply_filters(text, window.selectedPlatform)
+                onTextChanged: window.applyCurrentFilter()
             }
             TextField {
                 id: pathField
@@ -649,13 +754,23 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Label {
                         Layout.fillWidth: true
-                        text: "Platforms"
+                        text: "Library"
                         color: "#aeb8c5"
                         font.bold: true
                         font.pixelSize: 16
                     }
                     ToolButton {
-                        text: "+"
+                        text: "+ Cat"
+                        Accessible.name: "Add platform category"
+                        enabled: controller.library_path.length > 0
+                                 && !controller.loading && !controller.writing
+                                 && !controller.launching
+                                 && !controller.write_conflict
+                                 && controller.pending_recovery_count === 0
+                        onClicked: categoryEditor.prepareCreate()
+                    }
+                    ToolButton {
+                        text: "+ Plat"
                         Accessible.name: "Add platform"
                         enabled: controller.library_path.length > 0
                                  && !controller.loading && !controller.writing
@@ -664,26 +779,44 @@ ApplicationWindow {
                                  && controller.pending_recovery_count === 0
                         onClicked: addPlatformDialog.prepare()
                     }
-                    ToolButton {
-                        text: "✎"
-                        Accessible.name: "Edit selected platform"
-                        enabled: window.selectedPlatform.length > 0
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Edit"
+                        Accessible.name: "Edit selected category or platform"
+                        enabled: (window.selectedNavigationKind === "platform"
+                                  || window.selectedNavigationKind === "category")
                                  && !controller.loading && !controller.writing
                                  && !controller.launching
                                  && !controller.write_conflict
                                  && controller.pending_recovery_count === 0
-                        onClicked: platformEditor.prepare(window.selectedPlatform)
+                        onClicked: {
+                            if (window.selectedNavigationKind === "category")
+                                categoryEditor.prepareEdit(window.selectedNavigationKey)
+                            else
+                                platformEditor.prepare(window.selectedNavigationKey)
+                        }
                     }
-                    ToolButton {
-                        text: "−"
-                        Accessible.name: "Delete selected platform"
-                        enabled: window.selectedPlatform.length > 0
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Delete"
+                        Accessible.name: "Delete selected category or platform"
+                        enabled: (window.selectedNavigationKind === "platform"
+                                  || window.selectedNavigationKind === "category")
                                  && !controller.loading && !controller.writing
                                  && !controller.launching
                                  && !controller.write_conflict
                                  && controller.pending_recovery_count === 0
-                        onClicked: deletePlatformConfirmation.prepare(
-                                       window.selectedPlatform)
+                        onClicked: {
+                            if (window.selectedNavigationKind === "category")
+                                deleteCategoryConfirmation.prepare(
+                                            window.selectedNavigationKey)
+                            else
+                                deletePlatformConfirmation.prepare(
+                                            window.selectedNavigationKey)
+                        }
                     }
                 }
                 ListView {
@@ -693,25 +826,47 @@ ApplicationWindow {
                     clip: true
                     model: {
                         const revision = controller.platform_revision
-                        return controller.platform_entry_count + 1
+                        return controller.navigation_entry_count + 1
                     }
                     delegate: ItemDelegate {
                         id: platformDelegate
                         required property int index
+                        property string entryKind: {
+                            const revision = controller.platform_revision
+                            return index === 0 ? "all"
+                                               : controller.navigation_entry_kind_at(index - 1)
+                        }
+                        property string entryKey: {
+                            const revision = controller.platform_revision
+                            return index === 0 ? ""
+                                               : controller.navigation_entry_key_at(index - 1)
+                        }
                         property string entryName: {
                             const revision = controller.platform_revision
                             return index === 0 ? "All Games"
-                                               : window.platformName(index - 1)
+                                               : controller.navigation_entry_name_at(index - 1)
+                        }
+                        property int entryDepth: {
+                            const revision = controller.platform_revision
+                            return index === 0 ? 0
+                                               : controller.navigation_entry_depth_at(index - 1)
                         }
                         property int entryCount: {
                             const revision = controller.platform_revision
                             return index === 0 ? controller.game_count
-                                               : window.platformGameCount(index - 1)
+                                               : controller.navigation_entry_game_count_at(index - 1)
                         }
                         width: platformList.width
-                        highlighted: (index === 0 && window.selectedPlatform === "")
-                                     || entryName === window.selectedPlatform
+                        highlighted: entryKind === window.selectedNavigationKind
+                                     && entryKey === window.selectedNavigationKey
                         contentItem: RowLayout {
+                            spacing: 6
+                            Label {
+                                Layout.leftMargin: platformDelegate.entryDepth * 16
+                                text: platformDelegate.entryKind === "category" ? "▾" : "▪"
+                                color: platformDelegate.entryKind === "category"
+                                       ? "#7fbfff" : "#7d8590"
+                            }
                             Label {
                                 Layout.fillWidth: true
                                 text: entryName
@@ -724,8 +879,11 @@ ApplicationWindow {
                             }
                         }
                         onClicked: {
-                            window.selectedPlatform = index === 0 ? "" : entryName
-                            controller.apply_filters(searchField.text, window.selectedPlatform)
+                            window.selectedNavigationKind = entryKind
+                            window.selectedNavigationKey = entryKey
+                            window.selectedNavigationName = entryName
+                            window.selectedPlatform = entryKind === "platform" ? entryKey : ""
+                            window.applyCurrentFilter()
                         }
                     }
                 }
@@ -744,7 +902,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Label {
                         Layout.fillWidth: true
-                        text: window.selectedPlatform.length > 0 ? window.selectedPlatform : "All Games"
+                        text: window.selectedNavigationName
                         color: "white"
                         font.pixelSize: 24
                         font.bold: true
@@ -2062,6 +2220,9 @@ ApplicationWindow {
             const deleting = platformName
             if (window.selectedPlatform === deleting) {
                 window.selectedPlatform = ""
+                window.selectedNavigationKind = "all"
+                window.selectedNavigationKey = ""
+                window.selectedNavigationName = "All Games"
                 controller.apply_filters(searchField.text, "")
             }
             controller.delete_platform(deleting)
@@ -2070,6 +2231,290 @@ ApplicationWindow {
         contentItem: Label {
             width: 440
             text: "Deletion is refused while any game, emulator, playlist, navigation, controller, or frontend setting refers to this platform. Only its catalog records and empty platform XML are removed; media files and directories are never deleted."
+            wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: categoryEditor
+        anchors.centerIn: parent
+        modal: true
+        title: createMode ? "Add Platform Category" : "Edit " + originalName
+        standardButtons: Dialog.Save | Dialog.Cancel
+        property bool createMode: true
+        property string originalName: ""
+        property var draft: null
+
+        ListModel { id: categoryParentEditorModel }
+
+        function storedText(value) {
+            return value === null || value === undefined ? "" : value
+        }
+
+        function optionalText(value) {
+            return value.trim().length > 0 ? value : null
+        }
+
+        function targetIndex(kind, key) {
+            if (draft === null)
+                return -1
+            for (let index = 0; index < draft.available_parent_targets.length; ++index) {
+                const target = draft.available_parent_targets[index]
+                if (target.target_kind === kind && target.target_key === key)
+                    return index
+            }
+            return -1
+        }
+
+        function loadDraft(serialized, creating) {
+            if (serialized.length === 0)
+                return false
+            createMode = creating
+            draft = JSON.parse(serialized)
+            originalName = creating ? "" : draft.category.name
+            categoryNameField.text = draft.category.name
+            categoryNestedNameField.text = storedText(draft.category.nested_name)
+            categorySortTitleField.text = storedText(draft.category.sort_title)
+            categoryImageTypeField.text = storedText(draft.category.image_type)
+            categoryVideoPathField.text = storedText(draft.category.video_path)
+            categoryNotesField.text = storedText(draft.category.notes)
+            categoryHideBigBoxCheck.checked = draft.category.hide_in_big_box
+            categoryParentEditorModel.clear()
+            for (let index = 0; index < draft.parents.length; ++index) {
+                const parent = draft.parents[index]
+                categoryParentEditorModel.append({
+                    sourceIndex: parent.source_index === null ? -1 : parent.source_index,
+                    targetKind: parent.target_kind,
+                    targetKey: parent.target_key
+                })
+            }
+            return true
+        }
+
+        function prepareCreate() {
+            if (loadDraft(controller.new_category_edit_payload(), true))
+                open()
+        }
+
+        function prepareEdit(name) {
+            if (loadDraft(controller.category_edit_payload(name), false))
+                open()
+        }
+
+        function selectParent(row, kind, key) {
+            const index = targetIndex(kind, key)
+            if (index < 0)
+                return false
+            const target = draft.available_parent_targets[index]
+            categoryParentEditorModel.setProperty(row, "targetKind", target.target_kind)
+            categoryParentEditorModel.setProperty(row, "targetKey", target.target_key)
+            return true
+        }
+
+        function addRootPlacement() {
+            categoryParentEditorModel.append({
+                sourceIndex: -1,
+                targetKind: "root",
+                targetKey: ""
+            })
+        }
+
+        function editPayload() {
+            draft.category.name = categoryNameField.text
+            draft.category.nested_name = optionalText(categoryNestedNameField.text)
+            draft.category.sort_title = optionalText(categorySortTitleField.text)
+            draft.category.image_type = optionalText(categoryImageTypeField.text)
+            draft.category.video_path = optionalText(categoryVideoPathField.text)
+            draft.category.notes = optionalText(categoryNotesField.text)
+            draft.category.hide_in_big_box = categoryHideBigBoxCheck.checked
+            const parents = []
+            for (let index = 0; index < categoryParentEditorModel.count; ++index) {
+                const parent = categoryParentEditorModel.get(index)
+                parents.push({
+                    source_index: parent.sourceIndex < 0 ? null : parent.sourceIndex,
+                    target_kind: parent.targetKind,
+                    target_key: parent.targetKey
+                })
+            }
+            draft.parents = parents
+            return JSON.stringify(draft)
+        }
+
+        function smokeCreate(name, parentKind, parentKey) {
+            prepareCreate()
+            categoryNameField.text = name
+            if (!selectParent(0, parentKind, parentKey)) {
+                console.error("CATEGORY_CRUD_SMOKE_PARENT_TARGET_MISSING")
+                Qt.exit(10)
+                return
+            }
+            Qt.callLater(function() { categoryEditor.accept() })
+        }
+
+        function smokeSave(name) {
+            prepareEdit(name)
+            categoryNestedNameField.text = "Portable"
+            categorySortTitleField.text = "Collections, Portable"
+            categoryImageTypeField.text = "Clear Logo"
+            categoryVideoPathField.text = "Videos\\Portable Collections\\theme.mp4"
+            categoryNotesField.text = "Edited through the real category dialog."
+            categoryHideBigBoxCheck.checked = true
+            addRootPlacement()
+            Qt.callLater(function() { categoryEditor.accept() })
+        }
+
+        onAccepted: {
+            const serialized = editPayload()
+            if (createMode)
+                controller.add_category(serialized)
+            else
+                controller.save_category(originalName, serialized)
+        }
+
+        contentItem: ScrollView {
+            id: categoryEditorScroll
+            implicitWidth: 680
+            implicitHeight: Math.min(650, window.height - 160)
+            contentWidth: availableWidth
+            clip: true
+
+            ColumnLayout {
+                width: categoryEditorScroll.availableWidth
+                spacing: 12
+
+                Label {
+                    Layout.fillWidth: true
+                    text: "LaunchBox 13.27 exposes category identity as getter-only. Existing names stay fixed; hierarchy placements and the metadata below are editable."
+                    wrapMode: Text.Wrap
+                    color: "#d29922"
+                }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+
+                    Label { text: "Name" }
+                    TextField {
+                        id: categoryNameField
+                        Layout.fillWidth: true
+                        readOnly: !categoryEditor.createMode
+                    }
+                    Label { text: "Nested name" }
+                    TextField { id: categoryNestedNameField; Layout.fillWidth: true }
+                    Label { text: "Sort title" }
+                    TextField { id: categorySortTitleField; Layout.fillWidth: true }
+                    Label { text: "Image type" }
+                    TextField { id: categoryImageTypeField; Layout.fillWidth: true }
+                    Label { text: "Video path" }
+                    TextField {
+                        id: categoryVideoPathField
+                        Layout.fillWidth: true
+                        placeholderText: "Stored LaunchBox path"
+                    }
+                }
+                Label { text: "Notes" }
+                TextArea {
+                    id: categoryNotesField
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 100
+                    wrapMode: TextEdit.Wrap
+                }
+                CheckBox {
+                    id: categoryHideBigBoxCheck
+                    text: "Hide in BigBox"
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: "#30363d"
+                }
+                Label { text: "Hierarchy placements"; font.pixelSize: 18; font.bold: true }
+                Label {
+                    Layout.fillWidth: true
+                    text: "A category can appear at root or below any category, platform, or playlist. Cycles and duplicate placements are rejected."
+                    wrapMode: Text.Wrap
+                    color: "#7d8590"
+                }
+                Repeater {
+                    model: categoryParentEditorModel
+                    delegate: RowLayout {
+                        required property int index
+                        required property int sourceIndex
+                        required property string targetKind
+                        required property string targetKey
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: categoryEditor.draft === null
+                                   ? [] : categoryEditor.draft.available_parent_targets
+                            textRole: "label"
+                            currentIndex: categoryEditor.targetIndex(targetKind, targetKey)
+                            onActivated: function(selectedIndex) {
+                                const target = model[selectedIndex]
+                                categoryParentEditorModel.setProperty(
+                                            index, "targetKind", target.target_kind)
+                                categoryParentEditorModel.setProperty(
+                                            index, "targetKey", target.target_key)
+                            }
+                        }
+                        Button {
+                            text: "Remove"
+                            enabled: categoryParentEditorModel.count > 1
+                            onClicked: categoryParentEditorModel.remove(index)
+                        }
+                    }
+                }
+                Button {
+                    text: "Add Placement"
+                    onClicked: categoryEditor.addRootPlacement()
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: "Save updates Data/Platforms.xml and Data/Parents.xml in one recoverable transaction with an exact backup of each file. Video paths remain lexical; no media is created, moved, or deleted."
+                    wrapMode: Text.Wrap
+                    color: "#7d8590"
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: deleteCategoryConfirmation
+        anchors.centerIn: parent
+        modal: true
+        title: "Delete " + categoryName + "?"
+        standardButtons: Dialog.Yes | Dialog.No
+        property string categoryName: ""
+
+        function prepare(name) {
+            categoryName = name
+            open()
+        }
+
+        function smokeDelete(name) {
+            prepare(name)
+            Qt.callLater(function() { deleteCategoryConfirmation.accept() })
+        }
+
+        onAccepted: {
+            const deleting = categoryName
+            if (window.selectedNavigationKind === "category"
+                    && window.selectedNavigationKey === deleting) {
+                window.selectedPlatform = ""
+                window.selectedNavigationKind = "all"
+                window.selectedNavigationKey = ""
+                window.selectedNavigationName = "All Games"
+                controller.apply_filters(searchField.text, "")
+            }
+            controller.delete_category(deleting)
+        }
+
+        contentItem: Label {
+            width: 500
+            text: "The category and all of its placements will be removed. Direct child categories, platforms, and playlists are detached to the root. No platforms, playlists, games, media files, or directories are deleted."
             wrapMode: Text.Wrap
         }
     }
