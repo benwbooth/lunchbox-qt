@@ -117,6 +117,34 @@ backup snapshots found no observed Make Default transition, so this field map
 is static-contract- and documentation-derived rather than a claimed live 13.27
 runtime oracle.
 
+Manual combine/expand has a separate recovered contract. The
+[official help page](https://feedback.launchbox-app.com/help/articles/2413817-additional-apps)
+states that Combine Selected Games asks which selected game should be the
+default and converts the others to additional applications, while Expand
+Selected Games creates individual entries from those applications. Surviving
+13.27 semantic signatures expose
+`AdditionalApplication.GetFromGame(newGameId, game, priority, region,
+version)`, `Game.GetFromAdditionalApplication(app, title, region, version,
+platform, originalGame)`, `Combining.Combine(games, rootGame)`, and
+`Combining.Expand(games)`. The value-free real-install census independently
+shows that every observed combined group retains an additional-application
+representative for the primary/default launch path.
+
+The implemented subset therefore creates or reuses one launch representative
+for every selected same-platform game, retains the chosen root game, moves
+every modeled owned record to it, and atomically remaps clone relationships,
+platform/category/playlist last-game state, manual playlist membership, and
+import-blacklist rows. Expansion consumes only launchable version rows:
+automatic helpers and document extensions remain attached, the representative
+equal to the root launch is consumed without creating a duplicate, and every
+other representative becomes a new game cloned from the root's otherwise
+unrepresentable presentation data. Application-owned saves follow their new
+game. Stored paths remain lexical values, unknown XML is retained wherever the
+source record survives or is cloned, and neither operation moves or deletes
+ROM/media files. This is static-contract-, documentation-, real-census-, and
+fixture-derived evidence; a supported Windows runtime oracle is still needed
+for field-by-field 13.27 parity and collapse/presentation behavior.
+
 The concrete 13.27 `GameSave` contract recovers 16 persisted fields: owning
 game/additional-application IDs, emulator filename/core, title, group name and
 ID, display chip, match lineage, migration family, lexical file path, original

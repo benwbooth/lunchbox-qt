@@ -320,7 +320,13 @@ never changes active files. Other-emulator scanning, other directory/container
 backup, Dolphin Wii directory handling, PCSX2 filesystem repair/capacity
 recovery, full disc-image serial extraction, stale-row reconciliation,
 automatic-backup policy, repair, and the remaining emulator adapters remain
-open, as does manual game combine/expand.
+open. Manual game combine/expand is now a separate transactional library
+operation: same-platform games become selectable version applications, modeled
+platform/navigation/playlist/clone/save/controller/blacklist references migrate
+to the retained root, and launchable versions expand back to standalone games.
+Stored paths remain lexical, exact XML backups are retained, and ROM/media
+files are never moved or deleted. Collapse and remaining presentation parity
+stay open.
 
 Emulator
 auto-extraction invokes 7-Zip without a shell for ZIP, 7z, and RAR inputs,

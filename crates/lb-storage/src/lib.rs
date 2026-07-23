@@ -302,6 +302,32 @@ pub struct RemovedPlaylistRelationships {
     pub detached_children: usize,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct CombinedGames {
+    pub root_game: Game,
+    pub removed_games: Vec<Game>,
+    pub created_version_applications: Vec<AdditionalApplication>,
+    pub retargeted_additional_applications: usize,
+    pub retargeted_game_records: usize,
+    pub retargeted_clone_relationships: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExpandedGames {
+    pub root_game: Game,
+    pub created_games: Vec<Game>,
+    pub removed_version_applications: Vec<AdditionalApplication>,
+    pub reassigned_game_saves: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CombinedGameReferenceRemap {
+    pub navigation_references: usize,
+    pub playlist_rows_retargeted: usize,
+    pub playlist_rows_deduplicated: usize,
+    pub blacklist_rows_removed: usize,
+}
+
 /// One row submitted by an editor for a repeated platform-document record.
 /// Existing rows carry their per-game source ordinal so the lossless editor
 /// can update or remove the exact XML element without discarding unknown
@@ -884,6 +910,125 @@ impl AuxiliaryDocument {
     pub fn playlist_document(&self) -> Result<PlaylistDocument, StorageError> {
         self.ensure_operation_kind("read playlist", AuxiliaryDocumentKind::Playlist)?;
         data_index::parse_playlist(&self.source_path, &self.root)
+    }
+
+    /// Rewrites modeled references after several standalone games are
+    /// combined into one retained root game.
+    ///
+    /// Playlist membership is deduplicated instead of leaving multiple rows
+    /// for the same root ID. Import-blacklist entries for removed game IDs are
+    /// discarded; mapping them to the retained root would incorrectly hide a
+    /// still-present game from future import review.
+    pub fn remap_combined_game_references(
+        &mut self,
+        removed_game_ids: &[String],
+        root_game: &Game,
+    ) -> Result<CombinedGameReferenceRemap, StorageError> {
+        let removed = removed_game_ids
+            .iter()
+            .map(|id| id.to_lowercase())
+            .collect::<std::collections::BTreeSet<_>>();
+        if removed.is_empty() {
+            return Ok(CombinedGameReferenceRemap::default());
+        }
+        let root_id = root_game.id.clone();
+        let root_title = root_game.title.clone();
+        let root_platform = root_game.platform.clone();
+        let kind = self.kind;
+        let mut report = CombinedGameReferenceRemap::default();
+        self.mutate(|root| {
+            match kind {
+                AuxiliaryDocumentKind::Platforms => {
+                    for element in root.children.iter_mut().filter_map(XMLNode::as_mut_element) {
+                        if !matches!(element.name.as_str(), "Platform" | "PlatformCategory") {
+                            continue;
+                        }
+                        if optional_child(element, "LastGameId")
+                            .is_some_and(|id| removed.contains(&id.to_lowercase()))
+                        {
+                            set_child_text(element, "LastGameId", &root_id);
+                            report.navigation_references =
+                                report.navigation_references.saturating_add(1);
+                        }
+                    }
+                }
+                AuxiliaryDocumentKind::Playlist => {
+                    for element in root.children.iter_mut().filter_map(XMLNode::as_mut_element) {
+                        if element.name == "Playlist"
+                            && optional_child(element, "LastGameId")
+                                .is_some_and(|id| removed.contains(&id.to_lowercase()))
+                        {
+                            set_child_text(element, "LastGameId", &root_id);
+                            report.navigation_references =
+                                report.navigation_references.saturating_add(1);
+                        }
+                    }
+
+                    let root_row_exists = root.children.iter().any(|node| {
+                        node.as_element().is_some_and(|element| {
+                            element.name == "PlaylistGame"
+                                && optional_child(element, "GameId")
+                                    .is_some_and(|id| id.eq_ignore_ascii_case(&root_id))
+                        })
+                    });
+                    let mut retained_retargeted_row = root_row_exists;
+                    root.children.retain_mut(|node| {
+                        let Some(element) = node.as_mut_element() else {
+                            return true;
+                        };
+                        if element.name != "PlaylistGame" {
+                            return true;
+                        }
+                        let is_removed = optional_child(element, "GameId")
+                            .is_some_and(|id| removed.contains(&id.to_lowercase()));
+                        if !is_removed {
+                            if optional_child(element, "GameId")
+                                .is_some_and(|id| id.eq_ignore_ascii_case(&root_id))
+                            {
+                                set_child_text(element, "GameTitle", &root_title);
+                                set_child_text(element, "GamePlatform", &root_platform);
+                            }
+                            return true;
+                        }
+                        if retained_retargeted_row {
+                            report.playlist_rows_deduplicated =
+                                report.playlist_rows_deduplicated.saturating_add(1);
+                            return false;
+                        }
+                        set_child_text(element, "GameId", &root_id);
+                        set_child_text(element, "GameTitle", &root_title);
+                        set_child_text(element, "GamePlatform", &root_platform);
+                        retained_retargeted_row = true;
+                        report.playlist_rows_retargeted =
+                            report.playlist_rows_retargeted.saturating_add(1);
+                        true
+                    });
+                }
+                AuxiliaryDocumentKind::ImportBlacklist => {
+                    root.children.retain(|node| {
+                        let matches = node.as_element().is_some_and(|element| {
+                            element.name == "IgnoredGameId"
+                                && optional_child(element, "GameId")
+                                    .is_some_and(|id| removed.contains(&id.to_lowercase()))
+                        });
+                        if matches {
+                            report.blacklist_rows_removed =
+                                report.blacklist_rows_removed.saturating_add(1);
+                        }
+                        !matches
+                    });
+                }
+                actual => {
+                    return Err(StorageError::UnsupportedAuxiliaryOperation {
+                        operation: "remap combined game references",
+                        expected: AuxiliaryDocumentKind::Playlist,
+                        actual,
+                    });
+                }
+            }
+            Ok(())
+        })?;
+        Ok(report)
     }
 
     /// Updates one playlist and its ordered filter/game rows without
@@ -2569,6 +2714,448 @@ impl PlatformDocument {
         Ok(application)
     }
 
+    /// Combines standalone games from this platform into one retained root
+    /// game and losslessly retargets every platform-document record that
+    /// refers to a removed game.
+    ///
+    /// Each standalone launch target remains selectable through an additional
+    /// application. Existing version/helper applications keep their IDs and
+    /// unknown XML children. Main-game save rows from removed games are moved
+    /// to the generated representative application so per-version save
+    /// ownership remains explicit.
+    pub fn combine_games(
+        &mut self,
+        root_game_id: &str,
+        selected_game_ids: &[String],
+        new_application_ids: &[String],
+    ) -> Result<CombinedGames, StorageError> {
+        let selected = selected_game_ids
+            .iter()
+            .map(|id| id.to_lowercase())
+            .collect::<std::collections::BTreeSet<_>>();
+        if selected.len() < 2 || !selected.contains(&root_game_id.to_lowercase()) {
+            return Err(StorageError::InvalidGameGrouping {
+                reason: "combine requires at least two unique games including the selected root"
+                    .into(),
+            });
+        }
+        let mut selected_games = Vec::with_capacity(selected.len());
+        let root_game = self
+            .library
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(root_game_id))
+            .cloned()
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: root_game_id.to_string(),
+            })?;
+        selected_games.push(root_game.clone());
+        for id in selected_game_ids {
+            if id.eq_ignore_ascii_case(root_game_id)
+                || selected_games
+                    .iter()
+                    .any(|game| game.id.eq_ignore_ascii_case(id))
+            {
+                continue;
+            }
+            let game = self
+                .library
+                .games
+                .iter()
+                .find(|game| game.id.eq_ignore_ascii_case(id))
+                .cloned()
+                .ok_or_else(|| StorageError::GameNotFound { id: id.clone() })?;
+            if !game.platform.eq_ignore_ascii_case(&root_game.platform) {
+                return Err(StorageError::InvalidGameGrouping {
+                    reason: format!(
+                        "{} belongs to {}, not {}",
+                        game.title, game.platform, root_game.platform
+                    ),
+                });
+            }
+            selected_games.push(game);
+        }
+        if selected_games.len() != selected.len() {
+            return Err(StorageError::InvalidGameGrouping {
+                reason: "one or more selected game IDs were not resolved exactly once".into(),
+            });
+        }
+
+        let mut representative_by_game = std::collections::BTreeMap::<String, String>::new();
+        for game in &selected_games {
+            if let Some(application) =
+                self.library
+                    .additional_applications
+                    .iter()
+                    .find(|application| {
+                        application.game_id.eq_ignore_ascii_case(&game.id)
+                            && application.is_likely_game_version()
+                            && additional_application_matches_game_launch(application, game)
+                    })
+            {
+                representative_by_game.insert(game.id.to_lowercase(), application.id.clone());
+            }
+        }
+        let missing_representatives = selected_games
+            .iter()
+            .filter(|game| !representative_by_game.contains_key(&game.id.to_lowercase()))
+            .count();
+        if new_application_ids.len() < missing_representatives {
+            return Err(StorageError::InvalidGameGrouping {
+                reason: format!(
+                    "combine requires at least {missing_representatives} fresh version application ID(s), received {}",
+                    new_application_ids.len()
+                ),
+            });
+        }
+        let existing_application_ids = self
+            .library
+            .additional_applications
+            .iter()
+            .map(|application| application.id.to_lowercase())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut supplied_ids = std::collections::BTreeSet::new();
+        for id in new_application_ids.iter().take(missing_representatives) {
+            if id.trim().is_empty()
+                || existing_application_ids.contains(&id.to_lowercase())
+                || !supplied_ids.insert(id.to_lowercase())
+            {
+                return Err(StorageError::InvalidGameGrouping {
+                    reason: format!("version application ID is empty or already in use: {id}"),
+                });
+            }
+        }
+
+        let mut next_priority = self
+            .library
+            .additional_applications
+            .iter()
+            .filter(|application| selected.contains(&application.game_id.to_lowercase()))
+            .map(|application| application.priority)
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1);
+        let mut supplied = new_application_ids.iter();
+        let mut created_version_applications = Vec::new();
+        for game in &selected_games {
+            if representative_by_game.contains_key(&game.id.to_lowercase()) {
+                continue;
+            }
+            let id = supplied
+                .next()
+                .expect("fresh application ID count was validated")
+                .clone();
+            let application =
+                AdditionalApplication::from_game_version(id, &root_game.id, game, next_priority);
+            next_priority = next_priority.saturating_add(1);
+            representative_by_game.insert(game.id.to_lowercase(), application.id.clone());
+            created_version_applications.push(application);
+        }
+
+        let removed_games = selected_games
+            .iter()
+            .filter(|game| !game.id.eq_ignore_ascii_case(&root_game.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let removed_ids = removed_games
+            .iter()
+            .map(|game| game.id.to_lowercase())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut candidate = self.root.clone();
+        let mut retargeted_additional_applications = 0usize;
+        let mut retargeted_game_records = 0usize;
+        let mut retargeted_clone_relationships = 0usize;
+        candidate.children.retain_mut(|node| {
+            let Some(element) = node.as_mut_element() else {
+                return true;
+            };
+            if element.name == "Game" {
+                let id = optional_child(element, "ID").unwrap_or_default();
+                if removed_ids.contains(&id.to_lowercase()) {
+                    return false;
+                }
+                if optional_child(element, "CloneOf")
+                    .is_some_and(|clone| removed_ids.contains(&clone.to_lowercase()))
+                {
+                    if id.eq_ignore_ascii_case(&root_game.id) {
+                        set_optional_child_text(element, "CloneOf", None);
+                    } else {
+                        set_child_text(element, "CloneOf", &root_game.id);
+                    }
+                    retargeted_clone_relationships =
+                        retargeted_clone_relationships.saturating_add(1);
+                }
+                return true;
+            }
+
+            let owner_field = match element.name.as_str() {
+                "AdditionalApplication" | "Mount" | "AlternateName" | "CustomField" => {
+                    Some("GameID")
+                }
+                "GameControllerSupport" | "GameSave" => Some("GameId"),
+                _ => None,
+            };
+            let Some(owner_field) = owner_field else {
+                return true;
+            };
+            let owner = optional_child(element, owner_field).unwrap_or_default();
+            if !removed_ids.contains(&owner.to_lowercase()) {
+                return true;
+            }
+            set_child_text(element, owner_field, &root_game.id);
+            if element.name == "AdditionalApplication" {
+                retargeted_additional_applications =
+                    retargeted_additional_applications.saturating_add(1);
+            } else {
+                retargeted_game_records = retargeted_game_records.saturating_add(1);
+            }
+            if element.name == "GameSave"
+                && optional_child(element, "AdditionalApplicationId").is_none()
+            {
+                if let Some(representative) = representative_by_game.get(&owner.to_lowercase()) {
+                    set_child_text(element, "AdditionalApplicationId", representative);
+                }
+            }
+            true
+        });
+        for application in &created_version_applications {
+            let insertion = platform_record_insertion_index(&candidate, "AdditionalApplication");
+            candidate.children.insert(
+                insertion,
+                XMLNode::Element(additional_application_element(application)),
+            );
+        }
+        self.replace_platform_root(candidate)?;
+
+        Ok(CombinedGames {
+            root_game,
+            removed_games,
+            created_version_applications,
+            retargeted_additional_applications,
+            retargeted_game_records,
+            retargeted_clone_relationships,
+        })
+    }
+
+    /// Expands every launchable version application into a standalone game.
+    ///
+    /// A version row that exactly represents the retained root's default
+    /// launch target is consumed without creating a duplicate game. Save rows
+    /// explicitly owned by an expanded application move to the corresponding
+    /// new game and drop the now-removed application ID.
+    pub fn expand_game_versions(
+        &mut self,
+        root_game_id: &str,
+        new_game_ids: &[String],
+    ) -> Result<ExpandedGames, StorageError> {
+        let root_game = self
+            .library
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(root_game_id))
+            .cloned()
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: root_game_id.to_string(),
+            })?;
+        let version_applications = self
+            .library
+            .additional_applications
+            .iter()
+            .filter(|application| {
+                application.game_id.eq_ignore_ascii_case(root_game_id)
+                    && application.is_likely_game_version()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let expandable_count = version_applications
+            .iter()
+            .filter(|application| {
+                !additional_application_matches_game_launch(application, &root_game)
+            })
+            .count();
+        if expandable_count == 0 {
+            return Err(StorageError::InvalidGameGrouping {
+                reason:
+                    "the selected game has no additional launch target distinct from its default"
+                        .into(),
+            });
+        }
+        if new_game_ids.len() < expandable_count {
+            return Err(StorageError::InvalidGameGrouping {
+                reason: format!(
+                    "expand requires at least {expandable_count} fresh game ID(s), received {}",
+                    new_game_ids.len()
+                ),
+            });
+        }
+        let existing_game_ids = self
+            .library
+            .games
+            .iter()
+            .map(|game| game.id.to_lowercase())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut supplied_ids = std::collections::BTreeSet::new();
+        for id in new_game_ids.iter().take(expandable_count) {
+            if id.trim().is_empty()
+                || existing_game_ids.contains(&id.to_lowercase())
+                || !supplied_ids.insert(id.to_lowercase())
+            {
+                return Err(StorageError::InvalidGameGrouping {
+                    reason: format!("expanded game ID is empty or already in use: {id}"),
+                });
+            }
+        }
+
+        let mut supplied = new_game_ids.iter();
+        let mut application_to_game = std::collections::BTreeMap::<String, Option<String>>::new();
+        let mut created_games = Vec::with_capacity(expandable_count);
+        for application in &version_applications {
+            if additional_application_matches_game_launch(application, &root_game) {
+                application_to_game.insert(application.id.to_lowercase(), None);
+                continue;
+            }
+            let id = supplied
+                .next()
+                .expect("fresh expanded game ID count was validated")
+                .clone();
+            let game = Game::from_additional_application_version(id, application, &root_game);
+            game.validate()?;
+            application_to_game.insert(application.id.to_lowercase(), Some(game.id.clone()));
+            created_games.push(game);
+        }
+
+        let root_element = self
+            .root
+            .children
+            .iter()
+            .filter_map(XMLNode::as_element)
+            .find(|element| {
+                element.name == "Game"
+                    && optional_child(element, "ID")
+                        .is_some_and(|id| id.eq_ignore_ascii_case(root_game_id))
+            })
+            .cloned()
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: root_game_id.to_string(),
+            })?;
+        let root_mounts = self
+            .root
+            .children
+            .iter()
+            .filter_map(XMLNode::as_element)
+            .filter(|element| {
+                element.name == "Mount"
+                    && optional_child(element, "GameID")
+                        .is_some_and(|id| id.eq_ignore_ascii_case(root_game_id))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let removed_application_ids = application_to_game
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut candidate = self.root.clone();
+        let mut reassigned_game_saves = 0usize;
+        candidate.children.retain_mut(|node| {
+            let Some(element) = node.as_mut_element() else {
+                return true;
+            };
+            if element.name == "AdditionalApplication" {
+                return !optional_child(element, "Id")
+                    .is_some_and(|id| removed_application_ids.contains(&id.to_lowercase()));
+            }
+            if element.name != "GameSave" {
+                return true;
+            }
+            let Some(application_id) = optional_child(element, "AdditionalApplicationId") else {
+                return true;
+            };
+            let Some(new_game_id) = application_to_game.get(&application_id.to_lowercase()) else {
+                return true;
+            };
+            set_child_text(
+                element,
+                "GameId",
+                new_game_id.as_deref().unwrap_or(&root_game.id),
+            );
+            set_optional_child_text(element, "AdditionalApplicationId", None);
+            reassigned_game_saves = reassigned_game_saves.saturating_add(1);
+            true
+        });
+
+        for game in &created_games {
+            let mut element = root_element.clone();
+            update_expanded_game_element(&mut element, game);
+            let insertion = platform_record_insertion_index(&candidate, "Game");
+            candidate
+                .children
+                .insert(insertion, XMLNode::Element(element));
+            if game.use_dos_box {
+                for mount in &root_mounts {
+                    let mut mount = mount.clone();
+                    set_child_text(&mut mount, "GameID", &game.id);
+                    let insertion = platform_record_insertion_index(&candidate, "Mount");
+                    candidate
+                        .children
+                        .insert(insertion, XMLNode::Element(mount));
+                }
+            }
+        }
+        self.replace_platform_root(candidate)?;
+
+        Ok(ExpandedGames {
+            root_game,
+            created_games,
+            removed_version_applications: version_applications,
+            reassigned_game_saves,
+        })
+    }
+
+    /// Retargets clone relationships in another platform document during a
+    /// cross-document combine transaction.
+    pub fn remap_clone_references(
+        &mut self,
+        removed_game_ids: &[String],
+        root_game_id: &str,
+    ) -> Result<usize, StorageError> {
+        let removed = removed_game_ids
+            .iter()
+            .map(|id| id.to_lowercase())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut candidate = self.root.clone();
+        let mut changed = 0usize;
+        for element in candidate
+            .children
+            .iter_mut()
+            .filter_map(XMLNode::as_mut_element)
+            .filter(|element| element.name == "Game")
+        {
+            if optional_child(element, "CloneOf")
+                .is_some_and(|id| removed.contains(&id.to_lowercase()))
+            {
+                set_child_text(element, "CloneOf", root_game_id);
+                changed = changed.saturating_add(1);
+            }
+        }
+        if changed > 0 {
+            self.replace_platform_root(candidate)?;
+        }
+        Ok(changed)
+    }
+
+    fn replace_platform_root(&mut self, root: Element) -> Result<(), StorageError> {
+        let mut bytes = Vec::new();
+        write_xml_root(&root, &mut bytes)?;
+        let replacement = Self::from_reader_for_platform(
+            self.source_path.clone(),
+            bytes.as_slice(),
+            self.library.name.clone(),
+        )?;
+        self.root = replacement.root;
+        self.library = replacement.library;
+        Ok(())
+    }
+
     /// Replaces the 13.27 editor surface for one additional application while
     /// retaining its immutable identity, owner, storefront/cloud fields, and
     /// every unknown XML child on the source record.
@@ -3993,6 +4580,59 @@ fn ensure_record_index_alignment(
             format!("typed/XML source count mismatch ({typed_count} versus {xml_count})"),
         ))
     }
+}
+
+fn additional_application_matches_game_launch(
+    application: &AdditionalApplication,
+    game: &Game,
+) -> bool {
+    let game_uses_emulator = game
+        .emulator_id
+        .as_deref()
+        .is_none_or(|id| !lb_domain::is_unassigned_emulator_id(id));
+    application.application_path == game.application_path
+        && application.command_line == game.command_line
+        && application.use_dos_box == game.use_dos_box
+        && application.use_emulator == game_uses_emulator
+        && (!game_uses_emulator || application.emulator_id == game.emulator_id)
+}
+
+fn update_expanded_game_element(element: &mut Element, game: &Game) {
+    set_child_text(element, "ID", &game.id);
+    set_child_text(element, "Title", &game.title);
+    set_child_text(element, "Platform", &game.platform);
+    set_child_text(element, "ApplicationPath", &game.application_path);
+    set_optional_child_text(element, "CommandLine", game.command_line.as_deref());
+    set_optional_child_text(element, "Emulator", game.emulator_id.as_deref());
+    set_optional_child_text(element, "CloneOf", game.clone_of.as_deref());
+    set_child_text(element, "UseDosBox", &game.use_dos_box.to_string());
+    set_child_text(element, "UseScummVM", &game.use_scumm_vm.to_string());
+    set_optional_child_text(element, "Developer", game.developer.as_deref());
+    set_optional_child_text(element, "Publisher", game.publisher.as_deref());
+    set_optional_child_text(element, "Region", game.region.as_deref());
+    set_optional_child_text(element, "ReleaseDate", game.release_date.as_deref());
+    set_optional_child_text(element, "Version", game.version.as_deref());
+    set_optional_child_text(element, "Status", game.status.as_deref());
+    set_optional_child_text(
+        element,
+        "Installed",
+        game.installed.map(|value| value.to_string()).as_deref(),
+    );
+    set_child_text(element, "PlayCount", &game.play_count.to_string());
+    set_child_text(element, "PlayTime", &game.play_time_seconds.to_string());
+    set_optional_child_text(element, "LastPlayedDate", game.last_played_date.as_deref());
+    set_optional_child_text(element, "GogAppId", game.gog_app_id.as_deref());
+    set_optional_child_text(element, "OriginAppId", game.origin_app_id.as_deref());
+    set_optional_child_text(
+        element,
+        "OriginInstallPath",
+        game.origin_install_path.as_deref(),
+    );
+    set_child_text(
+        element,
+        "HasCloudSynced",
+        &game.has_cloud_synced.to_string(),
+    );
 }
 
 fn platform_record_insertion_index(root: &Element, record_name: &str) -> usize {
@@ -6307,6 +6947,8 @@ pub enum StorageError {
     EmptyGameApplicationPath { id: String },
     #[error("game ID {id} already exists")]
     DuplicateGameId { id: String },
+    #[error("invalid game combine/expand request: {reason}")]
+    InvalidGameGrouping { reason: String },
     #[error("game platform {actual} does not match platform document {expected}")]
     GamePlatformMismatch { expected: String, actual: String },
     #[error("invalid {record} edit for game {game_id}: {reason}")]
@@ -6545,6 +7187,210 @@ mod tests {
         assert_eq!(document.library().custom_fields.len(), 1);
         assert_eq!(document.library().controller_support.len(), 1);
         assert_eq!(document.library().game_saves.len(), 1);
+    }
+
+    #[test]
+    fn combine_and_expand_games_preserve_versions_references_and_unknown_xml() {
+        let fixture = FIXTURE
+            .replace(
+                "    <Title>Fixture Racer</Title>",
+                "    <Region>Europe</Region>\n    <Version>Rev 2</Version>\n    <Title>Fixture Racer</Title>\n    <FutureRacerField>keep-racer-data</FutureRacerField>",
+            )
+            .replace(
+                "    <Notes>Searchable puzzle fixture.</Notes>",
+                "    <CloneOf>fixture-racer</CloneOf>\n    <Notes>Searchable puzzle fixture.</Notes>",
+            )
+            .replace(
+                "  <FutureRootElement>preserve-me</FutureRootElement>",
+                "  <GameSave>\n    <FilePath>Saves\\Fixture Racer\\career.sav</FilePath>\n    <GameId>fixture-racer</GameId>\n    <Title>Racer Career</Title>\n    <FutureRacerSaveField>keep-racer-save-data</FutureRacerSaveField>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
+            );
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", fixture.as_bytes()).unwrap();
+        let combined = document
+            .combine_games(
+                "fixture-adventure",
+                &["fixture-adventure".into(), "fixture-racer".into()],
+                &["version-root".into(), "version-racer".into()],
+            )
+            .unwrap();
+
+        assert_eq!(combined.root_game.id, "fixture-adventure");
+        assert_eq!(
+            combined
+                .removed_games
+                .iter()
+                .map(|game| game.id.as_str())
+                .collect::<Vec<_>>(),
+            ["fixture-racer"]
+        );
+        assert_eq!(combined.created_version_applications.len(), 2);
+        assert_eq!(combined.retargeted_game_records, 2);
+        assert_eq!(combined.retargeted_clone_relationships, 1);
+        assert_eq!(document.library().games.len(), 2);
+        assert!(document
+            .library()
+            .games
+            .iter()
+            .all(|game| game.id != "fixture-racer"));
+        assert_eq!(
+            document
+                .library()
+                .games
+                .iter()
+                .find(|game| game.id == "fixture-puzzle")
+                .unwrap()
+                .clone_of
+                .as_deref(),
+            Some("fixture-adventure")
+        );
+        assert_eq!(document.library().additional_applications.len(), 3);
+        assert!(document
+            .library()
+            .controller_support
+            .iter()
+            .all(|support| support.game_id == "fixture-adventure"));
+        let racer_save = document
+            .library()
+            .game_saves
+            .iter()
+            .find(|save| save.title.as_deref() == Some("Racer Career"))
+            .unwrap();
+        assert_eq!(racer_save.game_id, "fixture-adventure");
+        assert_eq!(
+            racer_save.additional_application_id.as_deref(),
+            Some("version-racer")
+        );
+
+        let combined_xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(combined_xml
+            .contains("<FutureRacerSaveField>keep-racer-save-data</FutureRacerSaveField>"));
+        assert!(!combined_xml.contains("<FutureRacerField>keep-racer-data</FutureRacerField>"));
+
+        let expanded = document
+            .expand_game_versions("fixture-adventure", &["expanded-racer".into()])
+            .unwrap();
+        assert_eq!(expanded.created_games.len(), 1);
+        assert_eq!(expanded.removed_version_applications.len(), 2);
+        assert_eq!(expanded.reassigned_game_saves, 1);
+        let racer = document
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "expanded-racer")
+            .unwrap();
+        assert_eq!(racer.title, "Fixture Adventure");
+        assert_eq!(racer.application_path, r"Games\Fixture Racer\racer.rom");
+        assert_eq!(racer.region.as_deref(), Some("Europe"));
+        assert_eq!(racer.version.as_deref(), Some("Rev 2"));
+        assert_eq!(racer.play_count, 8);
+        assert_eq!(
+            document
+                .library()
+                .game_saves
+                .iter()
+                .find(|save| save.title.as_deref() == Some("Racer Career"))
+                .unwrap()
+                .game_id,
+            "expanded-racer"
+        );
+        assert!(document
+            .library()
+            .game_saves
+            .iter()
+            .find(|save| save.title.as_deref() == Some("Racer Career"))
+            .unwrap()
+            .additional_application_id
+            .is_none());
+        assert_eq!(document.library().additional_applications.len(), 1);
+        assert_eq!(
+            document.library().additional_applications[0].id,
+            "fixture-adventure-manual"
+        );
+        let expanded_xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert_eq!(
+            expanded_xml
+                .matches("<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>")
+                .count(),
+            2
+        );
+        assert!(expanded_xml
+            .contains("<FutureRacerSaveField>keep-racer-save-data</FutureRacerSaveField>"));
+    }
+
+    #[test]
+    fn combined_game_reference_remap_updates_and_deduplicates_auxiliary_documents() {
+        let root_game = Game {
+            id: "fixture-adventure".into(),
+            title: "Fixture Adventure".into(),
+            platform: "Fixture Console".into(),
+            application_path: "Games/adventure.rom".into(),
+            ..Game::default()
+        };
+        let removed = vec!["fixture-racer".to_string()];
+
+        let playlist_fixture =
+            include_str!("../../../fixtures/launchbox/Data/Playlists/Fixture Playlist.xml")
+                .replace(
+                    "    <Notes>A deterministic playlist fixture.</Notes>",
+                    "    <Notes>A deterministic playlist fixture.</Notes>\n    <LastGameId>fixture-racer</LastGameId>",
+                )
+                .replace(
+                    "</LaunchBox>",
+                    "  <PlaylistGame>\n    <GameId>fixture-racer</GameId>\n    <GameTitle>Fixture Racer</GameTitle>\n    <GamePlatform>Fixture Console</GamePlatform>\n    <FuturePlaylistGameField>keep-playlist-data</FuturePlaylistGameField>\n  </PlaylistGame>\n</LaunchBox>",
+                );
+        let mut playlist = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Playlist,
+            "Fixture Playlist.xml",
+            playlist_fixture.as_bytes(),
+        )
+        .unwrap();
+        let playlist_report = playlist
+            .remap_combined_game_references(&removed, &root_game)
+            .unwrap();
+        assert_eq!(playlist_report.navigation_references, 1);
+        assert_eq!(playlist_report.playlist_rows_retargeted, 0);
+        assert_eq!(playlist_report.playlist_rows_deduplicated, 1);
+        let reparsed = playlist.playlist_document().unwrap();
+        assert_eq!(
+            reparsed.playlist.metadata.last_game_id.as_deref(),
+            Some("fixture-adventure")
+        );
+        assert_eq!(reparsed.games.len(), 1);
+        assert_eq!(reparsed.games[0].game_id, "fixture-adventure");
+
+        let platforms_fixture = include_str!("../../../fixtures/launchbox/Data/Platforms.xml")
+            .replace(
+                "    <Name>Fixture Console</Name>",
+                "    <Name>Fixture Console</Name>\n    <LastGameId>fixture-racer</LastGameId>",
+            );
+        let mut platforms = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Platforms,
+            "Platforms.xml",
+            platforms_fixture.as_bytes(),
+        )
+        .unwrap();
+        let platforms_report = platforms
+            .remap_combined_game_references(&removed, &root_game)
+            .unwrap();
+        assert_eq!(platforms_report.navigation_references, 1);
+        assert!(String::from_utf8(platforms.to_xml_bytes().unwrap())
+            .unwrap()
+            .contains("<LastGameId>fixture-adventure</LastGameId>"));
+
+        let blacklist_fixture =
+            include_str!("../../../fixtures/launchbox/Data/ImportBlacklist.xml")
+                .replace("fixture-ignored-game", "fixture-racer");
+        let mut blacklist = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::ImportBlacklist,
+            "ImportBlacklist.xml",
+            blacklist_fixture.as_bytes(),
+        )
+        .unwrap();
+        let blacklist_report = blacklist
+            .remap_combined_game_references(&removed, &root_game)
+            .unwrap();
+        assert_eq!(blacklist_report.blacklist_rows_removed, 1);
+        assert_eq!(blacklist.record_count("IgnoredGameId"), 0);
     }
 
     #[test]

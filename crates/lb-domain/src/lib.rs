@@ -454,6 +454,101 @@ impl AdditionalApplication {
         updated.has_cloud_synced = self.has_cloud_synced;
         updated
     }
+
+    /// Converts one standalone game into the version/application shape used
+    /// by LaunchBox's manual Combine Games operation.
+    ///
+    /// The protected 13.27 implementation exposes
+    /// `AdditionalApplication.GetFromGame(newGameId, game, priority, region,
+    /// version)`. Only fields representable by the concrete additional-
+    /// application record are copied. Game-only presentation, media, input,
+    /// DOSBox mount, and ScummVM fields remain on the selected root game.
+    pub fn from_game_version(
+        id: impl Into<String>,
+        root_game_id: impl Into<String>,
+        game: &Game,
+        priority: i32,
+    ) -> Self {
+        let version_label = game
+            .version
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                game.region
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .unwrap_or(&game.title);
+        let use_emulator = game
+            .emulator_id
+            .as_deref()
+            .is_none_or(|id| !is_unassigned_emulator_id(id));
+        Self {
+            id: id.into(),
+            game_id: root_game_id.into(),
+            name: format!("Play {version_label} Version..."),
+            application_path: game.application_path.clone(),
+            command_line: game.command_line.clone(),
+            use_emulator,
+            emulator_id: if use_emulator {
+                game.emulator_id.clone()
+            } else {
+                None
+            },
+            use_dos_box: game.use_dos_box,
+            priority,
+            play_count: game.play_count,
+            play_time_seconds: game.play_time_seconds,
+            developer: game.developer.clone(),
+            publisher: game.publisher.clone(),
+            region: game.region.clone(),
+            release_date: game.release_date.clone(),
+            version: game.version.clone(),
+            status: game.status.clone(),
+            installed: game.installed,
+            last_played: game.last_played_date.clone(),
+            gog_app_id: game.gog_app_id.clone(),
+            origin_app_id: game.origin_app_id.clone(),
+            origin_install_path: game.origin_install_path.clone(),
+            has_cloud_synced: game.has_cloud_synced,
+            ..Self::default()
+        }
+    }
+
+    /// Matches the semantic boundary used by Expand Games: launchable
+    /// versions are expandable, while automatic helpers and documents are
+    /// retained on the original game.
+    pub fn is_likely_game_version(&self) -> bool {
+        if self.auto_run_before || self.auto_run_after || self.application_path.trim().is_empty() {
+            return false;
+        }
+        let lowercase_path = self.application_path.to_ascii_lowercase();
+        ![".pdf", ".txt", ".doc", ".docx", ".htm", ".html", ".url"]
+            .iter()
+            .any(|extension| lowercase_path.ends_with(extension))
+    }
+}
+
+impl Game {
+    /// Converts one expandable additional application back into a standalone
+    /// game while using the original game as the template for fields that an
+    /// additional application cannot represent.
+    ///
+    /// This mirrors the surviving 13.27 signature
+    /// `Game.GetFromAdditionalApplication(app, title, region, version,
+    /// platform, originalGame)`.
+    pub fn from_additional_application_version(
+        id: impl Into<String>,
+        application: &AdditionalApplication,
+        original: &Game,
+    ) -> Self {
+        let mut game = application.apply_as_default_to(original);
+        game.id = id.into();
+        game.title = original.title.clone();
+        game.platform = original.platform.clone();
+        game.clone_of = None;
+        game
+    }
 }
 
 /// Fields exposed by LaunchBox 13.27's additional-application editor.
@@ -973,5 +1068,71 @@ mod tests {
                 .as_deref(),
             Some("specific-emulator")
         );
+    }
+
+    #[test]
+    fn game_and_additional_application_version_conversion_is_reversible() {
+        let original = Game {
+            id: "regional-game".into(),
+            title: "Fixture Adventure".into(),
+            platform: "Fixture Console".into(),
+            application_path: r"Games\Fixture Console\adventure-eu.rom".into(),
+            command_line: Some("--region eu".into()),
+            emulator_id: Some("fixture-emulator".into()),
+            notes: Some("shared presentation template".into()),
+            developer: Some("Fixture Developer".into()),
+            region: Some("Europe".into()),
+            version: Some("Rev 2".into()),
+            play_count: 7,
+            play_time_seconds: 31,
+            last_played_date: Some("2026-07-23T12:34:56.0000000-07:00".into()),
+            ..Game::default()
+        };
+
+        let application =
+            AdditionalApplication::from_game_version("version-app", "root-game", &original, 2);
+        assert_eq!(application.id, "version-app");
+        assert_eq!(application.game_id, "root-game");
+        assert_eq!(application.name, "Play Rev 2 Version...");
+        assert_eq!(application.application_path, original.application_path);
+        assert_eq!(application.command_line, original.command_line);
+        assert_eq!(application.emulator_id, original.emulator_id);
+        assert_eq!(application.region, original.region);
+        assert_eq!(application.version, original.version);
+        assert_eq!(application.play_count, 7);
+        assert!(application.is_likely_game_version());
+
+        let template = Game {
+            id: "root-game".into(),
+            title: "Fixture Adventure".into(),
+            platform: "Fixture Console".into(),
+            application_path: r"Games\Fixture Console\adventure-us.rom".into(),
+            notes: Some("shared presentation template".into()),
+            clone_of: Some("another-game".into()),
+            ..Game::default()
+        };
+        let expanded =
+            Game::from_additional_application_version("expanded-game", &application, &template);
+        assert_eq!(expanded.id, "expanded-game");
+        assert_eq!(expanded.title, template.title);
+        assert_eq!(expanded.platform, template.platform);
+        assert_eq!(expanded.notes, template.notes);
+        assert_eq!(expanded.application_path, original.application_path);
+        assert_eq!(expanded.command_line, original.command_line);
+        assert_eq!(expanded.emulator_id, original.emulator_id);
+        assert_eq!(expanded.region, original.region);
+        assert_eq!(expanded.version, original.version);
+        assert_eq!(expanded.clone_of, None);
+
+        let automatic = AdditionalApplication {
+            auto_run_before: true,
+            ..application.clone()
+        };
+        assert!(!automatic.is_likely_game_version());
+        let document = AdditionalApplication {
+            application_path: "Docs/guide.pdf".into(),
+            ..application
+        };
+        assert!(!document.is_likely_game_version());
     }
 }

@@ -36,6 +36,8 @@ ApplicationWindow {
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
     property bool pathMappingSmokeTest:
         Qt.application.arguments.indexOf("--path-mapping-smoke-test") >= 0
+    property bool gameGroupingSmokeTest:
+        Qt.application.arguments.indexOf("--game-grouping-smoke-test") >= 0
     property int loadHeartbeat: 0
     property int smokePhase: 0
     property int editSmokePhase: 0
@@ -126,6 +128,8 @@ ApplicationWindow {
     property bool launchSmokeFinished: false
     property int pathMappingSmokePhase: 0
     property bool pathMappingSmokeFinished: false
+    property int gameGroupingSmokePhase: 0
+    property bool gameGroupingSmokeFinished: false
     property string launchSmokeGameId: {
         const requested = argumentValue("--launch-game-id")
         return requested.length > 0 ? requested : "fixture-racer"
@@ -403,6 +407,71 @@ ApplicationWindow {
                           + window.pathMappingSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(8)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameGroupingSmokeTest
+                 && !window.gameGroupingSmokeFinished
+        onTriggered: {
+            const rootId = "fixture-adventure"
+            if (window.gameGroupingSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(rootId)
+                if (row < 0) {
+                    console.error("GAME_GROUPING_SMOKE_MISSING_ROOT")
+                    Qt.exit(28)
+                    return
+                }
+                window.gameGroupingSmokePhase = 1
+                gameCombineDialog.smokeCombine(
+                    row, rootId, "Fixture Adventure", "fixture-racer")
+            } else if (window.gameGroupingSmokePhase === 1
+                       && !controller.loading && !controller.writing
+                       && controller.game_grouping_revision === 1) {
+                const row = controller.row_for_game_id(rootId)
+                if (controller.last_game_grouping_operation !== "combine"
+                        || controller.last_game_grouping_root_id !== rootId
+                        || controller.last_game_grouping_removed_count !== 1
+                        || controller.last_game_grouping_created_count !== 0
+                        || controller.game_count !== 2 || row < 0
+                        || controller.additional_application_count(row, rootId) !== 3) {
+                    console.error("GAME_GROUPING_SMOKE_BAD_COMBINE_STATE status="
+                                  + controller.status_message)
+                    Qt.exit(28)
+                    return
+                }
+                window.gameGroupingSmokePhase = 2
+                gameExpandConfirmation.smokeExpand(
+                    row, rootId, "Fixture Adventure")
+            } else if (window.gameGroupingSmokePhase === 2
+                       && !controller.loading && !controller.writing
+                       && controller.game_grouping_revision === 2) {
+                if (!controller.report_game_grouping_smoke_success(rootId)) {
+                    console.error("GAME_GROUPING_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(28)
+                    return
+                }
+                window.gameGroupingSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 30000
+        running: window.gameGroupingSmokeTest
+                 && !window.gameGroupingSmokeFinished
+        onTriggered: {
+            console.error("GAME_GROUPING_SMOKE_TIMEOUT phase="
+                          + window.gameGroupingSmokePhase
+                          + " revision=" + controller.game_grouping_revision
+                          + " status=" + controller.status_message)
+            Qt.exit(28)
         }
     }
 
@@ -4000,16 +4069,194 @@ ApplicationWindow {
                     wrapMode: Text.Wrap
                     color: "#7d8590"
                 }
-                Button {
-                    text: "Delete Game…"
-                    enabled: !controller.writing
-                    onClicked: {
-                        gameEditor.close()
-                        deleteConfirmation.prepare(gameEditor.modelRow, gameEditor.gameId,
-                                                   gameEditor.gameTitle)
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button {
+                        text: "Combine Games…"
+                        enabled: !controller.writing
+                                 && controller.pending_recovery_count === 0
+                                 && !controller.write_conflict
+                        onClicked: {
+                            gameEditor.close()
+                            gameCombineDialog.prepare(
+                                gameEditor.modelRow, gameEditor.gameId,
+                                gameEditor.gameTitle)
+                        }
+                    }
+                    Button {
+                        text: "Expand Versions…"
+                        enabled: !controller.writing
+                                 && controller.pending_recovery_count === 0
+                                 && !controller.write_conflict
+                                 && controller.additional_application_count(
+                                     gameEditor.modelRow, gameEditor.gameId) > 0
+                        onClicked: {
+                            gameEditor.close()
+                            gameExpandConfirmation.prepare(
+                                gameEditor.modelRow, gameEditor.gameId,
+                                gameEditor.gameTitle)
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                    Button {
+                        text: "Delete Game…"
+                        enabled: !controller.writing
+                        onClicked: {
+                            gameEditor.close()
+                            deleteConfirmation.prepare(
+                                gameEditor.modelRow, gameEditor.gameId,
+                                gameEditor.gameTitle)
+                        }
                     }
                 }
             }
+        }
+    }
+
+    Dialog {
+        id: gameCombineDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Combine Games into " + rootGameTitle
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        property int modelRow: -1
+        property string rootGameId: ""
+        property string rootGameTitle: ""
+
+        ListModel { id: gameCombineCandidateModel }
+
+        function selectedGameIds() {
+            const ids = []
+            for (let index = 0; index < gameCombineCandidateModel.count; ++index) {
+                const candidate = gameCombineCandidateModel.get(index)
+                if (candidate.chosen)
+                    ids.push(candidate.candidateId)
+            }
+            return ids
+        }
+
+        function updateAcceptance() {
+            const button = standardButton(Dialog.Ok)
+            if (button)
+                button.enabled = selectedGameIds().length > 0
+        }
+
+        function prepare(row, id, title) {
+            modelRow = row
+            rootGameId = id
+            rootGameTitle = title
+            gameCombineCandidateModel.clear()
+            const serialized = controller.game_combine_candidates(row, id)
+            if (serialized.length > 0) {
+                const candidates = JSON.parse(serialized)
+                for (let index = 0; index < candidates.length; ++index) {
+                    const candidate = candidates[index]
+                    gameCombineCandidateModel.append({
+                        candidateId: candidate.id,
+                        candidateTitle: candidate.title,
+                        candidatePlatform: candidate.platform,
+                        candidatePath: candidate.application_path,
+                        chosen: false
+                    })
+                }
+            }
+            open()
+            Qt.callLater(updateAcceptance)
+        }
+
+        function smokeCombine(row, id, title, candidateId) {
+            prepare(row, id, title)
+            for (let index = 0; index < gameCombineCandidateModel.count; ++index) {
+                if (gameCombineCandidateModel.get(index).candidateId === candidateId) {
+                    gameCombineCandidateModel.setProperty(index, "chosen", true)
+                    break
+                }
+            }
+            updateAcceptance()
+            Qt.callLater(function() { gameCombineDialog.accept() })
+        }
+
+        onAccepted: controller.combine_games(
+                        modelRow, rootGameId,
+                        JSON.stringify(selectedGameIds()))
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.preferredWidth: 700
+                text: "Select same-platform games to make launchable versions of the retained root. The root keeps its title, metadata, and media associations; all modeled references are migrated in one transaction."
+                wrapMode: Text.Wrap
+                color: "#aeb8c5"
+            }
+            Label {
+                Layout.preferredWidth: 700
+                visible: gameCombineCandidateModel.count === 0
+                text: "No other games are available in this platform document."
+                wrapMode: Text.Wrap
+                color: "#f0b35a"
+            }
+            ListView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: gameCombineCandidateModel.count > 0
+                                        ? Math.min(360, contentHeight) : 0
+                clip: true
+                spacing: 4
+                model: gameCombineCandidateModel
+                delegate: CheckDelegate {
+                    required property int index
+                    required property string candidateId
+                    required property string candidateTitle
+                    required property string candidatePlatform
+                    required property string candidatePath
+                    required property bool chosen
+                    width: ListView.view.width
+                    checked: chosen
+                    text: candidateTitle + " — " + candidatePlatform
+                          + "\n" + candidatePath
+                    onToggled: {
+                        gameCombineCandidateModel.setProperty(
+                            index, "chosen", checked)
+                        gameCombineDialog.updateAcceptance()
+                    }
+                }
+            }
+            Label {
+                Layout.preferredWidth: 700
+                text: "Stored paths remain lexical LaunchBox values. Exact backups are created for every changed XML file; no ROM or media files are moved or deleted."
+                wrapMode: Text.Wrap
+                color: "#7fbfff"
+            }
+        }
+    }
+
+    Dialog {
+        id: gameExpandConfirmation
+        anchors.centerIn: parent
+        modal: true
+        title: "Expand Versions from " + gameTitle + "?"
+        standardButtons: Dialog.Yes | Dialog.No
+        property int modelRow: -1
+        property string gameId: ""
+        property string gameTitle: ""
+
+        function prepare(row, id, title) {
+            modelRow = row
+            gameId = id
+            gameTitle = title
+            open()
+        }
+
+        function smokeExpand(row, id, title) {
+            prepare(row, id, title)
+            Qt.callLater(function() { gameExpandConfirmation.accept() })
+        }
+
+        onAccepted: controller.expand_game_versions(modelRow, gameId)
+
+        contentItem: Label {
+            width: 620
+            text: "Each launchable version becomes a standalone game. The default-version representative is consumed without duplicating the retained game; documents and automatic helper applications stay attached. Exact XML backup is created, and no ROM or media files are moved or deleted."
+            wrapMode: Text.Wrap
         }
     }
 

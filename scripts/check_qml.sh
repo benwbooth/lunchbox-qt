@@ -112,6 +112,7 @@ import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
 category_crud_root=$(mktemp -d)
 playlist_crud_root=$(mktemp -d)
+game_grouping_root=$(mktemp -d)
 emulator_launch_root=$(mktemp -d)
 direct_launch_root=$(mktemp -d)
 sequence_launch_root=$(mktemp -d)
@@ -119,7 +120,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -2782,4 +2783,84 @@ for launch_root in \
   fi
 done
 
-echo "Persisted host mappings, direct/emulator/archive/M3U/DOSBox/ScummVM argv, folder/image mounts, leased resource cleanup, launch ordering, selected additional apps, and transactional play statistics validated."
+cp -R fixtures/launchbox/Data "$game_grouping_root/Data"
+grouping_platform="$game_grouping_root/Data/Platforms/Fixture Console.xml"
+grouping_catalog="$game_grouping_root/Data/Platforms.xml"
+grouping_playlist="$game_grouping_root/Data/Playlists/Fixture Playlist.xml"
+grouping_blacklist="$game_grouping_root/Data/ImportBlacklist.xml"
+sed -i \
+  '/<DisableAutoImport>false<\/DisableAutoImport>/a\    <LastGameId>fixture-racer</LastGameId>' \
+  "$grouping_catalog"
+sed -i \
+  '/<PlaylistId>fixture-playlist<\/PlaylistId>/a\    <LastGameId>fixture-racer</LastGameId>' \
+  "$grouping_playlist"
+sed -i \
+  '/<\/LaunchBox>/i\  <PlaylistGame><GameId>fixture-racer</GameId><GameTitle>Fixture Racer</GameTitle><GamePlatform>Fixture Console</GamePlatform><ManualOrder>2</ManualOrder></PlaylistGame>' \
+  "$grouping_playlist"
+sed -i \
+  '/<\/LaunchBox>/i\  <IgnoredGameId><GameId>fixture-racer</GameId></IgnoredGameId>' \
+  "$grouping_blacklist"
+mkdir -p "$game_grouping_root/expected"
+cp "$grouping_platform" "$game_grouping_root/expected/platform.xml"
+cp "$grouping_catalog" "$game_grouping_root/expected/catalog.xml"
+cp "$grouping_playlist" "$game_grouping_root/expected/playlist.xml"
+cp "$grouping_blacklist" "$game_grouping_root/expected/blacklist.xml"
+
+game_grouping_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$game_grouping_root" --game-grouping-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_grouping_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_GROUPING_SMOKE_COMPLETE revisions=2 games=3 applications=1' \
+  <<< "$game_grouping_output"; then
+  printf '%s\n' "$game_grouping_output" >&2
+  echo "LaunchBox did not validate the real-dialog combine/expand lifecycle." >&2
+  exit 1
+fi
+if [[ $(rg -c '<Game>' "$grouping_platform") != 3 ]] \
+  || [[ $(rg -c '<AdditionalApplication>' "$grouping_platform") != 1 ]] \
+  || ! rg -q -F \
+    '<ApplicationPath>Games\Fixture Racer\racer.rom</ApplicationPath>' \
+    "$grouping_platform" \
+  || ! rg -q -F \
+    '<FutureAdditionalApplicationElement>keep-additional-app-data</FutureAdditionalApplicationElement>' \
+    "$grouping_platform" \
+  || ! rg -q -F \
+    '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>' \
+    "$grouping_platform"; then
+  echo "The expanded platform XML did not retain its versions or unknown data." >&2
+  exit 1
+fi
+if [[ $(rg -c '<LastGameId>fixture-adventure</LastGameId>' "$grouping_catalog") != 2 ]] \
+  || [[ $(rg -c '<GameId>fixture-adventure</GameId>' "$grouping_playlist") != 1 ]] \
+  || ! rg -q -F \
+    '<LastGameId>fixture-adventure</LastGameId>' "$grouping_playlist" \
+  || rg -q -F 'fixture-racer' "$grouping_blacklist"; then
+  echo "The combine transaction did not migrate navigation, playlist, and blacklist references." >&2
+  exit 1
+fi
+for expected in platform catalog playlist blacklist; do
+  if ! find "$game_grouping_root/Data" -type f \
+    -name '*.lbport-transaction-backup-*' \
+    -exec cmp -s "$game_grouping_root/expected/$expected.xml" {} \; \
+    -print -quit | rg -q .; then
+    echo "No exact pre-combine backup was retained for $expected.xml." >&2
+    exit 1
+  fi
+done
+if [[ $(find "$game_grouping_root/Data" -type f \
+  -name '*.lbport-transaction-backup-*' | wc -l) != 5 ]]; then
+  echo "Combine/expand did not retain the expected five transaction backups." >&2
+  exit 1
+fi
+if find "$game_grouping_root" -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Combine/expand left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "Persisted host mappings, direct/emulator/archive/M3U/DOSBox/ScummVM argv, folder/image mounts, leased resource cleanup, launch ordering, selected additional apps, transactional play statistics, and the combine/expand game-grouping lifecycle validated."

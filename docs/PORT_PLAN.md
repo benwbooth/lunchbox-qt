@@ -338,8 +338,10 @@ validated deletion copy, so a final conflict remains recoverable through Find
 Active Saves. Only `dolphin:wii:` directories remain container-gated.
 Dolphin Wii handling, PCSX2 filesystem repair/capacity recovery, full PCSX2
 disc-image serial extraction, stale-row reconciliation, automatic policy,
-repair, and the remaining adapters remain open, as do the manual combine/expand
-actions in `LIB-010`.
+repair, and the remaining adapters remain open. The manual `LIB-010` subset now
+combines same-platform games into launchable version applications and expands
+them back transactionally; collapse and remaining presentation parity stay
+open.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:
@@ -349,9 +351,10 @@ Phase 0/1 evidence and product-safety gates:
 3. Convert the first ten critical runtime scenarios into structured fixtures
    and map them to feature-matrix IDs.
 4. Expand desktop editing beyond the now-working additional-application,
-   platform, nested-category, playlist, and save-group metadata workflows into
-   filesystem-safe save backup/restore/delete, manual combine/expand, and reviewed
-   cascade/remediation choices for dependencies. Category and playlist deletion now follow
+   platform, nested-category, playlist, save-group metadata, and manual
+   combine/expand workflows into the remaining filesystem-safe save
+   backup/restore/delete adapters and reviewed cascade/remediation choices for
+   dependencies. Category and playlist deletion now follow
    the recovered detach-to-root behavior without deleting child records or
    media. Alternate names and custom fields now pass typed storage and real-dialog runtime gates. The
    launch-configuration subset now edits direct/emulator/DOSBox/ScummVM fields

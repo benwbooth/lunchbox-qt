@@ -96,7 +96,7 @@ parity remain open.
 | LIB-007 | Nested platform categories | DV category editor; PA `IPlatformCategory`, `IParent` |
 | LIB-008 | Manual and auto-populated playlists | DV playlist editor; PA manual/automatic playlist and criteria contracts |
 | LIB-009 | Child-playlist generation and arcade playlist creation | DV generator; DM generate child/create arcade playlists |
-| LIB-010 | Combined games, versions, and expand/collapse | DM combine, show versions, expand games; port importer combines recovered matching-title/version groups, while manual combine/expand/collapse remain open |
+| LIB-010 | Combined games, versions, and expand/collapse | DM combine, show versions, expand games; port importer combines recovered matching-title/version groups; the manual port subset converts same-platform games to selectable version applications, atomically migrates modeled XML references, and expands launchable versions back to standalone games without moving ROM/media files; collapse and remaining presentation parity stay open |
 | LIB-011 | Favorites, completed/broken/hidden/installed state | PA game state; search/filter menus; BigBox state resources |
 | LIB-012 | Play count, last played, completion, local/community star ratings | PA game/additional-app state; DM reset counters/download ratings; BV rating popup |
 | LIB-013 | Search, sort, arrange, filters, random selection, and suggestions | DM arrange/search/random; DV search/suggestion/filter options |

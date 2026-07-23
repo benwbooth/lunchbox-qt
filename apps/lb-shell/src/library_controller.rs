@@ -44,6 +44,11 @@ pub mod qobject {
         #[qproperty(i32, platform_revision)]
         #[qproperty(i32, additional_application_revision)]
         #[qproperty(i32, game_save_revision)]
+        #[qproperty(i32, game_grouping_revision)]
+        #[qproperty(QString, last_game_grouping_operation)]
+        #[qproperty(QString, last_game_grouping_root_id)]
+        #[qproperty(i32, last_game_grouping_removed_count)]
+        #[qproperty(i32, last_game_grouping_created_count)]
         #[qproperty(i32, pending_recovery_count)]
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
@@ -225,6 +230,21 @@ pub mod qobject {
 
         #[qinvokable]
         fn delete_game(self: Pin<&mut LibraryController>, row: i32, game_id: QString);
+
+        #[qinvokable]
+        fn game_combine_candidates(self: &LibraryController, row: i32, game_id: QString)
+            -> QString;
+
+        #[qinvokable]
+        fn combine_games(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            root_game_id: QString,
+            selected_game_ids_json: QString,
+        );
+
+        #[qinvokable]
+        fn expand_game_versions(self: Pin<&mut LibraryController>, row: i32, game_id: QString);
 
         #[qinvokable]
         fn launch_game(self: Pin<&mut LibraryController>, row: i32, game_id: QString);
@@ -589,6 +609,12 @@ pub mod qobject {
             -> bool;
 
         #[qinvokable]
+        fn report_game_grouping_smoke_success(
+            self: &LibraryController,
+            root_game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn row_for_game_id(self: &LibraryController, game_id: QString) -> i32;
 
         #[qinvokable]
@@ -918,6 +944,11 @@ pub struct LibraryControllerRust {
     platform_revision: i32,
     additional_application_revision: i32,
     game_save_revision: i32,
+    game_grouping_revision: i32,
+    last_game_grouping_operation: QString,
+    last_game_grouping_root_id: QString,
+    last_game_grouping_removed_count: i32,
+    last_game_grouping_created_count: i32,
     pending_recovery_count: i32,
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
@@ -966,6 +997,7 @@ pub struct LibraryControllerRust {
     launch_notifications: u64,
     session_stats_writes: u64,
     session_stats_error: Option<String>,
+    pending_post_reload_message: Option<String>,
     additional_application_write_notifications: u64,
     game_save_write_notifications: u64,
     category_write_notifications: u64,
@@ -1439,6 +1471,23 @@ struct GameDeleteSuccess {
     backup: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GameGroupingOperation {
+    Combine,
+    Expand,
+}
+
+struct GameGroupingWriteSuccess {
+    operation: GameGroupingOperation,
+    root_game_id: String,
+    root_game_title: String,
+    removed_game_count: usize,
+    created_game_count: usize,
+    version_application_count: usize,
+    migrated_reference_count: usize,
+    backups: Vec<PathBuf>,
+}
+
 struct AdditionalApplicationWriteSuccess {
     operation: AdditionalApplicationWriteOperation,
     application: AdditionalApplication,
@@ -1692,6 +1741,14 @@ struct GameEditPayload {
 struct AdditionalApplicationEditPayload {
     version: u32,
     application: AdditionalApplicationEdit,
+}
+
+#[derive(Serialize)]
+struct GameCombineCandidate {
+    id: String,
+    title: String,
+    platform: String,
+    application_path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]
@@ -6818,6 +6875,147 @@ fn delete_game_from_platform(
     })
 }
 
+fn combine_games_in_library(
+    root: PathBuf,
+    source: PathBuf,
+    root_game_id: String,
+    selected_game_ids: Vec<String>,
+) -> Result<GameGroupingWriteSuccess, GameWriteFailure> {
+    let data = LaunchBoxDataIndex::load(&root)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let mut document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let fresh_application_ids = selected_game_ids
+        .iter()
+        .map(|_| Uuid::new_v4().to_string())
+        .collect::<Vec<_>>();
+    let combined = document
+        .combine_games(&root_game_id, &selected_game_ids, &fresh_application_ids)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let removed_game_ids = combined
+        .removed_games
+        .iter()
+        .map(|game| game.id.clone())
+        .collect::<Vec<_>>();
+    let mut migrated_reference_count = combined
+        .retargeted_additional_applications
+        .saturating_add(combined.retargeted_game_records)
+        .saturating_add(combined.retargeted_clone_relationships);
+
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&document)
+        .map_err(classify_transaction_error)?;
+
+    for platform in data
+        .platforms()
+        .platforms()
+        .iter()
+        .filter(|platform| platform.source_path != source)
+    {
+        let mut peer = PlatformDocument::load_for_platform(&platform.source_path, &platform.name)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let changed = peer
+            .remap_clone_references(&removed_game_ids, &combined.root_game.id)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        if changed > 0 {
+            migrated_reference_count = migrated_reference_count.saturating_add(changed);
+            transaction
+                .stage_platform(&peer)
+                .map_err(classify_transaction_error)?;
+        }
+    }
+
+    let mut auxiliary_paths = vec![
+        data.data_root().join("Platforms.xml"),
+        data.data_root().join("ImportBlacklist.xml"),
+    ];
+    auxiliary_paths.extend(
+        data.playlists()
+            .iter()
+            .map(|playlist| playlist.source_path.clone()),
+    );
+    auxiliary_paths.sort();
+    auxiliary_paths.dedup();
+    for path in auxiliary_paths.into_iter().filter(|path| path.is_file()) {
+        let mut auxiliary = AuxiliaryDocument::load(&path)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let remap = auxiliary
+            .remap_combined_game_references(&removed_game_ids, &combined.root_game)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let changed = remap
+            .navigation_references
+            .saturating_add(remap.playlist_rows_retargeted)
+            .saturating_add(remap.playlist_rows_deduplicated)
+            .saturating_add(remap.blacklist_rows_removed);
+        if changed > 0 {
+            migrated_reference_count = migrated_reference_count.saturating_add(changed);
+            transaction
+                .stage_auxiliary(&auxiliary)
+                .map_err(classify_transaction_error)?;
+        }
+    }
+
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let backups = report
+        .writes
+        .into_iter()
+        .map(|write| write.backup)
+        .collect::<Vec<_>>();
+    Ok(GameGroupingWriteSuccess {
+        operation: GameGroupingOperation::Combine,
+        root_game_id: combined.root_game.id,
+        root_game_title: combined.root_game.title,
+        removed_game_count: combined.removed_games.len(),
+        created_game_count: 0,
+        version_application_count: combined.created_version_applications.len(),
+        migrated_reference_count,
+        backups,
+    })
+}
+
+fn expand_game_versions_in_library(
+    root: PathBuf,
+    source: PathBuf,
+    root_game_id: String,
+) -> Result<GameGroupingWriteSuccess, GameWriteFailure> {
+    let mut document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let fresh_game_ids = document
+        .library()
+        .additional_applications
+        .iter()
+        .filter(|application| {
+            application.game_id.eq_ignore_ascii_case(&root_game_id)
+                && application.is_likely_game_version()
+        })
+        .map(|_| Uuid::new_v4().to_string())
+        .collect::<Vec<_>>();
+    let expanded = document
+        .expand_game_versions(&root_game_id, &fresh_game_ids)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&document)
+        .map_err(classify_transaction_error)?;
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let backups = report
+        .writes
+        .into_iter()
+        .map(|write| write.backup)
+        .collect::<Vec<_>>();
+    Ok(GameGroupingWriteSuccess {
+        operation: GameGroupingOperation::Expand,
+        root_game_id: expanded.root_game.id,
+        root_game_title: expanded.root_game.title,
+        removed_game_count: 0,
+        created_game_count: expanded.created_games.len(),
+        version_application_count: expanded.removed_version_applications.len(),
+        migrated_reference_count: expanded.reassigned_game_saves,
+        backups,
+    })
+}
+
 fn classify_transaction_error(error: TransactionError) -> GameWriteFailure {
     let message = error.to_string();
     match error {
@@ -9016,6 +9214,179 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn game_combine_candidates(&self, row: i32, game_id: QString) -> QString {
+        let game_id = game_id.to_string();
+        let Some((source, _)) = self.edit_target(row, &game_id) else {
+            return QString::default();
+        };
+        let Some(root_game) = self.rust().games.iter().find(|game| game.id == game_id) else {
+            return QString::default();
+        };
+        let mut candidates = self
+            .rust()
+            .games
+            .iter()
+            .zip(&self.rust().game_sources)
+            .filter(|(game, game_source)| {
+                game.id != root_game.id
+                    && **game_source == source
+                    && game.platform.eq_ignore_ascii_case(&root_game.platform)
+            })
+            .map(|(game, _)| GameCombineCandidate {
+                id: game.id.clone(),
+                title: game.title.clone(),
+                platform: game.platform.clone(),
+                application_path: game.application_path.clone(),
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            left.title
+                .to_lowercase()
+                .cmp(&right.title.to_lowercase())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        serde_json::to_string(&candidates)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn combine_games(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        root_game_id: QString,
+        selected_game_ids_json: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let root_game_id = root_game_id.to_string();
+        let Some((source, _)) = self.as_ref().edit_target(row, &root_game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected root game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Combining games requires a loaded LaunchBox directory so cross-document references can be migrated atomically.",
+            ));
+            return;
+        };
+        let requested =
+            match serde_json::from_str::<Vec<String>>(&selected_game_ids_json.to_string()) {
+                Ok(requested) => requested,
+                Err(error) => {
+                    self.as_mut().set_status_message(qstring(format!(
+                        "The game selection is invalid: {error}"
+                    )));
+                    return;
+                }
+            };
+        let mut selected_keys = requested
+            .iter()
+            .map(|id| id.to_lowercase())
+            .collect::<BTreeSet<_>>();
+        selected_keys.insert(root_game_id.to_lowercase());
+        if selected_keys.len() < 2 {
+            self.as_mut().set_status_message(qstring(
+                "Select at least one other game to combine with the root.",
+            ));
+            return;
+        }
+        let mut selected_game_ids = Vec::with_capacity(selected_keys.len());
+        selected_game_ids.push(root_game_id.clone());
+        for key in selected_keys
+            .iter()
+            .filter(|key| !key.eq_ignore_ascii_case(&root_game_id))
+        {
+            let selected_id = {
+                let this = self.as_ref();
+                let rust = this.rust();
+                rust.games
+                    .iter()
+                    .zip(&rust.game_sources)
+                    .find(|(game, game_source)| {
+                        game.id.eq_ignore_ascii_case(key) && **game_source == source
+                    })
+                    .map(|(game, _)| game.id.clone())
+            };
+            let Some(selected_id) = selected_id else {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Selected game is no longer available in the root platform: {key}"
+                )));
+                return;
+            };
+            selected_game_ids.push(selected_id);
+        }
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Combining {} games and migrating their references...",
+            selected_game_ids.len()
+        )));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-game-combine".to_string())
+            .spawn(move || {
+                let result =
+                    combine_games_in_library(root, source, root_game_id, selected_game_ids);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_game_grouping_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not start game combine: {error}")));
+        }
+    }
+
+    pub fn expand_game_versions(mut self: Pin<&mut Self>, row: i32, game_id: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let Some((source, _)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Expanding game versions requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Expanding launchable versions into games..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-game-expand".to_string())
+            .spawn(move || {
+                let result = expand_game_versions_in_library(root, source, game_id);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_game_grouping_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not start game expansion: {error}")));
+        }
+    }
+
     pub fn delete_game(mut self: Pin<&mut Self>, row: i32, game_id: QString) {
         if !self.as_mut().begin_library_mutation() {
             return;
@@ -10326,6 +10697,45 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_game_grouping_smoke_success(&self, root_game_id: QString) -> bool {
+        let root_game_id = root_game_id.to_string();
+        let rust = self.rust();
+        let root_exists = rust.games.iter().any(|game| game.id == root_game_id);
+        let expanded_version_exists = rust.games.iter().any(|game| {
+            game.id != root_game_id
+                && game.platform == "Fixture Console"
+                && game.application_path == r"Games\Fixture Racer\racer.rom"
+        });
+        let root_applications = rust
+            .additional_applications_by_game
+            .get(&root_game_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let success = root_exists
+            && expanded_version_exists
+            && rust.games.len() == 3
+            && root_applications.len() == 1
+            && root_applications[0].id == "fixture-adventure-manual"
+            && *self.game_grouping_revision() == 2
+            && self.last_game_grouping_operation().to_string() == "expand"
+            && self.last_game_grouping_root_id().to_string() == root_game_id
+            && *self.last_game_grouping_removed_count() == 0
+            && *self.last_game_grouping_created_count() == 1
+            && !*self.loading()
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "GAME_GROUPING_SMOKE_COMPLETE revisions={} games={} applications={}",
+                self.game_grouping_revision(),
+                rust.games.len(),
+                root_applications.len()
+            );
+        }
+        success
+    }
+
     pub fn row_for_game_id(&self, game_id: QString) -> i32 {
         let game_id = game_id.to_string();
         self.rust()
@@ -10828,6 +11238,11 @@ impl qobject::LibraryController {
                 });
                 self.as_mut().set_library_path(qstring(path));
                 self.as_mut().set_write_conflict(false);
+                let post_reload_message =
+                    self.as_mut().rust_mut().pending_post_reload_message.take();
+                if let Some(message) = post_reload_message {
+                    self.as_mut().set_status_message(qstring(message));
+                }
             }
             Err(error) => {
                 eprintln!("Could not load library: {error}");
@@ -12162,6 +12577,92 @@ impl qobject::LibraryController {
             Err(PlatformWriteFailure::Other(message)) => self.as_mut().set_status_message(qstring(
                 format!("Could not {operation_label} playlist: {message}"),
             )),
+        }
+    }
+
+    fn finish_game_grouping_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<GameGroupingWriteSuccess, GameWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(written) => {
+                let operation = match written.operation {
+                    GameGroupingOperation::Combine => "combine",
+                    GameGroupingOperation::Expand => "expand",
+                };
+                let backup_list = written
+                    .backups
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let detail = match written.operation {
+                    GameGroupingOperation::Combine => format!(
+                        "Combined {} source game(s) into {} and created {} version application(s). Migrated {} modeled dependent record(s).",
+                        written.removed_game_count,
+                        written.root_game_title,
+                        written.version_application_count,
+                        written.migrated_reference_count
+                    ),
+                    GameGroupingOperation::Expand => format!(
+                        "Expanded {} into {} standalone game(s) and consumed {} version application(s). Reassigned {} dependent save record(s).",
+                        written.root_game_title,
+                        written.created_game_count,
+                        written.version_application_count,
+                        written.migrated_reference_count
+                    ),
+                };
+                {
+                    self.as_mut().rust_mut().pending_post_reload_message = Some(format!(
+                        "{detail} Exact transaction backup(s): {backup_list}. No ROM or media files were moved or deleted."
+                    ));
+                }
+                self.as_mut()
+                    .set_last_game_grouping_operation(qstring(operation));
+                self.as_mut()
+                    .set_last_game_grouping_root_id(qstring(&written.root_game_id));
+                self.as_mut()
+                    .set_last_game_grouping_removed_count(saturating_i32(
+                        written.removed_game_count,
+                    ));
+                self.as_mut()
+                    .set_last_game_grouping_created_count(saturating_i32(
+                        written.created_game_count,
+                    ));
+                let revision = self.as_ref().rust().game_grouping_revision.wrapping_add(1);
+                self.as_mut().set_game_grouping_revision(revision);
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().reload_library();
+            }
+            Err(GameWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict during game combine/expand: {message}. Reload before retrying."
+                )));
+            }
+            Err(GameWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted game combine/expand transaction requires recovery: {message}"
+                )));
+            }
+            Err(GameWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Game combine/expand returned an unexpected reference gate for {} record(s).",
+                    references.len()
+                )));
+            }
+            Err(GameWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not combine/expand games: {message}"
+                )));
+            }
         }
     }
 
@@ -15982,6 +16483,216 @@ mod tests {
         ));
         assert!(path_mapping_key(&mappings, -1).is_none());
         assert!(path_mapping_key(&mappings, 2).is_none());
+    }
+
+    #[test]
+    fn game_grouping_workers_commit_all_references_and_expand_versions_transactionally() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data_directory = directory.path().join("Data");
+        let platform_directory = data_directory.join("Platforms");
+        let playlist_directory = data_directory.join("Playlists");
+        fs::create_dir_all(&platform_directory).expect("create platform directory");
+        fs::create_dir_all(&playlist_directory).expect("create playlist directory");
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        for entry in fs::read_dir(&fixture_root).expect("read fixture data directory") {
+            let entry = entry.expect("fixture entry");
+            if entry.file_type().expect("fixture entry type").is_file() {
+                fs::copy(entry.path(), data_directory.join(entry.file_name()))
+                    .expect("copy fixture auxiliary file");
+            }
+        }
+
+        let source = platform_directory.join("Fixture Console.xml");
+        fs::copy(fixture_root.join("Platforms/Fixture Console.xml"), &source)
+            .expect("copy source platform");
+        let peer = platform_directory.join("Peer Console.xml");
+        fs::write(
+            &peer,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Game>
+    <ApplicationPath>Games\Peer\clone.rom</ApplicationPath>
+    <CloneOf>fixture-racer</CloneOf>
+    <ID>peer-clone</ID>
+    <Platform>Peer Console</Platform>
+    <Title>Peer Clone</Title>
+    <FuturePeerGameField>keep-peer</FuturePeerGameField>
+  </Game>
+</LaunchBox>
+"#,
+        )
+        .expect("write peer platform");
+
+        let catalog_path = data_directory.join("Platforms.xml");
+        let catalog = fs::read_to_string(&catalog_path)
+            .expect("read platform catalog")
+            .replace(
+                "<DisableAutoImport>false</DisableAutoImport>",
+                "<DisableAutoImport>false</DisableAutoImport>\n    <LastGameId>fixture-racer</LastGameId>",
+            )
+            .replace(
+                "  <PlatformCategory>",
+                "  <Platform>\n    <Name>Peer Console</Name>\n  </Platform>\n  <PlatformCategory>",
+            )
+            .replace(
+                "<IsAutogenerated>false</IsAutogenerated>",
+                "<IsAutogenerated>false</IsAutogenerated>\n    <LastGameId>fixture-racer</LastGameId>",
+            );
+        fs::write(&catalog_path, catalog).expect("write platform catalog");
+
+        let playlist_path = playlist_directory.join("Fixture Playlist.xml");
+        let playlist = fs::read_to_string(fixture_root.join("Playlists/Fixture Playlist.xml"))
+            .expect("read playlist fixture")
+            .replace(
+                "<PlaylistId>fixture-playlist</PlaylistId>",
+                "<PlaylistId>fixture-playlist</PlaylistId>\n    <LastGameId>fixture-racer</LastGameId>",
+            )
+            .replace(
+                "</LaunchBox>",
+                "  <PlaylistGame>\n    <GameId>fixture-racer</GameId>\n    <GameTitle>Fixture Racer</GameTitle>\n    <GamePlatform>Fixture Console</GamePlatform>\n    <ManualOrder>2</ManualOrder>\n    <FuturePlaylistGameField>remove-with-duplicate</FuturePlaylistGameField>\n  </PlaylistGame>\n</LaunchBox>",
+            );
+        fs::write(&playlist_path, playlist).expect("write playlist");
+
+        let blacklist_path = data_directory.join("ImportBlacklist.xml");
+        let blacklist = fs::read_to_string(&blacklist_path)
+            .expect("read import blacklist")
+            .replace(
+                "</LaunchBox>",
+                "  <IgnoredGameId><GameId>fixture-racer</GameId></IgnoredGameId>\n</LaunchBox>",
+            );
+        fs::write(&blacklist_path, blacklist).expect("write import blacklist");
+
+        let original_participants = [
+            source.clone(),
+            peer.clone(),
+            catalog_path.clone(),
+            playlist_path.clone(),
+            blacklist_path.clone(),
+        ]
+        .map(|path| {
+            let bytes = fs::read(&path).expect("read transaction participant");
+            (path, bytes)
+        });
+        let combined = combine_games_in_library(
+            directory.path().to_path_buf(),
+            source.clone(),
+            "fixture-adventure".into(),
+            vec!["fixture-adventure".into(), "fixture-racer".into()],
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        assert_eq!(combined.operation, GameGroupingOperation::Combine);
+        assert_eq!(combined.root_game_id, "fixture-adventure");
+        assert_eq!(combined.removed_game_count, 1);
+        assert_eq!(combined.created_game_count, 0);
+        assert_eq!(combined.version_application_count, 2);
+        assert_eq!(combined.backups.len(), original_participants.len());
+        let backup_bytes = combined
+            .backups
+            .iter()
+            .map(|path| fs::read(path).expect("read combine backup"))
+            .collect::<Vec<_>>();
+        for (_, original) in &original_participants {
+            assert!(
+                backup_bytes.contains(original),
+                "every participant has an exact pre-combine backup"
+            );
+        }
+
+        let combined_source_bytes = fs::read(&source).expect("read combined platform");
+        let combined_source = PlatformDocument::load(&source).expect("parse combined platform");
+        assert_eq!(combined_source.library().games.len(), 2);
+        assert!(combined_source
+            .library()
+            .games
+            .iter()
+            .all(|game| game.id != "fixture-racer"));
+        let root_versions = combined_source
+            .library()
+            .additional_applications
+            .iter()
+            .filter(|application| {
+                application.game_id == "fixture-adventure" && application.is_likely_game_version()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(root_versions.len(), 2);
+        assert!(root_versions.iter().any(|application| {
+            application.application_path == r"Games\Fixture Racer\racer.rom"
+        }));
+        assert!(combined_source
+            .library()
+            .controller_support
+            .iter()
+            .all(|support| support.game_id != "fixture-racer"));
+        assert!(fs::read_to_string(&peer)
+            .expect("read remapped peer")
+            .contains("<CloneOf>fixture-adventure</CloneOf>"));
+        let catalog = fs::read_to_string(&catalog_path).expect("read remapped catalog");
+        assert_eq!(
+            catalog
+                .matches("<LastGameId>fixture-adventure</LastGameId>")
+                .count(),
+            2
+        );
+        let playlist_xml = fs::read_to_string(&playlist_path).expect("read remapped playlist XML");
+        assert!(playlist_xml.contains("<LastGameId>fixture-adventure</LastGameId>"));
+        let playlist = AuxiliaryDocument::load(&playlist_path).expect("parse remapped playlist");
+        let playlist = playlist
+            .playlist_document()
+            .expect("typed remapped playlist");
+        assert_eq!(
+            playlist
+                .games
+                .iter()
+                .filter(|game| game.game_id == "fixture-adventure")
+                .count(),
+            1
+        );
+        assert!(!fs::read_to_string(&blacklist_path)
+            .expect("read remapped blacklist")
+            .contains("fixture-racer"));
+        assert!(pending_transaction_manifests(directory.path())
+            .expect("inspect combine manifests")
+            .is_empty());
+
+        let expanded = expand_game_versions_in_library(
+            directory.path().to_path_buf(),
+            source.clone(),
+            "fixture-adventure".into(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        assert_eq!(expanded.operation, GameGroupingOperation::Expand);
+        assert_eq!(expanded.removed_game_count, 0);
+        assert_eq!(expanded.created_game_count, 1);
+        assert_eq!(expanded.version_application_count, 2);
+        assert_eq!(expanded.backups.len(), 1);
+        assert_eq!(
+            fs::read(&expanded.backups[0]).expect("read expand backup"),
+            combined_source_bytes
+        );
+        let expanded_source = PlatformDocument::load(&source).expect("parse expanded platform");
+        assert_eq!(expanded_source.library().games.len(), 3);
+        assert!(expanded_source.library().games.iter().any(|game| {
+            game.application_path == r"Games\Fixture Racer\racer.rom"
+                && game.id != "fixture-racer"
+                && game.platform == "Fixture Console"
+        }));
+        assert!(expanded_source
+            .library()
+            .additional_applications
+            .iter()
+            .any(|application| application.id == "fixture-adventure-manual"));
+        assert!(expanded_source
+            .library()
+            .additional_applications
+            .iter()
+            .all(|application| !application.is_likely_game_version()));
+        assert!(fs::read_to_string(&source)
+            .expect("read expanded XML")
+            .contains("<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>"));
+        assert!(pending_transaction_manifests(directory.path())
+            .expect("inspect expand manifests")
+            .is_empty());
     }
 
     #[test]
