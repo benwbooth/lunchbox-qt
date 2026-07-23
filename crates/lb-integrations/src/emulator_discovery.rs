@@ -14,10 +14,17 @@ pub enum EmulatorDiscoveryProfile {
     Dolphin,
     Pcsx2,
     ScummVm,
+    Xemu,
 }
 
 impl EmulatorDiscoveryProfile {
-    pub const ALL: [Self; 4] = [Self::RetroArch, Self::Dolphin, Self::Pcsx2, Self::ScummVm];
+    pub const ALL: [Self; 5] = [
+        Self::RetroArch,
+        Self::Dolphin,
+        Self::Pcsx2,
+        Self::ScummVm,
+        Self::Xemu,
+    ];
 
     pub const fn id(self) -> &'static str {
         match self {
@@ -25,6 +32,7 @@ impl EmulatorDiscoveryProfile {
             Self::Dolphin => "dolphin",
             Self::Pcsx2 => "pcsx2",
             Self::ScummVm => "scummvm",
+            Self::Xemu => "xemu",
         }
     }
 
@@ -34,6 +42,7 @@ impl EmulatorDiscoveryProfile {
             Self::Dolphin => "Dolphin",
             Self::Pcsx2 => "PCSX2",
             Self::ScummVm => "ScummVM",
+            Self::Xemu => "Xemu",
         }
     }
 
@@ -48,6 +57,7 @@ impl EmulatorDiscoveryProfile {
             ),
             Self::Pcsx2 => Some("-fullscreen -nogui"),
             Self::ScummVm => Some("-p %romfile% --auto-detect --fullscreen"),
+            Self::Xemu => Some("-full-screen -dvd_path"),
         }
     }
 
@@ -59,6 +69,18 @@ impl EmulatorDiscoveryProfile {
         matches!(self, Self::RetroArch | Self::Dolphin | Self::ScummVm)
     }
 
+    pub const fn use_pause_screen(self) -> bool {
+        !matches!(self, Self::Xemu)
+    }
+
+    pub const fn suspend_process_on_pause(self) -> bool {
+        !matches!(self, Self::Xemu)
+    }
+
+    pub const fn forceful_pause_screen_activation(self) -> bool {
+        !matches!(self, Self::Xemu)
+    }
+
     /// Platforms whose support is explicit in the concrete 13.27 adapter and
     /// does not depend on the online LaunchBox Games DB.
     pub const fn supported_platforms(self) -> &'static [&'static str] {
@@ -67,6 +89,7 @@ impl EmulatorDiscoveryProfile {
             Self::Dolphin => &["Nintendo GameCube", "Nintendo Wii"],
             Self::Pcsx2 => &["Sony PlayStation 2"],
             Self::ScummVm => &["ScummVM"],
+            Self::Xemu => &["Microsoft Xbox"],
         }
     }
 
@@ -77,6 +100,7 @@ impl EmulatorDiscoveryProfile {
             Self::Dolphin => &["Dolphin.exe"],
             Self::Pcsx2 => &["pcsx2-qt.exe", "pcsx2.exe"],
             Self::ScummVm => &["scummvm.exe"],
+            Self::Xemu => &["xemu.exe"],
         }
     }
 
@@ -87,6 +111,7 @@ impl EmulatorDiscoveryProfile {
             Self::Dolphin => &["dolphin-emu"],
             Self::Pcsx2 => &["pcsx2-qt", "PCSX2"],
             Self::ScummVm => &["scummvm"],
+            Self::Xemu => &["xemu"],
         }
     }
 
@@ -99,6 +124,7 @@ impl EmulatorDiscoveryProfile {
             Self::Dolphin => &["dolphin-emu"],
             Self::Pcsx2 => &["pcsx2-qt", "pcsx2"],
             Self::ScummVm => &["scummvm"],
+            Self::Xemu => &["xemu"],
         }
     }
 
@@ -334,6 +360,7 @@ fn native_application_candidates() -> Vec<(EmulatorDiscoveryProfile, PathBuf)> {
                 EmulatorDiscoveryProfile::ScummVm,
                 root.join("ScummVM/scummvm.exe"),
             ),
+            (EmulatorDiscoveryProfile::Xemu, root.join("xemu/xemu.exe")),
         ]);
     }
     candidates
@@ -357,6 +384,10 @@ fn native_application_candidates() -> Vec<(EmulatorDiscoveryProfile, PathBuf)> {
         (
             EmulatorDiscoveryProfile::ScummVm,
             PathBuf::from("/Applications/ScummVM.app/Contents/MacOS/scummvm"),
+        ),
+        (
+            EmulatorDiscoveryProfile::Xemu,
+            PathBuf::from("/Applications/xemu.app/Contents/MacOS/xemu"),
         ),
     ]
 }
@@ -389,6 +420,7 @@ mod tests {
         let portable = temporary.path().join("Emulators");
         let path_directory = temporary.path().join("bin");
         fs::create_dir_all(portable.join("PCSX2/bin")).expect("portable tree");
+        fs::create_dir_all(portable.join("Xemu")).expect("portable Xemu tree");
         fs::create_dir_all(&path_directory).expect("PATH tree");
 
         let portable_pcsx2 = if cfg!(target_os = "windows") {
@@ -397,6 +429,12 @@ mod tests {
             portable.join("PCSX2/bin/pcsx2-qt")
         };
         make_executable(&portable_pcsx2);
+        let portable_xemu = if cfg!(target_os = "windows") {
+            portable.join("Xemu/xemu.exe")
+        } else {
+            portable.join("Xemu/xemu")
+        };
+        make_executable(&portable_xemu);
         let scummvm = if cfg!(target_os = "windows") {
             path_directory.join("scummvm.exe")
         } else {
@@ -432,6 +470,11 @@ mod tests {
                 && candidate.executable == scummvm
                 && candidate.source == EmulatorDiscoverySource::SearchPath
         }));
+        assert!(first.iter().any(|candidate| {
+            candidate.profile == EmulatorDiscoveryProfile::Xemu
+                && candidate.executable == portable_xemu
+                && candidate.source == EmulatorDiscoverySource::PortableLibrary
+        }));
         if !cfg!(target_os = "windows") {
             assert!(!first
                 .iter()
@@ -440,7 +483,7 @@ mod tests {
                 .iter()
                 .any(|candidate| candidate.profile == EmulatorDiscoveryProfile::RetroArch));
         }
-        assert_eq!(fs::read_dir(&portable).expect("portable root").count(), 1);
+        assert_eq!(fs::read_dir(&portable).expect("portable root").count(), 2);
     }
 
     #[cfg(unix)]
@@ -487,5 +530,14 @@ mod tests {
             EmulatorDiscoveryProfile::ScummVm.command_line(),
             Some("-p %romfile% --auto-detect --fullscreen")
         );
+        assert_eq!(
+            EmulatorDiscoveryProfile::Xemu.supported_platforms(),
+            ["Microsoft Xbox"]
+        );
+        assert_eq!(
+            EmulatorDiscoveryProfile::Xemu.command_line(),
+            Some("-full-screen -dvd_path")
+        );
+        assert!(!EmulatorDiscoveryProfile::Xemu.use_pause_screen());
     }
 }

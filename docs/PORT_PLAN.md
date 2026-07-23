@@ -255,7 +255,7 @@ edit/create/blocked-delete/delete, three exact backup states, unknown XML
 retention, optimistic revision notification, and that Windows-style executable
 paths neither become host paths nor create or delete emulator directories.
 The first `RUN-003` subset now discovers evidence-reviewed RetroArch, Dolphin,
-PCSX2, and ScummVM executable identities from a bounded portable tree,
+PCSX2, ScummVM, and Xemu executable identities from a bounded portable tree,
 OS-native application locations, and `PATH` without executing or modifying
 them. The Qt manager shows native paths, provenance, and registration state,
 then sends a selected candidate through the full typed editor with recovered
@@ -278,13 +278,16 @@ implemented with exact digest checks, fresh emulator-reference refusal, one
 recoverable file/XML transaction, and explicit preservation of settings,
 unrelated files, and directories. Other emulator providers, dependencies,
 cores, automatic update policy, and native macOS runtime validation remain open
-under `RUN-003`. The first `RUN-004` subset audits the complete recovered
-PCSX2 BIOS group of 73 alternatives without executing PCSX2 or mutating its
-configuration or firmware. It honors the portable marker and portable/native
-`PCSX2.ini` roots, resolves native paths behind the platform boundary, streams
-MD5 checks, refuses symlink entries, and exposes every result in a read-only Qt
-manager. Other-emulator adapters, firmware acquisition, configuration changes,
-and mutation remain open under `RUN-004`. The ROM importer now resolves
+under `RUN-003`. The first two `RUN-004` adapters audit the complete recovered
+PCSX2 BIOS group of 73 alternatives and Xemu's three required boot-ROM, HDD,
+and flash-BIOS groups without executing either emulator or mutating
+configuration or firmware. PCSX2 honors its portable marker and
+portable/native `PCSX2.ini` roots. Xemu prefers portable `xemu.toml`, then its
+host-native data root; values from an older Windows installation cross the
+explicit drive/UNC mapping boundary. Both adapters stream hashes, refuse
+symlink entries, and expose every result in one generalized read-only Qt
+manager. Remaining emulator adapters, firmware acquisition, configuration
+changes, and mutation remain open under `RUN-004`. The ROM importer now resolves
 primary and alternate filenames through the local database, combines matching
 stable IDs into one deterministic game, recovers separator-neutral
 version/region qualifiers, and retains every ROM including the primary as an

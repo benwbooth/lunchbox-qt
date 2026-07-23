@@ -45,6 +45,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 tempfile = "3.0"
 thiserror = "2.0"
+toml = "1.1"
 unicode-normalization = "0.1"
 ureq = "3.3"
 uuid = { version = "1.0", features = ["v4"] }

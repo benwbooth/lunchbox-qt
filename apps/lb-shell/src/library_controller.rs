@@ -937,12 +937,13 @@ use lb_integrations::pcsx2::{
     folder_manifest_signature, is_pcsx2_emulator, prepare_pcsx2_memory_card_deletion,
     prepare_pcsx2_memory_card_restore, Pcsx2Content,
 };
-use lb_integrations::pcsx2_bios::{
-    audit_pcsx2_bios, BiosFileState, Pcsx2BiosAudit, Pcsx2BiosError,
-};
+use lb_integrations::pcsx2_bios::{audit_pcsx2_bios, BiosFileState, Pcsx2BiosAudit};
 use lb_integrations::retroarch::{
     discover_retroarch_saves, inspect_saturn_save_set, is_retroarch_emulator,
     is_saturn_companion_path, retroarch_save_signature, saturn_group_id, RetroArchContent,
+};
+use lb_integrations::xemu_bios::{
+    audit_xemu_bios, default_xemu_data_directories, XemuBiosAudit, XemuBiosGroupKind,
 };
 use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
 use lb_platform::{
@@ -1223,7 +1224,7 @@ pub struct LibraryControllerRust {
     big_box_pause_screen_policy: FrontendPauseScreenPolicy,
     launch_control_sender: Option<Sender<LaunchControlCommand>>,
     discovered_emulators: Vec<DiscoveredEmulatorExecutable>,
-    emulator_bios_audit: Option<Pcsx2BiosAudit>,
+    emulator_bios_audit: Option<EmulatorBiosAudit>,
     emulator_bios_emulator_id: Option<String>,
     pcsx2_release_state: Option<Pcsx2ReleaseState>,
     pcsx2_remove_state: Option<Pcsx2RemoveState>,
@@ -2032,7 +2033,7 @@ const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
-const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 1;
+const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 2;
 const EMULATOR_RELEASE_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION: u32 = 1;
 const MAX_PCSX2_MACOS_TAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -2150,11 +2151,13 @@ struct EmulatorEditPayload {
 
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]
 struct EmulatorBiosFilePayload {
+    group_id: &'static str,
     file_name: String,
+    required: bool,
     description: String,
     path: String,
     state: &'static str,
-    expected_md5: String,
+    expected_md5: Option<String>,
     actual_md5: Option<String>,
 }
 
@@ -2178,11 +2181,95 @@ struct EmulatorBiosAuditPayload {
     emulator_id: String,
     emulator_title: String,
     adapter: &'static str,
-    bios_directory: String,
+    search_root: String,
     configuration_path: Option<String>,
     location_source: &'static str,
-    group: EmulatorBiosGroupPayload,
+    ready: bool,
+    valid_count: usize,
+    mismatch_count: usize,
+    unsafe_count: usize,
+    unreadable_count: usize,
+    missing_count: usize,
+    groups: Vec<EmulatorBiosGroupPayload>,
     files: Vec<EmulatorBiosFilePayload>,
+}
+
+#[derive(Clone, Debug)]
+enum EmulatorBiosAudit {
+    Pcsx2(Pcsx2BiosAudit),
+    Xemu(XemuBiosAudit),
+}
+
+impl EmulatorBiosAudit {
+    const fn adapter(&self) -> &'static str {
+        match self {
+            Self::Pcsx2(_) => "pcsx2",
+            Self::Xemu(_) => "xemu",
+        }
+    }
+
+    fn search_root(&self) -> &Path {
+        match self {
+            Self::Pcsx2(audit) => &audit.bios_directory,
+            Self::Xemu(audit) => &audit.application_directory,
+        }
+    }
+
+    fn configuration_path(&self) -> Option<&Path> {
+        match self {
+            Self::Pcsx2(audit) => audit.configuration_path.as_deref(),
+            Self::Xemu(audit) => audit.configuration_path.as_deref(),
+        }
+    }
+
+    const fn location_source(&self) -> &'static str {
+        match self {
+            Self::Pcsx2(audit) => audit.location_source.label(),
+            Self::Xemu(audit) => audit.location_source.label(),
+        }
+    }
+
+    fn ready(&self) -> bool {
+        match self {
+            Self::Pcsx2(audit) => audit.group_satisfied(),
+            Self::Xemu(audit) => audit.ready(),
+        }
+    }
+
+    fn valid_count(&self) -> usize {
+        match self {
+            Self::Pcsx2(audit) => audit.valid_count(),
+            Self::Xemu(audit) => audit.valid_count(),
+        }
+    }
+
+    fn mismatch_count(&self) -> usize {
+        match self {
+            Self::Pcsx2(audit) => audit.mismatch_count(),
+            Self::Xemu(audit) => audit.mismatch_count(),
+        }
+    }
+
+    fn unsafe_count(&self) -> usize {
+        match self {
+            Self::Pcsx2(audit) => audit.unsafe_count(),
+            Self::Xemu(audit) => audit.unsafe_count(),
+        }
+    }
+
+    fn unreadable_count(&self) -> usize {
+        match self {
+            Self::Pcsx2(audit) => audit.unreadable_count(),
+            Self::Xemu(audit) => audit.unreadable_count(),
+        }
+    }
+
+    fn missing_count(&self) -> usize {
+        match self {
+            Self::Pcsx2(audit) => audit.missing_count(),
+            Self::Xemu(audit) => audit.missing_count(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -7109,10 +7196,10 @@ fn discovered_emulator_payload(
             auto_extract: candidate.profile.auto_extract(),
             hide_console: candidate.profile.hide_console(),
             use_startup_screen: true,
-            use_pause_screen: true,
+            use_pause_screen: candidate.profile.use_pause_screen(),
             hide_mouse_cursor_in_game: true,
-            suspend_process_on_pause: true,
-            forceful_pause_screen_activation: true,
+            suspend_process_on_pause: candidate.profile.suspend_process_on_pause(),
+            forceful_pause_screen_activation: candidate.profile.forceful_pause_screen_activation(),
             startup_load_delay: 5_000,
             ..Emulator::default()
         },
@@ -7147,45 +7234,100 @@ fn native_paths_equal(left: &Path, right: &Path) -> bool {
 fn emulator_bios_audit_payload(
     emulator_id: &str,
     emulator_title: &str,
-    audit: &Pcsx2BiosAudit,
+    audit: &EmulatorBiosAudit,
 ) -> Result<String, serde_json::Error> {
-    let payload = EmulatorBiosAuditPayload {
+    let (groups, files) = match audit {
+        EmulatorBiosAudit::Pcsx2(audit) => {
+            let groups = vec![EmulatorBiosGroupPayload {
+                id: audit.group_id(),
+                description: audit.group_description(),
+                required: audit.group_required(),
+                all_items_required: audit.all_items_required(),
+                satisfied: audit.group_satisfied(),
+                valid_count: audit.valid_count(),
+                mismatch_count: audit.mismatch_count(),
+                unsafe_count: audit.unsafe_count(),
+                unreadable_count: audit.unreadable_count(),
+                missing_count: audit.missing_count(),
+            }];
+            let files = audit
+                .files
+                .iter()
+                .map(|file| EmulatorBiosFilePayload {
+                    group_id: audit.group_id(),
+                    file_name: file.requirement.file_name.clone(),
+                    required: false,
+                    description: file.requirement.description.clone(),
+                    path: file.path.to_string_lossy().into_owned(),
+                    state: file.state.id(),
+                    expected_md5: Some(file.requirement.md5.clone()),
+                    actual_md5: file.actual_md5.clone(),
+                })
+                .collect();
+            (groups, files)
+        }
+        EmulatorBiosAudit::Xemu(audit) => {
+            let groups = XemuBiosGroupKind::ALL
+                .into_iter()
+                .map(|group| {
+                    let states = audit
+                        .files_for_group(group)
+                        .map(|file| file.state)
+                        .collect::<Vec<_>>();
+                    EmulatorBiosGroupPayload {
+                        id: group.id(),
+                        description: group.description(),
+                        required: group.required(),
+                        all_items_required: group.all_items_required(),
+                        satisfied: audit.group_satisfied(group),
+                        valid_count: count_bios_state(&states, BiosFileState::Valid),
+                        mismatch_count: count_bios_state(&states, BiosFileState::HashMismatch),
+                        unsafe_count: count_bios_state(&states, BiosFileState::UnsafeEntry),
+                        unreadable_count: count_bios_state(&states, BiosFileState::Unreadable),
+                        missing_count: count_bios_state(&states, BiosFileState::Missing),
+                    }
+                })
+                .collect();
+            let files = audit
+                .files
+                .iter()
+                .map(|file| EmulatorBiosFilePayload {
+                    group_id: file.requirement.group.id(),
+                    file_name: file.requirement.file_name.clone(),
+                    required: file.requirement.file_required,
+                    description: file.requirement.description.clone(),
+                    path: file.path.to_string_lossy().into_owned(),
+                    state: file.state.id(),
+                    expected_md5: file.requirement.md5.clone(),
+                    actual_md5: file.actual_md5.clone(),
+                })
+                .collect();
+            (groups, files)
+        }
+    };
+    serde_json::to_string(&EmulatorBiosAuditPayload {
         version: EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION,
         emulator_id: emulator_id.to_string(),
         emulator_title: emulator_title.to_string(),
-        adapter: "pcsx2",
-        bios_directory: audit.bios_directory.to_string_lossy().into_owned(),
+        adapter: audit.adapter(),
+        search_root: audit.search_root().to_string_lossy().into_owned(),
         configuration_path: audit
-            .configuration_path
-            .as_ref()
+            .configuration_path()
             .map(|path| path.to_string_lossy().into_owned()),
-        location_source: audit.location_source.label(),
-        group: EmulatorBiosGroupPayload {
-            id: audit.group_id(),
-            description: audit.group_description(),
-            required: audit.group_required(),
-            all_items_required: audit.all_items_required(),
-            satisfied: audit.group_satisfied(),
-            valid_count: audit.valid_count(),
-            mismatch_count: audit.mismatch_count(),
-            unsafe_count: audit.unsafe_count(),
-            unreadable_count: audit.unreadable_count(),
-            missing_count: audit.missing_count(),
-        },
-        files: audit
-            .files
-            .iter()
-            .map(|file| EmulatorBiosFilePayload {
-                file_name: file.requirement.file_name.clone(),
-                description: file.requirement.description.clone(),
-                path: file.path.to_string_lossy().into_owned(),
-                state: file.state.id(),
-                expected_md5: file.requirement.md5.clone(),
-                actual_md5: file.actual_md5.clone(),
-            })
-            .collect(),
-    };
-    serde_json::to_string(&payload)
+        location_source: audit.location_source(),
+        ready: audit.ready(),
+        valid_count: audit.valid_count(),
+        mismatch_count: audit.mismatch_count(),
+        unsafe_count: audit.unsafe_count(),
+        unreadable_count: audit.unreadable_count(),
+        missing_count: audit.missing_count(),
+        groups,
+        files,
+    })
+}
+
+fn count_bios_state(states: &[BiosFileState], expected: BiosFileState) -> usize {
+    states.iter().filter(|state| **state == expected).count()
 }
 
 fn pcsx2_release_payload(state: &Pcsx2ReleaseState) -> Result<String, serde_json::Error> {
@@ -7643,6 +7785,54 @@ fn emulator_release_transport_from_command_line(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EmulatorBiosAdapter {
+    Pcsx2,
+    Xemu,
+}
+
+impl EmulatorBiosAdapter {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Pcsx2 => "PCSX2",
+            Self::Xemu => "Xemu",
+        }
+    }
+}
+
+fn emulator_bios_adapter_for_application(
+    emulator_title: &str,
+    application_path: &Path,
+) -> Option<EmulatorBiosAdapter> {
+    if is_pcsx2_emulator(emulator_title, application_path) {
+        return Some(EmulatorBiosAdapter::Pcsx2);
+    }
+    let xemu_file_name = application_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().contains("xemu"));
+    (xemu_file_name || emulator_title.trim().eq_ignore_ascii_case("xemu"))
+        .then_some(EmulatorBiosAdapter::Xemu)
+}
+
+fn emulator_supports_bios(
+    emulator: &Emulator,
+    launchbox_root: Option<&Path>,
+    resolver: &HostPathResolver,
+) -> bool {
+    if emulator.title.trim().eq_ignore_ascii_case("pcsx2")
+        || emulator.title.trim().eq_ignore_ascii_case("xemu")
+    {
+        return true;
+    }
+    launchbox_root
+        .and_then(|root| resolver.resolve(root, &emulator.application_path).ok())
+        .and_then(|application_path| {
+            emulator_bios_adapter_for_application(&emulator.title, &application_path)
+        })
+        .is_some()
+}
+
 fn emulator_supports_pcsx2_bios(
     emulator: &Emulator,
     launchbox_root: Option<&Path>,
@@ -7653,7 +7843,10 @@ fn emulator_supports_pcsx2_bios(
     }
     launchbox_root
         .and_then(|root| resolver.resolve(root, &emulator.application_path).ok())
-        .is_some_and(|application_path| is_pcsx2_emulator(&emulator.title, &application_path))
+        .and_then(|application_path| {
+            emulator_bios_adapter_for_application(&emulator.title, &application_path)
+        })
+        == Some(EmulatorBiosAdapter::Pcsx2)
 }
 
 fn load_emulator_edit_payload(
@@ -13813,6 +14006,9 @@ impl qobject::LibraryController {
         let audit = rust.emulator_bios_audit.as_ref();
         let success = rust.emulator_bios_emulator_id.as_deref() == Some(emulator_id.as_str())
             && audit.is_some_and(|audit| {
+                let EmulatorBiosAudit::Pcsx2(audit) = audit else {
+                    return false;
+                };
                 audit.files.len() == 73
                     && !audit.group_satisfied()
                     && audit.valid_count() == 0
@@ -14694,7 +14890,7 @@ impl qobject::LibraryController {
         else {
             return false;
         };
-        emulator_supports_pcsx2_bios(
+        emulator_supports_bios(
             emulator,
             self.rust().launchbox_root.as_deref(),
             &self.rust().path_resolver,
@@ -14740,31 +14936,49 @@ impl qobject::LibraryController {
             Ok(path) => path,
             Err(error) => {
                 self.as_mut().set_status_message(qstring(format!(
-                    "Could not resolve the configured PCSX2 executable: {error}"
+                    "Could not resolve the configured emulator executable for BIOS auditing: {error}"
                 )));
                 return;
             }
         };
-        if !is_pcsx2_emulator(&emulator.title, &application_path) {
+        let Some(adapter) =
+            emulator_bios_adapter_for_application(&emulator.title, &application_path)
+        else {
             self.as_mut().set_status_message(qstring(
                 "BIOS auditing is not yet implemented for this emulator adapter.",
             ));
             return;
-        }
-        let data_directories = default_pcsx2_data_directories(&application_path);
+        };
+        let path_resolver = self.as_ref().rust().path_resolver.clone();
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_emulator_bios_scanning(true);
         self.as_mut()
             .set_emulator_bios_audit_json(QString::default());
-        self.as_mut().set_status_message(qstring(
-            "Auditing the recovered PCSX2 BIOS catalog without executing or modifying PCSX2...",
-        ));
+        self.as_mut().set_status_message(qstring(format!(
+            "Auditing the recovered {} BIOS catalog without executing or modifying {}...",
+            adapter.name(),
+            adapter.name()
+        )));
         let qt_thread = self.as_ref().qt_thread();
         let title = emulator.title;
         let spawn_result = std::thread::Builder::new()
             .name("launchbox-emulator-bios-audit".to_string())
             .spawn(move || {
-                let result = audit_pcsx2_bios(&application_path, &data_directories);
+                let result = match adapter {
+                    EmulatorBiosAdapter::Pcsx2 => audit_pcsx2_bios(
+                        &application_path,
+                        &default_pcsx2_data_directories(&application_path),
+                    )
+                    .map(EmulatorBiosAudit::Pcsx2)
+                    .map_err(|error| error.to_string()),
+                    EmulatorBiosAdapter::Xemu => audit_xemu_bios(
+                        &application_path,
+                        &default_xemu_data_directories(),
+                        &path_resolver,
+                    )
+                    .map(EmulatorBiosAudit::Xemu)
+                    .map_err(|error| error.to_string()),
+                };
                 qt_thread
                     .queue(move |mut controller| {
                         controller.as_mut().finish_emulator_bios_audit(
@@ -16698,7 +16912,7 @@ impl qobject::LibraryController {
         generation: u64,
         emulator_id: String,
         emulator_title: String,
-        result: Result<Pcsx2BiosAudit, Pcsx2BiosError>,
+        result: Result<EmulatorBiosAudit, String>,
     ) {
         self.as_mut().set_emulator_bios_scanning(false);
         if self.as_ref().rust().request_generation != generation {
@@ -16711,18 +16925,19 @@ impl qobject::LibraryController {
                         Ok(payload) => payload,
                         Err(error) => {
                             self.as_mut().set_status_message(qstring(format!(
-                                "Could not serialize PCSX2 BIOS audit: {error}"
+                                "Could not serialize emulator BIOS audit: {error}"
                             )));
                             return;
                         }
                     };
-                let satisfied = audit.group_satisfied();
+                let ready = audit.ready();
+                let adapter = audit.adapter();
                 let valid = audit.valid_count();
                 let mismatch = audit.mismatch_count();
                 let unsafe_count = audit.unsafe_count();
                 let unreadable = audit.unreadable_count();
                 let missing = audit.missing_count();
-                let directory = audit.bios_directory.clone();
+                let search_root = audit.search_root().to_path_buf();
                 {
                     let mut rust = self.as_mut().rust_mut();
                     rust.emulator_bios_audit = Some(audit);
@@ -16734,14 +16949,15 @@ impl qobject::LibraryController {
                 let revision = self.as_ref().emulator_bios_revision().saturating_add(1);
                 self.as_mut().set_emulator_bios_revision(revision);
                 self.as_mut().set_status_message(qstring(format!(
-                    "PCSX2 BIOS audit {} at {}: {valid} valid, {mismatch} hash mismatch, {unsafe_count} unsafe, {unreadable} unreadable, {missing} missing. No files or configuration were changed.",
-                    if satisfied { "ready" } else { "needs a valid BIOS" },
-                    directory.display()
+                    "{} BIOS audit {} at {}: {valid} valid, {mismatch} hash mismatch, {unsafe_count} unsafe, {unreadable} unreadable, {missing} missing. No files or configuration were changed.",
+                    if adapter == "pcsx2" { "PCSX2" } else { "Xemu" },
+                    if ready { "ready" } else { "needs required firmware" },
+                    search_root.display()
                 )));
             }
             Err(error) => {
                 self.as_mut()
-                    .set_status_message(qstring(format!("Could not audit PCSX2 BIOS: {error}")));
+                    .set_status_message(qstring(format!("Could not audit emulator BIOS: {error}")));
             }
         }
     }
@@ -18878,6 +19094,54 @@ mod tests {
     }
 
     #[test]
+    fn discovered_xemu_payload_uses_recovered_xbox_defaults_without_windows_runtime_fields() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let executable = directory.path().join("Emulators/Xemu/xemu");
+        let candidate = DiscoveredEmulatorExecutable {
+            profile: EmulatorDiscoveryProfile::Xemu,
+            executable,
+            source: EmulatorDiscoverySource::PortableLibrary,
+        };
+        let serialized = discovered_emulator_payload(
+            &candidate,
+            directory.path(),
+            &HostPathResolver::default(),
+            &["Microsoft Xbox".into(), "Sony PlayStation 2".into()],
+            None,
+        )
+        .expect("Xemu discovery payload");
+        let payload: EmulatorEditPayload =
+            serde_json::from_str(&serialized).expect("typed discovery payload");
+
+        assert_eq!(payload.emulator.title, "Xemu");
+        assert_eq!(payload.emulator.application_path, r"Emulators\Xemu\xemu");
+        assert_eq!(
+            payload.emulator.command_line.as_deref(),
+            Some("-full-screen -dvd_path")
+        );
+        assert!(!payload.emulator.auto_extract);
+        assert!(!payload.emulator.hide_console);
+        assert!(payload.emulator.use_startup_screen);
+        assert!(!payload.emulator.use_pause_screen);
+        assert!(payload.emulator.hide_mouse_cursor_in_game);
+        assert!(!payload.emulator.suspend_process_on_pause);
+        assert!(!payload.emulator.forceful_pause_screen_activation);
+        assert!(payload.emulator.auto_hotkey_script.is_none());
+        assert_eq!(payload.emulator.startup_load_delay, 5_000);
+        assert_eq!(
+            payload.platforms,
+            vec![EmulatorPlatformEditPayload {
+                source_index: None,
+                platform: "Microsoft Xbox".into(),
+                command_line: None,
+                default: true,
+                auto_extract: None,
+                m3u_disc_load_enabled: false,
+            }]
+        );
+    }
+
+    #[test]
     fn discovered_emulator_payload_respects_existing_defaults_and_registration() {
         let directory = tempfile::tempdir().expect("temporary library");
         let executable = directory.path().join("Emulators/PCSX2/pcsx2-qt");
@@ -19529,22 +19793,29 @@ mod tests {
         };
 
         let serialized =
-            emulator_bios_audit_payload("pcsx2", "PCSX2", &audit).expect("BIOS audit payload");
+            emulator_bios_audit_payload("pcsx2", "PCSX2", &EmulatorBiosAudit::Pcsx2(audit))
+                .expect("BIOS audit payload");
         let payload: serde_json::Value =
             serde_json::from_str(&serialized).expect("typed JSON payload");
         assert_eq!(payload["version"], EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION);
         assert_eq!(payload["adapter"], "pcsx2");
         assert_eq!(
-            payload["bios_directory"],
+            payload["search_root"],
             "/library/Emulators/PCSX2/custom-bios"
         );
         assert_eq!(payload["location_source"], "portable PCSX2 configuration");
-        assert_eq!(payload["group"]["id"], "ps2 bios");
-        assert_eq!(payload["group"]["required"], true);
-        assert_eq!(payload["group"]["all_items_required"], false);
-        assert_eq!(payload["group"]["satisfied"], true);
-        assert_eq!(payload["group"]["valid_count"], 1);
-        assert_eq!(payload["group"]["missing_count"], 1);
+        assert_eq!(payload["ready"], true);
+        assert_eq!(payload["groups"][0]["id"], "ps2 bios");
+        assert_eq!(payload["groups"][0]["required"], true);
+        assert_eq!(payload["groups"][0]["all_items_required"], false);
+        assert_eq!(payload["groups"][0]["satisfied"], true);
+        assert_eq!(payload["groups"][0]["valid_count"], 1);
+        assert_eq!(payload["groups"][0]["missing_count"], 1);
+        assert_eq!(payload["files"][0]["group_id"], "ps2 bios");
+        assert_eq!(
+            payload["files"][0]["expected_md5"],
+            "0123456789abcdef0123456789abcdef"
+        );
         assert_eq!(payload["files"][0]["state"], "valid");
         assert_eq!(payload["files"][1]["state"], "missing");
 
@@ -19559,6 +19830,49 @@ mod tests {
             Some(directory.path()),
             &HostPathResolver::default()
         ));
+    }
+
+    #[test]
+    fn xemu_bios_payload_preserves_all_required_groups_and_optional_hdd_digest() {
+        let directory = tempfile::tempdir().expect("temporary Xemu");
+        let application = directory.path().join("xemu");
+        fs::write(&application, []).expect("application fixture");
+        fs::create_dir(directory.path().join("saves")).expect("save directory");
+        fs::write(
+            directory.path().join("saves/xbox_hdd.qcow2"),
+            b"readable non-firmware fixture",
+        )
+        .expect("HDD fixture");
+        let audit =
+            audit_xemu_bios(&application, &[], &HostPathResolver::default()).expect("Xemu audit");
+
+        let serialized =
+            emulator_bios_audit_payload("xemu", "Xemu", &EmulatorBiosAudit::Xemu(audit))
+                .expect("Xemu BIOS payload");
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("typed JSON payload");
+
+        assert_eq!(payload["version"], EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION);
+        assert_eq!(payload["adapter"], "xemu");
+        assert_eq!(payload["ready"], false);
+        assert_eq!(payload["groups"].as_array().map(Vec::len), Some(3));
+        assert_eq!(payload["files"].as_array().map(Vec::len), Some(7));
+        assert_eq!(payload["valid_count"], 1);
+        assert_eq!(payload["missing_count"], 6);
+        assert!(payload["groups"]
+            .as_array()
+            .is_some_and(|groups| groups.iter().all(|group| group["required"] == true)));
+        let hdd = payload["files"]
+            .as_array()
+            .and_then(|files| {
+                files
+                    .iter()
+                    .find(|file| file["file_name"] == "xbox_hdd.qcow2")
+            })
+            .expect("HDD payload");
+        assert_eq!(hdd["group_id"], "xemu hdd");
+        assert!(hdd["expected_md5"].is_null());
+        assert_eq!(hdd["state"], "valid");
     }
 
     #[test]

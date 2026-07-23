@@ -355,7 +355,7 @@ fn audit_bios_directory(
             let (state, actual_md5) = if unsafe_directory {
                 (BiosFileState::UnsafeEntry, None)
             } else {
-                audit_file(&path, &requirement.md5)
+                audit_bios_file(&path, Some(&requirement.md5))
             };
             Pcsx2BiosFileAudit {
                 requirement,
@@ -367,7 +367,10 @@ fn audit_bios_directory(
         .collect()
 }
 
-fn audit_file(path: &Path, expected_md5: &str) -> (BiosFileState, Option<String>) {
+pub(crate) fn audit_bios_file(
+    path: &Path,
+    expected_md5: Option<&str>,
+) -> (BiosFileState, Option<String>) {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -378,7 +381,13 @@ fn audit_file(path: &Path, expected_md5: &str) -> (BiosFileState, Option<String>
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return (BiosFileState::UnsafeEntry, None);
     }
-    let Ok(actual_md5) = md5_file(path) else {
+    let Ok(mut source) = File::open(path) else {
+        return (BiosFileState::Unreadable, None);
+    };
+    let Some(expected_md5) = expected_md5 else {
+        return (BiosFileState::Valid, None);
+    };
+    let Ok(actual_md5) = md5_reader(&mut source) else {
         return (BiosFileState::Unreadable, None);
     };
     let state = if actual_md5.eq_ignore_ascii_case(expected_md5) {
@@ -389,8 +398,7 @@ fn audit_file(path: &Path, expected_md5: &str) -> (BiosFileState, Option<String>
     (state, Some(actual_md5))
 }
 
-fn md5_file(path: &Path) -> io::Result<String> {
-    let mut source = File::open(path)?;
+fn md5_reader(source: &mut File) -> io::Result<String> {
     let mut digest = Md5::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -403,7 +411,7 @@ fn md5_file(path: &Path) -> io::Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-fn regular_file_without_symlink(path: &Path) -> bool {
+pub(crate) fn regular_file_without_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
 }

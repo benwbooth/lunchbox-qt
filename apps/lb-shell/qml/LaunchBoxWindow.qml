@@ -2020,25 +2020,28 @@ ApplicationWindow {
                             unsafeFound = true
                     }
                 }
-                if (payload === null || payload.version !== 1
+                const group = payload !== null && payload.groups.length > 0
+                            ? payload.groups[0] : null
+                if (payload === null || payload.version !== 2
                         || payload.emulator_id !== emulatorId
                         || payload.adapter !== "pcsx2"
-                        || !payload.bios_directory.endsWith(
+                        || !payload.search_root.endsWith(
                             "/Emulators/PCSX2/custom-bios")
                         || payload.configuration_path === null
                         || !payload.configuration_path.endsWith(
                             "/Emulators/PCSX2/inis/PCSX2.ini")
                         || payload.location_source
                            !== "portable PCSX2 configuration"
-                        || payload.group.id !== "ps2 bios"
-                        || !payload.group.required
-                        || payload.group.all_items_required
-                        || payload.group.satisfied
-                        || payload.group.valid_count !== 0
-                        || payload.group.mismatch_count !== 1
-                        || payload.group.unsafe_count !== 1
-                        || payload.group.unreadable_count !== 0
-                        || payload.group.missing_count !== 71
+                        || group === null
+                        || group.id !== "ps2 bios"
+                        || !group.required
+                        || group.all_items_required
+                        || group.satisfied
+                        || group.valid_count !== 0
+                        || group.mismatch_count !== 1
+                        || group.unsafe_count !== 1
+                        || group.unreadable_count !== 0
+                        || group.missing_count !== 71
                         || payload.files.length !== 73
                         || !mismatchFound || !unsafeFound
                         || !controller.report_emulator_bios_smoke_success(
@@ -5719,6 +5722,19 @@ ApplicationWindow {
             return "#f85149"
         }
 
+        function groupSummary() {
+            if (audit === null)
+                return ""
+            const summaries = []
+            for (let index = 0; index < audit.groups.length; ++index) {
+                const group = audit.groups[index]
+                summaries.push(group.description + " "
+                               + (group.satisfied ? "READY" : "MISSING")
+                               + " (" + group.valid_count + " valid)")
+            }
+            return summaries.join(" · ")
+        }
+
         Connections {
             target: controller
             function onEmulatorBiosRevisionChanged() {
@@ -5733,7 +5749,17 @@ ApplicationWindow {
 
             Label {
                 Layout.fillWidth: true
-                text: "This is a read-only validation of the complete LaunchBox 13.27 PCSX2 BIOS alternative group. At least one exact MD5 match is required. The audit does not run PCSX2, follow firmware symlinks, download firmware, or change files and configuration."
+                text: {
+                    const name = biosManager.audit === null
+                               ? biosManager.emulatorTitle
+                               : biosManager.audit.emulator_title
+                    return "This is a read-only validation of the complete "
+                           + "LaunchBox 13.27 " + name
+                           + " BIOS contract. Every required group must be "
+                           + "satisfied. The audit does not run the emulator, "
+                           + "follow firmware symlinks, download firmware, or "
+                           + "change files and configuration."
+                }
                 wrapMode: Text.Wrap
                 color: "#7fbfff"
             }
@@ -5750,14 +5776,14 @@ ApplicationWindow {
                             return "Checking configured BIOS location…"
                         if (biosManager.audit === null)
                             return "No audit result"
-                        return biosManager.audit.group.satisfied
+                        return biosManager.audit.ready
                                ? "READY — "
-                                 + biosManager.audit.group.valid_count
-                                 + " recognized BIOS file(s)"
-                               : "NEEDS BIOS — no recognized exact match"
+                                 + biosManager.audit.valid_count
+                                 + " recognized required file(s)"
+                               : "NEEDS FIRMWARE — one or more required groups are unsatisfied"
                     }
                     color: biosManager.audit !== null
-                           && biosManager.audit.group.satisfied
+                           && biosManager.audit.ready
                            ? "#3fb950" : "#d29922"
                     font.bold: true
                 }
@@ -5773,7 +5799,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 visible: biosManager.audit !== null
                 text: biosManager.audit === null ? ""
-                      : "BIOS directory: " + biosManager.audit.bios_directory
+                      : "Search root: " + biosManager.audit.search_root
                 color: "white"
                 elide: Text.ElideMiddle
             }
@@ -5784,7 +5810,7 @@ ApplicationWindow {
                     if (biosManager.audit === null)
                         return ""
                     const config = biosManager.audit.configuration_path === null
-                                 ? "no readable PCSX2.ini"
+                                 ? "no readable emulator configuration"
                                  : biosManager.audit.configuration_path
                     return "Source: " + biosManager.audit.location_source
                            + " · " + config
@@ -5799,12 +5825,7 @@ ApplicationWindow {
                 text: {
                     if (biosManager.audit === null)
                         return ""
-                    const group = biosManager.audit.group
-                    return group.description + " · valid " + group.valid_count
-                           + " · mismatch " + group.mismatch_count
-                           + " · unsafe " + group.unsafe_count
-                           + " · unreadable " + group.unreadable_count
-                           + " · missing " + group.missing_count
+                    return biosManager.groupSummary()
                 }
                 color: "white"
             }
@@ -5822,7 +5843,8 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Label {
                                 Layout.fillWidth: true
-                                text: modelData.file_name + " · "
+                                text: modelData.group_id + " · "
+                                      + modelData.file_name + " · "
                                       + modelData.description
                                 color: "white"
                                 font.bold: true
@@ -5838,6 +5860,7 @@ ApplicationWindow {
                             Label {
                                 Layout.fillWidth: true
                                 visible: modelData.state === "hash_mismatch"
+                                         && modelData.expected_md5 !== null
                                 text: "Expected " + modelData.expected_md5
                                       + " · actual "
                                       + (modelData.actual_md5 || "unavailable")

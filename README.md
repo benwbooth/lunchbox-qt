@@ -162,7 +162,7 @@ freshly scans games and additional applications and refuses to orphan an
 explicit emulator reference. Application paths remain lexical LaunchBox
 strings on every host. The same manager can scan the portable `Emulators`
 folder, native application locations, and `PATH` for evidence-reviewed
-RetroArch, Dolphin, PCSX2, and ScummVM executable names. Results show their
+RetroArch, Dolphin, PCSX2, ScummVM, and Xemu executable names. Results show their
 native path and provenance, never execute a candidate, and require review in
 the complete editor before transactional registration. Portable paths are
 stored with LaunchBox backslashes while mapped and external paths use the
@@ -195,8 +195,14 @@ recovered 13.27 group of 73 filename-and-MD5 alternatives. It resolves
 streams hashes without loading firmware into memory, requires any one valid alternative
 for the required group, and reports missing, mismatched, unreadable, or unsafe
 symlink entries without executing PCSX2 or writing any file or directory.
-Other-emulator BIOS adapters and all firmware acquisition or mutation remain
-open.
+Configured Xemu entries use the same generalized Qt manager for the second
+read-only BIOS adapter. It resolves portable `xemu.toml` first, then Xemu's
+host-native data location, maps legacy Windows drive/UNC values through the
+shared host-path service, and audits the recovered required boot-ROM, HDD, and
+flash-BIOS groups. The HDD requires a readable regular file; firmware requires
+an exact recovered MD5. It never downloads Xemu's dashboard HDD, creates
+`bios`/`saves`, starts Xemu, or rewrites configuration. Other-emulator BIOS
+adapters and all firmware acquisition or mutation remain open.
 The same sidebar now renders recovered category/platform nesting from
 `Parents.xml`, including multiple placements, recursive category game counts,
 and descendant filtering. Its category dialog edits the recovered mutable
