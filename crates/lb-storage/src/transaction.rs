@@ -439,6 +439,47 @@ impl LibraryTransaction {
         })
     }
 
+    /// Stages a streamed replacement while preserving the exact inspected
+    /// source permissions on the replacement. This is reserved for native
+    /// executable artifacts whose execute bits must survive managed updates.
+    pub fn stage_file_replace_with_revisions_preserving_permissions(
+        &mut self,
+        source: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+        source_expected: FileRevision,
+        target_expected: FileRevision,
+    ) -> Result<(), TransactionError> {
+        let supplied_source = source.as_ref();
+        let metadata =
+            fs::symlink_metadata(supplied_source).map_err(|source| TransactionError::Io {
+                path: supplied_source.to_path_buf(),
+                source,
+            })?;
+        if !metadata.file_type().is_file() {
+            return Err(TransactionError::SourceNotFile {
+                path: supplied_source.to_path_buf(),
+            });
+        }
+        let source = fs::canonicalize(supplied_source).map_err(|source| TransactionError::Io {
+            path: supplied_source.to_path_buf(),
+            source,
+        })?;
+        let target = self.checked_target(target.as_ref())?;
+        if source == target {
+            return Err(TransactionError::SourceEqualsTarget { path: target });
+        }
+        self.push_change(PendingChange {
+            target,
+            operation: TransactionOperation::Replace,
+            candidate: Some(PendingCandidate::SourceFile {
+                path: source,
+                expected: Some(source_expected),
+                preserve_permissions: true,
+            }),
+            expected: Some(target_expected),
+        })
+    }
+
     /// Stages deletion of one exact regular file under the library root.
     /// Callers supply the already-inspected revision so a replaced vault file
     /// is refused before any deletion is committed.

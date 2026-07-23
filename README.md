@@ -187,8 +187,19 @@ boundary. macOS selects the official Qt tar.xz, bounds and verifies its single
 XZ stream, audits the nested tar through the same traversal/link boundary,
 normalizes the versioned upstream root to a stable `PCSX2.app`, and preserves
 the main executable mode. The upstream bundle is x86-64, so Apple Silicon needs
-Rosetta 2; native macOS runtime execution still needs a real-host gate. Other
-emulators, dependencies, cores, and automatic update policy remain open. A
+Rosetta 2; native macOS runtime execution still needs a real-host gate.
+BigPEmu has a second managed provider using Rich Whitehouse's official release
+page. It selects the exact Windows x64/ARM64 ZIP or Linux x64/ARM64 tar.gz,
+checks the published byte count and uppercase 64-bit FNV-1a value, computes a
+local SHA-256 receipt, and safely extracts the complete package. Linux tar.gz
+handling validates and bounds the single GZip stream before routing every tar
+member through the existing traversal/link/special-file boundary. The optional
+`make_desktop.sh` helper is explicitly excluded and never invoked; Qt registers
+and launches the native executable directly. Install, update, repair, and
+removal share the complete ownership, conflict, recovery-copy, user-file
+retention, and lossless `Emulators.xml` transaction contract described above.
+Other managed emulators, dependencies, cores, and automatic update policy
+remain open. A
 configured PCSX2 entry also exposes a read-only BIOS audit using the complete
 recovered 13.27 group of 73 filename-and-MD5 alternatives. It resolves
 `portable.ini` and `inis/PCSX2.ini` or the host-native PCSX2 configuration root,

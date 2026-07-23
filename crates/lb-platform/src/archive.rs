@@ -691,6 +691,227 @@ impl ArchiveExtractor {
         self.extract_to_directory(tar_path, &destination)
     }
 
+    /// Extracts one bounded `.tar.gz` payload through two audited stages.
+    ///
+    /// GZip carries one stream filename, which must be exactly the `.tar`
+    /// derived from the source archive name. The declared unpacked size is
+    /// checked before extraction, the one stream output is checked again by
+    /// size and name, and all tar members then pass through the ordinary
+    /// traversal/link/special-file boundary. Every tool is started directly
+    /// with an argument vector; no command shell is involved.
+    pub fn extract_tar_gz_to_directory(
+        &self,
+        archive: &Path,
+        stream_directory: &Path,
+        destination: &Path,
+        max_tar_bytes: u64,
+    ) -> Result<Vec<PathBuf>, ArchiveExtractionError> {
+        let metadata =
+            fs::symlink_metadata(archive).map_err(|_| ArchiveExtractionError::ArchiveNotFound {
+                archive: archive.to_path_buf(),
+            })?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(ArchiveExtractionError::ArchiveNotFound {
+                archive: archive.to_path_buf(),
+            });
+        }
+        let archive_name =
+            archive
+                .file_name()
+                .ok_or_else(|| ArchiveExtractionError::MissingArchiveFileName {
+                    archive: archive.to_path_buf(),
+                })?;
+        let archive_name_text = archive_name.to_string_lossy();
+        if !archive_name_text.to_ascii_lowercase().ends_with(".tar.gz") {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the source name does not end in .tar.gz".into(),
+            });
+        }
+        let expected_tar_name = Path::new(archive_name)
+            .file_stem()
+            .filter(|name| {
+                Path::new(name)
+                    .extension()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tar"))
+            })
+            .ok_or_else(|| ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the source has no derived .tar filename".into(),
+            })?
+            .to_os_string();
+
+        let mut signature = [0_u8; 2];
+        fs::File::open(archive)
+            .and_then(|mut file| file.read_exact(&mut signature))
+            .map_err(|error| ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!("could not read the GZip signature: {error}"),
+            })?;
+        if signature != [0x1f, 0x8b] {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the source does not have a GZip stream signature".into(),
+            });
+        }
+        if max_tar_bytes == 0 {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the permitted unpacked size is zero".into(),
+            });
+        }
+
+        let output = Command::new(&self.executable)
+            .arg("l")
+            .arg("-slt")
+            .arg("-sccUTF-8")
+            .arg("-ba")
+            .arg("--")
+            .arg(archive)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| ArchiveExtractionError::ToolStart {
+                executable: self.executable.clone(),
+                operation: "list",
+                archive: archive.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        if !output.status.success() {
+            return Err(ArchiveExtractionError::ToolFailed {
+                executable: self.executable.clone(),
+                operation: "list",
+                archive: archive.to_path_buf(),
+                message: tool_output_message(&output.stdout, &output.stderr),
+            });
+        }
+        let listing = String::from_utf8(output.stdout).map_err(|error| {
+            ArchiveExtractionError::InvalidToolOutput {
+                archive: archive.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+        let entries = parse_technical_listing(&listing);
+        let [stream_entry] = entries.as_slice() else {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!(
+                    "the GZip listing contains {} stream names instead of one",
+                    entries.len()
+                ),
+            });
+        };
+        if stream_entry.encrypted
+            || Path::new(&stream_entry.path).file_name() != Some(expected_tar_name.as_os_str())
+            || Path::new(&stream_entry.path)
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!(
+                    "the GZip stream name is unsafe or unexpected: {}",
+                    stream_entry.path
+                ),
+            });
+        }
+        let unpacked_sizes = listing
+            .lines()
+            .filter_map(|line| line.trim_end_matches('\r').strip_prefix("Size = "))
+            .collect::<Vec<_>>();
+        let [unpacked_size] = unpacked_sizes.as_slice() else {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the GZip listing does not contain exactly one unpacked size".into(),
+            });
+        };
+        let unpacked_size = unpacked_size.parse::<u64>().map_err(|error| {
+            ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!("the GZip unpacked size is invalid: {error}"),
+            }
+        })?;
+        if unpacked_size == 0 || unpacked_size > max_tar_bytes {
+            return Err(ArchiveExtractionError::CompressedTarTooLarge {
+                archive: archive.to_path_buf(),
+                unpacked_size,
+                max_tar_bytes,
+            });
+        }
+
+        let stream_directory =
+            empty_real_directory(archive, stream_directory, "stream extraction")?;
+        let destination = empty_real_directory(archive, destination, "tar extraction")?;
+        if stream_directory == destination {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the stream and tar extraction directories are identical".into(),
+            });
+        }
+        let mut output_directory_argument = OsString::from("-o");
+        output_directory_argument.push(&stream_directory);
+        let output = Command::new(&self.executable)
+            .arg("x")
+            .arg("-y")
+            .arg("-aos")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg(output_directory_argument)
+            .arg("--")
+            .arg(archive)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| ArchiveExtractionError::ToolStart {
+                executable: self.executable.clone(),
+                operation: "extract GZip stream",
+                archive: archive.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        if !output.status.success() {
+            return Err(ArchiveExtractionError::ToolFailed {
+                executable: self.executable.clone(),
+                operation: "extract GZip stream",
+                archive: archive.to_path_buf(),
+                message: tool_output_message(&output.stdout, &output.stderr),
+            });
+        }
+        let stream_files = audit_extracted_tree(archive, &stream_directory)?;
+        let [tar_path] = stream_files.as_slice() else {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!(
+                    "the GZip stream produced {} files instead of one",
+                    stream_files.len()
+                ),
+            });
+        };
+        if tar_path.file_name() != Some(expected_tar_name.as_os_str()) {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!(
+                    "the GZip stream produced unexpected file {}",
+                    tar_path.display()
+                ),
+            });
+        }
+        let actual_size = fs::symlink_metadata(tar_path)
+            .map_err(|error| ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!("could not inspect extracted tar: {error}"),
+            })?
+            .len();
+        if actual_size != unpacked_size {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!(
+                    "the extracted tar size is {actual_size}, expected {unpacked_size}"
+                ),
+            });
+        }
+
+        self.extract_to_directory(tar_path, &destination)
+    }
+
     pub(crate) fn extract(
         &self,
         archive: &Path,
@@ -1586,6 +1807,104 @@ mod tests {
         fs::create_dir(&invalid_destination).unwrap();
         assert!(matches!(
             extractor.extract_tar_xz_to_directory(
+                &invalid,
+                &invalid_stream,
+                &invalid_destination,
+                1024
+            ),
+            Err(ArchiveExtractionError::InvalidCompressedTar { .. })
+        ));
+    }
+
+    #[test]
+    fn extracts_bounded_tar_gz_through_two_audited_stages() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let payload = source.join("bigpemu");
+        fs::create_dir_all(payload.join("Data")).unwrap();
+        fs::write(payload.join("bigpemu"), b"fixture executable").unwrap();
+        fs::write(payload.join("Data/default.ini"), b"setting=1").unwrap();
+
+        let tar = directory.path().join("BigPEmu_Linux64_v1221.tar");
+        let tar_output = Command::new("7z")
+            .current_dir(&source)
+            .arg("a")
+            .arg("-ttar")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg(&tar)
+            .arg("--")
+            .arg("bigpemu")
+            .output()
+            .unwrap();
+        assert!(
+            tar_output.status.success(),
+            "{}",
+            tool_output_message(&tar_output.stdout, &tar_output.stderr)
+        );
+        let archive = directory.path().join("BigPEmu_Linux64_v1221.tar.gz");
+        let gzip_output = Command::new("7z")
+            .current_dir(directory.path())
+            .arg("a")
+            .arg("-tgzip")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg(&archive)
+            .arg("--")
+            .arg(tar.file_name().unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            gzip_output.status.success(),
+            "{}",
+            tool_output_message(&gzip_output.stdout, &gzip_output.stderr)
+        );
+        fs::remove_file(&tar).unwrap();
+
+        let rejected_stream = directory.path().join("rejected-stream");
+        let rejected_destination = directory.path().join("rejected-destination");
+        fs::create_dir(&rejected_stream).unwrap();
+        fs::create_dir(&rejected_destination).unwrap();
+        let extractor = ArchiveExtractor::new("7z");
+        assert!(matches!(
+            extractor.extract_tar_gz_to_directory(
+                &archive,
+                &rejected_stream,
+                &rejected_destination,
+                1
+            ),
+            Err(ArchiveExtractionError::CompressedTarTooLarge { .. })
+        ));
+        assert_eq!(fs::read_dir(&rejected_stream).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&rejected_destination).unwrap().count(), 0);
+
+        let stream = directory.path().join("stream");
+        let destination = directory.path().join("destination");
+        fs::create_dir(&stream).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let files = extractor
+            .extract_tar_gz_to_directory(&archive, &stream, &destination, 1024 * 1024)
+            .unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            fs::read(destination.join("bigpemu/bigpemu")).unwrap(),
+            b"fixture executable"
+        );
+        assert_eq!(
+            fs::read(destination.join("bigpemu/Data/default.ini")).unwrap(),
+            b"setting=1"
+        );
+
+        let invalid = directory.path().join("invalid.tar.gz");
+        fs::write(&invalid, b"not gzip").unwrap();
+        let invalid_stream = directory.path().join("invalid-stream");
+        let invalid_destination = directory.path().join("invalid-destination");
+        fs::create_dir(&invalid_stream).unwrap();
+        fs::create_dir(&invalid_destination).unwrap();
+        assert!(matches!(
+            extractor.extract_tar_gz_to_directory(
                 &invalid,
                 &invalid_stream,
                 &invalid_destination,

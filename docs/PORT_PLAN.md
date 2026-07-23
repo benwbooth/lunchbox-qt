@@ -276,7 +276,13 @@ safe tar boundary, stable app-root normalization, complete file ownership, and
 main-executable mode preservation. Offline managed removal is now
 implemented with exact digest checks, fresh emulator-reference refusal, one
 recoverable file/XML transaction, and explicit preservation of settings,
-unrelated files, and directories. Other emulator providers, dependencies,
+unrelated files, and directories. BigPEmu is the second provider: the four
+official Windows/Linux architecture artifacts are selected from the verified
+publisher page; published byte counts and FNV-1a hashes plus local SHA-256 are
+checked; ZIP and bounded two-stage tar.gz extraction share the safe member
+boundary; the optional desktop helper is excluded; and install, update, repair,
+stale-file cleanup, removal, mappings, and executable modes are transactional.
+Other emulator providers, dependencies,
 cores, automatic update policy, and native macOS runtime validation remain open
 under `RUN-003`. The first three `RUN-004` adapters audit the complete recovered
 PCSX2 BIOS group of 73 alternatives, Xemu's three required boot-ROM/HDD/

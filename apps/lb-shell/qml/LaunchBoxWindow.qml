@@ -5162,7 +5162,7 @@ ApplicationWindow {
 
             Label {
                 Layout.fillWidth: true
-                text: "Emulator definitions and per-platform mappings are stored in Data/Emulators.xml. Manual edits keep application paths as lexical LaunchBox values. The reviewed PCSX2 workflow below can separately install or update a verified official portable build."
+                text: "Emulator definitions and per-platform mappings are stored in Data/Emulators.xml. Manual edits keep application paths as lexical LaunchBox values. The reviewed PCSX2 and BigPEmu workflows can separately install, update, repair, or remove verified official portable builds."
                 wrapMode: Text.Wrap
                 color: "#7fbfff"
             }
@@ -5219,10 +5219,7 @@ ApplicationWindow {
                     onClicked: emulatorEditor.prepareCreate()
                 }
                 Button {
-                    text: controller.emulator_installing
-                          ? "Installing PCSX2…"
-                          : controller.emulator_release_checking
-                            ? "Checking PCSX2…" : "Install / Update PCSX2"
+                    text: "Manage PCSX2"
                     enabled: !controller.loading && !controller.import_scanning
                              && !controller.emulator_discovery_scanning
                              && !controller.emulator_bios_scanning
@@ -5232,6 +5229,18 @@ ApplicationWindow {
                              && !controller.write_conflict
                              && controller.pending_recovery_count === 0
                     onClicked: pcsx2InstallManager.prepare()
+                }
+                Button {
+                    text: "Manage BigPEmu"
+                    enabled: !controller.loading && !controller.import_scanning
+                             && !controller.emulator_discovery_scanning
+                             && !controller.emulator_bios_scanning
+                             && !controller.emulator_release_checking
+                             && !controller.emulator_installing
+                             && !controller.writing && !controller.launching
+                             && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: pcsx2InstallManager.prepareBigPEmu()
                 }
                 Button {
                     text: "Edit"
@@ -5403,21 +5412,28 @@ ApplicationWindow {
         id: pcsx2InstallManager
         anchors.centerIn: parent
         modal: true
-        title: "Managed PCSX2"
+        title: "Managed " + displayName
         standardButtons: Dialog.Close
+        property string profileId: "pcsx2"
+        property string displayName: profileId === "bigpemu"
+                                     ? "BigPEmu" : "PCSX2"
         property var review: null
         property var managedReview: null
         property bool releaseCheckPending: false
 
         function loadReview() {
-            review = controller.emulator_release_json.length > 0
-                     ? JSON.parse(controller.emulator_release_json) : null
-            managedReview = controller.emulator_managed_json.length > 0
-                            ? JSON.parse(controller.emulator_managed_json)
-                            : null
+            const release = controller.emulator_release_json.length > 0
+                          ? JSON.parse(controller.emulator_release_json) : null
+            const managed = controller.emulator_managed_json.length > 0
+                          ? JSON.parse(controller.emulator_managed_json) : null
+            review = release !== null && release.profile_id === profileId
+                   ? release : null
+            managedReview = managed !== null && managed.profile_id === profileId
+                          ? managed : null
         }
 
         function prepare() {
+            profileId = "pcsx2"
             review = null
             managedReview = null
             releaseCheckPending = true
@@ -5425,7 +5441,17 @@ ApplicationWindow {
             controller.review_managed_pcsx2()
         }
 
+        function prepareBigPEmu() {
+            profileId = "bigpemu"
+            review = null
+            managedReview = null
+            releaseCheckPending = true
+            open()
+            controller.review_managed_bigpemu()
+        }
+
         function smokeCheck() {
+            profileId = "pcsx2"
             review = null
             open()
             controller.check_pcsx2_release()
@@ -5454,7 +5480,10 @@ ApplicationWindow {
                         && pcsx2InstallManager.managedReview !== null) {
                     pcsx2InstallManager.releaseCheckPending = false
                     Qt.callLater(function() {
-                        controller.check_pcsx2_release()
+                        if (pcsx2InstallManager.profileId === "bigpemu")
+                            controller.check_bigpemu_release()
+                        else
+                            controller.check_pcsx2_release()
                     })
                 }
             }
@@ -5467,7 +5496,9 @@ ApplicationWindow {
 
             Label {
                 Layout.fillWidth: true
-                text: "This provider checks PCSX2/pcsx2 on GitHub, selects the exact native artifact, verifies GitHub's SHA-256 digest and byte count, then commits every portable artifact path, portable.ini, an ownership manifest, and Data/Emulators.xml together. It never runs the downloaded artifact during installation."
+                text: pcsx2InstallManager.profileId === "bigpemu"
+                      ? "This provider checks Rich Whitehouse's official BigPEmu release page, selects the exact Windows or Linux artifact for this host, verifies its published byte count and 64-bit FNV-1a hash, computes SHA-256 locally, safely extracts it, excludes the optional Linux make_desktop.sh helper, and commits every owned path, an ownership manifest, and Data/Emulators.xml together. It never invokes a package script or downloaded executable during installation."
+                      : "This provider checks PCSX2/pcsx2 on GitHub, selects the exact native artifact, verifies GitHub's SHA-256 digest and byte count, then commits every portable artifact path, portable.ini, an ownership manifest, and Data/Emulators.xml together. It never runs the downloaded artifact during installation."
                 wrapMode: Text.Wrap
                 color: "#7fbfff"
             }
@@ -5488,8 +5519,11 @@ ApplicationWindow {
                         if (pcsx2InstallManager.review === null)
                             return "No reviewed release"
                         const release = pcsx2InstallManager.review.release
-                        return "PCSX2 " + release.version
-                               + (release.prerelease ? " · nightly" : " · stable")
+                        return pcsx2InstallManager.displayName + " "
+                               + release.version
+                               + (pcsx2InstallManager.profileId === "pcsx2"
+                                  ? (release.prerelease
+                                     ? " · nightly" : " · stable") : "")
                                + " · " + pcsx2InstallManager.actionLabel()
                     }
                     color: pcsx2InstallManager.review !== null
@@ -5530,9 +5564,22 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 visible: pcsx2InstallManager.review !== null
+                         && pcsx2InstallManager.profileId === "pcsx2"
                 text: pcsx2InstallManager.review === null ? ""
                       : "SHA-256: "
                         + pcsx2InstallManager.review.release.asset_sha256
+                color: "#7d8590"
+                font.family: "monospace"
+                font.pixelSize: 11
+                elide: Text.ElideMiddle
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                         && pcsx2InstallManager.profileId === "bigpemu"
+                text: pcsx2InstallManager.review === null ? ""
+                      : "Published FNV-1a 64: "
+                        + pcsx2InstallManager.review.release.asset_fnv1a64
                 color: "#7d8590"
                 font.family: "monospace"
                 font.pixelSize: 11
@@ -5623,7 +5670,12 @@ ApplicationWindow {
                              && !controller.writing
                              && !controller.write_conflict
                              && controller.pending_recovery_count === 0
-                    onClicked: controller.install_pcsx2_release()
+                    onClicked: {
+                        if (pcsx2InstallManager.profileId === "bigpemu")
+                            controller.install_bigpemu_release()
+                        else
+                            controller.install_pcsx2_release()
+                    }
                 }
                 Button {
                     text: "Cancel Download"
@@ -5662,10 +5714,15 @@ ApplicationWindow {
         id: removeManagedPcsx2Confirmation
         anchors.centerIn: parent
         modal: true
-        title: "Remove managed PCSX2?"
+        title: "Remove managed " + pcsx2InstallManager.displayName + "?"
         standardButtons: Dialog.Yes | Dialog.No
 
-        onAccepted: controller.remove_managed_pcsx2()
+        onAccepted: {
+            if (pcsx2InstallManager.profileId === "bigpemu")
+                controller.remove_managed_bigpemu()
+            else
+                controller.remove_managed_pcsx2()
+        }
 
         contentItem: Label {
             width: 650

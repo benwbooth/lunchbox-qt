@@ -56,6 +56,15 @@ impl Pcsx2ArtifactKind {
         !matches!(self, Self::LinuxAppImageX64)
     }
 
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "linux_appimage_x64" => Some(Self::LinuxAppImageX64),
+            "windows_qt_7z_x64" => Some(Self::WindowsQt7zX64),
+            "macos_qt_tar_xz" => Some(Self::MacosQtTarXz),
+            _ => None,
+        }
+    }
+
     pub fn current_host() -> Result<Self, EmulatorLifecycleError> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
@@ -143,11 +152,13 @@ pub struct ManagedEmulatorInstall {
     pub version: String,
     pub tag: String,
     pub prerelease: bool,
-    pub artifact_kind: Pcsx2ArtifactKind,
+    pub artifact_kind: String,
     pub asset_name: String,
     pub asset_url: String,
     pub asset_byte_len: u64,
     pub asset_sha256: String,
+    #[serde(default)]
+    pub asset_fnv1a64: Option<String>,
     pub executable_name: String,
     pub executable_byte_len: u64,
     pub executable_sha256: String,
@@ -170,12 +181,54 @@ impl ManagedEmulatorInstall {
             version: offer.version.clone(),
             tag: offer.tag.clone(),
             prerelease: offer.prerelease,
-            artifact_kind: offer.artifact_kind,
+            artifact_kind: offer.artifact_kind.id().into(),
             asset_name: offer.asset_name.clone(),
             asset_url: offer.asset_url.clone(),
             asset_byte_len: offer.asset_byte_len,
             asset_sha256: offer.asset_sha256.clone(),
+            asset_fnv1a64: None,
             executable_name: offer.artifact_kind.executable_name().into(),
+            executable_byte_len: executable.byte_len,
+            executable_sha256: executable.sha256.clone(),
+            installed_files,
+        };
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_release(
+        profile_id: String,
+        provider: String,
+        emulator_id: String,
+        version: String,
+        tag: String,
+        prerelease: bool,
+        artifact_kind: String,
+        asset_name: String,
+        asset_url: String,
+        asset_byte_len: u64,
+        asset_sha256: String,
+        asset_fnv1a64: Option<String>,
+        executable_name: String,
+        executable: &DownloadReceipt,
+        installed_files: Vec<ManagedInstalledFile>,
+    ) -> Result<Self, EmulatorLifecycleError> {
+        let manifest = Self {
+            schema_version: MANAGED_INSTALL_MANIFEST_VERSION,
+            profile_id,
+            provider,
+            emulator_id: Some(emulator_id),
+            version,
+            tag,
+            prerelease,
+            artifact_kind,
+            asset_name,
+            asset_url,
+            asset_byte_len,
+            asset_sha256,
+            asset_fnv1a64,
+            executable_name,
             executable_byte_len: executable.byte_len,
             executable_sha256: executable.sha256.clone(),
             installed_files,
@@ -193,11 +246,53 @@ impl ManagedEmulatorInstall {
                 version: self.schema_version,
             });
         }
-        if self.profile_id != "pcsx2" || self.provider != "github:PCSX2/pcsx2" {
-            return Err(EmulatorLifecycleError::InvalidManifest {
-                message: "managed install profile or provider is not PCSX2".into(),
-            });
-        }
+        let expected_executable = match (self.profile_id.as_str(), self.provider.as_str()) {
+            ("pcsx2", "github:PCSX2/pcsx2") => {
+                validate_github_asset_url(&self.asset_url)?;
+                if self.asset_fnv1a64.is_some() {
+                    return Err(EmulatorLifecycleError::InvalidManifest {
+                        message: "PCSX2 manifest unexpectedly contains an FNV hash".into(),
+                    });
+                }
+                Pcsx2ArtifactKind::from_id(&self.artifact_kind)
+                    .map(Pcsx2ArtifactKind::executable_name)
+                    .ok_or_else(|| EmulatorLifecycleError::InvalidManifest {
+                        message: format!(
+                            "managed PCSX2 artifact kind is unknown: {}",
+                            self.artifact_kind
+                        ),
+                    })?
+            }
+            ("bigpemu", "richwhitehouse:bigpemu") => {
+                validate_bigpemu_manifest_url(&self.asset_url, &self.asset_name)?;
+                let fnv = self.asset_fnv1a64.as_deref().ok_or_else(|| {
+                    EmulatorLifecycleError::InvalidManifest {
+                        message: "managed BigPEmu manifest has no official FNV hash".into(),
+                    }
+                })?;
+                validate_fnv1a64(fnv)?;
+                match self.artifact_kind.as_str() {
+                    "windows_zip_x64" | "windows_zip_arm64" => "BigPEmu.exe",
+                    "linux_tar_gz_x64" | "linux_tar_gz_arm64" => "bigpemu",
+                    _ => {
+                        return Err(EmulatorLifecycleError::InvalidManifest {
+                            message: format!(
+                                "managed BigPEmu artifact kind is unknown: {}",
+                                self.artifact_kind
+                            ),
+                        });
+                    }
+                }
+            }
+            _ => {
+                return Err(EmulatorLifecycleError::InvalidManifest {
+                    message: format!(
+                        "managed install profile/provider is unsupported: {}/{}",
+                        self.profile_id, self.provider
+                    ),
+                });
+            }
+        };
         for (field, value) in [
             ("version", self.version.as_str()),
             ("tag", self.tag.as_str()),
@@ -212,8 +307,7 @@ impl ManagedEmulatorInstall {
             }
         }
         validate_asset_name(&self.asset_name)?;
-        validate_github_asset_url(&self.asset_url)?;
-        if self.executable_name != self.artifact_kind.executable_name()
+        if self.executable_name != expected_executable
             || self.asset_byte_len == 0
             || self.asset_byte_len > MAX_ARTIFACT_BYTES
             || self.executable_byte_len == 0
@@ -315,7 +409,26 @@ impl ManagedInstallAudit {
     pub fn update_available(&self, offer: &Pcsx2ReleaseOffer) -> bool {
         self.manifest.tag != offer.tag
             || self.manifest.asset_sha256 != offer.asset_sha256
-            || self.manifest.artifact_kind != offer.artifact_kind
+            || self.manifest.artifact_kind != offer.artifact_kind.id()
+    }
+
+    pub fn update_available_for(
+        &self,
+        tag: &str,
+        artifact_kind: &str,
+        asset_sha256: Option<&str>,
+        asset_fnv1a64: Option<&str>,
+    ) -> bool {
+        self.manifest.tag != tag
+            || self.manifest.artifact_kind != artifact_kind
+            || asset_sha256.is_some_and(|sha256| self.manifest.asset_sha256 != sha256)
+            || asset_fnv1a64.is_some_and(|fnv| {
+                !self
+                    .manifest
+                    .asset_fnv1a64
+                    .as_deref()
+                    .is_some_and(|stored| stored.eq_ignore_ascii_case(fnv))
+            })
     }
 
     pub fn safe_to_update(&self) -> bool {
@@ -589,6 +702,14 @@ pub fn download_pcsx2_release(
 pub fn read_managed_pcsx2_install(
     install_directory: &Path,
 ) -> Result<Option<ManagedInstallAudit>, EmulatorLifecycleError> {
+    read_managed_emulator_install(install_directory, "pcsx2", "github:PCSX2/pcsx2")
+}
+
+pub fn read_managed_emulator_install(
+    install_directory: &Path,
+    expected_profile_id: &str,
+    expected_provider: &str,
+) -> Result<Option<ManagedInstallAudit>, EmulatorLifecycleError> {
     let manifest_path = install_directory.join(MANAGED_INSTALL_MANIFEST_NAME);
     let metadata = match fs::symlink_metadata(&manifest_path) {
         Ok(metadata) => metadata,
@@ -616,6 +737,14 @@ pub fn read_managed_pcsx2_install(
         }
     })?;
     manifest.validate()?;
+    if manifest.profile_id != expected_profile_id || manifest.provider != expected_provider {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message: format!(
+                "managed install belongs to {}/{} instead of {expected_profile_id}/{expected_provider}",
+                manifest.profile_id, manifest.provider
+            ),
+        });
+    }
     let executable_path = install_directory.join(&manifest.executable_name);
     let (executable_state, actual_executable) = audit_managed_executable(
         &executable_path,
@@ -922,6 +1051,35 @@ fn validate_github_asset_url(url: &str) -> Result<(), EmulatorLifecycleError> {
     {
         return Err(EmulatorLifecycleError::UntrustedUrl {
             url: url.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_bigpemu_manifest_url(
+    url: &str,
+    asset_name: &str,
+) -> Result<(), EmulatorLifecycleError> {
+    const PREFIX: &str = "https://www.richwhitehouse.com/jaguar/builds/";
+    if !url.starts_with(PREFIX)
+        || url.contains(['\r', '\n', '?', '#'])
+        || url.rsplit('/').next() != Some(asset_name)
+    {
+        return Err(EmulatorLifecycleError::UntrustedUrl {
+            url: url.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_fnv1a64(hash: &str) -> Result<(), EmulatorLifecycleError> {
+    if hash.len() != 16
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_lowercase())
+    {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message: format!("invalid uppercase 64-bit FNV-1a hash: {hash}"),
         });
     }
     Ok(())
@@ -1272,6 +1430,56 @@ mod tests {
         );
         assert!(ManagedInstalledFile::new(Path::new("C:drive-relative"), &receipt).is_err());
         assert!(ManagedInstalledFile::new(Path::new("assets/CON.txt"), &receipt).is_err());
+    }
+
+    #[test]
+    fn managed_bigpemu_manifest_requires_the_official_provider_url_and_fnv() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("bigpemu");
+        fs::write(&executable, b"managed BigPEmu executable").unwrap();
+        let receipt = file_receipt(&executable).unwrap();
+        let manifest = ManagedEmulatorInstall::from_release(
+            "bigpemu".into(),
+            "richwhitehouse:bigpemu".into(),
+            "managed-bigpemu".into(),
+            "1.221".into(),
+            "1.221".into(),
+            false,
+            "linux_tar_gz_x64".into(),
+            "BigPEmu_Linux64_v1221.tar.gz".into(),
+            "https://www.richwhitehouse.com/jaguar/builds/BigPEmu_Linux64_v1221.tar.gz".into(),
+            8_912_737,
+            "90".repeat(32),
+            Some("C1B241BBFA5135CB".into()),
+            "bigpemu".into(),
+            &receipt,
+            vec![ManagedInstalledFile::new(Path::new("bigpemu"), &receipt).unwrap()],
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join(MANAGED_INSTALL_MANIFEST_NAME),
+            manifest.to_json_bytes().unwrap(),
+        )
+        .unwrap();
+        let audit =
+            read_managed_emulator_install(directory.path(), "bigpemu", "richwhitehouse:bigpemu")
+                .unwrap()
+                .unwrap();
+        assert_eq!(audit.executable_state, ManagedExecutableState::Valid);
+        assert!(audit.safe_to_remove());
+
+        let mut lowercase_fnv = manifest.clone();
+        lowercase_fnv.asset_fnv1a64 = Some("c1b241bbfa5135cb".into());
+        assert!(matches!(
+            lowercase_fnv.validate(),
+            Err(EmulatorLifecycleError::InvalidManifest { .. })
+        ));
+        let mut untrusted = manifest;
+        untrusted.asset_url = "https://example.com/BigPEmu_Linux64_v1221.tar.gz".into();
+        assert!(matches!(
+            untrusted.validate(),
+            Err(EmulatorLifecycleError::UntrustedUrl { .. })
+        ));
     }
 
     #[cfg(unix)]

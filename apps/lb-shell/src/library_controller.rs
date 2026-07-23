@@ -228,6 +228,18 @@ pub mod qobject {
         fn remove_managed_pcsx2(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
+        fn check_bigpemu_release(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn review_managed_bigpemu(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn install_bigpemu_release(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn remove_managed_bigpemu(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
         fn cancel_emulator_install(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
@@ -921,6 +933,11 @@ use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
     ManualImportRequest, ManualImportSelection,
 };
+use lb_integrations::bigpemu::{
+    download_bigpemu_release, fetch_latest_bigpemu_release, BigPEmuArtifactKind,
+    BigPEmuLifecycleError, BigPEmuReleaseOffer, BigPEmuReleaseTransport,
+    FileBigPEmuReleaseTransport, RichWhitehouseReleaseTransport, BIGPEMU_PROVIDER,
+};
 use lb_integrations::dolphin::{
     default_dolphin_user_directories, discover_dolphin_saves, dolphin_wii_group_ids,
     is_dolphin_emulator, DolphinContent,
@@ -930,10 +947,11 @@ use lb_integrations::emulator_discovery::{
     EmulatorDiscoveryRequest, EmulatorDiscoverySource,
 };
 use lb_integrations::emulator_lifecycle::{
-    download_pcsx2_release, fetch_latest_pcsx2_release, file_receipt, read_managed_pcsx2_install,
-    DownloadReceipt, EmulatorLifecycleError, FileReleaseTransport, GithubReleaseTransport,
-    ManagedEmulatorInstall, ManagedExecutableState, ManagedInstallAudit, ManagedInstalledFile,
-    Pcsx2ArtifactKind, Pcsx2ReleaseOffer, ReleaseTransport, MANAGED_INSTALL_MANIFEST_NAME,
+    download_pcsx2_release, fetch_latest_pcsx2_release, file_receipt,
+    read_managed_emulator_install, read_managed_pcsx2_install, DownloadReceipt,
+    EmulatorLifecycleError, FileReleaseTransport, GithubReleaseTransport, ManagedEmulatorInstall,
+    ManagedExecutableState, ManagedInstallAudit, ManagedInstalledFile, Pcsx2ArtifactKind,
+    Pcsx2ReleaseOffer, ReleaseTransport, MANAGED_INSTALL_MANIFEST_NAME,
 };
 use lb_integrations::pcsx2::{
     default_pcsx2_data_directories, discover_pcsx2_saves, extract_pcsx2_memory_card_save,
@@ -1235,6 +1253,8 @@ pub struct LibraryControllerRust {
     emulator_bios_emulator_id: Option<String>,
     pcsx2_release_state: Option<Pcsx2ReleaseState>,
     pcsx2_remove_state: Option<Pcsx2RemoveState>,
+    bigpemu_release_state: Option<BigPEmuReleaseState>,
+    bigpemu_remove_state: Option<BigPEmuRemoveState>,
     emulator_install_cancel: Option<Arc<AtomicBool>>,
     path_mapping_settings_file: Option<PathBuf>,
     path_mappings: HostPathMappings,
@@ -1911,6 +1931,26 @@ struct Pcsx2RemoveSuccess {
     recovery_files: Vec<PathBuf>,
 }
 
+struct BigPEmuInstallSuccess {
+    emulator_write: EmulatorWriteSuccess,
+    manifest: ManagedEmulatorInstall,
+    executable: PathBuf,
+    installed_file_count: usize,
+    created_file_count: usize,
+    replaced_file_count: usize,
+    recovery_files: Vec<PathBuf>,
+}
+
+struct BigPEmuRemoveSuccess {
+    configuration: EmulatorConfiguration,
+    removed_emulator: Option<Emulator>,
+    removed_mapping_count: usize,
+    emulator_document: PathBuf,
+    emulator_backup: Option<PathBuf>,
+    removed_file_count: usize,
+    recovery_files: Vec<PathBuf>,
+}
+
 struct CategoryWriteSuccess {
     name: String,
     categories: Vec<PlatformCategory>,
@@ -2044,6 +2084,7 @@ const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 3;
 const EMULATOR_RELEASE_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION: u32 = 1;
 const MAX_PCSX2_MACOS_TAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_BIGPEMU_LINUX_TAR_BYTES: u64 = 512 * 1024 * 1024;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
 
@@ -2357,6 +2398,78 @@ struct Pcsx2RemoveState {
 
 #[derive(Clone, Debug, Serialize)]
 struct Pcsx2RemovePayload {
+    version: u32,
+    profile_id: &'static str,
+    install_directory: String,
+    managed_install: Option<ManagedInstallAudit>,
+    emulator_id: Option<String>,
+    emulator_title: Option<String>,
+    reference_count: usize,
+    reference_summary: Option<String>,
+    owned_file_count: usize,
+    can_remove: bool,
+    blocked_reason: Option<String>,
+    read_only_check: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum BigPEmuInstallAction {
+    Install,
+    Update,
+    Repair,
+    Current,
+    Blocked,
+}
+
+impl BigPEmuInstallAction {
+    const fn can_install(self) -> bool {
+        matches!(self, Self::Install | Self::Update | Self::Repair)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BigPEmuReleaseState {
+    offer: BigPEmuReleaseOffer,
+    install_directory: PathBuf,
+    executable_path: PathBuf,
+    existing_emulator_id: Option<String>,
+    existing_emulator_title: Option<String>,
+    managed_install: Option<ManagedInstallAudit>,
+    action: BigPEmuInstallAction,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BigPEmuReleasePayload {
+    version: u32,
+    profile_id: &'static str,
+    emulator_name: &'static str,
+    release: BigPEmuReleaseOffer,
+    install_directory: String,
+    executable_path: String,
+    existing_emulator_id: Option<String>,
+    existing_emulator_title: Option<String>,
+    managed_install: Option<ManagedInstallAudit>,
+    action: BigPEmuInstallAction,
+    can_install: bool,
+    blocked_reason: Option<String>,
+    read_only_check: bool,
+}
+
+#[derive(Clone, Debug)]
+struct BigPEmuRemoveState {
+    audit: Option<ManagedInstallAudit>,
+    emulator_id: Option<String>,
+    emulator_title: Option<String>,
+    reference_count: usize,
+    reference_summary: Option<String>,
+    can_remove: bool,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BigPEmuRemovePayload {
     version: u32,
     profile_id: &'static str,
     install_directory: String,
@@ -7433,7 +7546,7 @@ fn inspect_managed_pcsx2_removal(
     resolver: &HostPathResolver,
 ) -> Result<Pcsx2RemoveState, EmulatorWriteFailure> {
     let install_directory = root.join("Emulators/PCSX2");
-    validate_managed_install_directory(root, &install_directory)?;
+    validate_managed_install_directory(root, &install_directory, "PCSX2")?;
     let audit = read_managed_pcsx2_install(&install_directory)
         .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
     let Some(audit) = audit else {
@@ -7541,20 +7654,21 @@ fn managed_relative_path_key(path: &str) -> String {
 fn validate_managed_install_directory(
     root: &Path,
     install_directory: &Path,
+    emulator_name: &str,
 ) -> Result<(), EmulatorWriteFailure> {
     let metadata = match fs::symlink_metadata(install_directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(EmulatorWriteFailure::Other(format!(
-                "Could not inspect managed PCSX2 directory {}: {error}",
+                "Could not inspect managed {emulator_name} directory {}: {error}",
                 install_directory.display()
             )));
         }
     };
     if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
         return Err(EmulatorWriteFailure::Other(format!(
-            "Refusing unsafe managed PCSX2 directory {}.",
+            "Refusing unsafe managed {emulator_name} directory {}.",
             install_directory.display()
         )));
     }
@@ -7564,7 +7678,7 @@ fn validate_managed_install_directory(
         .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
     if !canonical_install.starts_with(&canonical_root) {
         return Err(EmulatorWriteFailure::Other(format!(
-            "Managed PCSX2 directory escapes the library root: {}.",
+            "Managed {emulator_name} directory escapes the library root: {}.",
             install_directory.display()
         )));
     }
@@ -7607,7 +7721,7 @@ fn remove_managed_pcsx2(
         ));
     }
     let install_directory = root.join("Emulators/PCSX2");
-    validate_managed_install_directory(&root, &install_directory)?;
+    validate_managed_install_directory(&root, &install_directory, "PCSX2")?;
     let current = read_managed_pcsx2_install(&install_directory)
         .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
     if current != reviewed.audit {
@@ -7864,6 +7978,435 @@ fn emulator_release_transport_from_command_line(
     }
 }
 
+fn is_bigpemu_emulator(emulator: &Emulator, root: &Path, resolver: &HostPathResolver) -> bool {
+    if emulator.title.trim().eq_ignore_ascii_case("bigpemu") {
+        return true;
+    }
+    resolver
+        .resolve(root, &emulator.application_path)
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_ascii_lowercase)
+        })
+        .is_some_and(|name| name.contains("bigpemu"))
+}
+
+fn bigpemu_release_payload(state: &BigPEmuReleaseState) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&BigPEmuReleasePayload {
+        version: EMULATOR_RELEASE_PAYLOAD_VERSION,
+        profile_id: "bigpemu",
+        emulator_name: "BigPEmu",
+        release: state.offer.clone(),
+        install_directory: state.install_directory.to_string_lossy().into_owned(),
+        executable_path: state.executable_path.to_string_lossy().into_owned(),
+        existing_emulator_id: state.existing_emulator_id.clone(),
+        existing_emulator_title: state.existing_emulator_title.clone(),
+        managed_install: state.managed_install.clone(),
+        action: state.action,
+        can_install: state.action.can_install(),
+        blocked_reason: state.blocked_reason.clone(),
+        read_only_check: true,
+    })
+}
+
+fn inspect_bigpemu_release_state(
+    root: &Path,
+    configuration: Option<&EmulatorConfiguration>,
+    resolver: &HostPathResolver,
+    offer: BigPEmuReleaseOffer,
+) -> Result<BigPEmuReleaseState, BigPEmuLifecycleError> {
+    let configured = configuration
+        .into_iter()
+        .flat_map(|configuration| &configuration.emulators)
+        .filter(|emulator| is_bigpemu_emulator(emulator, root, resolver))
+        .collect::<Vec<_>>();
+    if configured.len() > 1 {
+        return Err(BigPEmuLifecycleError::InvalidCatalog {
+            message: format!(
+                "found {} configured BigPEmu entries; choose one explicitly before managed installation",
+                configured.len()
+            ),
+        });
+    }
+    let existing_emulator_id = configured.first().map(|emulator| emulator.id.clone());
+    let existing_emulator_title = configured.first().map(|emulator| emulator.title.clone());
+    let install_directory = root.join("Emulators/BigPEmu");
+    let executable_path = install_directory.join(offer.artifact_kind.executable_name());
+    let managed_install =
+        read_managed_emulator_install(&install_directory, "bigpemu", BIGPEMU_PROVIDER).map_err(
+            |error| BigPEmuLifecycleError::InvalidCatalog {
+                message: error.to_string(),
+            },
+        )?;
+
+    let unsafe_install_directory = match fs::symlink_metadata(&install_directory) {
+        Ok(metadata) => !metadata.file_type().is_dir() || metadata.file_type().is_symlink(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(source) => {
+            return Err(BigPEmuLifecycleError::Io {
+                path: install_directory,
+                source,
+            });
+        }
+    };
+    let (action, blocked_reason) = if unsafe_install_directory {
+        (
+            BigPEmuInstallAction::Blocked,
+            Some("The portable BigPEmu install path is a symlink or non-directory entry.".into()),
+        )
+    } else if let Some(audit) = managed_install.as_ref() {
+        let unsafe_file = audit
+            .installed_files
+            .iter()
+            .find(|file| file.state == ManagedExecutableState::Unsafe);
+        let unreadable_file = audit
+            .installed_files
+            .iter()
+            .find(|file| file.state == ManagedExecutableState::Unreadable);
+        let repair_file = audit.installed_files.iter().find(|file| {
+            matches!(
+                file.state,
+                ManagedExecutableState::Missing | ManagedExecutableState::Modified
+            )
+        });
+        if audit.executable_state == ManagedExecutableState::Unsafe {
+            (
+                BigPEmuInstallAction::Blocked,
+                Some("The managed BigPEmu executable is a symlink or non-regular entry.".into()),
+            )
+        } else if audit.executable_state == ManagedExecutableState::Unreadable {
+            (
+                BigPEmuInstallAction::Blocked,
+                Some("The managed BigPEmu executable cannot be read safely.".into()),
+            )
+        } else if let Some(file) = unsafe_file {
+            (
+                BigPEmuInstallAction::Blocked,
+                Some(format!(
+                    "Managed path {} is a symlink or non-regular entry.",
+                    file.relative_path
+                )),
+            )
+        } else if let Some(file) = unreadable_file {
+            (
+                BigPEmuInstallAction::Blocked,
+                Some(format!(
+                    "Managed path {} cannot be read safely.",
+                    file.relative_path
+                )),
+            )
+        } else if !audit.ownership_manifest_current()
+            || audit.executable_state != ManagedExecutableState::Valid
+            || repair_file.is_some()
+        {
+            (BigPEmuInstallAction::Repair, None)
+        } else if audit.update_available_for(
+            &offer.version,
+            offer.artifact_kind.id(),
+            None,
+            Some(&offer.asset_fnv1a64),
+        ) {
+            (BigPEmuInstallAction::Update, None)
+        } else {
+            (BigPEmuInstallAction::Current, None)
+        }
+    } else {
+        match fs::symlink_metadata(&executable_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (BigPEmuInstallAction::Install, None)
+            }
+            Ok(_) => (
+                BigPEmuInstallAction::Blocked,
+                Some(
+                    "The managed executable target already exists without a port-owned manifest."
+                        .into(),
+                ),
+            ),
+            Err(source) => {
+                return Err(BigPEmuLifecycleError::Io {
+                    path: executable_path,
+                    source,
+                });
+            }
+        }
+    };
+    Ok(BigPEmuReleaseState {
+        offer,
+        install_directory,
+        executable_path,
+        existing_emulator_id,
+        existing_emulator_title,
+        managed_install,
+        action,
+        blocked_reason,
+    })
+}
+
+fn bigpemu_release_transport_from_command_line(
+) -> Result<Box<dyn BigPEmuReleaseTransport>, BigPEmuLifecycleError> {
+    let mut arguments = std::env::args_os();
+    let mut fixture = None;
+    while let Some(argument) = arguments.next() {
+        if argument != "--bigpemu-release-fixture" {
+            continue;
+        }
+        let path = arguments
+            .next()
+            .ok_or_else(|| BigPEmuLifecycleError::InvalidCatalog {
+                message: "--bigpemu-release-fixture requires a directory".into(),
+            })?;
+        if fixture.replace(PathBuf::from(path)).is_some() {
+            return Err(BigPEmuLifecycleError::InvalidCatalog {
+                message: "--bigpemu-release-fixture may only be supplied once".into(),
+            });
+        }
+    }
+    match fixture {
+        Some(path) if path.is_absolute() => Ok(Box::new(FileBigPEmuReleaseTransport::new(path))),
+        Some(_) => Err(BigPEmuLifecycleError::InvalidCatalog {
+            message: "--bigpemu-release-fixture requires an absolute directory".into(),
+        }),
+        None => Ok(Box::new(RichWhitehouseReleaseTransport)),
+    }
+}
+
+fn inspect_managed_bigpemu_removal(
+    root: &Path,
+    configuration: Option<&EmulatorConfiguration>,
+    resolver: &HostPathResolver,
+) -> Result<BigPEmuRemoveState, EmulatorWriteFailure> {
+    let install_directory = root.join("Emulators/BigPEmu");
+    validate_managed_install_directory(root, &install_directory, "BigPEmu")?;
+    let audit = read_managed_emulator_install(&install_directory, "bigpemu", BIGPEMU_PROVIDER)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let Some(audit) = audit else {
+        return Ok(BigPEmuRemoveState {
+            audit: None,
+            emulator_id: None,
+            emulator_title: None,
+            reference_count: 0,
+            reference_summary: None,
+            can_remove: false,
+            blocked_reason: Some(
+                "No port-owned BigPEmu install manifest exists in the portable directory.".into(),
+            ),
+        });
+    };
+    let emulator_id = audit.manifest.emulator_id.clone();
+    let emulator = emulator_id.as_deref().and_then(|emulator_id| {
+        configuration.and_then(|configuration| {
+            configuration
+                .emulators
+                .iter()
+                .find(|emulator| emulator.id.eq_ignore_ascii_case(emulator_id))
+        })
+    });
+    let references = match emulator_id.as_deref() {
+        Some(emulator_id) => find_emulator_references(root, emulator_id)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?,
+        None => Vec::new(),
+    };
+    let reference_summary =
+        (!references.is_empty()).then(|| summarize_emulator_references(&references));
+    let mut blocked_reason = None;
+    if !audit.ownership_manifest_current() {
+        blocked_reason = Some(
+            "This install uses a legacy manifest that does not enumerate every provider-owned file. Repair or update it before removal.".into(),
+        );
+    } else if let Some(file) = audit
+        .installed_files
+        .iter()
+        .find(|file| file.state != ManagedExecutableState::Valid)
+    {
+        blocked_reason = Some(format!(
+            "Owned file {} is {}; repair the managed install before removal.",
+            file.relative_path,
+            managed_file_state_label(file.state)
+        ));
+    } else if configuration.is_none() {
+        blocked_reason = Some("The loaded library has no readable emulator configuration.".into());
+    } else if let Some(emulator) = emulator {
+        match resolver.resolve(root, &emulator.application_path) {
+            Ok(path) if path == audit.executable_path => {}
+            Ok(path) => {
+                blocked_reason = Some(format!(
+                    "Emulator {} now points to {} instead of the managed executable.",
+                    emulator.id,
+                    path.display()
+                ));
+            }
+            Err(error) => {
+                blocked_reason = Some(format!(
+                    "The managed emulator application path cannot be resolved safely: {error}"
+                ));
+            }
+        }
+    }
+    if blocked_reason.is_none() && !references.is_empty() {
+        blocked_reason = Some(format!(
+            "The managed emulator is pinned by {} dependent record(s): {}",
+            references.len(),
+            reference_summary.as_deref().unwrap_or("unknown references")
+        ));
+    }
+    Ok(BigPEmuRemoveState {
+        emulator_id,
+        emulator_title: emulator.map(|emulator| emulator.title.clone()),
+        reference_count: references.len(),
+        reference_summary,
+        can_remove: blocked_reason.is_none() && audit.safe_to_remove(),
+        blocked_reason,
+        audit: Some(audit),
+    })
+}
+
+fn bigpemu_remove_payload(
+    root: &Path,
+    state: &BigPEmuRemoveState,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&BigPEmuRemovePayload {
+        version: EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION,
+        profile_id: "bigpemu",
+        install_directory: root
+            .join("Emulators/BigPEmu")
+            .to_string_lossy()
+            .into_owned(),
+        managed_install: state.audit.clone(),
+        emulator_id: state.emulator_id.clone(),
+        emulator_title: state.emulator_title.clone(),
+        reference_count: state.reference_count,
+        reference_summary: state.reference_summary.clone(),
+        owned_file_count: state
+            .audit
+            .as_ref()
+            .map_or(0, |audit| audit.installed_files.len().saturating_add(1)),
+        can_remove: state.can_remove,
+        blocked_reason: state.blocked_reason.clone(),
+        read_only_check: true,
+    })
+}
+
+fn remove_managed_bigpemu(
+    root: PathBuf,
+    resolver: HostPathResolver,
+    reviewed: BigPEmuRemoveState,
+) -> Result<BigPEmuRemoveSuccess, EmulatorWriteFailure> {
+    if !reviewed.can_remove {
+        return Err(EmulatorWriteFailure::Other(
+            reviewed
+                .blocked_reason
+                .unwrap_or_else(|| "The managed BigPEmu install is not safe to remove.".into()),
+        ));
+    }
+    let install_directory = root.join("Emulators/BigPEmu");
+    validate_managed_install_directory(&root, &install_directory, "BigPEmu")?;
+    let current = read_managed_emulator_install(&install_directory, "bigpemu", BIGPEMU_PROVIDER)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if current != reviewed.audit {
+        return Err(EmulatorWriteFailure::Conflict(
+            "BigPEmu managed files changed after the removal review.".into(),
+        ));
+    }
+    let audit = current.ok_or_else(|| {
+        EmulatorWriteFailure::Conflict(
+            "The BigPEmu ownership manifest disappeared after the removal review.".into(),
+        )
+    })?;
+    if !audit.safe_to_remove() {
+        return Err(EmulatorWriteFailure::Conflict(
+            "A managed BigPEmu file is no longer exact after the removal review.".into(),
+        ));
+    }
+    let emulator_id = audit.manifest.emulator_id.as_deref().ok_or_else(|| {
+        EmulatorWriteFailure::Other(
+            "The BigPEmu ownership manifest has no managed emulator ID.".into(),
+        )
+    })?;
+    let references = find_emulator_references(&root, emulator_id)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if !references.is_empty() {
+        return Err(EmulatorWriteFailure::Referenced(references));
+    }
+
+    let emulator_document = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&emulator_document)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let before = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let managed_emulator = before
+        .emulators
+        .iter()
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(emulator_id))
+        .cloned();
+    if let Some(emulator) = managed_emulator.as_ref() {
+        let application_path = resolver
+            .resolve(&root, &emulator.application_path)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        if application_path != audit.executable_path {
+            return Err(EmulatorWriteFailure::Conflict(format!(
+                "Emulator {} no longer points to the managed BigPEmu executable.",
+                emulator.id
+            )));
+        }
+    }
+    let removed = managed_emulator
+        .as_ref()
+        .map(|_| {
+            document
+                .remove_emulator(emulator_id)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+        })
+        .transpose()?;
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_emulator_transaction_error)?;
+    if removed.is_some() {
+        transaction
+            .stage_auxiliary(&document)
+            .map_err(classify_emulator_transaction_error)?;
+    }
+    for file in &audit.installed_files {
+        let expected = FileRevision::read(&file.path)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        transaction
+            .stage_file_delete_with_revision(&file.path, expected)
+            .map_err(classify_emulator_transaction_error)?;
+    }
+    let manifest_revision = FileRevision::read(&audit.manifest_path)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    transaction
+        .stage_file_delete_with_revision(&audit.manifest_path, manifest_revision)
+        .map_err(classify_emulator_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_emulator_transaction_error)?;
+    let emulator_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == emulator_document)
+        .map(|write| write.backup.clone());
+    let recovery_files = report
+        .deleted_targets
+        .iter()
+        .map(|deleted| deleted.backup.clone())
+        .collect::<Vec<_>>();
+    Ok(BigPEmuRemoveSuccess {
+        configuration,
+        removed_emulator: removed.as_ref().map(|removed| removed.emulator.clone()),
+        removed_mapping_count: removed.map_or(0, |removed| removed.platforms.len()),
+        emulator_document,
+        emulator_backup,
+        removed_file_count: report.deleted_targets.len(),
+        recovery_files,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EmulatorBiosAdapter {
     Pcsx2,
@@ -8061,6 +8604,50 @@ fn managed_pcsx2_emulator_payload(
     Ok(payload)
 }
 
+fn managed_bigpemu_emulator_payload(
+    root: &Path,
+    resolver: &HostPathResolver,
+    platform_names: &[String],
+    existing_emulator_id: Option<&str>,
+    executable_path: &Path,
+) -> Result<EmulatorEditPayload, EmulatorWriteFailure> {
+    let stored_path = resolver
+        .stored_path_for_host_path(root, executable_path)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if let Some(emulator_id) = existing_emulator_id {
+        let serialized = load_emulator_edit_payload(root, emulator_id, platform_names)?;
+        let mut payload =
+            parse_emulator_edit_payload(Some(emulator_id), &serialized, platform_names)
+                .map_err(EmulatorWriteFailure::Other)?;
+        payload.emulator.application_path = stored_path;
+        return Ok(payload);
+    }
+
+    let source = emulator_document_path(root)?;
+    let document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let candidate = DiscoveredEmulatorExecutable {
+        profile: EmulatorDiscoveryProfile::BigPEmu,
+        executable: executable_path.to_path_buf(),
+        source: EmulatorDiscoverySource::PortableLibrary,
+        installed_version: None,
+    };
+    let serialized = discovered_emulator_payload(
+        &candidate,
+        root,
+        resolver,
+        platform_names,
+        Some(&configuration),
+    )?;
+    let mut payload = parse_emulator_edit_payload(None, &serialized, platform_names)
+        .map_err(EmulatorWriteFailure::Other)?;
+    payload.emulator.application_path = stored_path;
+    Ok(payload)
+}
+
 fn install_managed_pcsx2(
     root: PathBuf,
     resolver: HostPathResolver,
@@ -8228,6 +8815,7 @@ fn install_managed_pcsx2(
         &state.install_directory,
         &install_sources,
         &mut created_directories,
+        "PCSX2",
     ) {
         remove_created_empty_directories(&created_directories);
         return Err(error);
@@ -8275,14 +8863,25 @@ fn install_managed_pcsx2(
                 {
                     let target_revision = FileRevision::read(&target)
                         .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
-                    transaction
-                        .stage_file_replace_with_revisions(
-                            &file.source,
-                            &target,
-                            source_revision,
-                            target_revision,
-                        )
-                        .map_err(classify_emulator_transaction_error)?;
+                    if file.preserve_permissions {
+                        transaction
+                            .stage_file_replace_with_revisions_preserving_permissions(
+                                &file.source,
+                                &target,
+                                source_revision,
+                                target_revision,
+                            )
+                            .map_err(classify_emulator_transaction_error)?;
+                    } else {
+                        transaction
+                            .stage_file_replace_with_revisions(
+                                &file.source,
+                                &target,
+                                source_revision,
+                                target_revision,
+                            )
+                            .map_err(classify_emulator_transaction_error)?;
+                    }
                 }
                 Ok(_) if initial_install || !previously_owned => {
                     return Err(EmulatorWriteFailure::Other(format!(
@@ -8365,7 +8964,7 @@ fn install_managed_pcsx2(
                     portable_marker.display()
                 )));
             }
-            stage_small_install_file(&mut transaction, &portable_marker, Vec::new())?;
+            stage_small_install_file(&mut transaction, &portable_marker, Vec::new(), "PCSX2")?;
         }
         let manifest_path = state.install_directory.join(MANAGED_INSTALL_MANIFEST_NAME);
         if initial_install {
@@ -8373,7 +8972,7 @@ fn install_managed_pcsx2(
                 .stage_new_file_bytes(&manifest_path, manifest_bytes)
                 .map_err(classify_emulator_transaction_error)?;
         } else {
-            stage_small_install_file(&mut transaction, &manifest_path, manifest_bytes)?;
+            stage_small_install_file(&mut transaction, &manifest_path, manifest_bytes, "PCSX2")?;
         }
         if cancel.load(Ordering::Relaxed) {
             return Err(EmulatorWriteFailure::Other(
@@ -8437,11 +9036,489 @@ fn install_managed_pcsx2(
     })
 }
 
+fn install_managed_bigpemu(
+    root: PathBuf,
+    resolver: HostPathResolver,
+    platform_names: Vec<String>,
+    state: BigPEmuReleaseState,
+    transport: Box<dyn BigPEmuReleaseTransport>,
+    cancel: Arc<AtomicBool>,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<BigPEmuInstallSuccess, EmulatorWriteFailure> {
+    if !state.action.can_install() {
+        return Err(EmulatorWriteFailure::Other(
+            state
+                .blocked_reason
+                .unwrap_or_else(|| "BigPEmu has no install or update action to apply.".into()),
+        ));
+    }
+    let temporary = tempfile::Builder::new()
+        .prefix(".lbport-bigpemu-download-")
+        .tempdir_in(&root)
+        .map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "could not create a private BigPEmu download directory: {error}"
+            ))
+        })?;
+    let artifact = temporary.path().join(&state.offer.asset_name);
+    let download = download_bigpemu_release(
+        transport.as_ref(),
+        &state.offer,
+        &artifact,
+        &mut progress,
+        &|| cancel.load(Ordering::Relaxed),
+    )
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EmulatorWriteFailure::Other(
+            BigPEmuLifecycleError::Cancelled.to_string(),
+        ));
+    }
+
+    let mut install_sources =
+        prepare_bigpemu_archive(&root, &state.offer, &artifact, temporary.path())?;
+    install_sources.sort_by(|left, right| left.relative_target.cmp(&right.relative_target));
+    if install_sources.is_empty() {
+        return Err(EmulatorWriteFailure::Other(
+            "The verified BigPEmu artifact contained no installable files.".into(),
+        ));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EmulatorWriteFailure::Other(
+            BigPEmuLifecycleError::Cancelled.to_string(),
+        ));
+    }
+
+    revalidate_bigpemu_install_precondition(&state)?;
+    let executable_source = install_sources
+        .iter()
+        .find(|file| file.relative_target == Path::new(state.offer.artifact_kind.executable_name()))
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(format!(
+                "The verified BigPEmu artifact did not contain {}.",
+                state.offer.artifact_kind.executable_name()
+            ))
+        })?;
+    let executable_receipt = file_receipt(&executable_source.source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let payload = managed_bigpemu_emulator_payload(
+        &root,
+        &resolver,
+        &platform_names,
+        state.existing_emulator_id.as_deref(),
+        &state.executable_path,
+    )?;
+    let mut installed_files = install_sources
+        .iter()
+        .map(|file| {
+            let receipt = file_receipt(&file.source)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+            ManagedInstalledFile::new(&file.relative_target, &receipt)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    installed_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let manifest = ManagedEmulatorInstall::from_release(
+        "bigpemu".into(),
+        BIGPEMU_PROVIDER.into(),
+        payload.emulator.id.clone(),
+        state.offer.version.clone(),
+        state.offer.version.clone(),
+        false,
+        state.offer.artifact_kind.id().into(),
+        state.offer.asset_name.clone(),
+        state.offer.asset_url.clone(),
+        state.offer.asset_byte_len,
+        download.sha256,
+        Some(state.offer.asset_fnv1a64.clone()),
+        state.offer.artifact_kind.executable_name().into(),
+        &executable_receipt,
+        installed_files,
+    )
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let manifest_bytes = manifest
+        .to_json_bytes()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+
+    let source = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let operation = if let Some(existing_id) = state.existing_emulator_id.as_deref() {
+        let emulator = payload.emulator.clone();
+        let platform_edits = emulator_platform_records(&emulator.id, payload.platforms);
+        document
+            .set_emulator(existing_id, emulator, platform_edits)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        EmulatorWriteOperation::Edit
+    } else {
+        let emulator = payload.emulator.clone();
+        let platforms = emulator_platform_records(&emulator.id, payload.platforms)
+            .into_iter()
+            .map(|edit| edit.record)
+            .collect();
+        document
+            .add_emulator(emulator, platforms)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        EmulatorWriteOperation::Create
+    };
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulator = configuration
+        .emulators
+        .iter()
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(&payload.emulator.id))
+        .cloned()
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "BigPEmu disappeared from the candidate Emulators.xml document.".into(),
+            )
+        })?;
+    let mapping_count = configuration
+        .platforms
+        .iter()
+        .filter(|mapping| mapping.emulator_id.eq_ignore_ascii_case(&emulator.id))
+        .count();
+
+    let mut created_directories = Vec::new();
+    if let Err(error) = prepare_install_directories(
+        &root,
+        &state.install_directory,
+        &install_sources,
+        &mut created_directories,
+        "BigPEmu",
+    ) {
+        remove_created_empty_directories(&created_directories);
+        return Err(error);
+    }
+    let commit = (|| {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EmulatorWriteFailure::Other(
+                BigPEmuLifecycleError::Cancelled.to_string(),
+            ));
+        }
+        let mut transaction =
+            LibraryTransaction::new(&root).map_err(classify_emulator_transaction_error)?;
+        transaction
+            .stage_auxiliary(&document)
+            .map_err(classify_emulator_transaction_error)?;
+        let initial_install = state.managed_install.is_none();
+        let previously_owned_paths = state
+            .managed_install
+            .as_ref()
+            .map(|audit| {
+                audit
+                    .installed_files
+                    .iter()
+                    .map(|file| managed_relative_path_key(&file.relative_path))
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        for file in &install_sources {
+            let target = state.install_directory.join(&file.relative_target);
+            let source_revision = FileRevision::read(&file.source)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+            let relative_key = managed_relative_path_key(
+                &file.relative_target.to_string_lossy().replace('\\', "/"),
+            );
+            let previously_owned = previously_owned_paths.contains(&relative_key)
+                || state.managed_install.as_ref().is_some_and(|audit| {
+                    !audit.ownership_manifest_current() && target == audit.executable_path
+                });
+            match fs::symlink_metadata(&target) {
+                Ok(metadata)
+                    if !initial_install
+                        && previously_owned
+                        && metadata.file_type().is_file()
+                        && !metadata.file_type().is_symlink() =>
+                {
+                    let target_revision = FileRevision::read(&target)
+                        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                    if file.preserve_permissions {
+                        transaction
+                            .stage_file_replace_with_revisions_preserving_permissions(
+                                &file.source,
+                                &target,
+                                source_revision,
+                                target_revision,
+                            )
+                            .map_err(classify_emulator_transaction_error)?;
+                    } else {
+                        transaction
+                            .stage_file_replace_with_revisions(
+                                &file.source,
+                                &target,
+                                source_revision,
+                                target_revision,
+                            )
+                            .map_err(classify_emulator_transaction_error)?;
+                    }
+                }
+                Ok(_) if initial_install || !previously_owned => {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing to overwrite unmanaged BigPEmu install path {}.",
+                        target.display()
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if file.preserve_permissions {
+                        transaction
+                            .stage_file_copy_with_revision_preserving_permissions(
+                                &file.source,
+                                &target,
+                                source_revision,
+                            )
+                            .map_err(classify_emulator_transaction_error)?;
+                    } else {
+                        transaction
+                            .stage_file_copy_with_revision(&file.source, &target, source_revision)
+                            .map_err(classify_emulator_transaction_error)?;
+                    }
+                }
+                Ok(_) => {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing unsafe BigPEmu install target {}.",
+                        target.display()
+                    )));
+                }
+                Err(error) => {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Could not inspect BigPEmu install target {}: {error}",
+                        target.display()
+                    )));
+                }
+            }
+        }
+        if let Some(previous) = state.managed_install.as_ref() {
+            let new_paths = manifest
+                .installed_files
+                .iter()
+                .map(|file| managed_relative_path_key(&file.relative_path))
+                .collect::<BTreeSet<_>>();
+            for file in &previous.installed_files {
+                if new_paths.contains(&managed_relative_path_key(&file.relative_path)) {
+                    continue;
+                }
+                if file.state != ManagedExecutableState::Valid {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing to remove stale managed path {} because it is {}.",
+                        file.path.display(),
+                        managed_file_state_label(file.state)
+                    )));
+                }
+                let expected = FileRevision::read(&file.path)
+                    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                transaction
+                    .stage_file_delete_with_revision(&file.path, expected)
+                    .map_err(classify_emulator_transaction_error)?;
+            }
+        }
+        let manifest_path = state.install_directory.join(MANAGED_INSTALL_MANIFEST_NAME);
+        if initial_install {
+            transaction
+                .stage_new_file_bytes(&manifest_path, manifest_bytes)
+                .map_err(classify_emulator_transaction_error)?;
+        } else {
+            stage_small_install_file(&mut transaction, &manifest_path, manifest_bytes, "BigPEmu")?;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EmulatorWriteFailure::Other(
+                BigPEmuLifecycleError::Cancelled.to_string(),
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(classify_emulator_transaction_error)
+    })();
+    let report = match commit {
+        Ok(report) => report,
+        Err(error) => {
+            remove_created_empty_directories(&created_directories);
+            return Err(error);
+        }
+    };
+    let backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "BigPEmu install transaction reported no Emulators.xml backup.".into(),
+            )
+        })?;
+    let recovery_files = report
+        .writes
+        .iter()
+        .filter(|write| write.target != source)
+        .map(|write| write.backup.clone())
+        .chain(
+            report
+                .deleted_targets
+                .iter()
+                .map(|write| write.backup.clone()),
+        )
+        .collect::<Vec<_>>();
+    let created_file_count = report.created_targets.len();
+    let replaced_file_count = report
+        .writes
+        .iter()
+        .filter(|write| write.target != source)
+        .count();
+    Ok(BigPEmuInstallSuccess {
+        emulator_write: EmulatorWriteSuccess {
+            operation,
+            emulator,
+            configuration,
+            source,
+            backup,
+            mapping_count,
+        },
+        manifest,
+        executable: state.executable_path,
+        installed_file_count: install_sources.len().saturating_add(1),
+        created_file_count,
+        replaced_file_count,
+        recovery_files,
+    })
+}
+
 #[derive(Clone, Debug)]
 struct PreparedInstallFile {
     source: PathBuf,
     relative_target: PathBuf,
     preserve_permissions: bool,
+}
+
+fn prepare_bigpemu_archive(
+    root: &Path,
+    offer: &BigPEmuReleaseOffer,
+    artifact: &Path,
+    temporary_root: &Path,
+) -> Result<Vec<PreparedInstallFile>, EmulatorWriteFailure> {
+    let extraction = temporary_root.join("bigpemu-extracted");
+    fs::create_dir(&extraction).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not create the BigPEmu extraction directory: {error}"
+        ))
+    })?;
+    let files = match offer.artifact_kind {
+        BigPEmuArtifactKind::WindowsZipX64 | BigPEmuArtifactKind::WindowsZipArm64 => {
+            ArchiveExtractor::for_launchbox_root(root)
+                .extract_to_directory(artifact, &extraction)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?
+        }
+        BigPEmuArtifactKind::LinuxTarGzX64 | BigPEmuArtifactKind::LinuxTarGzArm64 => {
+            let stream = temporary_root.join("bigpemu-stream");
+            fs::create_dir(&stream).map_err(|error| {
+                EmulatorWriteFailure::Other(format!(
+                    "Could not create the BigPEmu stream directory: {error}"
+                ))
+            })?;
+            ArchiveExtractor::for_launchbox_root(root)
+                .extract_tar_gz_to_directory(
+                    artifact,
+                    &stream,
+                    &extraction,
+                    MAX_BIGPEMU_LINUX_TAR_BYTES,
+                )
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?
+        }
+    };
+    let executables = files
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    if cfg!(windows) {
+                        name.eq_ignore_ascii_case(offer.artifact_kind.executable_name())
+                    } else {
+                        name == offer.artifact_kind.executable_name()
+                            || name.eq_ignore_ascii_case(offer.artifact_kind.executable_name())
+                    }
+                })
+        })
+        .collect::<Vec<_>>();
+    let [executable] = executables.as_slice() else {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "Expected exactly one {} in the verified BigPEmu archive, found {}.",
+            offer.artifact_kind.executable_name(),
+            executables.len()
+        )));
+    };
+    let executable = (*executable).clone();
+    let payload_root = executable
+        .parent()
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "BigPEmu archive executable has no parent directory.".into(),
+            )
+        })?
+        .to_path_buf();
+    if !files.iter().any(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("readme.txt"))
+            && path.parent() == Some(payload_root.as_path())
+    }) {
+        return Err(EmulatorWriteFailure::Other(
+            "The verified BigPEmu archive has no root ReadMe.txt.".into(),
+        ));
+    }
+    make_file_executable(&executable).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not make the BigPEmu executable runnable: {error}"
+        ))
+    })?;
+
+    let mut prepared = Vec::new();
+    for source in files {
+        let relative_target = source
+            .strip_prefix(&payload_root)
+            .map_err(|_| {
+                EmulatorWriteFailure::Other(format!(
+                    "BigPEmu archive member is outside its executable root: {}",
+                    source.display()
+                ))
+            })?
+            .to_path_buf();
+        if relative_target.as_os_str().is_empty() {
+            return Err(EmulatorWriteFailure::Other(
+                "BigPEmu archive produced an empty member path.".into(),
+            ));
+        }
+        if relative_target == Path::new("make_desktop.sh") {
+            // The official Linux archive includes an optional desktop helper.
+            // The port registers and launches the executable directly, so the
+            // helper is intentionally neither installed nor executed.
+            continue;
+        }
+        let reserved_root_metadata = relative_target.parent().is_some_and(|parent| {
+            parent.as_os_str().is_empty()
+                && relative_target.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .eq_ignore_ascii_case(MANAGED_INSTALL_MANIFEST_NAME)
+                })
+        });
+        if reserved_root_metadata {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "BigPEmu archive attempts to own reserved install metadata {}.",
+                relative_target.display()
+            )));
+        }
+        prepared.push(PreparedInstallFile {
+            preserve_permissions: source == executable,
+            source,
+            relative_target,
+        });
+    }
+    if prepared.is_empty() {
+        return Err(EmulatorWriteFailure::Other(
+            "The verified BigPEmu archive contained no installable files.".into(),
+        ));
+    }
+    Ok(prepared)
 }
 
 fn prepare_pcsx2_windows_archive(
@@ -8675,12 +9752,13 @@ fn prepare_install_directories(
     install_directory: &Path,
     sources: &[PreparedInstallFile],
     created: &mut Vec<PathBuf>,
+    emulator_name: &str,
 ) -> Result<(), EmulatorWriteFailure> {
     let root =
         fs::canonicalize(root).map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
     let emulators = root.join("Emulators");
-    ensure_real_install_directory(&root, &emulators, created)?;
-    ensure_real_install_directory(&root, install_directory, created)?;
+    ensure_real_install_directory(&root, &emulators, created, emulator_name)?;
+    ensure_real_install_directory(&root, install_directory, created, emulator_name)?;
     let mut directories = Vec::new();
     for parent in sources
         .iter()
@@ -8696,7 +9774,7 @@ fn prepare_install_directories(
     directories.sort_by_key(|path| path.components().count());
     directories.dedup();
     for directory in directories {
-        ensure_real_install_directory(&root, &directory, created)?;
+        ensure_real_install_directory(&root, &directory, created, emulator_name)?;
     }
     Ok(())
 }
@@ -8705,19 +9783,20 @@ fn ensure_real_install_directory(
     root: &Path,
     directory: &Path,
     created: &mut Vec<PathBuf>,
+    emulator_name: &str,
 ) -> Result<(), EmulatorWriteFailure> {
     match fs::symlink_metadata(directory) {
         Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
         Ok(_) => {
             return Err(EmulatorWriteFailure::Other(format!(
-                "Refusing unsafe PCSX2 install directory {}.",
-                directory.display()
+                "Refusing unsafe {emulator_name} install directory {}.",
+                directory.display(),
             )));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir(directory).map_err(|error| {
                 EmulatorWriteFailure::Other(format!(
-                    "Could not create PCSX2 install directory {}: {error}",
+                    "Could not create {emulator_name} install directory {}: {error}",
                     directory.display()
                 ))
             })?;
@@ -8725,20 +9804,20 @@ fn ensure_real_install_directory(
         }
         Err(error) => {
             return Err(EmulatorWriteFailure::Other(format!(
-                "Could not inspect PCSX2 install directory {}: {error}",
+                "Could not inspect {emulator_name} install directory {}: {error}",
                 directory.display()
             )));
         }
     }
     let canonical = fs::canonicalize(directory).map_err(|error| {
         EmulatorWriteFailure::Other(format!(
-            "Could not resolve PCSX2 install directory {}: {error}",
+            "Could not resolve {emulator_name} install directory {}: {error}",
             directory.display()
         ))
     })?;
     if !canonical.starts_with(root) {
         return Err(EmulatorWriteFailure::Other(format!(
-            "PCSX2 install directory escapes the LaunchBox root: {}.",
+            "{emulator_name} install directory escapes the LaunchBox root: {}.",
             directory.display()
         )));
     }
@@ -8749,6 +9828,7 @@ fn stage_small_install_file(
     transaction: &mut LibraryTransaction,
     target: &Path,
     bytes: Vec<u8>,
+    emulator_name: &str,
 ) -> Result<(), EmulatorWriteFailure> {
     match fs::symlink_metadata(target) {
         Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
@@ -8762,11 +9842,11 @@ fn stage_small_install_file(
             .stage_new_file_bytes(target, bytes)
             .map_err(classify_emulator_transaction_error),
         Ok(_) => Err(EmulatorWriteFailure::Other(format!(
-            "Refusing unsafe PCSX2 install metadata target {}.",
+            "Refusing unsafe {emulator_name} install metadata target {}.",
             target.display()
         ))),
         Err(error) => Err(EmulatorWriteFailure::Other(format!(
-            "Could not inspect PCSX2 install metadata target {}: {error}",
+            "Could not inspect {emulator_name} install metadata target {}: {error}",
             target.display()
         ))),
     }
@@ -8785,6 +9865,25 @@ fn revalidate_pcsx2_install_precondition(
     if current.is_none() && fs::symlink_metadata(&state.executable_path).is_ok() {
         return Err(EmulatorWriteFailure::Conflict(
             "The managed PCSX2 executable target appeared after the release check.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn revalidate_bigpemu_install_precondition(
+    state: &BigPEmuReleaseState,
+) -> Result<(), EmulatorWriteFailure> {
+    let current =
+        read_managed_emulator_install(&state.install_directory, "bigpemu", BIGPEMU_PROVIDER)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if current != state.managed_install {
+        return Err(EmulatorWriteFailure::Conflict(
+            "BigPEmu install contents changed after the release check.".into(),
+        ));
+    }
+    if current.is_none() && fs::symlink_metadata(&state.executable_path).is_ok() {
+        return Err(EmulatorWriteFailure::Conflict(
+            "The managed BigPEmu executable target appeared after the release check.".into(),
         ));
     }
     Ok(())
@@ -15134,7 +16233,11 @@ impl qobject::LibraryController {
         let configuration = self.as_ref().rust().emulator_configuration.clone();
         let resolver = self.as_ref().rust().path_resolver.clone();
         let generation = self.as_ref().rust().request_generation;
-        self.as_mut().rust_mut().pcsx2_remove_state = None;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.pcsx2_remove_state = None;
+            rust.bigpemu_remove_state = None;
+        }
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_emulator_managed_checking(true);
         self.as_mut().set_status_message(qstring(
@@ -15262,7 +16365,11 @@ impl qobject::LibraryController {
         let configuration = self.as_ref().rust().emulator_configuration.clone();
         let resolver = self.as_ref().rust().path_resolver.clone();
         let generation = self.as_ref().rust().request_generation;
-        self.as_mut().rust_mut().pcsx2_release_state = None;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.pcsx2_release_state = None;
+            rust.bigpemu_release_state = None;
+        }
         self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_emulator_release_checking(true);
         self.as_mut().set_status_message(qstring(
@@ -15400,13 +16507,309 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn review_managed_bigpemu(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator review requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let configuration = self.as_ref().rust().emulator_configuration.clone();
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.pcsx2_remove_state = None;
+            rust.bigpemu_remove_state = None;
+        }
+        self.as_mut().set_emulator_managed_json(QString::default());
+        self.as_mut().set_emulator_managed_checking(true);
+        self.as_mut().set_status_message(qstring(
+            "Auditing the local BigPEmu ownership manifest without changing files...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-bigpemu-managed-review".to_string())
+            .spawn(move || {
+                let result =
+                    inspect_managed_bigpemu_removal(&root, configuration.as_ref(), &resolver)
+                        .map(|state| (root, state));
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_managed_bigpemu_review(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_managed_checking(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the managed BigPEmu review: {error}"
+            )));
+        }
+    }
+
+    pub fn remove_managed_bigpemu(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        if *self.as_ref().pending_recovery_count() > 0 {
+            self.as_mut().set_status_message(qstring(
+                "Recover the interrupted transaction before removing managed BigPEmu files.",
+            ));
+            return;
+        }
+        if *self.as_ref().write_conflict() {
+            self.as_mut().set_status_message(qstring(
+                "Reload the library before removing BigPEmu after a write conflict.",
+            ));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator removal requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let Some(state) = self.as_ref().rust().bigpemu_remove_state.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Review the local managed BigPEmu install before removing it.",
+            ));
+            return;
+        };
+        if !state.can_remove {
+            self.as_mut().set_status_message(qstring(
+                state
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("The managed BigPEmu install is not safe to remove."),
+            ));
+            return;
+        }
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Removing only verified port-owned BigPEmu files in one recoverable transaction...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-bigpemu-managed-remove".to_string())
+            .spawn(move || {
+                let result = remove_managed_bigpemu(root, resolver, state);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_managed_bigpemu_remove(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start managed BigPEmu removal: {error}"
+            )));
+        }
+    }
+
+    pub fn check_bigpemu_release(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator installation requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let artifact_kind = match BigPEmuArtifactKind::current_host() {
+            Ok(artifact_kind) => artifact_kind,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not check BigPEmu releases: {error}"
+                )));
+                return;
+            }
+        };
+        let transport = match bigpemu_release_transport_from_command_line() {
+            Ok(transport) => transport,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not initialize the BigPEmu release provider: {error}"
+                )));
+                return;
+            }
+        };
+        let configuration = self.as_ref().rust().emulator_configuration.clone();
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.pcsx2_release_state = None;
+            rust.bigpemu_release_state = None;
+        }
+        self.as_mut().set_emulator_release_json(QString::default());
+        self.as_mut().set_emulator_release_checking(true);
+        self.as_mut().set_status_message(qstring(
+            "Checking the official BigPEmu release page without changing the library...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-bigpemu-release-check".to_string())
+            .spawn(move || {
+                let result = fetch_latest_bigpemu_release(transport.as_ref(), artifact_kind)
+                    .and_then(|offer| {
+                        inspect_bigpemu_release_state(
+                            &root,
+                            configuration.as_ref(),
+                            &resolver,
+                            offer,
+                        )
+                    });
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_bigpemu_release_check(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_release_checking(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the BigPEmu release check: {error}"
+            )));
+        }
+    }
+
+    pub fn install_bigpemu_release(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        if *self.as_ref().pending_recovery_count() > 0 {
+            self.as_mut().set_status_message(qstring(
+                "Recover the interrupted transaction before installing BigPEmu.",
+            ));
+            return;
+        }
+        if *self.as_ref().write_conflict() {
+            self.as_mut().set_status_message(qstring(
+                "Reload the library before installing BigPEmu after a write conflict.",
+            ));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator installation requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let Some(state) = self.as_ref().rust().bigpemu_release_state.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Check the official BigPEmu release before installing or updating it.",
+            ));
+            return;
+        };
+        if !state.action.can_install() {
+            self.as_mut().set_status_message(qstring(
+                state
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("The checked BigPEmu release has no action to apply."),
+            ));
+            return;
+        }
+        let transport = match bigpemu_release_transport_from_command_line() {
+            Ok(transport) => transport,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not initialize the BigPEmu release provider: {error}"
+                )));
+                return;
+            }
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let platform_names = self.as_ref().rust().platform_names.clone();
+        let generation = self.as_ref().rust().request_generation;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.as_mut().rust_mut().emulator_install_cancel = Some(cancel.clone());
+        self.as_mut().set_emulator_install_progress(0.0);
+        self.as_mut().set_emulator_installing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Downloading and verifying BigPEmu {} before one transactional library update...",
+            state.offer.version
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let progress_thread = qt_thread.clone();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-bigpemu-install".to_string())
+            .spawn(move || {
+                let mut last_percent = None;
+                let result = install_managed_bigpemu(
+                    root,
+                    resolver,
+                    platform_names,
+                    state,
+                    transport,
+                    cancel,
+                    |received, total| {
+                        let percent = if total == 0 {
+                            0
+                        } else {
+                            received.saturating_mul(100).saturating_div(total).min(100)
+                        };
+                        if last_percent == Some(percent) {
+                            return;
+                        }
+                        last_percent = Some(percent);
+                        let progress = percent as f64 / 100.0;
+                        progress_thread
+                            .queue(move |mut controller| {
+                                controller
+                                    .as_mut()
+                                    .finish_emulator_install_progress(generation, progress);
+                            })
+                            .ok();
+                    },
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_bigpemu_install(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_installing(false);
+            self.as_mut().rust_mut().emulator_install_cancel = None;
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the BigPEmu installer: {error}"
+            )));
+        }
+    }
+
     pub fn cancel_emulator_install(mut self: Pin<&mut Self>) {
         let Some(cancel) = self.as_ref().rust().emulator_install_cancel.clone() else {
             return;
         };
         cancel.store(true, Ordering::Relaxed);
         self.as_mut().set_status_message(qstring(
-            "Cancelling the PCSX2 download before any library changes are committed...",
+            "Cancelling the emulator download before any library changes are committed...",
         ));
     }
 
@@ -15867,6 +17270,8 @@ impl qobject::LibraryController {
         self.as_mut().rust_mut().emulator_bios_emulator_id = None;
         self.as_mut().rust_mut().pcsx2_release_state = None;
         self.as_mut().rust_mut().pcsx2_remove_state = None;
+        self.as_mut().rust_mut().bigpemu_release_state = None;
+        self.as_mut().rust_mut().bigpemu_remove_state = None;
         self.as_mut().set_path_mapping_count(count);
         self.as_mut()
             .set_emulator_bios_audit_json(QString::default());
@@ -17187,6 +18592,8 @@ impl qobject::LibraryController {
                     rust.emulator_bios_emulator_id = None;
                     rust.pcsx2_release_state = None;
                     rust.pcsx2_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_remove_notifications =
@@ -17372,6 +18779,8 @@ impl qobject::LibraryController {
                     rust.emulator_bios_emulator_id = None;
                     rust.pcsx2_release_state = None;
                     rust.pcsx2_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_install_notifications =
@@ -17449,6 +18858,357 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_managed_bigpemu_review(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<(PathBuf, BigPEmuRemoveState), EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_emulator_managed_checking(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok((root, state)) => {
+                let payload = match bigpemu_remove_payload(&root, &state) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.as_mut().set_status_message(qstring(format!(
+                            "Could not serialize the managed BigPEmu review: {error}"
+                        )));
+                        return;
+                    }
+                };
+                let can_remove = state.can_remove;
+                let owned_file_count = state
+                    .audit
+                    .as_ref()
+                    .map_or(0, |audit| audit.installed_files.len().saturating_add(1));
+                let blocked_reason = state.blocked_reason.clone();
+                self.as_mut().rust_mut().bigpemu_remove_state = Some(state);
+                self.as_mut().set_emulator_managed_json(qstring(payload));
+                let revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut().set_emulator_install_revision(revision);
+                self.as_mut().set_status_message(qstring(if can_remove {
+                    format!(
+                        "Managed BigPEmu removal is ready: {owned_file_count} exact port-owned file(s) can be removed; user settings and directories will be retained."
+                    )
+                } else {
+                    format!(
+                        "Managed BigPEmu removal is unavailable: {}",
+                        blocked_reason.unwrap_or_else(|| "no removable managed install".into())
+                    )
+                }));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                let summary = summarize_emulator_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed BigPEmu removal review found {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Conflict(message))
+            | Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not review managed BigPEmu removal: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery before managed BigPEmu review: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_managed_bigpemu_remove(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<BigPEmuRemoveSuccess, EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let removed_emulator_id = success
+                    .removed_emulator
+                    .as_ref()
+                    .map(|emulator| emulator.id.clone());
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_configuration = Some(success.configuration);
+                    rust.discovered_emulators.clear();
+                    rust.emulator_bios_audit = None;
+                    rust.emulator_bios_emulator_id = None;
+                    rust.pcsx2_release_state = None;
+                    rust.pcsx2_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
+                    rust.emulator_write_notifications =
+                        rust.emulator_write_notifications.saturating_add(1);
+                    rust.emulator_remove_notifications =
+                        rust.emulator_remove_notifications.saturating_add(1);
+                }
+                if removed_emulator_id
+                    .as_deref()
+                    .is_some_and(|id| self.as_ref().last_added_emulator_id().to_string() == id)
+                {
+                    self.as_mut().set_last_added_emulator_id(QString::default());
+                }
+                self.as_mut()
+                    .set_emulator_bios_audit_json(QString::default());
+                self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut().set_emulator_managed_json(QString::default());
+                self.as_mut().set_delete_blocker_count(0);
+                self.as_mut().set_delete_blocker_summary(QString::default());
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_pending_recovery_count(0);
+                let emulator_revision = self.as_ref().emulator_revision().saturating_add(1);
+                self.as_mut().set_emulator_revision(emulator_revision);
+                let discovery_revision = self
+                    .as_ref()
+                    .emulator_discovery_revision()
+                    .saturating_add(1);
+                self.as_mut()
+                    .set_emulator_discovery_revision(discovery_revision);
+                let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(bios_revision);
+                let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut()
+                    .set_emulator_install_revision(install_revision);
+                let xml_result = match success.emulator_backup.as_ref() {
+                    Some(backup) => format!(
+                        " Removed emulator definition and {} mapping(s) from {}; exact XML backup: {}.",
+                        success.removed_mapping_count,
+                        success.emulator_document.display(),
+                        backup.display()
+                    ),
+                    None => " No matching emulator definition remained to remove.".into(),
+                };
+                self.as_mut().set_status_message(qstring(format!(
+                    "Removed {} verified port-owned BigPEmu file(s) with {} exact recovery copy/copies. User settings, unrelated files, and directories were retained.{xml_result}",
+                    success.removed_file_count,
+                    success.recovery_files.len()
+                )));
+                eprintln!(
+                    "BigPEmu managed removal committed: files={} mappings={} emulator={}",
+                    success.removed_file_count,
+                    success.removed_mapping_count,
+                    removed_emulator_id.as_deref().unwrap_or("already absent")
+                );
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                let summary = summarize_emulator_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed BigPEmu removal blocked by {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed BigPEmu removal stopped on a write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted BigPEmu removal requires recovery: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not remove managed BigPEmu: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_bigpemu_release_check(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<BigPEmuReleaseState, BigPEmuLifecycleError>,
+    ) {
+        self.as_mut().set_emulator_release_checking(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(state) => {
+                let payload = match bigpemu_release_payload(&state) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.as_mut().set_status_message(qstring(format!(
+                            "Could not serialize the BigPEmu release review: {error}"
+                        )));
+                        return;
+                    }
+                };
+                let action = state.action;
+                let version = state.offer.version.clone();
+                let blocked_reason = state.blocked_reason.clone();
+                self.as_mut().rust_mut().bigpemu_release_state = Some(state);
+                self.as_mut().set_emulator_release_json(qstring(payload));
+                let revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut().set_emulator_install_revision(revision);
+                let message = match action {
+                    BigPEmuInstallAction::Install => format!(
+                        "Official BigPEmu {version} is ready for a reviewed portable install."
+                    ),
+                    BigPEmuInstallAction::Update => format!(
+                        "Official BigPEmu {version} is ready to update the managed portable install."
+                    ),
+                    BigPEmuInstallAction::Repair => format!(
+                        "Official BigPEmu {version} is ready to repair the managed portable install."
+                    ),
+                    BigPEmuInstallAction::Current => format!(
+                        "The managed portable BigPEmu install is current at {version}."
+                    ),
+                    BigPEmuInstallAction::Blocked => format!(
+                        "Managed BigPEmu installation is blocked: {}",
+                        blocked_reason.unwrap_or_else(|| "unsafe existing install state".into())
+                    ),
+                };
+                self.as_mut().set_status_message(qstring(message));
+            }
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not check BigPEmu releases: {error}"
+                )));
+            }
+        }
+    }
+
+    fn finish_bigpemu_install(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<BigPEmuInstallSuccess, EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_emulator_installing(false);
+        self.as_mut().rust_mut().emulator_install_cancel = None;
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let BigPEmuInstallSuccess {
+                    emulator_write,
+                    manifest,
+                    executable,
+                    installed_file_count,
+                    created_file_count,
+                    replaced_file_count,
+                    recovery_files,
+                } = success;
+                let operation = emulator_write.operation;
+                let emulator_id = emulator_write.emulator.id.clone();
+                let emulator_title = emulator_write.emulator.title.clone();
+                let mapping_count = emulator_write.mapping_count;
+                let source = emulator_write.source.clone();
+                let backup = emulator_write.backup.clone();
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_configuration = Some(emulator_write.configuration);
+                    rust.discovered_emulators.clear();
+                    rust.emulator_bios_audit = None;
+                    rust.emulator_bios_emulator_id = None;
+                    rust.pcsx2_release_state = None;
+                    rust.pcsx2_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
+                    rust.emulator_write_notifications =
+                        rust.emulator_write_notifications.saturating_add(1);
+                    rust.emulator_install_notifications =
+                        rust.emulator_install_notifications.saturating_add(1);
+                }
+                self.as_mut().set_emulator_install_progress(1.0);
+                self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut().set_emulator_managed_json(QString::default());
+                self.as_mut()
+                    .set_emulator_bios_audit_json(QString::default());
+                let emulator_revision = self.as_ref().emulator_revision().saturating_add(1);
+                self.as_mut().set_emulator_revision(emulator_revision);
+                let discovery_revision = self
+                    .as_ref()
+                    .emulator_discovery_revision()
+                    .saturating_add(1);
+                self.as_mut()
+                    .set_emulator_discovery_revision(discovery_revision);
+                let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(bios_revision);
+                let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut()
+                    .set_emulator_install_revision(install_revision);
+                if operation == EmulatorWriteOperation::Create {
+                    self.as_mut()
+                        .set_last_added_emulator_id(qstring(&emulator_id));
+                }
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_pending_recovery_count(0);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Installed verified BigPEmu {} at {} and {} platform mapping(s) in one transaction: {} managed file(s), {} created, {} replaced. Emulators.xml: {}; exact XML backup: {}; binary recovery copies: {}. Recheck releases to refresh status.",
+                    manifest.version,
+                    executable.display(),
+                    mapping_count,
+                    installed_file_count,
+                    created_file_count,
+                    replaced_file_count,
+                    source.display(),
+                    backup.display(),
+                    recovery_files.len()
+                )));
+                eprintln!(
+                    "BigPEmu managed install committed: emulator={emulator_title} id={emulator_id} version={} sha256={} fnv1a64={} files={installed_file_count}",
+                    manifest.version,
+                    manifest.asset_sha256,
+                    manifest.asset_fnv1a64.as_deref().unwrap_or("missing")
+                );
+            }
+            Err(EmulatorWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "BigPEmu install stopped on a write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted BigPEmu transaction requires recovery: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "BigPEmu install stopped on an unexpected reference result ({} records).",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Other(message))
+                if message == BigPEmuLifecycleError::Cancelled.to_string() =>
+            {
+                self.as_mut().set_status_message(qstring(
+                    "BigPEmu installation cancelled; no library changes were committed.",
+                ));
+            }
+            Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not install BigPEmu: {message}")));
+            }
+        }
+    }
+
     fn finish_emulator_write(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -17473,6 +19233,8 @@ impl qobject::LibraryController {
                     rust.emulator_bios_emulator_id = None;
                     rust.pcsx2_release_state = None;
                     rust.pcsx2_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                 }
@@ -18266,6 +20028,8 @@ impl qobject::LibraryController {
             rust.emulator_bios_emulator_id = None;
             rust.pcsx2_release_state = None;
             rust.pcsx2_remove_state = None;
+            rust.bigpemu_release_state = None;
+            rust.bigpemu_remove_state = None;
             if let Some(cancel) = rust.emulator_install_cancel.take() {
                 cancel.store(true, Ordering::Relaxed);
             }
@@ -19511,6 +21275,293 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn bigpemu_linux_test_offer(fixture: &Path, version: &str) -> BigPEmuReleaseOffer {
+        use std::os::unix::fs::PermissionsExt;
+
+        let compact = version.replace('.', "");
+        let source = fixture.join(format!("bigpemu-source-{compact}"));
+        let package = source.join("bigpemu");
+        fs::create_dir_all(package.join("Data")).unwrap();
+        fs::write(
+            package.join("bigpemu"),
+            format!("native BigPEmu {version}\n"),
+        )
+        .unwrap();
+        let mut executable_permissions =
+            fs::metadata(package.join("bigpemu")).unwrap().permissions();
+        executable_permissions.set_mode(0o755);
+        fs::set_permissions(package.join("bigpemu"), executable_permissions).unwrap();
+        fs::write(
+            package.join("ReadMe.txt"),
+            format!("BigPEmu version {version}\n"),
+        )
+        .unwrap();
+        fs::write(
+            package.join(format!("Data/release-{compact}.dat")),
+            format!("provider data {version}\n"),
+        )
+        .unwrap();
+        fs::write(
+            package.join("make_desktop.sh"),
+            b"deliberately invalid helper fixture",
+        )
+        .unwrap();
+
+        let asset_name = format!("BigPEmu_Linux64_v{compact}.tar.gz");
+        let asset = fixture.join(&asset_name);
+        let tar = fixture.join(format!("BigPEmu_Linux64_v{compact}.tar"));
+        let tar_output = Command::new("7z")
+            .current_dir(&source)
+            .arg("a")
+            .arg("-ttar")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg(&tar)
+            .arg("--")
+            .arg("bigpemu")
+            .output()
+            .unwrap();
+        assert!(
+            tar_output.status.success(),
+            "could not create BigPEmu tar: {}",
+            String::from_utf8_lossy(&tar_output.stderr)
+        );
+        let gzip_output = Command::new("7z")
+            .current_dir(fixture)
+            .arg("a")
+            .arg("-tgzip")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg(&asset)
+            .arg("--")
+            .arg(tar.file_name().unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            gzip_output.status.success(),
+            "could not create BigPEmu gzip: {}",
+            String::from_utf8_lossy(&gzip_output.stderr)
+        );
+        fs::remove_file(tar).unwrap();
+        let bytes = fs::read(&asset).unwrap();
+        let mut fnv = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in &bytes {
+            fnv ^= u64::from(*byte);
+            fnv = fnv.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        BigPEmuReleaseOffer {
+            version: version.into(),
+            release_name: format!("BigPEmu {version}"),
+            release_url: lb_integrations::bigpemu::BIGPEMU_DOWNLOAD_PAGE.into(),
+            artifact_kind: BigPEmuArtifactKind::LinuxTarGzX64,
+            asset_name: asset_name.clone(),
+            asset_url: format!("https://www.richwhitehouse.com/jaguar/builds/{asset_name}"),
+            asset_byte_len: u64::try_from(bytes.len()).unwrap(),
+            asset_fnv1a64: format!("{fnv:016X}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_bigpemu_install_update_repair_review_and_removal_are_native_and_exact() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temporary library");
+        let fixture = tempfile::tempdir().expect("release fixture");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data");
+        let emulator_document = data.join("Emulators.xml");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/launchbox/Data/Emulators.xml"),
+            &emulator_document,
+        )
+        .unwrap();
+        let platform_directory = data.join("Platforms");
+        fs::create_dir(&platform_directory).unwrap();
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/launchbox/Data/Platforms/Fixture Console.xml"),
+            platform_directory.join("Fixture Console.xml"),
+        )
+        .unwrap();
+        let original_xml = fs::read(&emulator_document).unwrap();
+        let resolver = HostPathResolver::default();
+        let platforms = vec!["Atari Jaguar".into(), "Atari Jaguar CD".into()];
+        let first_offer = bigpemu_linux_test_offer(fixture.path(), "1.220");
+        let first_fnv = first_offer.asset_fnv1a64.clone();
+        let first_state = inspect_bigpemu_release_state(
+            directory.path(),
+            Some(
+                &AuxiliaryDocument::load(&emulator_document)
+                    .unwrap()
+                    .emulator_configuration()
+                    .unwrap(),
+            ),
+            &resolver,
+            first_offer,
+        )
+        .expect("inspect initial BigPEmu install");
+        assert_eq!(first_state.action, BigPEmuInstallAction::Install);
+
+        let first = install_managed_bigpemu(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            platforms.clone(),
+            first_state,
+            Box::new(FileBigPEmuReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("install managed BigPEmu");
+        assert_eq!(first.manifest.profile_id, "bigpemu");
+        assert_eq!(first.manifest.provider, BIGPEMU_PROVIDER);
+        assert_eq!(first.manifest.version, "1.220");
+        assert_eq!(first.manifest.tag, "1.220");
+        assert_eq!(
+            first.manifest.artifact_kind,
+            BigPEmuArtifactKind::LinuxTarGzX64.id()
+        );
+        assert_eq!(
+            first.manifest.asset_fnv1a64.as_deref(),
+            Some(first_fnv.as_str())
+        );
+        assert_eq!(
+            fs::read(&first.emulator_write.backup).unwrap(),
+            original_xml
+        );
+        assert_eq!(
+            fs::read_to_string(&first.executable).unwrap(),
+            "native BigPEmu 1.220\n"
+        );
+        assert_ne!(
+            fs::metadata(&first.executable)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+        let install_directory = directory.path().join("Emulators/BigPEmu");
+        assert!(!install_directory.join("make_desktop.sh").exists());
+        assert!(first
+            .manifest
+            .installed_files
+            .iter()
+            .all(|file| file.relative_path != "make_desktop.sh"));
+        assert_eq!(
+            first.emulator_write.emulator.application_path,
+            r"Emulators\BigPEmu\bigpemu"
+        );
+        assert_eq!(
+            first.emulator_write.emulator.command_line.as_deref(),
+            Some("%romfile% -localdata")
+        );
+        assert_eq!(first.emulator_write.mapping_count, 2);
+
+        let user_configuration = install_directory.join("User/settings.json");
+        fs::create_dir_all(user_configuration.parent().unwrap()).unwrap();
+        fs::write(&user_configuration, b"{\"scale\":2}\n").unwrap();
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let before_update_xml = fs::read(&emulator_document).unwrap();
+        let second_offer = bigpemu_linux_test_offer(fixture.path(), "1.221");
+        let second_state = inspect_bigpemu_release_state(
+            directory.path(),
+            Some(&configuration),
+            &resolver,
+            second_offer,
+        )
+        .expect("inspect BigPEmu update");
+        assert_eq!(second_state.action, BigPEmuInstallAction::Update);
+        let second = install_managed_bigpemu(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            platforms,
+            second_state,
+            Box::new(FileBigPEmuReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("update managed BigPEmu");
+        assert_eq!(second.manifest.version, "1.221");
+        assert_eq!(
+            fs::read_to_string(&second.executable).unwrap(),
+            "native BigPEmu 1.221\n"
+        );
+        assert_ne!(
+            fs::metadata(&second.executable)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+        assert_eq!(fs::read(&user_configuration).unwrap(), b"{\"scale\":2}\n");
+        assert!(!install_directory.join("make_desktop.sh").exists());
+        assert!(!install_directory.join("Data/release-1220.dat").exists());
+        assert_eq!(
+            fs::read_to_string(install_directory.join("Data/release-1221.dat")).unwrap(),
+            "provider data 1.221\n"
+        );
+        assert_eq!(
+            fs::read(&second.emulator_write.backup).unwrap(),
+            before_update_xml
+        );
+        assert!(second.recovery_files.iter().any(|path| {
+            fs::read_to_string(path).is_ok_and(|bytes| bytes == "provider data 1.220\n")
+        }));
+
+        let provider_file = install_directory.join("Data/release-1221.dat");
+        fs::write(&provider_file, b"user modified managed file\n").unwrap();
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let repair = inspect_bigpemu_release_state(
+            directory.path(),
+            Some(&configuration),
+            &resolver,
+            bigpemu_linux_test_offer(fixture.path(), "1.221"),
+        )
+        .expect("inspect BigPEmu repair");
+        assert_eq!(repair.action, BigPEmuInstallAction::Repair);
+        let blocked =
+            inspect_managed_bigpemu_removal(directory.path(), Some(&configuration), &resolver)
+                .expect("review modified BigPEmu removal");
+        assert!(!blocked.can_remove);
+        assert!(blocked
+            .blocked_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("release-1221.dat is modified")));
+        fs::write(&provider_file, b"provider data 1.221\n").unwrap();
+
+        let removable =
+            inspect_managed_bigpemu_removal(directory.path(), Some(&configuration), &resolver)
+                .expect("review removable BigPEmu");
+        assert!(removable.can_remove);
+        let owned_file_count = removable.audit.as_ref().unwrap().installed_files.len();
+        let removed = remove_managed_bigpemu(directory.path().to_path_buf(), resolver, removable)
+            .expect("remove managed BigPEmu");
+        assert_eq!(removed.removed_file_count, owned_file_count + 1);
+        assert_eq!(removed.recovery_files.len(), owned_file_count + 1);
+        assert!(removed.removed_emulator.is_some());
+        assert!(!second.executable.exists());
+        assert!(!install_directory
+            .join(MANAGED_INSTALL_MANIFEST_NAME)
+            .exists());
+        assert_eq!(fs::read(&user_configuration).unwrap(), b"{\"scale\":2}\n");
+        assert!(install_directory.join("User").is_dir());
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[cfg(unix)]
     #[test]
     fn managed_pcsx2_macos_bundle_uses_stable_paths_and_recoverable_removal() {
         use std::os::unix::fs::PermissionsExt;
@@ -19593,7 +21644,7 @@ mod tests {
         .expect("install managed macOS PCSX2 bundle");
         assert_eq!(
             first.manifest.artifact_kind,
-            Pcsx2ArtifactKind::MacosQtTarXz
+            Pcsx2ArtifactKind::MacosQtTarXz.id()
         );
         assert_eq!(
             first.manifest.executable_name,

@@ -231,6 +231,20 @@ records every regular file in the same ownership transaction. The official
 bundle is x86-64 and requires Rosetta 2 on Apple Silicon. Native macOS runtime
 execution and the recovered first-time wizard remain open.
 
+The recovered BigPEmu plugin exposes Windows x64 and ARM64 plus Linux x64 and
+ARM64 downloads from Rich Whitehouse's official page. That page publishes a
+byte count and 64-bit FNV-1a value for each artifact. The Windows packages are
+ZIP files with `BigPEmu.exe` at the root; Linux packages are one-wrapper
+tar.gz files containing `bigpemu`, `ReadMe.txt`, runtime data, and an optional
+`make_desktop.sh`. The port models those four identities explicitly, verifies
+the page contract and downloaded FNV before extraction, computes SHA-256 for
+durable ownership, and sends ZIP/tar members through the shared safe archive
+boundary. It strips only the Linux wrapper, requires the executable and
+readme, preserves execute mode, excludes the desktop helper, and directly
+registers/launches `%romfile% -localdata` without a command shell. Managed
+install, update, repair, stale-owned-file cleanup, and exact removal use the
+same recoverable transaction and reference gates as PCSX2.
+
 The recovered 13.27 PCSX2 plugin uses the exact
 `SERIAL (CRC).NN.p2s`/`.p2z` contract for ordinary state files, but treats each
 logical memory-card save as a named member inside a `.ps2` card. The port's
