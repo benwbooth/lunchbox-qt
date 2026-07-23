@@ -294,21 +294,31 @@ replaces or creates the selected `.bcr`, `.bkr`, and `.smpc` companions under
 one recovery manifest; active companions absent from the selected version are
 retained to match 13.27. Evidence-backed regular Dolphin save states, GameCube
 save files, and PCSX2 save states use the same backup-first atomic restore path;
-Dolphin Wii directories, PCSX2 memory-card members, other directories, and
-ambiguous-active cases remain adapter-gated.
+PCSX2 card-member restore extracts and validates the selected 7z, commits and
+rechecks a new vault version of the live member, builds a complete card working
+copy, verifies the restored logical manifest, and replaces the card only if its
+whole-file or whole-directory revision is unchanged. Folder cards use a
+rollback-capable sibling-directory swap; raw cards use a streamed atomic file
+replacement and regenerate physical-page spare/ECC bytes with the recovered
+13.27 algorithm. Raw restore deliberately requires an ECC-bearing physical
+card, matching the recovered Windows gate. Both forms retain the complete
+pre-restore card as a sibling recovery copy and preserve unrelated members.
+Dolphin Wii directories, other directories, and ambiguous-active cases remain
+adapter-gated.
 Confirmed active deletion supports a resolved regular file or complete
 RetroArch Saturn companion set, including host-mapped files outside the
-library root and regular Dolphin GameCube/state files. It first atomically
+library root, regular Dolphin GameCube/state files, and a PCSX2 folder/raw card
+member. It first atomically
 replaces the active history row with an exact portable vault copy. Only after
 that copy is committed and verified does it revision-check and remove the live
-file set, retaining exact sibling recovery copies and rolling back every
-attempted deletion if a peer fails.
+file set or swap a validated complete card working copy, retaining exact sibling
+recovery copies and rolling back every attempted deletion if a peer fails.
 Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
 Unresolved. Metadata operations never move or delete save files, and backup
 never changes active files. Other-emulator scanning, other directory/container
-backup, Dolphin Wii directory and PCSX2 memory-card-member restore/deletion or
-card repair/writes, full disc-image serial extraction, stale-row reconciliation,
+backup, Dolphin Wii directory handling, PCSX2 filesystem repair/capacity
+recovery, full disc-image serial extraction, stale-row reconciliation,
 automatic-backup policy, repair, and the remaining emulator adapters remain
 open, as does manual game combine/expand.
 

@@ -3,6 +3,7 @@ use crate::{DiscoveredContainerSave, DiscoveredEmulatorSave, EmulatorSaveKind};
 mod card;
 pub use card::{
     extract_pcsx2_memory_card_save, folder_manifest_signature, list_pcsx2_memory_card_saves,
+    prepare_pcsx2_memory_card_deletion, prepare_pcsx2_memory_card_restore,
     ExtractedPcsx2MemoryCardSave, Pcsx2CardError, Pcsx2MemoryCardSave,
 };
 use std::collections::{BTreeMap, BTreeSet};

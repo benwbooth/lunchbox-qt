@@ -1,4 +1,4 @@
-use chrono::{Duration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use encoding_rs::SHIFT_JIS;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -47,16 +47,28 @@ struct MemoryCardHeader {
     root_dir_cluster: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Dirent {
     mode: u16,
     length: u32,
     first_cluster: u32,
     name: String,
+    created: Option<SystemTime>,
     modified: Option<SystemTime>,
 }
 
 impl Dirent {
+    fn empty() -> Self {
+        Self {
+            mode: 0,
+            length: 0,
+            first_cluster: 0,
+            name: String::new(),
+            created: None,
+            modified: None,
+        }
+    }
+
     fn exists(&self) -> bool {
         self.mode & 0x8000 != 0
     }
@@ -86,10 +98,27 @@ struct RawMemoryCard {
 impl RawMemoryCard {
     fn open(path: &Path) -> Result<Self, Pcsx2CardError> {
         let path = canonical_regular_file(path, "PCSX2 raw memory card")?;
-        let mut file = File::open(&path).map_err(|source| Pcsx2CardError::Read {
+        let file = File::open(&path).map_err(|source| Pcsx2CardError::Read {
             path: path.clone(),
             source,
         })?;
+        Self::from_file(path, file)
+    }
+
+    fn open_writable(path: &Path) -> Result<Self, Pcsx2CardError> {
+        let path = canonical_regular_file(path, "PCSX2 raw memory-card working copy")?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|source| Pcsx2CardError::Write {
+                path: path.clone(),
+                source,
+            })?;
+        Self::from_file(path, file)
+    }
+
+    fn from_file(path: PathBuf, mut file: File) -> Result<Self, Pcsx2CardError> {
         let header = read_header(&mut file, &path)?;
         let use_raw_cluster_size = header.spare_size > 0;
         let fat = read_fat(&mut file, &path, &header, use_raw_cluster_size)?;
@@ -212,6 +241,280 @@ impl RawMemoryCard {
             self.use_raw_cluster_size,
         )
     }
+
+    fn delete_member(&mut self, member_name: &str) -> Result<(), Pcsx2CardError> {
+        let (entry, members) = self.member(member_name)?;
+        if !members.iter().any(|member| {
+            member.exists() && member.is_file() && member.name.eq_ignore_ascii_case("icon.sys")
+        }) {
+            return Err(Pcsx2CardError::NotSaveMember {
+                card: self.path.clone(),
+                member: member_name.to_string(),
+            });
+        }
+        for member in members
+            .iter()
+            .filter(|member| member.exists() && member.is_file())
+        {
+            free_chain(&mut self.fat, member.first_cluster, &self.path)?;
+        }
+        free_chain(&mut self.fat, entry.first_cluster, &self.path)?;
+        let root_index = self
+            .root
+            .iter()
+            .position(|candidate| candidate == &entry)
+            .ok_or_else(|| Pcsx2CardError::InvalidFilesystem {
+                path: self.path.clone(),
+                message: format!("save member {member_name} disappeared from the root directory"),
+            })?;
+        let mut cleared = entry;
+        cleared.mode &= !0x8000;
+        write_fat(
+            &mut self.file,
+            &self.path,
+            &self.header,
+            &self.fat,
+            self.use_raw_cluster_size,
+        )?;
+        write_dirent_at(
+            &mut self.file,
+            &RawDirectoryWrite {
+                path: &self.path,
+                header: &self.header,
+                fat: &self.fat,
+                use_raw: self.use_raw_cluster_size,
+            },
+            self.header.root_dir_cluster,
+            root_index,
+            &cleared,
+        )?;
+        self.file
+            .sync_all()
+            .map_err(|source| Pcsx2CardError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(())
+    }
+
+    fn import_member(
+        mut self,
+        member_name: &str,
+        source_folder: &Path,
+    ) -> Result<(), Pcsx2CardError> {
+        if self.header.spare_size == 0 {
+            return Err(Pcsx2CardError::RawRestoreRequiresSpare {
+                path: self.path.clone(),
+            });
+        }
+        match self.member(member_name) {
+            Ok(_) => {
+                self.delete_member(member_name)?;
+                return RawMemoryCard::open_writable(&self.path)?
+                    .import_missing_member(member_name, source_folder);
+            }
+            Err(Pcsx2CardError::MemberNotFound { .. }) => {}
+            Err(error) => return Err(error),
+        }
+        self.import_missing_member(member_name, source_folder)
+    }
+
+    fn import_missing_member(
+        &mut self,
+        member_name: &str,
+        source_folder: &Path,
+    ) -> Result<(), Pcsx2CardError> {
+        let sources = import_source_files(source_folder)?;
+        validate_raw_name(member_name, &self.path)?;
+        for source in &sources {
+            validate_raw_name(&source.name, &self.path)?;
+        }
+        let directory_entries =
+            sources
+                .len()
+                .checked_add(2)
+                .ok_or_else(|| Pcsx2CardError::TooLarge {
+                    path: source_folder.to_path_buf(),
+                })?;
+        let directory_clusters = directory_entries
+            .checked_mul(DIRENT_LENGTH)
+            .and_then(|bytes| bytes.checked_add(self.header.cluster_size - 1))
+            .map(|bytes| bytes / self.header.cluster_size)
+            .ok_or_else(|| Pcsx2CardError::TooLarge {
+                path: source_folder.to_path_buf(),
+            })?;
+        let mut required_clusters = directory_clusters;
+        for source in &sources {
+            required_clusters = required_clusters
+                .checked_add(source.cluster_count(self.header.cluster_size)?)
+                .ok_or_else(|| Pcsx2CardError::TooLarge {
+                    path: source.path.clone(),
+                })?;
+        }
+        let reusable_root_index = self.root.iter().position(|entry| !entry.exists());
+        if reusable_root_index.is_none() {
+            required_clusters =
+                required_clusters
+                    .checked_add(1)
+                    .ok_or_else(|| Pcsx2CardError::TooLarge {
+                        path: self.path.clone(),
+                    })?;
+        }
+        let free_clusters = self
+            .fat
+            .iter()
+            .filter(|entry| **entry & FAT_ALLOCATED == 0)
+            .count();
+        if free_clusters < required_clusters {
+            return Err(Pcsx2CardError::NoFreeSpace {
+                path: self.path.clone(),
+                required: required_clusters,
+                available: free_clusters,
+            });
+        }
+
+        let directory_chain = allocate_chain(&mut self.fat, directory_clusters, &self.path)?;
+        let mut file_chains = Vec::with_capacity(sources.len());
+        for source in &sources {
+            file_chains.push(allocate_chain(
+                &mut self.fat,
+                source.cluster_count(self.header.cluster_size)?,
+                &self.path,
+            )?);
+        }
+        for (source, chain) in sources.iter().zip(&file_chains) {
+            write_bytes_to_chain(
+                &mut self.file,
+                &self.path,
+                &self.header,
+                chain,
+                &source.bytes,
+                self.use_raw_cluster_size,
+            )?;
+        }
+
+        let now = SystemTime::now();
+        let mut entries = Vec::with_capacity(directory_entries);
+        entries.push(Dirent {
+            mode: 0x8427,
+            length: u32::try_from(directory_entries).map_err(|_| Pcsx2CardError::TooLarge {
+                path: source_folder.to_path_buf(),
+            })?,
+            first_cluster: u32::try_from(directory_chain[0]).expect("FAT index fits u32"),
+            name: ".".into(),
+            created: Some(now),
+            modified: Some(now),
+        });
+        entries.push(Dirent {
+            mode: 0x8427,
+            length: 0,
+            first_cluster: 0,
+            name: "..".into(),
+            created: Some(now),
+            modified: Some(now),
+        });
+        for (source, chain) in sources.iter().zip(&file_chains) {
+            entries.push(Dirent {
+                mode: 0x8417,
+                length: u32::try_from(source.bytes.len()).map_err(|_| {
+                    Pcsx2CardError::TooLarge {
+                        path: source.path.clone(),
+                    }
+                })?,
+                first_cluster: u32::try_from(chain[0]).expect("FAT index fits u32"),
+                name: source.name.clone(),
+                created: source.created,
+                modified: source.modified,
+            });
+        }
+        write_directory_chain(
+            &mut self.file,
+            &self.path,
+            &self.header,
+            &directory_chain,
+            &entries,
+            self.use_raw_cluster_size,
+        )?;
+
+        let root_index = if let Some(index) = reusable_root_index {
+            index
+        } else {
+            let extension = allocate_chain(&mut self.fat, 1, &self.path)?;
+            let root_chain = enumerate_chain(&self.fat, self.header.root_dir_cluster, &self.path)?;
+            let previous = *root_chain
+                .last()
+                .ok_or_else(|| Pcsx2CardError::InvalidFilesystem {
+                    path: self.path.clone(),
+                    message: "root directory has no FAT chain".into(),
+                })?;
+            self.fat[previous] =
+                u32::try_from(extension[0]).expect("FAT index fits u32") | FAT_ALLOCATED;
+            write_alloc_cluster(
+                &mut self.file,
+                &self.path,
+                &self.header,
+                extension[0],
+                &vec![0_u8; self.header.cluster_size],
+                self.use_raw_cluster_size,
+            )?;
+            let index = self.root.len();
+            self.root
+                .extend((0..self.header.cluster_size / DIRENT_LENGTH).map(|_| Dirent::empty()));
+            index
+        };
+        let new_root_length = self.root[0]
+            .length
+            .max(u32::try_from(root_index + 1).expect("bounded root index"));
+        let mut root_dot = self.root[0].clone();
+        root_dot.length = new_root_length;
+        root_dot.modified = Some(now);
+        let member = Dirent {
+            mode: 0x8427,
+            length: u32::try_from(directory_entries).expect("bounded directory entries"),
+            first_cluster: u32::try_from(directory_chain[0]).expect("FAT index fits u32"),
+            name: member_name.to_string(),
+            created: Some(now),
+            modified: Some(now),
+        };
+        write_dirent_at(
+            &mut self.file,
+            &RawDirectoryWrite {
+                path: &self.path,
+                header: &self.header,
+                fat: &self.fat,
+                use_raw: self.use_raw_cluster_size,
+            },
+            self.header.root_dir_cluster,
+            0,
+            &root_dot,
+        )?;
+        write_dirent_at(
+            &mut self.file,
+            &RawDirectoryWrite {
+                path: &self.path,
+                header: &self.header,
+                fat: &self.fat,
+                use_raw: self.use_raw_cluster_size,
+            },
+            self.header.root_dir_cluster,
+            root_index,
+            &member,
+        )?;
+        write_fat(
+            &mut self.file,
+            &self.path,
+            &self.header,
+            &self.fat,
+            self.use_raw_cluster_size,
+        )?;
+        self.file
+            .sync_all()
+            .map_err(|source| Pcsx2CardError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(())
+    }
 }
 
 pub fn list_pcsx2_memory_card_saves(
@@ -264,6 +567,325 @@ pub fn extract_pcsx2_memory_card_save(
         let _ = clean_failed_destination(destination, destination_created);
     }
     result
+}
+
+/// Builds a complete restored memory-card working copy at `destination`.
+///
+/// The source card is never opened for writing. Callers can validate the
+/// returned copy and atomically replace the live card through their platform
+/// transaction boundary. Raw-card imports intentionally match LaunchBox
+/// 13.27 by requiring physical spare/ECC pages.
+pub fn prepare_pcsx2_memory_card_restore(
+    source_card: &Path,
+    destination: &Path,
+    member_name: &str,
+    source_folder: &Path,
+) -> Result<Pcsx2MemoryCardSave, Pcsx2CardError> {
+    validate_member_component(member_name)?;
+    let source_folder = canonical_directory(source_folder, "PCSX2 restore source")?;
+    let sources = import_source_files(&source_folder)?;
+    if !sources
+        .iter()
+        .any(|source| source.name.eq_ignore_ascii_case("icon.sys"))
+    {
+        return Err(Pcsx2CardError::MissingIconSys {
+            path: source_folder,
+        });
+    }
+    let kind = copy_memory_card_working_copy(source_card, destination)?;
+    let result = (|| {
+        match kind {
+            MemoryCardKind::Folder => {
+                import_folder_member(destination, member_name, &source_folder)?;
+                list_folder_saves(destination)
+            }
+            MemoryCardKind::Raw => {
+                validate_raw_name(member_name, destination)?;
+                RawMemoryCard::open_writable(destination)?
+                    .import_member(member_name, &source_folder)?;
+                RawMemoryCard::open(destination)?.list_saves()
+            }
+        }
+        .and_then(|saves| exactly_one_named_save(destination, member_name, saves))
+    })();
+    if result.is_err() {
+        let _ = remove_working_copy(destination);
+    }
+    result
+}
+
+/// Builds a complete memory-card working copy with one logical save removed.
+///
+/// The member must contain `icon.sys`, matching LaunchBox 13.27's guard
+/// against deleting an arbitrary card directory. The source card remains
+/// untouched even if validation or deletion fails.
+pub fn prepare_pcsx2_memory_card_deletion(
+    source_card: &Path,
+    destination: &Path,
+    member_name: &str,
+) -> Result<(), Pcsx2CardError> {
+    validate_member_component(member_name)?;
+    let kind = copy_memory_card_working_copy(source_card, destination)?;
+    let result = (|| match kind {
+        MemoryCardKind::Folder => delete_folder_member(destination, member_name),
+        MemoryCardKind::Raw => {
+            let mut card = RawMemoryCard::open_writable(destination)?;
+            card.delete_member(member_name)?;
+            RawMemoryCard::open(destination)?
+                .list_saves()
+                .and_then(|saves| {
+                    if saves
+                        .iter()
+                        .any(|save| save.directory_name.eq_ignore_ascii_case(member_name))
+                    {
+                        Err(Pcsx2CardError::InvalidFilesystem {
+                            path: destination.to_path_buf(),
+                            message: format!(
+                                "deleted save member {member_name} still appears in the card index"
+                            ),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                })
+        }
+    })();
+    if result.is_err() {
+        let _ = remove_working_copy(destination);
+    }
+    result
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MemoryCardKind {
+    Folder,
+    Raw,
+}
+
+#[derive(Debug)]
+struct ImportSourceFile {
+    path: PathBuf,
+    name: String,
+    bytes: Vec<u8>,
+    created: Option<SystemTime>,
+    modified: Option<SystemTime>,
+}
+
+impl ImportSourceFile {
+    fn cluster_count(&self, cluster_size: usize) -> Result<usize, Pcsx2CardError> {
+        if self.bytes.is_empty() {
+            return Err(Pcsx2CardError::EmptyImportFile {
+                path: self.path.clone(),
+            });
+        }
+        self.bytes
+            .len()
+            .checked_add(cluster_size - 1)
+            .map(|bytes| bytes / cluster_size)
+            .ok_or_else(|| Pcsx2CardError::TooLarge {
+                path: self.path.clone(),
+            })
+    }
+}
+
+fn import_source_files(folder: &Path) -> Result<Vec<ImportSourceFile>, Pcsx2CardError> {
+    let folder = canonical_directory(folder, "PCSX2 restore source")?;
+    let mut sources = Vec::new();
+    let mut names = BTreeSet::new();
+    for entry in sorted_entries(&folder)? {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|source| Pcsx2CardError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(Pcsx2CardError::UnsupportedFileType {
+                kind: "PCSX2 restore member file",
+                path,
+            });
+        }
+        let name = unicode_file_name(&path)?.to_string();
+        validate_file_component(&name, &folder)?;
+        if !names.insert(name.to_ascii_lowercase()) {
+            return Err(Pcsx2CardError::DuplicateImportFile { path, name });
+        }
+        let bytes = fs::read(&path).map_err(|source| Pcsx2CardError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        let modified = metadata.modified().ok();
+        sources.push(ImportSourceFile {
+            path,
+            name,
+            bytes,
+            created: metadata.created().ok().or(modified),
+            modified,
+        });
+    }
+    if sources.is_empty() {
+        return Err(Pcsx2CardError::EmptyMember {
+            card: folder.clone(),
+            member: unicode_file_name(&folder)?.to_string(),
+        });
+    }
+    Ok(sources)
+}
+
+fn validate_raw_name(name: &str, card: &Path) -> Result<(), Pcsx2CardError> {
+    if name.len() > DIRENT_LENGTH - 64 || !name.is_ascii() {
+        return Err(Pcsx2CardError::InvalidFilesystem {
+            path: card.to_path_buf(),
+            message: format!("raw-card directory entry name is not portable ASCII: {name:?}"),
+        });
+    }
+    Ok(())
+}
+
+fn exactly_one_named_save(
+    card: &Path,
+    member_name: &str,
+    saves: Vec<Pcsx2MemoryCardSave>,
+) -> Result<Pcsx2MemoryCardSave, Pcsx2CardError> {
+    let matches = saves
+        .into_iter()
+        .filter(|save| save.directory_name.eq_ignore_ascii_case(member_name))
+        .collect::<Vec<_>>();
+    let [save] = matches.as_slice() else {
+        return if matches.is_empty() {
+            Err(Pcsx2CardError::MemberNotFound {
+                card: card.to_path_buf(),
+                member: member_name.to_string(),
+            })
+        } else {
+            Err(Pcsx2CardError::AmbiguousMember {
+                card: card.to_path_buf(),
+                member: member_name.to_string(),
+            })
+        };
+    };
+    Ok(save.clone())
+}
+
+fn copy_memory_card_working_copy(
+    source: &Path,
+    destination: &Path,
+) -> Result<MemoryCardKind, Pcsx2CardError> {
+    match fs::symlink_metadata(destination) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(Pcsx2CardError::DestinationAlreadyExists {
+                path: destination.to_path_buf(),
+            })
+        }
+        Err(source) => {
+            return Err(Pcsx2CardError::Read {
+                path: destination.to_path_buf(),
+                source,
+            })
+        }
+    }
+    let metadata = fs::symlink_metadata(source).map_err(|source_error| Pcsx2CardError::Read {
+        path: source.to_path_buf(),
+        source: source_error,
+    })?;
+    let result = if metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+        copy_new_file(source, destination)?;
+        Ok(MemoryCardKind::Raw)
+    } else if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+        copy_directory_tree(source, destination)?;
+        Ok(MemoryCardKind::Folder)
+    } else {
+        Err(Pcsx2CardError::UnsupportedFileType {
+            kind: "PCSX2 memory card",
+            path: source.to_path_buf(),
+        })
+    };
+    if result.is_err() {
+        let _ = remove_working_copy(destination);
+    }
+    result
+}
+
+fn copy_directory_tree(source: &Path, destination: &Path) -> Result<(), Pcsx2CardError> {
+    fs::create_dir(destination).map_err(|source| Pcsx2CardError::Write {
+        path: destination.to_path_buf(),
+        source,
+    })?;
+    for entry in sorted_entries(source)? {
+        let source_path = entry.path();
+        let target_path = destination.join(entry.file_name());
+        let metadata =
+            fs::symlink_metadata(&source_path).map_err(|source| Pcsx2CardError::Read {
+                path: source_path.clone(),
+                source,
+            })?;
+        if metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+            copy_new_file(&source_path, &target_path)?;
+        } else if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            copy_directory_tree(&source_path, &target_path)?;
+        } else {
+            return Err(Pcsx2CardError::UnsupportedFileType {
+                kind: "PCSX2 folder memory-card entry",
+                path: source_path,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn remove_working_copy(path: &Path) -> Result<(), std::io::Error> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            fs::remove_dir_all(path)
+        }
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn import_folder_member(
+    card: &Path,
+    member_name: &str,
+    source_folder: &Path,
+) -> Result<(), Pcsx2CardError> {
+    let card = canonical_directory(card, "PCSX2 folder memory-card working copy")?;
+    match find_folder_member(&card, member_name) {
+        Ok(existing) => fs::remove_dir_all(&existing).map_err(|source| Pcsx2CardError::Write {
+            path: existing,
+            source,
+        })?,
+        Err(Pcsx2CardError::MemberNotFound { .. }) => {}
+        Err(error) => return Err(error),
+    }
+    let target = card.join(member_name);
+    fs::create_dir(&target).map_err(|source| Pcsx2CardError::Write {
+        path: target.clone(),
+        source,
+    })?;
+    for source in import_source_files(source_folder)? {
+        copy_new_file(&source.path, &target.join(source.name))?;
+    }
+    Ok(())
+}
+
+fn delete_folder_member(card: &Path, member_name: &str) -> Result<(), Pcsx2CardError> {
+    let card = canonical_directory(card, "PCSX2 folder memory-card working copy")?;
+    let member = find_folder_member(&card, member_name)?;
+    if !folder_member_files(&member)?.iter().any(|file| {
+        file.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("icon.sys"))
+    }) {
+        return Err(Pcsx2CardError::NotSaveMember {
+            card,
+            member: member_name.to_string(),
+        });
+    }
+    fs::remove_dir_all(&member).map_err(|source| Pcsx2CardError::Write {
+        path: member,
+        source,
+    })
 }
 
 fn list_folder_saves(card_path: &Path) -> Result<Vec<Pcsx2MemoryCardSave>, Pcsx2CardError> {
@@ -937,6 +1559,319 @@ fn read_cluster(
     Ok(data)
 }
 
+fn allocate_chain(
+    fat: &mut [u32],
+    count: usize,
+    path: &Path,
+) -> Result<Vec<usize>, Pcsx2CardError> {
+    if count == 0 {
+        return Err(Pcsx2CardError::InvalidFilesystem {
+            path: path.to_path_buf(),
+            message: "cannot allocate an empty FAT chain".into(),
+        });
+    }
+    let available = fat
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| (entry & FAT_ALLOCATED == 0).then_some(index))
+        .take(count)
+        .collect::<Vec<_>>();
+    if available.len() != count {
+        return Err(Pcsx2CardError::NoFreeSpace {
+            path: path.to_path_buf(),
+            required: count,
+            available: available.len(),
+        });
+    }
+    for (position, cluster) in available.iter().copied().enumerate() {
+        fat[cluster] = available
+            .get(position + 1)
+            .map(|next| u32::try_from(*next).expect("FAT index fits u32") | FAT_ALLOCATED)
+            .unwrap_or(FAT_CHAIN_END);
+    }
+    Ok(available)
+}
+
+fn free_chain(fat: &mut [u32], start: u32, path: &Path) -> Result<(), Pcsx2CardError> {
+    for cluster in enumerate_chain(fat, start, path)? {
+        fat[cluster] = 0;
+    }
+    Ok(())
+}
+
+fn write_bytes_to_chain(
+    file: &mut File,
+    path: &Path,
+    header: &MemoryCardHeader,
+    chain: &[usize],
+    bytes: &[u8],
+    use_raw: bool,
+) -> Result<(), Pcsx2CardError> {
+    if chain.is_empty()
+        || bytes.len()
+            > chain
+                .len()
+                .checked_mul(header.cluster_size)
+                .ok_or_else(|| Pcsx2CardError::TooLarge {
+                    path: path.to_path_buf(),
+                })?
+    {
+        return Err(Pcsx2CardError::InvalidFilesystem {
+            path: path.to_path_buf(),
+            message: "allocated FAT chain is too short for imported data".into(),
+        });
+    }
+    for (position, cluster) in chain.iter().copied().enumerate() {
+        let start = position * header.cluster_size;
+        let end = (start + header.cluster_size).min(bytes.len());
+        let mut data = vec![0_u8; header.cluster_size];
+        if start < end {
+            data[..end - start].copy_from_slice(&bytes[start..end]);
+        }
+        write_alloc_cluster(file, path, header, cluster, &data, use_raw)?;
+    }
+    Ok(())
+}
+
+fn write_directory_chain(
+    file: &mut File,
+    path: &Path,
+    header: &MemoryCardHeader,
+    chain: &[usize],
+    entries: &[Dirent],
+    use_raw: bool,
+) -> Result<(), Pcsx2CardError> {
+    let mut bytes = Vec::with_capacity(entries.len() * DIRENT_LENGTH);
+    for entry in entries {
+        bytes.extend_from_slice(&serialize_dirent(entry, path)?);
+    }
+    write_bytes_to_chain(file, path, header, chain, &bytes, use_raw)
+}
+
+struct RawDirectoryWrite<'a> {
+    path: &'a Path,
+    header: &'a MemoryCardHeader,
+    fat: &'a [u32],
+    use_raw: bool,
+}
+
+fn write_dirent_at(
+    file: &mut File,
+    context: &RawDirectoryWrite<'_>,
+    start_cluster: u32,
+    entry_index: usize,
+    entry: &Dirent,
+) -> Result<(), Pcsx2CardError> {
+    let entries_per_cluster = context.header.cluster_size / DIRENT_LENGTH;
+    let chain_position = entry_index / entries_per_cluster;
+    let within_cluster = entry_index % entries_per_cluster;
+    let chain = enumerate_chain(context.fat, start_cluster, context.path)?;
+    let cluster =
+        chain
+            .get(chain_position)
+            .copied()
+            .ok_or_else(|| Pcsx2CardError::InvalidFilesystem {
+                path: context.path.to_path_buf(),
+                message: format!("directory entry {entry_index} is past the end of its FAT chain"),
+            })?;
+    let mut data = read_alloc_cluster(
+        file,
+        context.path,
+        context.header,
+        u32::try_from(cluster).expect("FAT index fits u32"),
+        context.use_raw,
+    )?;
+    let start = within_cluster * DIRENT_LENGTH;
+    data[start..start + DIRENT_LENGTH].copy_from_slice(&serialize_dirent(entry, context.path)?);
+    write_alloc_cluster(
+        file,
+        context.path,
+        context.header,
+        cluster,
+        &data,
+        context.use_raw,
+    )
+}
+
+fn serialize_dirent(entry: &Dirent, path: &Path) -> Result<[u8; DIRENT_LENGTH], Pcsx2CardError> {
+    validate_raw_name(&entry.name, path)?;
+    let mut bytes = [0_u8; DIRENT_LENGTH];
+    bytes[0..2].copy_from_slice(&entry.mode.to_le_bytes());
+    bytes[4..8].copy_from_slice(&entry.length.to_le_bytes());
+    bytes[16..20].copy_from_slice(&entry.first_cluster.to_le_bytes());
+    write_tod(&mut bytes, 8, entry.created);
+    write_tod(&mut bytes, 24, entry.modified);
+    bytes[64..64 + entry.name.len()].copy_from_slice(entry.name.as_bytes());
+    Ok(bytes)
+}
+
+fn write_tod(bytes: &mut [u8], offset: usize, value: Option<SystemTime>) {
+    let Some(value) = value else {
+        return;
+    };
+    let value = DateTime::<Utc>::from(value) + Duration::hours(9);
+    bytes[offset] = 0;
+    bytes[offset + 1] = u8::try_from(value.second()).expect("second fits u8");
+    bytes[offset + 2] = u8::try_from(value.minute()).expect("minute fits u8");
+    bytes[offset + 3] = u8::try_from(value.hour()).expect("hour fits u8");
+    bytes[offset + 4] = u8::try_from(value.day()).expect("day fits u8");
+    bytes[offset + 5] = u8::try_from(value.month()).expect("month fits u8");
+    bytes[offset + 6..offset + 8].copy_from_slice(
+        &u16::try_from(value.year())
+            .expect("supported year fits u16")
+            .to_le_bytes(),
+    );
+}
+
+fn write_fat(
+    file: &mut File,
+    path: &Path,
+    header: &MemoryCardHeader,
+    fat: &[u32],
+    use_raw: bool,
+) -> Result<(), Pcsx2CardError> {
+    let entries_per_cluster = header.cluster_size / 4;
+    let mut written = 0;
+    for indirect_cluster in header.indirect_fat_clusters {
+        if indirect_cluster <= 0 || written >= fat.len() {
+            break;
+        }
+        let indirect_cluster =
+            usize::try_from(indirect_cluster).map_err(|_| Pcsx2CardError::InvalidFilesystem {
+                path: path.to_path_buf(),
+                message: "negative indirect FAT cluster".into(),
+            })?;
+        let indirect = read_cluster(file, path, header, indirect_cluster, use_raw)?;
+        for index in 0..entries_per_cluster {
+            if written >= fat.len() {
+                break;
+            }
+            let direct_cluster = read_i32(&indirect, index * 4);
+            if direct_cluster <= 0 {
+                continue;
+            }
+            let direct_cluster =
+                usize::try_from(direct_cluster).map_err(|_| Pcsx2CardError::InvalidFilesystem {
+                    path: path.to_path_buf(),
+                    message: "negative direct FAT cluster".into(),
+                })?;
+            let count = entries_per_cluster.min(fat.len() - written);
+            let mut data = vec![0_u8; header.cluster_size];
+            for (slot, entry) in fat[written..written + count].iter().enumerate() {
+                data[slot * 4..slot * 4 + 4].copy_from_slice(&entry.to_le_bytes());
+            }
+            write_cluster(file, path, header, direct_cluster, &data, use_raw)?;
+            written += count;
+        }
+    }
+    if written != fat.len() {
+        return Err(Pcsx2CardError::InvalidFilesystem {
+            path: path.to_path_buf(),
+            message: format!("wrote {written} of {} FAT entries", fat.len()),
+        });
+    }
+    Ok(())
+}
+
+fn write_alloc_cluster(
+    file: &mut File,
+    path: &Path,
+    header: &MemoryCardHeader,
+    alloc_cluster: usize,
+    data: &[u8],
+    use_raw: bool,
+) -> Result<(), Pcsx2CardError> {
+    let physical = header
+        .allocatable_cluster_offset
+        .checked_add(alloc_cluster)
+        .filter(|cluster| *cluster < header.clusters_per_card)
+        .ok_or_else(|| Pcsx2CardError::InvalidFilesystem {
+            path: path.to_path_buf(),
+            message: format!("allocatable cluster {alloc_cluster} maps outside the card"),
+        })?;
+    write_cluster(file, path, header, physical, data, use_raw)
+}
+
+fn write_cluster(
+    file: &mut File,
+    path: &Path,
+    header: &MemoryCardHeader,
+    cluster: usize,
+    data: &[u8],
+    use_raw: bool,
+) -> Result<(), Pcsx2CardError> {
+    if cluster >= header.clusters_per_card || data.len() != header.cluster_size {
+        return Err(Pcsx2CardError::InvalidFilesystem {
+            path: path.to_path_buf(),
+            message: format!(
+                "cannot write cluster {cluster} with {} logical bytes",
+                data.len()
+            ),
+        });
+    }
+    let physical_size = if use_raw {
+        header.raw_cluster_size
+    } else {
+        header.cluster_size
+    };
+    let offset = cluster
+        .checked_mul(physical_size)
+        .and_then(|offset| u64::try_from(offset).ok())
+        .ok_or_else(|| Pcsx2CardError::TooLarge {
+            path: path.to_path_buf(),
+        })?;
+    let bytes = if use_raw {
+        let mut raw = vec![0xff_u8; header.raw_cluster_size];
+        for page in 0..header.pages_per_cluster {
+            let logical_start = page * header.page_size;
+            let raw_start = page * header.raw_page_size;
+            let logical = &data[logical_start..logical_start + header.page_size];
+            raw[raw_start..raw_start + header.page_size].copy_from_slice(logical);
+            let spare = compute_page_spare(logical, header.spare_size);
+            raw[raw_start + header.page_size..raw_start + header.page_size + spare.len()]
+                .copy_from_slice(&spare);
+        }
+        raw
+    } else {
+        data.to_vec()
+    };
+    file.seek(SeekFrom::Start(offset))
+        .and_then(|_| file.write_all(&bytes))
+        .map_err(|source| Pcsx2CardError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn compute_page_spare(data: &[u8], spare_size: usize) -> Vec<u8> {
+    let mut spare = vec![0xff_u8; spare_size];
+    for (chunk, target) in data.chunks_exact(128).zip(spare.chunks_exact_mut(3)) {
+        target.copy_from_slice(&compute_ecc_128(chunk));
+    }
+    spare
+}
+
+fn compute_ecc_128(data: &[u8]) -> [u8; 3] {
+    debug_assert_eq!(data.len(), 128);
+    const MASKS: [u8; 7] = [0x55, 0x33, 0x0f, 0x00, 0xaa, 0xcc, 0xf0];
+    let mut column = 0x77_u8;
+    let mut line0 = 0x7f_u8;
+    let mut line1 = 0x7f_u8;
+    for (index, byte) in data.iter().copied().enumerate() {
+        let mut mask_parity = 0_u8;
+        for (bit, mask) in MASKS.iter().copied().enumerate() {
+            mask_parity |= u8::from((byte & mask).count_ones() & 1 != 0) << bit;
+        }
+        column ^= mask_parity;
+        if byte.count_ones() & 1 != 0 {
+            let index = u8::try_from(index).expect("ECC chunk index fits u8");
+            line0 ^= !index;
+            line1 ^= index;
+        }
+    }
+    [column, line0 & 0x7f, line1]
+}
+
 fn parse_dirent(bytes: &[u8]) -> Dirent {
     let name_bytes = &bytes[64..DIRENT_LENGTH];
     let end = name_bytes
@@ -948,6 +1883,7 @@ fn parse_dirent(bytes: &[u8]) -> Dirent {
         length: read_u32(bytes, 4),
         first_cluster: read_u32(bytes, 16),
         name: String::from_utf8_lossy(&name_bytes[..end]).into_owned(),
+        created: parse_tod(bytes, 8),
         modified: parse_tod(bytes, 24),
     }
 }
@@ -1082,6 +2018,10 @@ fn clean_failed_destination(
 }
 
 fn copy_new_file(source: &Path, target: &Path) -> Result<(), Pcsx2CardError> {
+    let metadata = fs::metadata(source).map_err(|source_error| Pcsx2CardError::Read {
+        path: source.to_path_buf(),
+        source: source_error,
+    })?;
     let mut input = File::open(source).map_err(|source_error| Pcsx2CardError::Read {
         path: source.to_path_buf(),
         source: source_error,
@@ -1091,10 +2031,23 @@ fn copy_new_file(source: &Path, target: &Path) -> Result<(), Pcsx2CardError> {
         path: target.to_path_buf(),
         source,
     })?;
-    output.sync_all().map_err(|source| Pcsx2CardError::Write {
-        path: target.to_path_buf(),
-        source,
-    })
+    output
+        .set_permissions(metadata.permissions())
+        .and_then(|()| {
+            let mut times = fs::FileTimes::new();
+            if let Ok(accessed) = metadata.accessed() {
+                times = times.set_accessed(accessed);
+            }
+            if let Ok(modified) = metadata.modified() {
+                times = times.set_modified(modified);
+            }
+            output.set_times(times)
+        })
+        .and_then(|()| output.sync_all())
+        .map_err(|source| Pcsx2CardError::Write {
+            path: target.to_path_buf(),
+            source,
+        })
 }
 
 fn write_new_file(target: &Path, bytes: &[u8]) -> Result<(), Pcsx2CardError> {
@@ -1292,6 +2245,30 @@ pub enum Pcsx2CardError {
     AmbiguousMember { card: PathBuf, member: String },
     #[error("PCSX2 memory-card member {member} at {card} contains no files")]
     EmptyMember { card: PathBuf, member: String },
+    #[error(
+        "PCSX2 memory-card member {member} at {card} is not a save because icon.sys is missing"
+    )]
+    NotSaveMember { card: PathBuf, member: String },
+    #[error("PCSX2 restore source is missing icon.sys: {path}")]
+    MissingIconSys { path: PathBuf },
+    #[error("PCSX2 restore source contains a zero-length file: {path}")]
+    EmptyImportFile { path: PathBuf },
+    #[error("PCSX2 restore source contains duplicate file name {name:?}: {path}")]
+    DuplicateImportFile { path: PathBuf, name: String },
+    #[error(
+        "PCSX2 raw card has insufficient free space at {path}: requires {required} clusters, has {available}"
+    )]
+    NoFreeSpace {
+        path: PathBuf,
+        required: usize,
+        available: usize,
+    },
+    #[error(
+        "PCSX2 logical-page card cannot be restored because spare/ECC data is missing: {path}"
+    )]
+    RawRestoreRequiresSpare { path: PathBuf },
+    #[error("PCSX2 working-copy destination already exists: {path}")]
+    DestinationAlreadyExists { path: PathBuf },
     #[error("PCSX2 extraction destination is not empty: {path}")]
     DestinationNotEmpty { path: PathBuf },
     #[error("PCSX2 save manifest contains no eligible files: {path}")]
@@ -1409,6 +2386,25 @@ mod tests {
         save[..10].copy_from_slice(b"save bytes");
         put_cluster(&mut card, ALLOCATABLE_OFFSET + 3, &save, raw);
         card
+    }
+
+    fn restore_source(root: &Path, save_bytes: &[u8]) -> PathBuf {
+        let source = root.join("restore-source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("icon.sys"), icon_sys("FixtureNew")).unwrap();
+        fs::write(source.join("save.bin"), save_bytes).unwrap();
+        source
+    }
+
+    fn assert_cluster_ecc(card: &[u8], cluster: usize) {
+        let base = cluster * RAW_CLUSTER_SIZE;
+        for page in 0..PAGES_PER_CLUSTER {
+            let page = &card[base + page * RAW_PAGE_SIZE..base + (page + 1) * RAW_PAGE_SIZE];
+            assert_eq!(
+                &page[PAGE_SIZE..RAW_PAGE_SIZE],
+                compute_page_spare(&page[..PAGE_SIZE], SPARE_SIZE)
+            );
+        }
     }
 
     #[test]
@@ -1529,5 +2525,90 @@ mod tests {
                 Err(Pcsx2CardError::UnsupportedFileType { .. })
             ));
         }
+    }
+
+    #[test]
+    fn raw_restore_and_delete_build_validated_working_copies_without_touching_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = directory.path().join("Mcd001.ps2");
+        let original = card_fixture(true);
+        fs::write(&card, &original).unwrap();
+        let source = restore_source(directory.path(), b"replacement bytes");
+
+        let restored = directory.path().join("restored.ps2");
+        let save = prepare_pcsx2_memory_card_restore(&card, &restored, "BASLUS-12345SAVE", &source)
+            .unwrap();
+        assert_eq!(save.title, "Fixture New");
+        assert_eq!(fs::read(&card).unwrap(), original);
+        let extracted = directory.path().join("restored-member");
+        extract_pcsx2_memory_card_save(&restored, "BASLUS-12345SAVE", &extracted).unwrap();
+        assert_eq!(
+            fs::read(extracted.join("save.bin")).unwrap(),
+            b"replacement bytes"
+        );
+        let restored_bytes = fs::read(&restored).unwrap();
+        assert_eq!(restored_bytes.len(), original.len());
+        for cluster in [
+            2,
+            ALLOCATABLE_OFFSET,
+            ALLOCATABLE_OFFSET + 1,
+            ALLOCATABLE_OFFSET + 2,
+        ] {
+            assert_cluster_ecc(&restored_bytes, cluster);
+        }
+
+        let deleted = directory.path().join("deleted.ps2");
+        prepare_pcsx2_memory_card_deletion(&restored, &deleted, "BASLUS-12345SAVE").unwrap();
+        assert_eq!(
+            list_pcsx2_memory_card_saves(&deleted).unwrap(),
+            Vec::<Pcsx2MemoryCardSave>::new()
+        );
+        assert_eq!(
+            fs::read(extracted.join("save.bin")).unwrap(),
+            b"replacement bytes"
+        );
+        assert_eq!(fs::read(&card).unwrap(), original);
+    }
+
+    #[test]
+    fn folder_restore_and_delete_build_complete_working_copies() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = directory.path().join("Folder.ps2");
+        let member = card.join("BASLUS-12345SAVE");
+        fs::create_dir_all(&member).unwrap();
+        fs::write(member.join("icon.sys"), icon_sys("FixtureOld")).unwrap();
+        fs::write(member.join("save.bin"), b"old bytes").unwrap();
+        let unrelated = card.join("OTHER");
+        fs::create_dir(&unrelated).unwrap();
+        fs::write(unrelated.join("keep.bin"), b"keep").unwrap();
+        let source = restore_source(directory.path(), b"new bytes");
+
+        let restored = directory.path().join("restored-folder.ps2");
+        prepare_pcsx2_memory_card_restore(&card, &restored, "BASLUS-12345SAVE", &source).unwrap();
+        assert_eq!(fs::read(member.join("save.bin")).unwrap(), b"old bytes");
+        assert_eq!(
+            fs::read(restored.join("BASLUS-12345SAVE/save.bin")).unwrap(),
+            b"new bytes"
+        );
+        assert_eq!(fs::read(restored.join("OTHER/keep.bin")).unwrap(), b"keep");
+
+        let deleted = directory.path().join("deleted-folder.ps2");
+        prepare_pcsx2_memory_card_deletion(&restored, &deleted, "BASLUS-12345SAVE").unwrap();
+        assert!(!deleted.join("BASLUS-12345SAVE").exists());
+        assert_eq!(fs::read(deleted.join("OTHER/keep.bin")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn logical_raw_restore_matches_1327_spare_ecc_gate_and_cleans_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = directory.path().join("logical.ps2");
+        fs::write(&card, card_fixture(false)).unwrap();
+        let source = restore_source(directory.path(), b"new bytes");
+        let output = directory.path().join("working.ps2");
+        assert!(matches!(
+            prepare_pcsx2_memory_card_restore(&card, &output, "BASLUS-12345SAVE", &source),
+            Err(Pcsx2CardError::RawRestoreRequiresSpare { .. })
+        ));
+        assert!(!output.exists());
     }
 }

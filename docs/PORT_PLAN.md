@@ -318,17 +318,28 @@ commits and verifies the complete current companion set, then revision-checks
 and atomically replaces or creates all selected companions while retaining
 active members absent from the selected version like 13.27. Other-emulator
 scanning and other directory/container backup remain open. Active deletion now
-first
-atomically replaces one regular or Saturn active row with its verified portable
-vault set, then revision-checks and deletes even host-mapped external live files
-with exact sibling recovery copies and all-or-rollback behavior.
+first atomically replaces one regular or Saturn active row with its verified
+portable vault set, then revision-checks and deletes even host-mapped external
+live files with exact sibling recovery copies and all-or-rollback behavior; the
+PCSX2 path described below applies the same backup-first invariant at the
+logical-member and complete-card boundaries.
 Recovered Dolphin and PCSX2 13.27 regular-file semantics allow the same path
-for discovered Dolphin GameCube/state files and PCSX2 state rows; only
-`dolphin:wii:` directories and `pcsx2:` memory-card members remain
-adapter-gated for restore and deletion. Dolphin Wii/PCSX2 card-member
-restore/deletion, card repair/writes, full PCSX2 disc-image serial extraction,
-stale-row reconciliation, automatic policy, repair, and the remaining adapters
-remain open, as do the manual combine/expand actions in `LIB-010`.
+for discovered Dolphin GameCube/state files and PCSX2 state rows. PCSX2
+card-member restore/deletion now follows the recovered complete-working-copy
+shape for both folder and raw cards: it commits and verifies the current
+logical member as a flat 7z, mutates a private whole-card copy, re-extracts the
+result for manifest verification, and revision-checks the selected archive and
+live card before a recoverable swap. Folder cards use a rollback-capable
+sibling-directory replacement; raw cards use atomic file replacement and
+regenerate physical spare/ECC pages. Raw restore is deliberately limited to
+ECC-bearing physical cards, matching the recovered 13.27 gate. Active deletion
+commits the vault archive and removes the active XML row before swapping the
+validated deletion copy, so a final conflict remains recoverable through Find
+Active Saves. Only `dolphin:wii:` directories remain container-gated.
+Dolphin Wii handling, PCSX2 filesystem repair/capacity recovery, full PCSX2
+disc-image serial extraction, stale-row reconciliation, automatic policy,
+repair, and the remaining adapters remain open, as do the manual combine/expand
+actions in `LIB-010`.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:

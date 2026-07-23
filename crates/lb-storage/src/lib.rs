@@ -8,7 +8,9 @@ use lb_domain::{
 #[cfg(test)]
 use lb_domain::{GAME_SAVE_XML_FIELDS, GAME_XML_FIELDS};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -118,6 +120,134 @@ pub struct PlatformDocument {
 pub struct AtomicSaveReport {
     pub target: PathBuf,
     pub backup: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryRevision {
+    pub file_count: u64,
+    pub directory_count: u64,
+    pub byte_len: u64,
+    pub sha256: String,
+}
+
+impl DirectoryRevision {
+    pub fn read(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        let supplied = path.as_ref();
+        let metadata = fs::symlink_metadata(supplied).map_err(|source| StorageError::Read {
+            path: supplied.to_path_buf(),
+            source,
+        })?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err(StorageError::AtomicTargetNotDirectory {
+                path: supplied.to_path_buf(),
+            });
+        }
+        let root = fs::canonicalize(supplied).map_err(|source| StorageError::Read {
+            path: supplied.to_path_buf(),
+            source,
+        })?;
+        let mut revision = DirectoryRevisionBuilder::default();
+        revision.visit(&root, Path::new(""))?;
+        Ok(revision.finish())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AtomicDirectorySaveReport {
+    pub target: PathBuf,
+    pub backup: PathBuf,
+}
+
+#[derive(Default)]
+struct DirectoryRevisionBuilder {
+    file_count: u64,
+    directory_count: u64,
+    byte_len: u64,
+    digest: Sha256,
+}
+
+impl DirectoryRevisionBuilder {
+    fn visit(&mut self, root: &Path, relative: &Path) -> Result<(), StorageError> {
+        let current = root.join(relative);
+        let mut entries = fs::read_dir(&current)
+            .map_err(|source| StorageError::Read {
+                path: current.clone(),
+                source,
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| StorageError::Read {
+                path: current.clone(),
+                source,
+            })?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| StorageError::AtomicDirectoryNonUnicode { path: entry.path() })?;
+            let child_relative = relative.join(name);
+            let child = root.join(&child_relative);
+            let metadata = fs::symlink_metadata(&child).map_err(|source| StorageError::Read {
+                path: child.clone(),
+                source,
+            })?;
+            let portable = child_relative
+                .to_str()
+                .expect("all directory components were checked as Unicode")
+                .replace('\\', "/");
+            if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+                self.directory_count = self.directory_count.saturating_add(1);
+                self.update_entry(b'D', &portable, 0);
+                self.visit(root, &child_relative)?;
+            } else if metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+                self.file_count = self.file_count.saturating_add(1);
+                self.byte_len = self.byte_len.saturating_add(metadata.len());
+                self.update_entry(b'F', &portable, metadata.len());
+                let mut file = fs::File::open(&child).map_err(|source| StorageError::Read {
+                    path: child.clone(),
+                    source,
+                })?;
+                let mut buffer = vec![0_u8; 1024 * 1024];
+                loop {
+                    let read = file
+                        .read(&mut buffer)
+                        .map_err(|source| StorageError::Read {
+                            path: child.clone(),
+                            source,
+                        })?;
+                    if read == 0 {
+                        break;
+                    }
+                    self.digest.update(&buffer[..read]);
+                }
+            } else {
+                return Err(StorageError::AtomicDirectoryUnsafeEntry { path: child });
+            }
+        }
+        Ok(())
+    }
+
+    fn update_entry(&mut self, kind: u8, path: &str, byte_len: u64) {
+        self.digest.update([kind]);
+        self.digest
+            .update(u64::try_from(path.len()).unwrap_or(u64::MAX).to_le_bytes());
+        self.digest.update(path.as_bytes());
+        self.digest.update(byte_len.to_le_bytes());
+    }
+
+    fn finish(self) -> DirectoryRevision {
+        let digest = self.digest.finalize();
+        let mut sha256 = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            write!(&mut sha256, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        DirectoryRevision {
+            file_count: self.file_count,
+            directory_count: self.directory_count,
+            byte_len: self.byte_len,
+            sha256,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1764,6 +1894,195 @@ pub fn replace_regular_file_from_source_if_revisions(
         target,
         backup: backup_path,
     })
+}
+
+/// Replaces one existing directory tree from another exact directory snapshot.
+///
+/// Both trees are rejected if they contain symlinks, special files, or
+/// non-Unicode names. The source is copied into a durable sibling staging
+/// directory, both revisions are rechecked, and the original target is moved
+/// into a retained sibling recovery directory before the staged tree is moved
+/// into place. A failed second move is rolled back before returning.
+pub fn replace_directory_from_source_if_revisions(
+    source: impl AsRef<Path>,
+    source_expected: &DirectoryRevision,
+    target: impl AsRef<Path>,
+    target_expected: &DirectoryRevision,
+) -> Result<AtomicDirectorySaveReport, StorageError> {
+    replace_directory_from_source_if_revisions_with(
+        source.as_ref(),
+        source_expected,
+        target.as_ref(),
+        target_expected,
+        |from, to| fs::rename(from, to),
+    )
+}
+
+fn replace_directory_from_source_if_revisions_with(
+    supplied_source: &Path,
+    source_expected: &DirectoryRevision,
+    supplied_target: &Path,
+    target_expected: &DirectoryRevision,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> Result<AtomicDirectorySaveReport, StorageError> {
+    let source_metadata =
+        fs::symlink_metadata(supplied_source).map_err(|source| StorageError::Read {
+            path: supplied_source.to_path_buf(),
+            source,
+        })?;
+    if !source_metadata.file_type().is_dir() || source_metadata.file_type().is_symlink() {
+        return Err(StorageError::AtomicSourceNotDirectory {
+            path: supplied_source.to_path_buf(),
+        });
+    }
+    let source = fs::canonicalize(supplied_source).map_err(|source| StorageError::Read {
+        path: supplied_source.to_path_buf(),
+        source,
+    })?;
+
+    let target_metadata =
+        fs::symlink_metadata(supplied_target).map_err(|source| StorageError::Read {
+            path: supplied_target.to_path_buf(),
+            source,
+        })?;
+    if !target_metadata.file_type().is_dir() || target_metadata.file_type().is_symlink() {
+        return Err(StorageError::AtomicTargetNotDirectory {
+            path: supplied_target.to_path_buf(),
+        });
+    }
+    let target = fs::canonicalize(supplied_target).map_err(|source| StorageError::Read {
+        path: supplied_target.to_path_buf(),
+        source,
+    })?;
+    if source == target || source.starts_with(&target) || target.starts_with(&source) {
+        return Err(StorageError::AtomicDirectorySourceAliasesTarget {
+            source_path: source,
+            target_path: target,
+        });
+    }
+
+    let source_actual = DirectoryRevision::read(&source)?;
+    if source_actual != *source_expected {
+        return Err(StorageError::AtomicDirectorySourceConflict {
+            path: source,
+            expected: Box::new(source_expected.clone()),
+            actual: Box::new(source_actual),
+        });
+    }
+    let target_actual = DirectoryRevision::read(&target)?;
+    if target_actual != *target_expected {
+        return Err(StorageError::AtomicDirectoryTargetConflict {
+            path: target,
+            expected: Box::new(target_expected.clone()),
+            actual: Box::new(target_actual),
+        });
+    }
+
+    let staging = create_unique_sibling_directory(&target, "directory-temporary", true)?;
+    if let Err(error) = copy_directory_contents(&source, &staging) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    let staged_revision = DirectoryRevision::read(&staging)?;
+    if staged_revision != *source_expected {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(StorageError::AtomicDirectorySourceConflict {
+            path: source,
+            expected: Box::new(source_expected.clone()),
+            actual: Box::new(staged_revision),
+        });
+    }
+    let source_actual = DirectoryRevision::read(&source)?;
+    if source_actual != *source_expected {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(StorageError::AtomicDirectorySourceConflict {
+            path: source,
+            expected: Box::new(source_expected.clone()),
+            actual: Box::new(source_actual),
+        });
+    }
+    let target_actual = DirectoryRevision::read(&target)?;
+    if target_actual != *target_expected {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(StorageError::AtomicDirectoryTargetConflict {
+            path: target,
+            expected: Box::new(target_expected.clone()),
+            actual: Box::new(target_actual),
+        });
+    }
+
+    let backup_root = match create_unique_sibling_directory(&target, "directory-backup", false) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    let backup = backup_root.join(
+        target
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("directory")),
+    );
+    if let Err(source) = rename(&target, &backup) {
+        let _ = fs::remove_dir_all(&staging);
+        let _ = fs::remove_dir_all(&backup_root);
+        return Err(StorageError::Write {
+            path: target,
+            source,
+        });
+    }
+    if let Err(source) =
+        sync_parent_directory(&target).and_then(|()| sync_parent_directory(&backup))
+    {
+        let rollback = rename(&backup, &target)
+            .and_then(|()| sync_parent_directory(&target))
+            .and_then(|()| fs::remove_dir(&backup_root));
+        return match rollback {
+            Ok(()) => {
+                let _ = fs::remove_dir_all(&staging);
+                Err(StorageError::AtomicDirectoryReplaceRolledBack {
+                    path: target,
+                    source,
+                })
+            }
+            Err(recovery) => Err(StorageError::AtomicDirectoryReplaceRecoveryRequired {
+                path: Box::new(target),
+                backup: Box::new(backup),
+                staged: Box::new(staging),
+                replace_error: source.to_string(),
+                recovery_error: recovery.to_string(),
+            }),
+        };
+    }
+    if let Err(source) = rename(&staging, &target) {
+        let rollback = rename(&backup, &target)
+            .and_then(|()| sync_parent_directory(&target))
+            .and_then(|()| fs::remove_dir(&backup_root));
+        return match rollback {
+            Ok(()) => {
+                let _ = fs::remove_dir_all(&staging);
+                Err(StorageError::AtomicDirectoryReplaceRolledBack {
+                    path: target,
+                    source,
+                })
+            }
+            Err(recovery) => Err(StorageError::AtomicDirectoryReplaceRecoveryRequired {
+                path: Box::new(target),
+                backup: Box::new(backup),
+                staged: Box::new(staging),
+                replace_error: source.to_string(),
+                recovery_error: recovery.to_string(),
+            }),
+        };
+    }
+    if let Err(source) = sync_parent_directory(&target) {
+        return Err(StorageError::AtomicDirectorySync {
+            path: target,
+            backup,
+            source,
+        });
+    }
+    Ok(AtomicDirectorySaveReport { target, backup })
 }
 
 /// Deletes an exact set of regular files, including files outside a LaunchBox
@@ -3948,6 +4267,155 @@ fn create_unique_sibling(
     })
 }
 
+fn create_unique_sibling_directory(
+    target: &Path,
+    kind: &str,
+    hidden: bool,
+) -> Result<PathBuf, StorageError> {
+    let parent = target.parent().unwrap_or(Path::new("."));
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("directory");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for attempt in 0..1000 {
+        let leading_dot = if hidden { "." } else { "" };
+        let candidate = parent.join(format!(
+            "{leading_dot}{file_name}.lbport-{kind}-{}-{timestamp}-{attempt}",
+            std::process::id()
+        ));
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(StorageError::Write {
+                    path: candidate,
+                    source,
+                });
+            }
+        }
+    }
+    Err(StorageError::UniqueSiblingExhausted {
+        path: target.to_path_buf(),
+        kind: kind.to_string(),
+    })
+}
+
+fn copy_directory_contents(source: &Path, destination: &Path) -> Result<(), StorageError> {
+    let source_metadata =
+        fs::symlink_metadata(source).map_err(|source_error| StorageError::Read {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+    if !source_metadata.file_type().is_dir() || source_metadata.file_type().is_symlink() {
+        return Err(StorageError::AtomicSourceNotDirectory {
+            path: source.to_path_buf(),
+        });
+    }
+    let mut entries = fs::read_dir(source)
+        .map_err(|source_error| StorageError::Read {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source_error| StorageError::Read {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if entry.file_name().to_str().is_none() {
+            return Err(StorageError::AtomicDirectoryNonUnicode { path: entry.path() });
+        }
+        let source_path = entry.path();
+        let target_path = destination.join(entry.file_name());
+        let metadata =
+            fs::symlink_metadata(&source_path).map_err(|source_error| StorageError::Read {
+                path: source_path.clone(),
+                source: source_error,
+            })?;
+        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            fs::create_dir(&target_path).map_err(|source| StorageError::Write {
+                path: target_path.clone(),
+                source,
+            })?;
+            copy_directory_contents(&source_path, &target_path)?;
+            set_path_metadata(&target_path, &metadata)?;
+            sync_directory(&target_path).map_err(|source| StorageError::Write {
+                path: target_path,
+                source,
+            })?;
+        } else if metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+            let mut input = fs::File::open(&source_path).map_err(|source| StorageError::Read {
+                path: source_path.clone(),
+                source,
+            })?;
+            let mut output = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target_path)
+                .map_err(|source| StorageError::Write {
+                    path: target_path.clone(),
+                    source,
+                })?;
+            std::io::copy(&mut input, &mut output)
+                .and_then(|_| output.flush())
+                .and_then(|()| output.set_permissions(metadata.permissions()))
+                .and_then(|()| output.set_times(file_times(&metadata)))
+                .and_then(|()| output.sync_all())
+                .map_err(|source| StorageError::Write {
+                    path: target_path,
+                    source,
+                })?;
+        } else {
+            return Err(StorageError::AtomicDirectoryUnsafeEntry { path: source_path });
+        }
+    }
+    set_path_metadata(destination, &source_metadata)?;
+    sync_directory(destination).map_err(|source| StorageError::Write {
+        path: destination.to_path_buf(),
+        source,
+    })
+}
+
+fn file_times(metadata: &fs::Metadata) -> fs::FileTimes {
+    let mut times = fs::FileTimes::new();
+    if let Ok(accessed) = metadata.accessed() {
+        times = times.set_accessed(accessed);
+    }
+    if let Ok(modified) = metadata.modified() {
+        times = times.set_modified(modified);
+    }
+    times
+}
+
+fn set_path_metadata(path: &Path, metadata: &fs::Metadata) -> Result<(), StorageError> {
+    fs::set_permissions(path, metadata.permissions()).map_err(|source| StorageError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    fs::File::open(path)
+        .and_then(|file| file.set_times(file_times(metadata)))
+        .or_else(|error| if path.is_dir() { Ok(()) } else { Err(error) })
+        .map_err(|source| StorageError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
+    fs::File::open(path).and_then(|directory| directory.sync_all())
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
 #[cfg(not(windows))]
 fn replace_file(temporary: &Path, target: &Path) -> Result<(), std::io::Error> {
     fs::rename(temporary, target)
@@ -5873,6 +6341,49 @@ pub enum StorageError {
     AtomicTargetNotFile { path: PathBuf },
     #[error("atomic save source {path} is not a regular file")]
     AtomicSourceNotFile { path: PathBuf },
+    #[error("atomic directory target {path} is not a real directory")]
+    AtomicTargetNotDirectory { path: PathBuf },
+    #[error("atomic directory source {path} is not a real directory")]
+    AtomicSourceNotDirectory { path: PathBuf },
+    #[error("atomic directory tree contains a symlink or special entry: {path}")]
+    AtomicDirectoryUnsafeEntry { path: PathBuf },
+    #[error("atomic directory tree contains a non-Unicode path: {path}")]
+    AtomicDirectoryNonUnicode { path: PathBuf },
+    #[error("atomic directory source {source_path} aliases target {target_path}")]
+    AtomicDirectorySourceAliasesTarget {
+        source_path: PathBuf,
+        target_path: PathBuf,
+    },
+    #[error("refusing to copy directory {path} because it changed after inspection")]
+    AtomicDirectorySourceConflict {
+        path: PathBuf,
+        expected: Box<DirectoryRevision>,
+        actual: Box<DirectoryRevision>,
+    },
+    #[error("refusing to overwrite directory {path} because it changed after inspection")]
+    AtomicDirectoryTargetConflict {
+        path: PathBuf,
+        expected: Box<DirectoryRevision>,
+        actual: Box<DirectoryRevision>,
+    },
+    #[error(
+        "directory replacement of {path} failed, but the original tree was restored: {source}"
+    )]
+    AtomicDirectoryReplaceRolledBack {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "directory replacement of {path} failed and requires recovery from {backup}; staged tree remains at {staged}; replacement error: {replace_error}; recovery error: {recovery_error}"
+    )]
+    AtomicDirectoryReplaceRecoveryRequired {
+        path: Box<PathBuf>,
+        backup: Box<PathBuf>,
+        staged: Box<PathBuf>,
+        replace_error: String,
+        recovery_error: String,
+    },
     #[error("atomic save source and target resolve to the same file: {path}")]
     AtomicSourceEqualsTarget { path: PathBuf },
     #[error("cannot delete an empty regular-file set")]
@@ -7446,6 +7957,168 @@ mod tests {
             Err(StorageError::WriteConflict { .. })
         ));
         assert_eq!(fs::read(&target).unwrap(), b"changed active save");
+    }
+
+    #[test]
+    fn revision_checked_directory_replace_preserves_the_source_and_retains_the_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("working-card.ps2");
+        let target = directory.path().join("active-card.ps2");
+        fs::create_dir_all(source.join("BASLUS-RESTORED/nested")).unwrap();
+        fs::create_dir_all(source.join("EMPTY")).unwrap();
+        fs::write(source.join("BASLUS-RESTORED/icon.sys"), b"restored icon").unwrap();
+        fs::write(
+            source.join("BASLUS-RESTORED/nested/progress.dat"),
+            b"restored progress",
+        )
+        .unwrap();
+        fs::create_dir_all(target.join("BASLUS-ACTIVE")).unwrap();
+        fs::write(target.join("BASLUS-ACTIVE/icon.sys"), b"active icon").unwrap();
+        fs::write(target.join("unrelated.bin"), b"active unrelated member").unwrap();
+
+        let source_revision = DirectoryRevision::read(&source).unwrap();
+        let target_revision = DirectoryRevision::read(&target).unwrap();
+        let report = replace_directory_from_source_if_revisions(
+            &source,
+            &source_revision,
+            &target,
+            &target_revision,
+        )
+        .unwrap();
+
+        assert_eq!(DirectoryRevision::read(&target).unwrap(), source_revision);
+        assert_eq!(DirectoryRevision::read(&source).unwrap(), source_revision);
+        assert_eq!(
+            DirectoryRevision::read(&report.backup).unwrap(),
+            target_revision
+        );
+        assert!(target.join("EMPTY").is_dir());
+        assert_eq!(
+            fs::read(target.join("BASLUS-RESTORED/nested/progress.dat")).unwrap(),
+            b"restored progress"
+        );
+        assert_eq!(
+            fs::read(report.backup.join("unrelated.bin")).unwrap(),
+            b"active unrelated member"
+        );
+        assert_eq!(
+            fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains("temporary"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn revision_checked_directory_replace_refuses_changed_source_or_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("working-card.ps2");
+        let target = directory.path().join("active-card.ps2");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("save.bin"), b"selected save").unwrap();
+        fs::write(target.join("save.bin"), b"active save").unwrap();
+        let source_revision = DirectoryRevision::read(&source).unwrap();
+        let target_revision = DirectoryRevision::read(&target).unwrap();
+
+        fs::write(source.join("save.bin"), b"changed selected save").unwrap();
+        assert!(matches!(
+            replace_directory_from_source_if_revisions(
+                &source,
+                &source_revision,
+                &target,
+                &target_revision,
+            ),
+            Err(StorageError::AtomicDirectorySourceConflict { .. })
+        ));
+        assert_eq!(fs::read(target.join("save.bin")).unwrap(), b"active save");
+
+        fs::write(source.join("save.bin"), b"selected save").unwrap();
+        fs::write(target.join("save.bin"), b"changed active save").unwrap();
+        assert!(matches!(
+            replace_directory_from_source_if_revisions(
+                &source,
+                &source_revision,
+                &target,
+                &target_revision,
+            ),
+            Err(StorageError::AtomicDirectoryTargetConflict { .. })
+        ));
+        assert_eq!(
+            fs::read(target.join("save.bin")).unwrap(),
+            b"changed active save"
+        );
+    }
+
+    #[test]
+    fn revision_checked_directory_replace_rolls_back_a_failed_second_move() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("working-card.ps2");
+        let target = directory.path().join("active-card.ps2");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("save.bin"), b"replacement").unwrap();
+        fs::write(target.join("save.bin"), b"original").unwrap();
+        let source_revision = DirectoryRevision::read(&source).unwrap();
+        let target_revision = DirectoryRevision::read(&target).unwrap();
+        let mut rename_count = 0;
+
+        let error = replace_directory_from_source_if_revisions_with(
+            &source,
+            &source_revision,
+            &target,
+            &target_revision,
+            |from, to| {
+                rename_count += 1;
+                if rename_count == 2 {
+                    return Err(std::io::Error::other("injected second move failure"));
+                }
+                fs::rename(from, to)
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            StorageError::AtomicDirectoryReplaceRolledBack { .. }
+        ));
+        assert_eq!(fs::read(target.join("save.bin")).unwrap(), b"original");
+        assert_eq!(fs::read(source.join("save.bin")).unwrap(), b"replacement");
+        assert_eq!(
+            fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    name.contains("temporary") || name.contains("backup")
+                })
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_revision_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let card = directory.path().join("card.ps2");
+        fs::create_dir_all(&card).unwrap();
+        fs::write(directory.path().join("outside.bin"), b"outside").unwrap();
+        symlink(
+            directory.path().join("outside.bin"),
+            card.join("unsafe-link.bin"),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            DirectoryRevision::read(&card),
+            Err(StorageError::AtomicDirectoryUnsafeEntry { .. })
+        ));
     }
 
     #[test]
