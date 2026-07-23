@@ -127,8 +127,14 @@ Its Qt Saves manager treats an existing group ID as authoritative and gives
 each ungrouped legacy row a separate in-memory key rather than guessing a 13.27
 migration. Rename, combine, and split edit only title/group fields through an
 indexed XML transaction. File ownership and emulator operations remain outside
-that metadata transaction. Backup, restore, permanent deletion, scanning,
-automatic policy, repair, and RetroArch/Dolphin/PCSX2 adapters remain open.
+that metadata transaction. The first filesystem-backed operation manually
+backs up a resolved regular active file: it uses the documented
+`Saves\<Platform>\<ROM name>[-NN].<ext>` vault shape, captures exact
+size/seven-digit UTC modified time/MD5, and commits the revision-checked streamed
+copy and full new save row as one recoverable transaction. The active file is
+read-only. Directory/container and companion-file backup, restore, permanent
+deletion, scanning, automatic policy, repair, and RetroArch/Dolphin/PCSX2
+adapters remain open.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

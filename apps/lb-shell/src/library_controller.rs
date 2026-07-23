@@ -355,6 +355,14 @@ pub mod qobject {
         );
 
         #[qinvokable]
+        fn backup_game_save(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            source_index: i32,
+        );
+
+        #[qinvokable]
         fn alternate_name_count(self: &LibraryController, row: i32, game_id: QString) -> i32;
 
         #[qinvokable]
@@ -444,6 +452,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn report_game_save_metadata_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_game_save_backup_smoke_success(
             self: &LibraryController,
             game_id: QString,
         ) -> bool;
@@ -609,7 +623,7 @@ pub mod qobject {
     impl cxx_qt::Threading for LibraryController {}
 }
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{
@@ -628,7 +642,7 @@ use lb_import::{
 };
 use lb_platform::{
     default_host_path_mappings_path, default_platform_folders, execute_launch_sequence,
-    navigation_document_file_name, platform_document_file_name,
+    navigation_document_file_name, platform_document_file_name, portable_storage_name,
     prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     ArchiveExtractor, HostPathMappings, HostPathResolver, LaunchContext, LaunchKind,
@@ -637,13 +651,17 @@ use lb_platform::{
 use lb_query::{filter_game_indices, GameFilter};
 use lb_storage::{
     find_game_references, find_platform_references, pending_transaction_manifests,
-    recover_pending_transactions, AuxiliaryDocument, GameReference, IndexedGameSaveMetadataEdit,
-    IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame,
-    NewGameMetadata, PlatformDocument, PlatformReference, StorageError, TransactionError,
+    recover_pending_transactions, AuxiliaryDocument, FileRevision, GameReference,
+    IndexedGameSaveMetadataEdit, IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex,
+    LibraryTransaction, NewGame, NewGameMetadata, PlatformDocument, PlatformReference,
+    StorageError, TransactionError,
 };
+use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 use uuid::Uuid;
@@ -1341,6 +1359,15 @@ struct GameSaveWriteSuccess {
     source: PathBuf,
     backup: PathBuf,
     operation: String,
+}
+
+struct InspectedSaveFile {
+    source: PathBuf,
+    revision: FileRevision,
+    byte_len: i64,
+    modified_utc: String,
+    md5: String,
+    original_file_name: String,
 }
 
 #[derive(Clone)]
@@ -3094,6 +3121,328 @@ fn write_game_save_metadata(
     })
 }
 
+fn inspect_save_file(path: &Path) -> Result<InspectedSaveFile, GameWriteFailure> {
+    let supplied_metadata = fs::symlink_metadata(path).map_err(|error| {
+        GameWriteFailure::Other(format!("could not inspect save file: {error}"))
+    })?;
+    if !supplied_metadata.file_type().is_file() {
+        return Err(GameWriteFailure::Other(format!(
+            "save backup currently supports regular files only: {}",
+            path.display()
+        )));
+    }
+    let source = fs::canonicalize(path).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve save file {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut file = fs::File::open(&source).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not open save file {}: {error}",
+            source.display()
+        ))
+    })?;
+    let mut md5 = Md5::new();
+    let mut sha256 = Sha256::new();
+    let mut byte_len = 0_u64;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not read save file {}: {error}",
+                source.display()
+            ))
+        })?;
+        if read == 0 {
+            break;
+        }
+        md5.update(&buffer[..read]);
+        sha256.update(&buffer[..read]);
+        byte_len = byte_len.saturating_add(read.try_into().unwrap_or(u64::MAX));
+    }
+    let metadata = file.metadata().map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not read save metadata for {}: {error}",
+            source.display()
+        ))
+    })?;
+    if metadata.len() != byte_len {
+        return Err(GameWriteFailure::Conflict(format!(
+            "save file {} changed while it was being inspected",
+            source.display()
+        )));
+    }
+    let modified = metadata.modified().map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not read the modified time for {}: {error}",
+            source.display()
+        ))
+    })?;
+    let byte_len_i64 = i64::try_from(byte_len).map_err(|_| {
+        GameWriteFailure::Other(format!(
+            "save file is too large for LaunchBox metadata: {}",
+            source.display()
+        ))
+    })?;
+    let original_file_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            GameWriteFailure::Other(format!(
+                "save filename is not portable Unicode: {}",
+                source.display()
+            ))
+        })?;
+    let modified = DateTime::<Utc>::from(modified);
+    Ok(InspectedSaveFile {
+        source,
+        revision: FileRevision {
+            byte_len,
+            sha256: format!("{:x}", sha256.finalize()),
+        },
+        byte_len: byte_len_i64,
+        modified_utc: format!(
+            "{}.{:07}Z",
+            modified.format("%Y-%m-%dT%H:%M:%S"),
+            modified.timestamp_subsec_nanos() / 100
+        ),
+        md5: format!("{:X}", md5.finalize()),
+        original_file_name,
+    })
+}
+
+fn next_save_backup_target(
+    root: &Path,
+    platform: &str,
+    rom_path: &Path,
+    source: &Path,
+) -> Result<PathBuf, GameWriteFailure> {
+    let platform = portable_storage_name(platform)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let rom_stem = rom_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.trim().is_empty())
+        .ok_or_else(|| {
+            GameWriteFailure::Other(format!(
+                "could not derive a portable ROM name from {}",
+                rom_path.display()
+            ))
+        })?;
+    let rom_stem = portable_storage_name(rom_stem)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let extension = source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(portable_storage_name)
+        .transpose()
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?
+        .map(|extension| format!(".{extension}"))
+        .unwrap_or_default();
+    let directory = root.join("Saves").join(platform);
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if !metadata.file_type().is_dir() => {
+            return Err(GameWriteFailure::Other(format!(
+                "save vault path is not a real directory: {}",
+                directory.display()
+            )))
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(&directory).map_err(|error| {
+                GameWriteFailure::Other(format!(
+                    "could not create save vault {}: {error}",
+                    directory.display()
+                ))
+            })?;
+        }
+        Err(error) => {
+            return Err(GameWriteFailure::Other(format!(
+                "could not inspect save vault {}: {error}",
+                directory.display()
+            )))
+        }
+    }
+    let canonical_directory = fs::canonicalize(&directory).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve save vault {}: {error}",
+            directory.display()
+        ))
+    })?;
+    if !canonical_directory.starts_with(root) {
+        return Err(GameWriteFailure::Other(format!(
+            "save vault resolves outside the LaunchBox root: {}",
+            canonical_directory.display()
+        )));
+    }
+    for number in 0_u32..10_000 {
+        let suffix = if number == 0 {
+            String::new()
+        } else {
+            format!("-{number:02}")
+        };
+        let target = canonical_directory.join(format!("{rom_stem}{suffix}{extension}"));
+        match fs::symlink_metadata(&target) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(target),
+            Ok(_) => {}
+            Err(error) => {
+                return Err(GameWriteFailure::Other(format!(
+                    "could not inspect save backup target {}: {error}",
+                    target.display()
+                )))
+            }
+        }
+    }
+    Err(GameWriteFailure::Other(format!(
+        "could not allocate a unique save backup name under {}",
+        canonical_directory.display()
+    )))
+}
+
+fn write_game_save_backup(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    source_index: usize,
+    expected: GameSave,
+    resolver: HostPathResolver,
+) -> Result<GameSaveWriteSuccess, GameWriteFailure> {
+    let root = fs::canonicalize(&root).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve LaunchBox root {}: {error}",
+            root.display()
+        ))
+    })?;
+    let mut document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let current = document
+        .library()
+        .game_saves
+        .iter()
+        .filter(|save| save.game_id == game_id)
+        .nth(source_index)
+        .cloned()
+        .ok_or_else(|| {
+            GameWriteFailure::Conflict(format!(
+                "game-save row {source_index} disappeared after the manager was opened"
+            ))
+        })?;
+    if current != expected {
+        return Err(GameWriteFailure::Conflict(format!(
+            "game-save row {source_index} changed after the manager was opened"
+        )));
+    }
+    let game = document
+        .library()
+        .games
+        .iter()
+        .find(|game| game.id == game_id)
+        .cloned()
+        .ok_or_else(|| GameWriteFailure::Other(format!("game {game_id} no longer exists")))?;
+    let application_path = if let Some(application_id) =
+        expected.additional_application_id.as_deref()
+    {
+        document
+            .library()
+            .additional_applications
+            .iter()
+            .find(|application| application.id == application_id && application.game_id == game_id)
+            .map(|application| application.application_path.as_str())
+            .ok_or_else(|| {
+                GameWriteFailure::Other(format!(
+                    "additional application {application_id} no longer exists"
+                ))
+            })?
+    } else {
+        game.application_path.as_str()
+    };
+    let active_path = resolver
+        .resolve(&root, &expected.file_path)
+        .map_err(|error| {
+            GameWriteFailure::Other(format!("could not resolve active save: {error}"))
+        })?;
+    if active_path.starts_with(root.join("Saves")) {
+        return Err(GameWriteFailure::Other(
+            "select the resolved Active version; an existing Vault copy cannot be backed up again"
+                .into(),
+        ));
+    }
+    let inspected = inspect_save_file(&active_path)?;
+    let rom_path = resolver.resolve(&root, application_path).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve the game path used for backup naming: {error}"
+        ))
+    })?;
+    let target = next_save_backup_target(&root, &game.platform, &rom_path, &inspected.source)?;
+    let stored_target = resolver
+        .stored_path_for_host_path(&root, &target)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+
+    let mut backup = expected.clone();
+    if backup.save_group_id.is_none() {
+        let save_group_id = Uuid::new_v4().to_string();
+        let save_group_name = backup
+            .save_group_name
+            .clone()
+            .or_else(|| backup.title.clone())
+            .unwrap_or_else(|| {
+                if backup.slot.is_some() {
+                    "My Save State".into()
+                } else {
+                    "My Save File".into()
+                }
+            });
+        document
+            .set_game_save_metadata(
+                &game_id,
+                vec![IndexedGameSaveMetadataEdit {
+                    source_index,
+                    metadata: GameSaveMetadataEdit {
+                        title: backup.title.clone(),
+                        save_group_name: Some(save_group_name.clone()),
+                        save_group_id: Some(save_group_id.clone()),
+                    },
+                }],
+            )
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        backup.save_group_name = Some(save_group_name);
+        backup.save_group_id = Some(save_group_id);
+    }
+    backup.file_path = stored_target;
+    backup.original_file_name = Some(inspected.original_file_name);
+    backup.reported_file_size_bytes = Some(inspected.byte_len);
+    backup.reported_last_modified_utc = Some(inspected.modified_utc);
+    backup.md5 = Some(inspected.md5);
+    let saves = document
+        .add_game_save(backup)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_file_copy_with_revision(&inspected.source, &target, inspected.revision)
+        .map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&document)
+        .map_err(classify_transaction_error)?;
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .next()
+        .map(|write| write.backup)
+        .ok_or_else(|| GameWriteFailure::Other("transaction reported no platform write".into()))?;
+    Ok(GameSaveWriteSuccess {
+        game_id,
+        saves,
+        source,
+        backup,
+        operation: format!("Backed up active save to {}", target.display()),
+    })
+}
+
 fn platform_catalog_path(root: &Path) -> Result<PathBuf, PlatformWriteFailure> {
     [root.join("Data/Platforms.xml"), root.join("Platforms.xml")]
         .into_iter()
@@ -4150,6 +4499,7 @@ fn classify_transaction_error(error: TransactionError) -> GameWriteFailure {
     let message = error.to_string();
     match error {
         TransactionError::Conflict { .. }
+        | TransactionError::SourceConflict { .. }
         | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
             GameWriteFailure::Conflict(message)
         }
@@ -5335,6 +5685,65 @@ impl qobject::LibraryController {
             }],
             format!("Split save version into {name}"),
         );
+    }
+
+    pub fn backup_game_save(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        source_index: i32,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let Some(source_index) = usize::try_from(source_index).ok() else {
+            self.as_mut()
+                .set_status_message(qstring("The selected save version is invalid."));
+            return;
+        };
+        let Some(expected) = self
+            .as_ref()
+            .game_saves_for_model(row, &game_id)
+            .and_then(|saves| saves.get(source_index))
+            .cloned()
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The selected save version no longer exists; reload and try again.",
+            ));
+            return;
+        };
+        let Some((source, root)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Backing up active save in the background..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-game-save-backup".to_string())
+            .spawn(move || {
+                let result =
+                    write_game_save_backup(root, source, game_id, source_index, expected, resolver);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_game_save_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start game-save backup: {error}"
+            )));
+        }
     }
 
     fn start_game_save_write(
@@ -6712,6 +7121,36 @@ impl qobject::LibraryController {
         if success {
             eprintln!(
                 "GAME_SAVE_METADATA_SMOKE_COMPLETE groups=2 writes={} revision={} data_changes={}",
+                rust.game_save_write_notifications,
+                self.game_save_revision(),
+                rust.data_change_notifications,
+            );
+        }
+        success
+    }
+
+    pub fn report_game_save_backup_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let saves = rust.game_saves_by_game.get(&game_id);
+        let success = saves.is_some_and(|saves| {
+            saves.len() == 2
+                && saves[0].file_path == r"Emulator\Saves\slot1.sav"
+                && saves[1].file_path == r"Saves\Fixture Console\adventure.sav"
+                && saves[0].save_group_id.is_some()
+                && saves[0].save_group_id == saves[1].save_group_id
+                && saves[1].original_file_name.as_deref() == Some("slot1.sav")
+                && saves[1].reported_file_size_bytes.is_some()
+                && saves[1].reported_last_modified_utc.is_some()
+                && saves[1].md5.is_some()
+        }) && rust.game_save_write_notifications == 1
+            && *self.game_save_revision() == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "GAME_SAVE_BACKUP_SMOKE_COMPLETE saves=2 writes={} revision={} data_changes={}",
                 rust.game_save_write_notifications,
                 self.game_save_revision(),
                 rust.data_change_notifications,
@@ -11141,6 +11580,89 @@ mod tests {
             unresolved.groups[0].versions[0].file_path,
             r"C:\RetroArch\saves\game.srm"
         );
+    }
+
+    #[test]
+    fn manual_save_backup_copies_and_records_one_exact_active_file_transactionally() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        fs::create_dir_all(&platform_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE.replace(
+            r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+            r"<FilePath>Emulator\Saves\slot1.sav</FilePath>",
+        );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let rom_path = directory
+            .path()
+            .join("Games/Fixture Adventure/adventure.rom");
+        let active_path = directory.path().join("Emulator/Saves/slot1.sav");
+        fs::create_dir_all(rom_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(active_path.parent().unwrap()).unwrap();
+        fs::write(&rom_path, b"fixture rom").unwrap();
+        fs::write(&active_path, b"active save bytes").unwrap();
+
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let active = document.library().game_saves[0].clone();
+        let first = write_game_save_backup(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-adventure".into(),
+            0,
+            active,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        let first_target = directory.path().join("Saves/Fixture Console/adventure.sav");
+        assert_eq!(fs::read(&first_target).unwrap(), b"active save bytes");
+        assert_eq!(fs::read(&active_path).unwrap(), b"active save bytes");
+        assert_eq!(fs::read(&first.backup).unwrap(), platform_xml.as_bytes());
+        assert_eq!(first.saves.len(), 2);
+        let group_id = first.saves[0].save_group_id.as_deref().unwrap();
+        assert_eq!(first.saves[1].save_group_id.as_deref(), Some(group_id));
+        assert_eq!(
+            first.saves[1].file_path,
+            r"Saves\Fixture Console\adventure.sav"
+        );
+        assert_eq!(
+            first.saves[1].original_file_name.as_deref(),
+            Some("slot1.sav")
+        );
+        assert_eq!(first.saves[1].reported_file_size_bytes, Some(17));
+        assert_eq!(
+            first.saves[1].md5.as_deref(),
+            Some("9ECC3C48205ADFEA97E0113B060233B2")
+        );
+        let timestamp = first.saves[1]
+            .reported_last_modified_utc
+            .as_deref()
+            .unwrap();
+        let (_, fractional) = timestamp.rsplit_once('.').unwrap();
+        assert_eq!(fractional.strip_suffix('Z').unwrap().len(), 7);
+
+        let second = write_game_save_backup(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-adventure".into(),
+            0,
+            first.saves[0].clone(),
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        let second_target = directory
+            .path()
+            .join("Saves/Fixture Console/adventure-01.sav");
+        assert_eq!(fs::read(&second_target).unwrap(), b"active save bytes");
+        assert_eq!(second.saves.len(), 3);
+        assert_eq!(
+            second.saves[2].file_path,
+            r"Saves\Fixture Console\adventure-01.sav"
+        );
+        assert!(String::from_utf8_lossy(&fs::read(&platform_path).unwrap())
+            .contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

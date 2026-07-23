@@ -82,7 +82,10 @@ struct PendingChange {
 #[derive(Clone, Debug)]
 enum PendingCandidate {
     Bytes(Vec<u8>),
-    SourceFile(PathBuf),
+    SourceFile {
+        path: PathBuf,
+        expected: Option<FileRevision>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -281,7 +284,48 @@ impl LibraryTransaction {
         self.push_change(PendingChange {
             target,
             operation: TransactionOperation::Create,
-            candidate: Some(PendingCandidate::SourceFile(source)),
+            candidate: Some(PendingCandidate::SourceFile {
+                path: source,
+                expected: None,
+            }),
+            expected: None,
+        })
+    }
+
+    /// Stages a streamed file creation while requiring the copied bytes to
+    /// match a revision already inspected by the caller. This lets metadata
+    /// such as hashes and sizes be derived from one exact source snapshot
+    /// without trusting a path that may change before the transaction is
+    /// durably prepared.
+    pub fn stage_file_copy_with_revision(
+        &mut self,
+        source: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+        expected: FileRevision,
+    ) -> Result<(), TransactionError> {
+        let supplied_source = source.as_ref();
+        let metadata =
+            fs::symlink_metadata(supplied_source).map_err(|source| TransactionError::Io {
+                path: supplied_source.to_path_buf(),
+                source,
+            })?;
+        if !metadata.file_type().is_file() {
+            return Err(TransactionError::SourceNotFile {
+                path: supplied_source.to_path_buf(),
+            });
+        }
+        let source = fs::canonicalize(supplied_source).map_err(|source| TransactionError::Io {
+            path: supplied_source.to_path_buf(),
+            source,
+        })?;
+        let target = self.checked_new_target(target.as_ref())?;
+        self.push_change(PendingChange {
+            target,
+            operation: TransactionOperation::Create,
+            candidate: Some(PendingCandidate::SourceFile {
+                path: source,
+                expected: Some(expected),
+            }),
             expected: None,
         })
     }
@@ -718,8 +762,8 @@ fn prepare_staged_candidate(
                 staged.write_all(bytes)?;
                 FileRevision::from_bytes(bytes)
             }
-            PendingCandidate::SourceFile(source) => {
-                let mut source_file = fs::File::open(source)?;
+            PendingCandidate::SourceFile { path, .. } => {
+                let mut source_file = fs::File::open(path)?;
                 let mut digest = Sha256::new();
                 let mut byte_len = 0_u64;
                 let mut buffer = vec![0_u8; 1024 * 1024];
@@ -757,6 +801,20 @@ fn prepare_staged_candidate(
             });
         }
     };
+    if let PendingCandidate::SourceFile {
+        path,
+        expected: Some(expected),
+    } = candidate
+    {
+        if revision != *expected {
+            let _ = fs::remove_file(&staged_path);
+            return Err(TransactionError::SourceConflict {
+                path: path.clone(),
+                expected: expected.clone(),
+                actual: revision,
+            });
+        }
+    }
     drop(staged);
     Ok((staged_path, revision))
 }
@@ -1156,6 +1214,12 @@ pub enum TransactionError {
     },
     #[error("document changed since it was loaded: {path}")]
     Conflict {
+        path: PathBuf,
+        expected: FileRevision,
+        actual: FileRevision,
+    },
+    #[error("copy source changed after it was inspected: {path}")]
+    SourceConflict {
         path: PathBuf,
         expected: FileRevision,
         actual: FileRevision,
@@ -1777,6 +1841,33 @@ mod tests {
                 .title,
             "Imported Adventure"
         );
+    }
+
+    #[test]
+    fn refuses_a_streamed_copy_when_the_source_changed_after_inspection() {
+        let (directory, _, _) = fixture_tree();
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("active-save.srm");
+        fs::write(&source, b"inspected save bytes").unwrap();
+        let expected = FileRevision::read(&source).unwrap();
+        fs::write(&source, b"new emulator save bytes").unwrap();
+        let target_directory = directory.path().join("Saves/Fixture Console");
+        fs::create_dir_all(&target_directory).unwrap();
+        let target = target_directory.join("fixture-adventure.srm");
+
+        let mut transaction = LibraryTransaction::new(directory.path()).unwrap();
+        transaction
+            .stage_file_copy_with_revision(&source, &target, expected.clone())
+            .unwrap();
+        assert!(matches!(
+            transaction.commit(),
+            Err(TransactionError::SourceConflict {
+                path,
+                expected: actual_expected,
+                ..
+            }) if path == fs::canonicalize(&source).unwrap() && actual_expected == expected
+        ));
+        assert!(!target.exists());
     }
 
     #[test]

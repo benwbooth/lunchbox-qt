@@ -281,9 +281,12 @@ the edit/default backup chain, direct-launch sentinel, model refresh, lexical
 Windows path, and game-only/unknown-data retention. The first save-management
 subset now models the full persisted 13.27 save record and provides lossless
 group/version inventory plus rename, combine, and split metadata operations.
-File/folder scanning, backup, restore, deletion, automatic policy, repair, and
-emulator adapters remain open, as do the manual combine/expand actions in
-`LIB-010`.
+Manual backup now covers one resolved regular active file with documented
+portable vault naming, a full size/time/MD5 row, source-revision checking, and
+one recoverable file-plus-XML transaction; it never changes the active file.
+File/folder scanning, directory/container and companion-file backup, restore,
+deletion, automatic policy, repair, and emulator adapters remain open, as do
+the manual combine/expand actions in `LIB-010`.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:

@@ -60,6 +60,11 @@ ApplicationWindow {
             "--game-save-metadata-smoke-test") >= 0
     property int gameSaveMetadataSmokePhase: 0
     property bool gameSaveMetadataSmokeFinished: false
+    property bool gameSaveBackupSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--game-save-backup-smoke-test") >= 0
+    property int gameSaveBackupSmokePhase: 0
+    property bool gameSaveBackupSmokeFinished: false
     property int platformCrudSmokePhase: 0
     property int platformCrudBlockedReferences: 0
     property string platformCrudAddedGameId: ""
@@ -699,6 +704,61 @@ ApplicationWindow {
                           + window.gameSaveMetadataSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(16)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameSaveBackupSmokeTest
+                 && !window.gameSaveBackupSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-adventure"
+            if (window.gameSaveBackupSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 1) {
+                    console.error("GAME_SAVE_BACKUP_SMOKE_MISSING_FIXTURE")
+                    Qt.exit(17)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Adventure")
+                const version = gameSaveManager.selectedVersion()
+                if (version === null || version.location_kind !== "active") {
+                    console.error(
+                        "GAME_SAVE_BACKUP_SMOKE_ACTIVE_NOT_RESOLVED")
+                    Qt.exit(17)
+                    return
+                }
+                window.gameSaveBackupSmokePhase = 1
+                controller.backup_game_save(
+                    row, gameId, version.source_index)
+            } else if (window.gameSaveBackupSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_save_revision === 1) {
+                if (!controller.report_game_save_backup_smoke_success(gameId)) {
+                    console.error(
+                        "GAME_SAVE_BACKUP_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(17)
+                    return
+                }
+                window.gameSaveBackupSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.gameSaveBackupSmokeTest
+                 && !window.gameSaveBackupSmokeFinished
+        onTriggered: {
+            console.error("GAME_SAVE_BACKUP_SMOKE_TIMEOUT phase="
+                          + window.gameSaveBackupSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(17)
         }
     }
 
@@ -1989,7 +2049,7 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.preferredWidth: 820
-                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. This manager currently edits grouping metadata only and never moves or deletes save files."
+                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Manual backup copies one regular active save into the vault and records it atomically; emulator containers and companion-file sets require their emulator adapter."
                 wrapMode: Text.Wrap
                 color: "#aeb8c5"
             }
@@ -2107,6 +2167,17 @@ ApplicationWindow {
                         }
                     }
                     RowLayout {
+                        Button {
+                            text: "Backup Save"
+                            enabled: gameSaveManager.selectedVersion() !== null
+                                     && gameSaveManager.selectedVersion().location_kind
+                                        === "active"
+                                     && !controller.writing
+                            onClicked: controller.backup_game_save(
+                                           gameSaveManager.modelRow,
+                                           gameSaveManager.gameId,
+                                           gameSaveManager.selectedVersion().source_index)
+                        }
                         Button {
                             text: "Rename Version"
                             enabled: gameSaveManager.selectedVersion() !== null

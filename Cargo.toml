@@ -30,6 +30,7 @@ lb-metadata = { path = "crates/lb-metadata" }
 lb-platform = { path = "crates/lb-platform" }
 lb-query = { path = "crates/lb-query" }
 lb-storage = { path = "crates/lb-storage" }
+md-5 = "0.10"
 quick-xml = { version = "0.38", features = ["serialize"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }

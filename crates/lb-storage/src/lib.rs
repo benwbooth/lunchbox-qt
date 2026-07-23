@@ -2459,6 +2459,45 @@ impl PlatformDocument {
             .collect())
     }
 
+    /// Appends one filesystem-backed save record while preserving every
+    /// existing row and unknown XML field. The caller owns file creation and
+    /// must stage this document in the same transaction as that file.
+    pub fn add_game_save(&mut self, save: GameSave) -> Result<Vec<GameSave>, StorageError> {
+        let game_id = save.game_id.clone();
+        self.require_game(&game_id)?;
+        save.validate()?;
+        if let Some(application_id) = save.additional_application_id.as_deref() {
+            let owned = self
+                .library
+                .additional_applications
+                .iter()
+                .any(|application| {
+                    application.id == application_id && application.game_id == save.game_id
+                });
+            if !owned {
+                return Err(StorageError::AdditionalApplicationNotFound {
+                    id: application_id.to_string(),
+                });
+            }
+        }
+
+        let element = game_save_element(&save);
+        parse_game_save(&element)?;
+        let insertion = platform_record_insertion_index(&self.root, "GameSave");
+        self.root
+            .children
+            .insert(insertion, XMLNode::Element(element));
+        self.library.game_saves.push(save);
+        self.library.validate()?;
+        Ok(self
+            .library
+            .game_saves
+            .iter()
+            .filter(|record| record.game_id == game_id)
+            .cloned()
+            .collect())
+    }
+
     fn require_game(&self, id: &str) -> Result<(), StorageError> {
         self.library
             .games
@@ -5162,6 +5201,73 @@ fn additional_application_element(application: &AdditionalApplication) -> Elemen
     element
 }
 
+fn game_save_element(save: &GameSave) -> Element {
+    let mut element = Element::new("GameSave");
+    set_child_text(&mut element, "GameId", &save.game_id);
+    set_optional_child_text(
+        &mut element,
+        "AdditionalApplicationId",
+        save.additional_application_id.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "EmulatorFileName",
+        (!save.emulator_file_name.is_empty()).then_some(save.emulator_file_name.as_str()),
+    );
+    set_optional_child_text(
+        &mut element,
+        "EmulatorCore",
+        (!save.emulator_core.is_empty()).then_some(save.emulator_core.as_str()),
+    );
+    set_optional_child_text(&mut element, "Title", save.title.as_deref());
+    set_optional_child_text(
+        &mut element,
+        "SaveGroupName",
+        save.save_group_name.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "DisplayChipText",
+        save.display_chip_text.as_deref(),
+    );
+    set_optional_child_text(&mut element, "SaveGroupId", save.save_group_id.as_deref());
+    set_optional_child_text(
+        &mut element,
+        "MatchLineageId",
+        save.match_lineage_id.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "MigrationFamilyId",
+        save.migration_family_id.as_deref(),
+    );
+    set_child_text(&mut element, "FilePath", &save.file_path);
+    set_optional_child_text(
+        &mut element,
+        "OriginalFileName",
+        save.original_file_name.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "Slot",
+        save.slot.map(|value| value.to_string()).as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "ReportedFileSizeBytes",
+        save.reported_file_size_bytes
+            .map(|value| value.to_string())
+            .as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "ReportedLastModifiedUtc",
+        save.reported_last_modified_utc.as_deref(),
+    );
+    set_optional_child_text(&mut element, "Md5", save.md5.as_deref());
+    element
+}
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("failed to read {path}: {source}")]
@@ -5507,6 +5613,61 @@ mod tests {
         fs::write(&path, fixture).unwrap();
         let index = LibraryIndex::load(&path).unwrap();
         assert_eq!(index.game_saves().next(), Some(save));
+    }
+
+    #[test]
+    fn appends_a_full_game_save_record_without_rewriting_existing_xml() {
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes()).unwrap();
+        let original = document.library().game_saves[0].clone();
+        let backup = GameSave {
+            game_id: "fixture-adventure".into(),
+            additional_application_id: Some("fixture-adventure-manual".into()),
+            emulator_core: "fixture-core".into(),
+            emulator_file_name: "fixture-emulator".into(),
+            title: Some("Manual Backup".into()),
+            save_group_name: Some("Final Run".into()),
+            display_chip_text: Some("Slot 2".into()),
+            save_group_id: Some("save-group-alpha".into()),
+            match_lineage_id: Some("lineage-alpha".into()),
+            migration_family_id: Some("migration-alpha".into()),
+            file_path: r"Saves\Fixture Console\fixture-adventure.sav".into(),
+            original_file_name: Some("fixture-adventure.sav".into()),
+            slot: Some(2),
+            reported_file_size_bytes: Some(8192),
+            reported_last_modified_utc: Some("2026-07-23T01:02:03.4567890Z".into()),
+            md5: Some("0123456789ABCDEF0123456789ABCDEF".into()),
+        };
+
+        let saves = document.add_game_save(backup.clone()).unwrap();
+        assert_eq!(saves, vec![original, backup.clone()]);
+        let xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+        assert!(xml.contains(r"<FilePath>Saves\Fixture Console\fixture-adventure.sav</FilePath>"));
+
+        let reparsed =
+            PlatformDocument::from_reader("Fixture Console.xml", xml.as_bytes()).unwrap();
+        assert_eq!(reparsed.library().game_saves.last(), Some(&backup));
+    }
+
+    #[test]
+    fn rejects_a_game_save_for_an_unknown_additional_application_without_mutation() {
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes()).unwrap();
+        let before = document.to_xml_bytes().unwrap();
+        let save = GameSave {
+            game_id: "fixture-adventure".into(),
+            additional_application_id: Some("missing-app".into()),
+            file_path: r"Saves\Fixture Console\fixture.sav".into(),
+            ..GameSave::default()
+        };
+        assert!(matches!(
+            document.add_game_save(save),
+            Err(StorageError::AdditionalApplicationNotFound {
+                id
+            }) if id == "missing-app"
+        ));
+        assert_eq!(document.to_xml_bytes().unwrap(), before);
     }
 
     #[test]

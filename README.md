@@ -249,11 +249,18 @@ launch, emulator, version metadata, provider/cloud, and play-statistics fields
 onto the owning game while preserving game identity and game-only data. Save
 records now use the full persisted 13.27 contract in both readers. A per-game
 Saves manager displays grouped version history and provides transactional
-Rename Version, Rename Group, Combine, and Make New Save metadata operations.
+Rename Version, Rename Group, Combine, and Make New Save metadata operations,
+plus manual backup for a resolved regular active-save file. Manual backup
+derives the portable `Saves\<Platform>\<ROM name>[-NN].<ext>` target through
+the host-path service, records the exact size, seven-digit UTC modified time,
+and MD5, and commits the streamed vault copy with the full new `<GameSave>` row
+under one recovery manifest. A legacy ungrouped source receives an explicit
+group ID in that same transaction.
 Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
-Unresolved. These operations never move or delete save files. Emulator save
-scanning, backup/restore/delete, automatic-backup policy, repair, and
+Unresolved. Metadata operations never move or delete save files, and backup
+never changes the active file. Save scanning, directory/container and companion
+file backup, restore, permanent deletion, automatic-backup policy, repair, and
 emulator-specific adapters remain open, as does manual game combine/expand.
 
 Emulator

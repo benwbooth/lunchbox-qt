@@ -14,8 +14,10 @@ lb-import.workspace = true
 lb-platform.workspace = true
 lb-query.workspace = true
 lb-storage.workspace = true
+md-5.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 
 [build-dependencies]
