@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <InputBinding>
+    <InputAction>Play</InputAction>
+    <ControllerBinding>ButtonA</ControllerBinding>
+    <ControllerHoldBinding>None</ControllerHoldBinding>
+  </InputBinding>
+</LaunchBox>

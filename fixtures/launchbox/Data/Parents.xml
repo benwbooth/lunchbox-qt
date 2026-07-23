@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Parent>
+    <ParentPlatformCategoryName>Fixture Category</ParentPlatformCategoryName>
+    <PlatformName>Fixture Console</PlatformName>
+  </Parent>
+  <Parent>
+    <PlaylistId>fixture-playlist</PlaylistId>
+  </Parent>
+</LaunchBox>

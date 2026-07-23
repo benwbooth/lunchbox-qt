@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <ListCacheItem>
+    <PlaylistId>fixture-playlist</PlaylistId>
+    <LaunchBoxCount>1</LaunchBoxCount>
+    <LaunchBoxIncludeBroken>false</LaunchBoxIncludeBroken>
+    <LaunchBoxIncludeHidden>false</LaunchBoxIncludeHidden>
+    <LaunchBoxExcludeGamesMissingBackgroundImage>false</LaunchBoxExcludeGamesMissingBackgroundImage>
+    <LaunchBoxExcludeGamesMissingBoxFrontImage>false</LaunchBoxExcludeGamesMissingBoxFrontImage>
+    <LaunchBoxExcludeGamesMissingClearLogoImage>false</LaunchBoxExcludeGamesMissingClearLogoImage>
+    <LaunchBoxExcludeGamesMissingScreenshotImage>false</LaunchBoxExcludeGamesMissingScreenshotImage>
+    <LaunchBoxExcludeGamesMissingVideos>false</LaunchBoxExcludeGamesMissingVideos>
+    <BigBoxCount>1</BigBoxCount>
+    <BigBoxIncludeBroken>false</BigBoxIncludeBroken>
+    <BigBoxIncludeHidden>false</BigBoxIncludeHidden>
+    <BigBoxExcludeGamesMissingBackgroundImage>false</BigBoxExcludeGamesMissingBackgroundImage>
+    <BigBoxExcludeGamesMissingBoxFrontImage>false</BigBoxExcludeGamesMissingBoxFrontImage>
+    <BigBoxExcludeGamesMissingClearLogoImage>false</BigBoxExcludeGamesMissingClearLogoImage>
+    <BigBoxExcludeGamesMissingScreenshotImage>false</BigBoxExcludeGamesMissingScreenshotImage>
+    <BigBoxExcludeGamesMissingVideos>false</BigBoxExcludeGamesMissingVideos>
+  </ListCacheItem>
+</LaunchBox>

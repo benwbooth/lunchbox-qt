@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Emulator>
+    <ID>fixture-emulator</ID>
+    <Title>Fixture Emulator</Title>
+    <ApplicationPath>Emulators/fixture-emulator</ApplicationPath>
+    <CommandLine>--fullscreen</CommandLine>
+    <AutoExtract>true</AutoExtract>
+    <AggressiveWindowHiding>false</AggressiveWindowHiding>
+    <DefaultPauseSettingsPushed>true</DefaultPauseSettingsPushed>
+    <DisableShutdownScreen>false</DisableShutdownScreen>
+    <EnableHardcoreAchievements>false</EnableHardcoreAchievements>
+    <FileNameWithoutExtensionAndPath>false</FileNameWithoutExtensionAndPath>
+    <ForcefulPauseScreenActivation>false</ForcefulPauseScreenActivation>
+    <HideAllNonExclusiveFullscreenWindows>false</HideAllNonExclusiveFullscreenWindows>
+    <HideConsole>false</HideConsole>
+    <HideMouseCursorInGame>true</HideMouseCursorInGame>
+    <LoginToCheevoOnGameLaunch>false</LoginToCheevoOnGameLaunch>
+    <NoQuotes>false</NoQuotes>
+    <NoSpace>false</NoSpace>
+    <SkipVersionCheck>false</SkipVersionCheck>
+    <StartupLoadDelay>250</StartupLoadDelay>
+    <SuspendProcessOnPause>true</SuspendProcessOnPause>
+    <UsePauseScreen>true</UsePauseScreen>
+    <UseStartupScreen>true</UseStartupScreen>
+  </Emulator>
+  <EmulatorPlatform>
+    <Emulator>fixture-emulator</Emulator>
+    <Platform>Fixture Console</Platform>
+    <CommandLine>--platform fixture</CommandLine>
+    <Default>true</Default>
+    <M3uDiscLoadEnabled>false</M3uDiscLoadEnabled>
+  </EmulatorPlatform>
+</LaunchBox>

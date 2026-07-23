@@ -1,0 +1,15 @@
+<?xml version="1.0" standalone="yes"?>
+<LaunchBox>
+  <Game>
+    <ApplicationPath>Z:\LaunchTargets\argument-recorder</ApplicationPath>
+    <CommandLine>--direct "two words"</CommandLine>
+    <Completed>false</Completed>
+    <Emulator>00000000-0000-0000-0000-000000000000</Emulator>
+    <Favorite>false</Favorite>
+    <ID>fixture-direct</ID>
+    <Platform>Direct Fixture</Platform>
+    <PlayCount>0</PlayCount>
+    <PlayTime>0</PlayTime>
+    <Title>Direct Launch Fixture</Title>
+  </Game>
+</LaunchBox>

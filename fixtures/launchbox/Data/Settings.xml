@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Settings>
+    <Theme>Fixture Theme</Theme>
+    <DebugLog>false</DebugLog>
+    <EmptyValue />
+  </Settings>
+  <ImageTypeSettings>
+    <ImageType>Box - Front</ImageType>
+    <IsDefault>true</IsDefault>
+    <UseInAutoImports>true</UseInAutoImports>
+  </ImageTypeSettings>
+</LaunchBox>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <GameController>
+    <Id>fixture-controller</Id>
+    <Name>Fixture Controller</Name>
+    <Category>Gamepad</Category>
+    <AssociatedPlatforms />
+  </GameController>
+</LaunchBox>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Game>
+    <ApplicationPath />
+    <Completed>false</Completed>
+    <Favorite>false</Favorite>
+    <ID>fixture-scummvm</ID>
+    <Platform>ScummVM</Platform>
+    <ScummVMAspectCorrection>true</ScummVMAspectCorrection>
+    <ScummVMFullscreen>true</ScummVMFullscreen>
+    <ScummVMGameDataFolderPath>Games\Monkey Island 2</ScummVMGameDataFolderPath>
+    <ScummVMGameType>monkey2</ScummVMGameType>
+    <Title>ScummVM Legacy Fixture</Title>
+    <UseScummVM>true</UseScummVM>
+  </Game>
+</LaunchBox>

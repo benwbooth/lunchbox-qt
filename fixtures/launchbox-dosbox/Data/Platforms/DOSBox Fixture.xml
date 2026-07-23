@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Game>
+    <ApplicationPath>Games\DOS Fixture/BIN\PLAY.BAT</ApplicationPath>
+    <CommandLine>-fast</CommandLine>
+    <Completed>false</Completed>
+    <CustomDosBoxVersionPath>Runtime\dosbox-recorder</CustomDosBoxVersionPath>
+    <DosBoxConfigurationPath>Config/dosbox.conf</DosBoxConfigurationPath>
+    <Favorite>false</Favorite>
+    <ID>fixture-dosbox</ID>
+    <Platform>MS-DOS</Platform>
+    <RootFolder>Games/DOS Fixture</RootFolder>
+    <Title>DOSBox Mount Fixture</Title>
+    <UseDosBox>true</UseDosBox>
+  </Game>
+  <Mount>
+    <GameID>fixture-dosbox</GameID>
+    <DriveLetter>D</DriveLetter>
+    <Filesystem>ISO</Filesystem>
+    <MountType>Folder</MountType>
+    <Path>Media\CD Files</Path>
+    <Type>CD-ROM/ISO</Type>
+  </Mount>
+  <Mount>
+    <GameID>fixture-dosbox</GameID>
+    <DriveLetter>A</DriveLetter>
+    <Filesystem>FAT</Filesystem>
+    <MountType>File</MountType>
+    <Path>Media/Disk One.img</Path>
+    <Type>Floppy</Type>
+  </Mount>
+  <Mount>
+    <GameID>fixture-dosbox</GameID>
+    <DriveLetter>E</DriveLetter>
+    <Filesystem>ISO</Filesystem>
+    <MountType>File</MountType>
+    <Path>Media\Game.iso</Path>
+    <Type>CD-ROM/ISO</Type>
+  </Mount>
+</LaunchBox>

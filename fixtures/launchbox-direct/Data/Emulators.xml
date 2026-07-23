@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Emulator>
+    <ID>fixture-default-emulator</ID>
+    <Title>Default Emulator That Must Be Bypassed</Title>
+    <ApplicationPath>Emulators\must-not-run</ApplicationPath>
+    <CommandLine>--wrong-emulator</CommandLine>
+  </Emulator>
+  <EmulatorPlatform>
+    <Emulator>fixture-default-emulator</Emulator>
+    <Platform>Direct Fixture</Platform>
+    <CommandLine>--wrong-platform</CommandLine>
+    <Default>true</Default>
+    <M3uDiscLoadEnabled>false</M3uDiscLoadEnabled>
+    <AutoExtract>false</AutoExtract>
+  </EmulatorPlatform>
+</LaunchBox>

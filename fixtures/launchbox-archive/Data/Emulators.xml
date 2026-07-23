@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Emulator>
+    <ID>fixture-archive-emulator</ID>
+    <Title>Fixture Archive Emulator</Title>
+    <ApplicationPath>Emulators/archive-recorder</ApplicationPath>
+    <CommandLine>--fallback-should-not-be-used</CommandLine>
+    <AutoExtract>true</AutoExtract>
+    <FileNameWithoutExtensionAndPath>false</FileNameWithoutExtensionAndPath>
+    <HideConsole>false</HideConsole>
+    <NoSpace>false</NoSpace>
+  </Emulator>
+  <EmulatorPlatform>
+    <Emulator>fixture-archive-emulator</Emulator>
+    <Platform>Archive Fixture</Platform>
+    <CommandLine>--rom %romfile% --dir %romlocation%</CommandLine>
+    <Default>true</Default>
+    <M3uDiscLoadEnabled>false</M3uDiscLoadEnabled>
+  </EmulatorPlatform>
+</LaunchBox>

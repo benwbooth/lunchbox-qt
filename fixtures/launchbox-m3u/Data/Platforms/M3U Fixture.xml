@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Game>
+    <ApplicationPath>Games\M3U Fixture\Multi Disc Racer (Disc 1).chd</ApplicationPath>
+    <Broken>false</Broken>
+    <Completed>false</Completed>
+    <Favorite>false</Favorite>
+    <ID>fixture-m3u</ID>
+    <Platform>M3U Fixture</Platform>
+    <Title>Multi Disc Racer</Title>
+  </Game>
+  <AdditionalApplication>
+    <ApplicationPath>Manual\instructions.pdf</ApplicationPath>
+    <AutoRunAfter>false</AutoRunAfter>
+    <AutoRunBefore>false</AutoRunBefore>
+    <CommandLine />
+    <EmulatorId />
+    <GameID>fixture-m3u</GameID>
+    <Id>fixture-m3u-manual</Id>
+    <Name>Game Manual</Name>
+    <Priority>0</Priority>
+    <UseDosBox>false</UseDosBox>
+    <UseEmulator>false</UseEmulator>
+    <WaitForExit>false</WaitForExit>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Games/M3U Fixture/Multi Disc Racer (Disc 3).chd</ApplicationPath>
+    <AutoRunAfter>false</AutoRunAfter>
+    <AutoRunBefore>false</AutoRunBefore>
+    <CommandLine />
+    <Disc>3</Disc>
+    <EmulatorId>fixture-m3u-emulator</EmulatorId>
+    <GameID>fixture-m3u</GameID>
+    <Id>fixture-m3u-disc-3</Id>
+    <Name>Play Disc 3</Name>
+    <Priority>3</Priority>
+    <UseDosBox>false</UseDosBox>
+    <UseEmulator>true</UseEmulator>
+    <WaitForExit>false</WaitForExit>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Games\M3U Fixture\Multi Disc Racer (Disc 1).chd</ApplicationPath>
+    <AutoRunAfter>false</AutoRunAfter>
+    <AutoRunBefore>false</AutoRunBefore>
+    <CommandLine />
+    <Disc>1</Disc>
+    <EmulatorId>fixture-m3u-emulator</EmulatorId>
+    <GameID>fixture-m3u</GameID>
+    <Id>fixture-m3u-disc-1</Id>
+    <Name>Play Disc 1</Name>
+    <Priority>1</Priority>
+    <UseDosBox>false</UseDosBox>
+    <UseEmulator>true</UseEmulator>
+    <WaitForExit>false</WaitForExit>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Games\M3U Fixture/Multi Disc Racer (Disc 2).zip</ApplicationPath>
+    <AutoRunAfter>false</AutoRunAfter>
+    <AutoRunBefore>false</AutoRunBefore>
+    <CommandLine />
+    <Disc>2</Disc>
+    <EmulatorId>fixture-m3u-emulator</EmulatorId>
+    <GameID>fixture-m3u</GameID>
+    <Id>fixture-m3u-disc-2</Id>
+    <Name>Play Disc 2</Name>
+    <Priority>2</Priority>
+    <UseDosBox>false</UseDosBox>
+    <UseEmulator>true</UseEmulator>
+    <WaitForExit>false</WaitForExit>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Runtime/m3u-after</ApplicationPath>
+    <AutoRunAfter>true</AutoRunAfter>
+    <AutoRunBefore>false</AutoRunBefore>
+    <CommandLine />
+    <EmulatorId />
+    <GameID>fixture-m3u</GameID>
+    <Id>fixture-m3u-after</Id>
+    <Name>M3U Cleanup Gate</Name>
+    <Priority>4</Priority>
+    <UseDosBox>false</UseDosBox>
+    <UseEmulator>false</UseEmulator>
+    <WaitForExit>false</WaitForExit>
+  </AdditionalApplication>
+</LaunchBox>

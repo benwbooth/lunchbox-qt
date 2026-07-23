@@ -1,0 +1,199 @@
+# LaunchBox / BigBox cross-platform port research
+
+This repository is the evidence and planning workspace for a native,
+cross-platform LaunchBox-compatible front end built with Rust, Qt 6, QML, and
+[CXX-Qt](https://github.com/KDAB/cxx-qt).
+
+The local LaunchBox 13.27 Windows oracle has been installed with Wine and all
+first-party managed assemblies have been structurally decompiled. The original
+installation and decompiled proprietary sources are intentionally ignored;
+derived inventories and specifications live in this repository.
+
+## Current artifacts
+
+- [Reverse-engineering status](docs/RE_STATUS.md)
+- [Static feature matrix](docs/FEATURE_MATRIX.md)
+- [Port architecture and execution plan](docs/PORT_PLAN.md)
+- [Current implementation and verification status](docs/IMPLEMENTATION_STATUS.md)
+- [Machine-readable static inventory](analysis/static-inventory.json)
+- [Value-free LaunchBox 13.24 data schema](analysis/real-install-schema.json)
+
+## Develop and run
+
+The flake pins Rust, Qt 6, CXX-Qt, and the native build tools. Both front ends
+load the embedded synthetic fixture unless `--library` is supplied.
+
+```bash
+nix develop
+cargo test --workspace --all-targets
+./scripts/check_windows_core.sh
+cargo build -p lb-shell && ./scripts/check_qml.sh
+cargo run -p lb-shell --bin launchbox
+cargo run -p lb-shell --bin bigbox -- --windowed
+```
+
+Read an existing installation without modifying it:
+
+```bash
+cargo run -p lb-shell --bin launchbox -- --library "$LAUNCHBOX_PATH"
+cargo run -p lb-storage --example inspect_library -- "$LAUNCHBOX_PATH"
+cargo run -p lb-storage --example audit_data_compatibility -- "$LAUNCHBOX_PATH"
+cargo run -p lb-storage --example audit_launch_plans -- "$LAUNCHBOX_PATH"
+QT_QPA_PLATFORM=offscreen cargo run -p lb-shell --bin launchbox -- \
+  --library "$LAUNCHBOX_PATH" --load-smoke-test
+```
+
+LaunchBox-relative paths accept either slash style on every host. A Windows
+drive or UNC path is native on Windows and must be explicitly mapped elsewhere;
+it is never silently treated as a relative Unix filename. Mappings are
+shared by both frontends. All persisted-path classification and translation,
+including Windows drive/UNC syntax and the platform-native configuration
+location, is owned by `lb-platform`; storage retains the original strings and
+the Qt layer only supplies native host paths. LaunchBox's **Host Paths…**
+dialog persists mappings
+in a separate, versioned port-owned JSON file, so the source library XML remains
+portable and unchanged. The default is
+`$XDG_CONFIG_HOME/launchbox-port/path-mappings.json` on Linux (falling back to
+`~/.config`), the user's Application Support directory on macOS, and `%APPDATA%`
+on Windows. `--path-mappings-file` selects an explicit file for portable or
+isolated configurations.
+
+Repeatable command-line mappings remain available as temporary final overrides
+and also apply to the launch-plan auditor:
+
+```bash
+cargo run -p lb-shell --bin launchbox -- \
+  --library "$LAUNCHBOX_PATH" \
+  --path-mappings-file "$PWD/local-path-mappings.json" \
+  --map-windows-drive 'D=/mnt/windows-volume' \
+  --map-windows-unc 'server/share=/mnt/network-share'
+```
+
+Library parsing runs on a Rust worker thread and returns through CXX-Qt's queued
+Qt-thread bridge. QML consumes the controller as a real `QAbstractListModel`
+with 36 named identity, state, descriptive-metadata, launch-configuration, and
+additional-application
+roles; it does not receive a whole-library
+JSON snapshot. `check_qml.sh` validates generated type metadata, then runs both
+binaries offscreen and proves all 36 roles survive a model-resetting filter
+operation. It also edits a
+temporary fixture library through the Qt shell and checks the targeted model
+notification for a state-only edit, descriptive-metadata search refresh, exact
+backup chain, optional-element removal, resulting XML, and unknown-field
+preservation. The same real dialog source-indexes and edits repeated alternate
+names and custom fields, retaining unknown XML on each kept row, and changes
+the application path, command line, emulator selection, and DOSBox/ScummVM
+settings in one transaction. A fresh Linux process then
+reloads that edit and executes the stored Windows-separated relative path with
+the exact expanded argument vector.
+
+The complete read index covers all 107 `Game` fields observed in the 13.24
+installation plus every other platform record, playlist, emulator mapping,
+platform/category/folder navigation record, parent, setting, controller,
+binding, import-blacklist item, and list-cache item. Lossless typed editors for
+platform files and all ten auxiliary document families are available through
+the Rust storage API. They validate mutations, keep exact durable sibling
+backups, and use atomic replacement. `LibraryTransaction` adds exact SHA-256
+source revisions, conflict checks, a durable multi-document manifest,
+automatic rollback, and conservative crash recovery that refuses to overwrite
+externally diverged data. The desktop shell exposes pending recovery and write
+conflicts, and its write-enabled editor safely changes favorite, completed,
+star-rating, title, sort title, notes, developer, publisher, genre, series,
+region, release date/type, version, source, status, content rating, player/mode,
+progress, and Wikipedia URL fields through one versioned typed edit payload and
+one transaction. The same payload transactionally adds, edits, or removes
+ordered alternate names and custom fields and edits the ordinary, DOSBox, and
+legacy ScummVM launch fields. Persisted paths remain lexical
+LaunchBox strings in QML, the domain, and storage; only `lb-platform` maps them
+to native paths at launch. Descriptive metadata participates in search; metadata changes
+recompute stable sort and search membership while state-only changes use
+targeted role notifications.
+Existing-platform game additions generate UUIDs and use targeted Qt row
+insertion. Deletion freshly scans every modeled platform, playlist, navigation,
+clone, save, controller, and blacklist reference and refuses orphaning; an
+unreferenced game uses targeted row removal and never deletes media files.
+Interrupted transactions require an explicit Recover action; conflicts require
+a reload and never offer a blind overwrite.
+
+Both front ends now expose a shared launch vertical. A launch plan selects
+an explicit or single default emulator mapping (or a direct executable), keeps
+LaunchBox's explicit unassigned-emulator sentinel distinct from a missing
+emulator, resolves paths through a host service, parses persisted Windows
+command lines into shell-free semantic arguments, expands LaunchBox command-line
+variables, and spawns on a Rust worker. Additional applications are indexed per
+game and available through a Launch With chooser in both front ends. Main-game
+launches pre-validate and priority-sort automatic before/after applications,
+honor the recovered 30-second ceiling for a waited before-app, wait for the
+primary process before starting after-apps, and reap every child. Once the
+primary child starts, the shared controller transactionally increments its
+game or selected additional application's play count and records a seven-digit
+local-offset LastPlayed timestamp. When that child returns, its elapsed whole
+seconds are added to PlayTime; every write retains an exact backup and reports
+conflicts or pending recovery through both front ends. Emulator
+auto-extraction invokes 7-Zip without a shell for ZIP, 7z, and RAR inputs,
+rejects unsafe/encrypted/ambiguous archives, preserves an archive-named
+temporary folder, expands ROM variables against the extracted file, and leases
+that folder until the consuming process exits. The Nix package supplies 7-Zip;
+Windows uses LaunchBox's bundled copy when present. DOSBox games are planned
+through a dedicated adapter: custom executable/configuration paths, the C-drive
+root, and every folder/image mount are resolved to native host paths by the
+same path service, while DOS separators occur only inside guest commands. The
+adapter supports folder, floppy-image, CD/ISO, and hard-disk-image records,
+LaunchBox's configuration-owned `[autoexec]` mode, and shell-free `argv`. The
+Nix package supplies DOSBox Staging as the Unix default; Windows selects the
+portable bundled DOSBox unless a game specifies a custom executable. Legacy
+`UseScummVM` games use a separate shell-free adapter that resolves their stored
+game-data folder through the host path service, supplies it as ScummVM's game,
+save, and extras directory, and preserves the stored target ID, fullscreen, and
+aspect-correction flags. The Nix package supplies native ScummVM on Unix;
+Windows selects LaunchBox's legacy bundled executable. LaunchBox 13.27's newer
+ScummVM emulator plugin remains compatible with the ordinary emulator path.
+When the effective
+emulator-platform mapping enables M3U loading, explicit `Disc` additional-app
+records are priority-ordered into a temporary UTF-8 playlist. Every entry is
+resolved through the host path service; archived discs are extracted first;
+the playlist and all extraction directories remain leased until emulator exit.
+The QML smoke suite executes argument, archive, M3U, DOSBox, ScummVM, and sequence recorders,
+proves exact argument boundaries, a
+mapped Windows drive, persisted mapping CRUD and reuse after a LaunchBox-to-
+BigBox restart, extraction lifetime and cleanup, before/main/after order, and a
+selected BigBox additional-app launch. It also verifies transactional
+PlayCount, PlayTime, and LastPlayed persistence for every launch backend,
+backup retention, completed-manifest cleanup, and unknown XML preservation.
+Elapsed time currently follows the directly spawned primary child; detached
+descendant and focus-based accounting remain later lifecycle work.
+
+The current QML library browser and launcher are an early functional vertical slice, not a
+claim of LaunchBox/BigBox parity. See the implementation status for the exact
+verified boundary.
+
+## Reproduce the local analysis
+
+The scripts are deliberately conservative: they verify the installer hash and
+refuse to overwrite an existing oracle or decompile tree.
+
+```bash
+./scripts/install_oracle.sh /home/ben/Downloads/LaunchBox-13.27-Setup.exe
+./scripts/decompile.sh
+uv run python scripts/build_static_inventory.py
+uv run python scripts/analyze_launchbox_schema.py "$LAUNCHBOX_PATH"
+```
+
+Local inputs and generated proprietary artifacts:
+
+- `oracle/LaunchBox`: installed LaunchBox/BigBox oracle
+- `oracle/wine-prefix`: isolated Wine prefix
+- `decompiled`: ILSpy project output for first-party assemblies
+
+## Important boundary
+
+The binaries use runtime method-body protection. Static decompilation recovers
+valuable type structure, UI/resource names, plugin contracts, data shapes, and
+integration boundaries, but many method bodies are empty/default stubs until a
+runtime initializer restores or dispatches them. The output is therefore a
+feature-discovery source, not a faithful implementation that can be translated
+line by line.
+
+Distribution of a compatible product, use of LaunchBox trademarks, premium
+entitlements, hosted APIs, and bundled third-party assets all require a separate
+rights and licensing review. This repository does not bypass licensing.

@@ -1,0 +1,32 @@
+[package]
+name = "lb-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+lb-domain.workspace = true
+lb-platform.workspace = true
+lb-query.workspace = true
+lb-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+cxx-qt-build.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "launchbox"
+path = "src/bin/launchbox.rs"
+
+[[bin]]
+name = "bigbox"
+path = "src/bin/bigbox.rs"

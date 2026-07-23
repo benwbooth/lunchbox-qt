@@ -1,0 +1,54 @@
+<?xml version="1.0" standalone="yes"?>
+<LaunchBox>
+  <Game>
+    <ApplicationPath>Runtime\sequence-recorder</ApplicationPath>
+    <CommandLine>--step main</CommandLine>
+    <Completed>false</Completed>
+    <Emulator>00000000-0000-0000-0000-000000000000</Emulator>
+    <Favorite>false</Favorite>
+    <ID>fixture-sequence</ID>
+    <Platform>Sequence Fixture</Platform>
+    <PlayCount>0</PlayCount>
+    <PlayTime>0</PlayTime>
+    <Title>Sequence Launch Fixture</Title>
+  </Game>
+  <AdditionalApplication>
+    <ApplicationPath>Runtime\sequence-recorder</ApplicationPath>
+    <AutoRunAfter>false</AutoRunAfter>
+    <AutoRunBefore>true</AutoRunBefore>
+    <CommandLine>--step before</CommandLine>
+    <GameID>fixture-sequence</GameID>
+    <Id>fixture-before</Id>
+    <Name>Fixture Before Hook</Name>
+    <Priority>10</Priority>
+    <UseDosBox>false</UseDosBox>
+    <UseEmulator>false</UseEmulator>
+    <WaitForExit>true</WaitForExit>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Runtime\sequence-recorder</ApplicationPath>
+    <AutoRunAfter>true</AutoRunAfter>
+    <AutoRunBefore>false</AutoRunBefore>
+    <CommandLine>--step after</CommandLine>
+    <GameID>fixture-sequence</GameID>
+    <Id>fixture-after</Id>
+    <Name>Fixture After Hook</Name>
+    <Priority>20</Priority>
+    <UseDosBox>false</UseDosBox>
+    <UseEmulator>false</UseEmulator>
+    <WaitForExit>false</WaitForExit>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Runtime\sequence-recorder</ApplicationPath>
+    <AutoRunAfter>false</AutoRunAfter>
+    <AutoRunBefore>false</AutoRunBefore>
+    <CommandLine>--step manual</CommandLine>
+    <GameID>fixture-sequence</GameID>
+    <Id>fixture-manual</Id>
+    <Name>Fixture Manual Launch</Name>
+    <Priority>30</Priority>
+    <UseDosBox>false</UseDosBox>
+    <UseEmulator>false</UseEmulator>
+    <WaitForExit>false</WaitForExit>
+  </AdditionalApplication>
+</LaunchBox>

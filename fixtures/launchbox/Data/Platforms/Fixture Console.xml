@@ -1,0 +1,184 @@
+<?xml version="1.0" standalone="yes"?>
+<LaunchBox>
+  <Game>
+    <AggressiveWindowHiding>false</AggressiveWindowHiding>
+    <AndroidBackgroundPath>Android\Backgrounds\fixture-adventure.jpg</AndroidBackgroundPath>
+    <AndroidBackgroundThumbPath>Android\Backgrounds\Thumbs\fixture-adventure.jpg</AndroidBackgroundThumbPath>
+    <AndroidBoxFrontFullPath>Android\BoxFront\fixture-adventure.png</AndroidBoxFrontFullPath>
+    <AndroidBoxFrontThumbPath>Android\BoxFront\Thumbs\fixture-adventure.png</AndroidBoxFrontThumbPath>
+    <AndroidClearLogoFullPath>Android\ClearLogo\fixture-adventure.png</AndroidClearLogoFullPath>
+    <AndroidClearLogoThumbPath>Android\ClearLogo\Thumbs\fixture-adventure.png</AndroidClearLogoThumbPath>
+    <AndroidGameTitleScreenshotPath>Android\Screenshots\Title\fixture-adventure.png</AndroidGameTitleScreenshotPath>
+    <AndroidGameTitleScreenshotThumbPath>Android\Screenshots\Title\Thumbs\fixture-adventure.png</AndroidGameTitleScreenshotThumbPath>
+    <AndroidGameplayScreenshotPath>Android\Screenshots\Gameplay\fixture-adventure.png</AndroidGameplayScreenshotPath>
+    <AndroidGameplayScreenshotThumbPath>Android\Screenshots\Gameplay\Thumbs\fixture-adventure.png</AndroidGameplayScreenshotThumbPath>
+    <AndroidVideoPath>Android\Videos\fixture-adventure.mp4</AndroidVideoPath>
+    <ApplicationPath>Games\Fixture Adventure\adventure.rom</ApplicationPath>
+    <Broken>false</Broken>
+    <CloneOf>fixture-prototype</CloneOf>
+    <CommandLine>--region auto</CommandLine>
+    <CommunityStarRating>4.25</CommunityStarRating>
+    <CommunityStarRatingTotalVotes>42</CommunityStarRatingTotalVotes>
+    <Completed>false</Completed>
+    <ConfigurationCommandLine>--config fixture</ConfigurationCommandLine>
+    <ConfigurationPath>Config\fixture-adventure.cfg</ConfigurationPath>
+    <CustomDosBoxVersionPath>ThirdParty\DOSBox\fixture</CustomDosBoxVersionPath>
+    <DatabaseID>1234</DatabaseID>
+    <DateAdded>2026-07-22T08:00:00-07:00</DateAdded>
+    <DateModified>2026-07-22T09:00:00-07:00</DateModified>
+    <Developer>Fixture Labs</Developer>
+    <DisableShutdownScreen>false</DisableShutdownScreen>
+    <DosBoxConfigurationPath>Config\dosbox-fixture.conf</DosBoxConfigurationPath>
+    <Emulator>fixture-emulator</Emulator>
+    <Favorite>true</Favorite>
+    <ForcefulPauseScreenActivation>false</ForcefulPauseScreenActivation>
+    <Genre>Adventure</Genre>
+    <GogAppId>fixture-gog-id</GogAppId>
+    <HasCloudSynced>true</HasCloudSynced>
+    <HasGogAchievements>true</HasGogAchievements>
+    <HasSteamAchievements>false</HasSteamAchievements>
+    <Hide>false</Hide>
+    <HideAllNonExclusiveFullscreenWindows>true</HideAllNonExclusiveFullscreenWindows>
+    <HideMouseCursorInGame>true</HideMouseCursorInGame>
+    <ID>fixture-adventure</ID>
+    <Installed>true</Installed>
+    <LastPlayedDate>2026-07-22T10:00:00-07:00</LastPlayedDate>
+    <LastSteamScan>2026-07-22T11:00:00-07:00</LastSteamScan>
+    <LoadStateAutoHotkeyScript>load-state-fixture</LoadStateAutoHotkeyScript>
+    <ManualPath>Manuals\Fixture Console\fixture-adventure.pdf</ManualPath>
+    <MaxPlayers>4</MaxPlayers>
+    <MissingBackgroundImage>false</MissingBackgroundImage>
+    <MissingBannerImage>true</MissingBannerImage>
+    <MissingBox3dImage>false</MissingBox3dImage>
+    <MissingBoxFrontImage>false</MissingBoxFrontImage>
+    <MissingCart3dImage>true</MissingCart3dImage>
+    <MissingCartImage>false</MissingCartImage>
+    <MissingClearLogoImage>false</MissingClearLogoImage>
+    <MissingManual>false</MissingManual>
+    <MissingMarqueeImage>true</MissingMarqueeImage>
+    <MissingMusic>false</MissingMusic>
+    <MissingScreenshotImage>false</MissingScreenshotImage>
+    <MissingVideo>false</MissingVideo>
+    <MusicPath>Music\Fixture Console\fixture-adventure.mp3</MusicPath>
+    <Notes>A synthetic adventure used to verify LaunchBox XML compatibility.</Notes>
+    <OriginAppId>fixture-origin-id</OriginAppId>
+    <OriginInstallPath>Games\Origin\Fixture Adventure</OriginInstallPath>
+    <OverrideDefaultPauseScreenSettings>true</OverrideDefaultPauseScreenSettings>
+    <OverrideDefaultStartupScreenSettings>true</OverrideDefaultStartupScreenSettings>
+    <PauseAutoHotkeyScript>pause-fixture</PauseAutoHotkeyScript>
+    <Platform>Fixture Console</Platform>
+    <PlayCount>3</PlayCount>
+    <PlayMode>Cooperative</PlayMode>
+    <PlayTime>5400</PlayTime>
+    <Portable>false</Portable>
+    <Progress>25%</Progress>
+    <Publisher>Fixture Publishing</Publisher>
+    <Rating>E</Rating>
+    <Region>North America</Region>
+    <ReleaseDate>1999-03-04</ReleaseDate>
+    <ReleaseType>Released</ReleaseType>
+    <ResetAutoHotkeyScript>reset-fixture</ResetAutoHotkeyScript>
+    <ResumeAutoHotkeyScript>resume-fixture</ResumeAutoHotkeyScript>
+    <RetroAchievementsBeatenHardcore>true</RetroAchievementsBeatenHardcore>
+    <RetroAchievementsBeatenSoftcore>true</RetroAchievementsBeatenSoftcore>
+    <RetroAchievementsHash>fixture-retro-hash</RetroAchievementsHash>
+    <RetroAchievementsId>5678</RetroAchievementsId>
+    <RootFolder>Games\Fixture Adventure</RootFolder>
+    <SaveStateAutoHotkeyScript>save-state-fixture</SaveStateAutoHotkeyScript>
+    <ScummVMAspectCorrection>true</ScummVMAspectCorrection>
+    <ScummVMFullscreen>true</ScummVMFullscreen>
+    <ScummVMGameDataFolderPath>Games\Fixture Adventure\ScummVM</ScummVMGameDataFolderPath>
+    <ScummVMGameType>fixture-scumm-id</ScummVMGameType>
+    <Series>Fixture Saga</Series>
+    <SortTitle>Adventure, Fixture</SortTitle>
+    <Source>Fixture Store</Source>
+    <StarRating>4</StarRating>
+    <StarRatingFloat>4.5</StarRatingFloat>
+    <StartupLoadDelay>250</StartupLoadDelay>
+    <Status>Ready</Status>
+    <SuspendProcessOnPause>true</SuspendProcessOnPause>
+    <SwapDiscsAutoHotkeyScript>swap-discs-fixture</SwapDiscsAutoHotkeyScript>
+    <ThemeVideoPath>Videos\Fixture Console\Themes\fixture-adventure.mp4</ThemeVideoPath>
+    <Title>Fixture Adventure</Title>
+    <UseDosBox>true</UseDosBox>
+    <UsePauseScreen>true</UsePauseScreen>
+    <UseScummVM>true</UseScummVM>
+    <UseStartupScreen>true</UseStartupScreen>
+    <Version>1.2</Version>
+    <VideoPath>Videos\Fixture Console\fixture-adventure.mp4</VideoPath>
+    <VideoUrl>https://example.invalid/fixture-adventure.mp4</VideoUrl>
+    <WikipediaURL>https://example.invalid/wiki/fixture-adventure</WikipediaURL>
+    <TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>
+  </Game>
+  <Game>
+    <ApplicationPath>Games\Fixture Racer\racer.rom</ApplicationPath>
+    <Broken>false</Broken>
+    <Completed>true</Completed>
+    <Favorite>false</Favorite>
+    <ID>fixture-racer</ID>
+    <Platform>Fixture Console</Platform>
+    <PlayCount>8</PlayCount>
+    <PlayTime>14400</PlayTime>
+    <StarRating>5</StarRating>
+    <Title>Fixture Racer</Title>
+  </Game>
+  <Game>
+    <ApplicationPath>Games\Fixture Puzzle\puzzle.rom</ApplicationPath>
+    <Broken>false</Broken>
+    <Completed>false</Completed>
+    <Favorite>false</Favorite>
+    <Hide>false</Hide>
+    <ID>fixture-puzzle</ID>
+    <Notes>Searchable puzzle fixture.</Notes>
+    <Platform>Fixture Console</Platform>
+    <PlayCount>0</PlayCount>
+    <PlayTime>0</PlayTime>
+    <Title>Fixture Puzzle</Title>
+  </Game>
+  <AdditionalApplication>
+    <ApplicationPath>Games\Fixture Adventure\manual.pdf</ApplicationPath>
+    <AutoRunAfter>false</AutoRunAfter>
+    <AutoRunBefore>false</AutoRunBefore>
+    <CommandLine />
+    <EmulatorId />
+    <GameID>fixture-adventure</GameID>
+    <HasCloudSynced>false</HasCloudSynced>
+    <Id>fixture-adventure-manual</Id>
+    <Name>Fixture Manual</Name>
+    <PlayCount>0</PlayCount>
+    <PlayTime>0</PlayTime>
+    <Priority>0</Priority>
+    <SideA>false</SideA>
+    <SideB>false</SideB>
+    <UseDosBox>false</UseDosBox>
+    <UseEmulator>false</UseEmulator>
+    <WaitForExit>false</WaitForExit>
+    <FutureAdditionalApplicationElement>keep-additional-app-data</FutureAdditionalApplicationElement>
+  </AdditionalApplication>
+  <AlternateName>
+    <GameID>fixture-adventure</GameID>
+    <Name>The Fixture Adventure</Name>
+    <Region>North America</Region>
+    <FutureAlternateNameElement>keep-alternate-name-data</FutureAlternateNameElement>
+  </AlternateName>
+  <CustomField>
+    <GameID>fixture-adventure</GameID>
+    <Name>Cabinet</Name>
+    <Value>Upright</Value>
+    <FutureCustomFieldElement>keep-custom-field-data</FutureCustomFieldElement>
+  </CustomField>
+  <GameControllerSupport>
+    <ControllerId>fixture-controller</ControllerId>
+    <GameId>fixture-racer</GameId>
+    <SupportLevel>2</SupportLevel>
+  </GameControllerSupport>
+  <GameSave>
+    <EmulatorCore>fixture-core</EmulatorCore>
+    <EmulatorFileName>fixture-emulator</EmulatorFileName>
+    <FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>
+    <GameId>fixture-adventure</GameId>
+    <Slot>1</Slot>
+    <Title>Before the Final Puzzle</Title>
+  </GameSave>
+  <FutureRootElement>preserve-me</FutureRootElement>
+</LaunchBox>

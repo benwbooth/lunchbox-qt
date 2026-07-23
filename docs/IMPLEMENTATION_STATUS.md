@@ -1,0 +1,231 @@
+# Implementation status
+
+This document records mechanically verified port work. The 113 feature families
+in `FEATURE_MATRIX.md` remain a census; no complete feature family is yet marked
+Windows-and-Linux parity verified.
+
+## Working vertical slice
+
+| Area | Current implementation | Verification |
+|---|---|---|
+| Reproducible toolchain | Pinned Nix flake with Rust, Qt 6.11.1, QML, CXX-Qt 0.8.1, 7-Zip, DOSBox Staging, ScummVM, format/lint tools, and package definition | `nix develop` reports Qt 6.11.1 and Rust 1.97.1; `7z`, `dosbox`, and `scummvm` are present in the development environment |
+| Linux package | Release builds, Qt runtime wrapping, packaged 7-Zip, DOSBox Staging, and ScummVM, and both installed executables | `nix flake check`, explicit release-mode tests, wrapper-content assertions, generated-type QML validation, and offscreen installed-binary smokes |
+| Domain | All 107 `Game` fields observed in 13.24, every other platform-file record, plus playlists, emulators/mappings, navigation metadata, parents, controllers, input bindings, list cache, image types, scalar settings, and validation; persisted path strings remain lossless data rather than becoming host paths | The canonical field inventory is mechanically compared with the value-free real-install schema; Windows drive/UNC classification and all persisted-path interpretation are confined to the platform service |
+| Read index | Streaming platform-file index plus a complete typed index for all other 13.24 XML document groups | Exact counts across the read-only real install match the value-free schema for every record family |
+| Lossless editing | DOM-backed platform and auxiliary documents, transactional typed descriptive/state/launch-configuration edits, source-indexed alternate-name/custom-field replacement, platform-game and auxiliary-record add/remove, unknown-element retention, serialization, and no-overwrite save; persisted paths remain lexical strings until the platform launch boundary | All ten auxiliary families structurally round-trip; retained repeated-metadata rows keep their exact unknown children while additions/removals remain deterministic; launch edits preserve Windows separators and unknown XML; platform game add/remove reparses cleanly and preserves unknown data; fast/lossless platform readers produce identical modeled fixture data |
+| Safe replacement | Typed reparse-before-write validation, exact durable backup, SHA-256 source-revision conflict detection, permission preservation, symlink rejection, same-directory atomic replacement, and byte-exact reversible restore | Every auxiliary family performs a real mutation/save/reload test; injected validation, stale-source, replace, and directory-sync failures prove the documented recovery state; Windows core compiles through `MoveFileExW` |
+| Repository transactions | Root-scoped lock, multi-document staging, pre/post-stage revision checks, durable manifest, exact per-file backups, automatic rollback, conservative crash recovery, and refusal to write past a pending manifest | Two-document commit, exact golden semantic diff, stale source, pending-manifest refusal, injected partial replacement, simulated process death, recovery, external divergence, unversioned/out-of-root targets, and manifest path escape are tested |
+| Query | Case-insensitive search across title, sort title, notes, and all descriptive editor metadata; platform filter; stable indexed sorting; default hidden/broken exclusion | Unit tested without cloning games or serializing result snapshots |
+| Process boundary | Shell-free direct/emulator/DOSBox/legacy-ScummVM/additional-app plans, prevalidated priority-ordered before/main/after sequences, a 30-second waited-before ceiling, primary-process gating for after-apps, primary-child start/exit/runtime reporting, an injectable host path resolver, explicit Windows drive/UNC mappings, Windows-native passthrough, portable separator handling, host-independent Windows-path classification, platform-native mapping-config locations, a versioned port-owned mapping document with atomic replacement, Windows-compatible command-line parsing, `%romfile%`/`%romlocation%`/`%platform%`/`%gameid%`/frontend-variable expansion, explicit/default/unassigned emulator selection, per-platform overrides, filename-only/no-space modes, working directories, console hiding, ZIP/7z/RAR auto-extraction, effective-mapping M3U generation from explicit disc records, DOSBox folder/floppy/CD/hard-disk mounts, custom config/executable and `[autoexec]` modes, legacy ScummVM data/save/extras paths and display flags, temporary-resource leasing, OS process spawning, and child reaping | Unit tests cover target/sequence planning, typed/lossless mount parsing, DOSBox host/guest path separation, folder/image command generation, legacy ScummVM native semantic arguments and validation, mutually exclusive legacy modes, drive collisions and root traversal, disc membership and priority, timeout continuation, exact lifecycle order, primary runtime/resource lifetime, native/portable/mapped/unmapped paths, host-independent Windows-path classification, mapping validation/atomic persistence, variables, argument boundaries, cross-platform archive path validation, deterministic launch-file selection, M3U primary-disc validation, and Unix processes; runtime recorders prove persisted mappings after frontend restart, direct/emulator/archive/M3U/DOSBox/ScummVM `argv`, folder/image mounts, archive-named extraction, multi-disc order, generated-playlist and extraction cleanup, mapped Windows paths, before/main/after order, and selected additional-app execution |
+| Qt data boundary | Worker-thread indexing/writing/launching, per-game priority-sorted additional-app indexing, ordered alternate-name/custom-field indexing and guarded row accessors, persisted host-mapping CRUD, stale-request generations, queued CXX-Qt result delivery, and a virtualized `QAbstractListModel` with 36 named identity/state/metadata/launch roles, reset notifications, targeted state/row notifications, and metadata-driven query recomputation | The current packaged release load smoke delivered 35,869 games, 16,752 additional applications, 54 playlists, 11 emulators, and 37 platforms in 2.227 seconds; generated QML metadata plus 36-role/filter, typed-edit-payload, repeated-row, CRUD, path-mapping, and process-launch runtime smokes prevent silent binding drift |
+| LaunchBox shell | Background library loading, platform sidebar, descriptive-metadata search, counts, game grid with Play and Launch With controls, scrollable rich-metadata, alternate-name, custom-field, and launch-configuration editor, Host Paths mapping editor, launch/session status, pending-recovery/conflict/reference-blocker banners, transactional metadata, launch configuration, and play-statistics editing, and existing-platform game add/remove | Offscreen role smoke; temporary-library state/rich-metadata/repeated-metadata/launch, game CRUD, and mapping CRUD scenarios; editor submission runs through the real dialog and a versioned, unknown-field-denying typed payload; retained alternate/custom rows preserve unknown XML and new rows survive a fresh-process reload; that process also executes the edited Windows-separated path natively on Linux with exact expanded `argv`; a second BigBox process consumes the saved mapping and launches a Windows-path fixture; process smokes prove archive/M3U preparation, DOSBox mounts, legacy ScummVM launch semantics, lifecycle order, worker-thread spawning, child reaping, PlayCount/PlayTime/LastPlayed updates, backup retention, completed-manifest cleanup, optional-element removal, and unknown XML preservation |
+| BigBox shell | Separate full-screen QML entry point with horizontal keyboard navigation, Enter/double-click launch, keyboard/button Launch With chooser, and launch status over the shared role model | Offscreen QML role/filter smoke plus real emulator, archive, M3U, DOSBox, legacy ScummVM, and selected additional-app launches from synthetic fixtures |
+
+The workspace currently has 114 passing Rust tests. Both QML resources are
+compiled into the native binaries. Their `--smoke-test` paths verify all 36
+model roles before and after filtering from three rows to one under Qt's
+offscreen platform. QML is also checked against generated CXX-Qt module
+metadata; opening a window alone is not accepted as proof that its controller
+or model bindings resolve. Separate launch smokes execute checked-in argument
+recorders through direct and default-emulator paths from both front ends and
+compare every captured argument. A lifecycle fixture proves waited-before,
+main, and after ordering plus manual Launch With selection. The direct fixture
+is stored under a synthetic
+Windows drive and reaches its Linux executable only through the configured host
+mapping.
+The mapping smoke creates and removes a UNC entry, retains a drive entry in the
+canonical version-1 JSON document, restarts into BigBox without CLI mapping
+arguments, and proves that the saved mapping resolves the fixture executable.
+An archive fixture is generated with 7-Zip during the smoke rather than stored
+as an opaque binary. Both shells prove that auto-extraction preserves the
+archive stem as a folder, supplies extracted `%romfile%` and `%romlocation%`
+values while the emulator is alive, and cleans the folder after exit.
+An M3U fixture deliberately stores its three disc applications out of XML
+order, mixes slash styles, includes a non-disc additional app, and archives the
+second disc. Both shells prove that the effective mapping generates a stable-
+stem playlist in priority order, resolves every entry to a native host path,
+keeps both playlist and extracted disc alive for the emulator, and cleans both
+after exit.
+A DOSBox fixture contains three typed mount records in LaunchBox 13.27's
+persisted vocabulary: a CD-ROM folder, a floppy image, and an ISO image. It
+mixes slash styles across the executable, configuration, game root, application,
+and media fields. Both shells capture identical semantic `argv`: every host
+path is native, only the DOS guest `CD` command uses a backslash, mount order is
+preserved. The source document receives only the expected transactional session
+fields while all unrelated and unknown data is retained.
+A legacy ScummVM fixture stores its game-data folder with Windows separators
+and leaves the ordinary application path empty. Both shells resolve that folder
+to the native host path, capture separate game/save/extras arguments plus the
+stored target, fullscreen, and aspect-correction flags, and leave the source
+document otherwise intact. The modern 13.27 ScummVM plugin continues through the
+ordinary emulator path rather than this legacy adapter.
+Across all launch fixtures, both shells now prove that process start increments
+the correct main-game or selected-additional-app PlayCount and writes the
+seven-digit local-offset LastPlayed field. Fixtures whose child remains alive
+for more than a second also prove whole-second PlayTime accumulation. Every
+successful statistics transaction retains an exact backup, removes its durable
+manifest, and preserves unknown XML.
+
+## Real-install evidence
+
+A read-only LaunchBox 13.24 installation supplied by the project owner was
+profiled without recording filenames, element values, stored paths, accounts,
+or license data. The derived schema reports:
+
+- 37 platform XML files totaling 196,571,938 bytes;
+- 35,869 games;
+- 16,752 additional applications;
+- 20,739 alternate names;
+- zero custom-field records in this older library;
+- 7,061 controller-support records;
+- 33 game-save records;
+- 54 playlist files;
+- 104 playlist filters and 955 playlist-game records;
+- 11 emulators with 63 per-platform mappings;
+- 37 platform definitions, 4 categories, and 1,890 media folders;
+- 159 parent relationships, 86 controller records, and 36 input bindings;
+- 362 LaunchBox settings, 79 image-type settings, and 555 BigBox settings;
+- 2 import-blacklist records and 122 list-cache records;
+- zero XML parse errors in the schema census.
+
+The alternate-name implementation is grounded in all 20,739 real rows and
+their exact `GameID`, `Name`, and `Region` shape. That older installation has
+no custom-field rows. Custom fields are therefore tested against a synthetic
+fixture derived from the installed 13.27 `ICustomField` contract and concrete
+serializer metadata (`GameID`, `Name`, and `Value`), not presented as
+real-library runtime evidence.
+
+The first whole-library lossless DOM test loaded the correct 35,869 games but
+took 116.810 seconds and grew to roughly 2.4 GiB RSS. This led to an explicit
+two-path design:
+
+- browsing/search uses the read-optimized index on a worker thread (15.796
+  seconds for the complete data index in the current unoptimized development
+  build), then delivers the result through Qt's queued event loop;
+- editing opens only the affected document as a lossless DOM and uses the
+  transaction/backup pipeline; the QML editor exposes favorite, completed,
+  integer star-rating, 18 descriptive metadata fields, launch configuration,
+  alternate names, and custom fields through one versioned typed payload and
+  transaction.
+
+The reusable value-free compatibility auditor strictly parsed all 35,869 real
+games, matched the union of their fields to the 107-field canonical model with
+zero unknown or unobserved fields, and structurally round-tripped all 63
+auxiliary documents (54 playlists plus nine fixed data files). It never writes
+to the source installation.
+
+A second value-free auditor builds a shell-free launch plan for every game. It
+identified the all-zero emulator ID as LaunchBox's explicit “unassigned
+emulator” sentinel: 1,848 games using it must bypass a platform default and
+launch directly. With the two source volumes currently mounted on Linux mapped
+to their stored drive letters, 35,847 games produce plans; nine more reference
+an unmapped drive, and the remaining 13 have no application path. When every
+observed drive is given a syntactic mapping, 35,856 plans resolve and only those
+13 pathless records remain. Four emulator command lines use `%romlocation%`;
+all expand and zero known variables remain in resulting argument vectors. This
+is structural plan coverage, not proof that every referenced file exists or
+that every Windows executable has a native Linux adapter.
+
+The same auditor now plans all 16,752 additional applications against their
+parent game and emulator context. With the mounted E: and F: volumes mapped,
+16,736 produce plans; four reference the unavailable H: drive and 12 have no
+application path. A syntactic H: mapping raises coverage to 16,740 and leaves
+only the 12 pathless records. This is structural coverage and does not imply
+that Windows-only targets execute natively on Linux.
+It also reports 633 explicit disc application records across 239 games,
+including four archive-backed disc records. Those aggregate counts drove the
+M3U implementation; names and paths remain absent from the audit output.
+The older installation contains zero `Mount` records and zero games marked
+`UseDosBox`, so DOSBox behavior is verified against the recovered 13.27
+contract and a synthetic fixture rather than falsely attributed to that
+real-library census.
+It likewise contains zero games marked `UseScummVM`; its ScummVM-related
+booleans are serialized defaults on ordinary games, not evidence that the
+legacy mode is active. Legacy behavior is therefore verified against the
+recovered 13.27 contract and a synthetic fixture.
+
+## Deliberate limitations
+
+- `Game` field coverage is complete for the observed 13.24 installation, not
+  yet for the newer 13.27 oracle. Free-form LaunchBox strings such as dates,
+  paths, enum-like labels, scripts, and URLs deliberately retain their exact
+  lexical values rather than being normalized during persistence.
+- Settings retain all 917 observed scalar keys/values and offer strict typed
+  accessors, but most keys do not yet have dedicated semantic domain fields.
+- The JSON snapshot and numeric game-row facade are gone. Filtering and full
+  library replacement use correct model-reset notifications; the game-state
+  editor emits a targeted `dataChanged` for its three roles. Title edits
+  correctly recompute sorting and filter membership with a model reset. Visible
+  game additions/removals use `beginInsertRows`/`beginRemoveRows`; filtered-out
+  mutations correctly leave the visible row model unchanged.
+- The QML editor writes 18 descriptive fields, favorite/completed/integer
+  star-rating state, launch configuration, alternate names, and custom fields.
+  It blocks edits while recovery is pending, exposes an explicit safe-rollback
+  action, and requires reload after a write conflict.
+  Its root lock coordinates this port's processes; the original LaunchBox
+  application does not honor it, so exact revision checks remain the
+  protection against external writers.
+- Add Game currently targets an existing non-empty platform document and writes
+  a validated minimal record with a generated UUID; exact Windows-created
+  default-field parity is not yet oracle-verified. Delete is deliberately
+  conservative: it blocks on any modeled cross-document reference instead of
+  cascading, never deletes media, and does not yet create/remove platform files.
+  The dependency scan is fresh and backgrounded, but an uncooperative external
+  LaunchBox process can still race between scanning other documents and the
+  target platform's revision-checked commit.
+- The process-launch vertical supports direct executables and one
+  explicit or default emulator mapping, including mapping-level command-line
+  overrides and the five observed/documented LaunchBox command-line variables.
+  Stored paths resolve behind a host service; Windows drives and UNC shares are
+  native on Windows and require explicit mappings on Linux/macOS. The Host Paths
+  screen persists validated mappings outside LaunchBox XML using platform-native
+  config locations; CLI mappings are non-persistent final overrides. Mapping a
+  path does not make a Windows-only executable runnable on Linux. Legacy
+  `UseScummVM` games use the dedicated native adapter; modern ScummVM plugin
+  mappings continue through the ordinary emulator path.
+  DOSBox games use the portable bundled executable on Windows or packaged
+  DOSBox Staging on Unix, unless a custom executable is configured. Custom and
+  bundled configuration paths, configuration-owned `[autoexec]`, C-drive roots,
+  and typed folder/floppy/CD/hard-disk mounts are supported without privileged
+  OS mounts. All persisted paths go through the host resolver; DOS separators
+  are generated only for guest-relative commands. Values that cannot be safely
+  represented in a DOSBox `-c` command, duplicate/reserved drive letters,
+  unknown mount vocabulary, and applications outside the C-drive root fail
+  explicitly. Exact command parity with a live 13.27 Windows oracle and broader
+  DOSBox configuration/import UI remain open. ZIP, 7z, and RAR auto-extraction now follows emulator and
+  per-platform settings, uses the bundled 7-Zip on Windows or the packaged
+  command on Unix, validates member paths before extraction, rejects symbolic
+  links and encrypted or ambiguous contents, preserves the archive stem inside
+  its private temporary directory, and retains that directory through process
+  exit. M3U loading follows only the effective emulator-platform mapping. It
+  uses the modeled `Disc` field rather than localized display-name parsing,
+  retains LaunchBox priority order, requires the game path to identify the
+  first disc record, resolves every line through the same path service, and
+  composes with archive extraction before writing the playlist. Abrupt frontend
+  termination and emulators that immediately delegate to a detached process
+  still need stale-directory/process-tree handling. Launch
+  With selection, additional applications,
+  and priority-ordered automatic before/after hooks now work in both shells;
+  the recovered LaunchBox 3.1 contract supplies the 30-second before-app wait
+  ceiling, but current Wine limitations prevent 13.27 oracle verification.
+  PlayCount and LastPlayed now commit when the directly spawned primary child
+  starts; PlayTime adds its elapsed whole seconds after exit for both main games
+  and selected additional applications. This matches the recovered historical
+  log ordering, but detached launchers, descendant-process supervision, and
+  focus-aware exclusion are not yet handled. Dependency/BIOS/core management,
+  full process-tree lifecycle, focus,
+  startup/pause/shutdown screens, saves, controller behavior, and
+  emulator-specific adapters remain unimplemented.
+- Runtime visual/behavior parity against licensed LaunchBox and premium BigBox
+  has not been established. Wine installed 13.27 but does not yet provide a
+  reliable WPF oracle.
+
+## Next implementation gate
+
+The transaction, golden semantic-diff, role-model, recovery/conflict UX,
+desktop rich metadata/state, reference-gated game add/remove, and first native Linux
+direct/emulator/additional-app launch plus persisted path-mapping gates now pass
+at the storage and QML boundaries. Phase 1 remains open until the editor covers
+platform/cascade CRUD, the remaining launch lifecycle breadth is implemented,
+and the Windows oracle produces executable import/launch scenarios for
+comparison.

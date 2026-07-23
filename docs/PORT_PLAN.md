@@ -1,0 +1,295 @@
+# CXX-Qt/Rust cross-platform port plan
+
+## Product target
+
+Build two native Qt 6 applications over one Rust core:
+
+- **LaunchBox**: mouse/keyboard desktop library management and configuration.
+- **BigBox**: controller-first full-screen couch/arcade experience.
+
+Linux and Windows are first-class targets. macOS should remain architecturally
+possible, but it is not a parity gate until explicitly added.
+
+The objective is behavioral and data compatibility, not a mechanical
+translation of protected C# syntax. Existing user libraries and media should be
+usable without destructive migration. All new implementation code should have
+clear provenance and tests derived from observed behavior and public contracts.
+
+## Proposed architecture
+
+```text
+ LaunchBox QML shell                 BigBox QML shell
+          |                                |
+          +---------- CXX-Qt --------------+
+                         |
+              Rust application facade
+                         |
+   +----------+----------+----------+----------+
+   |          |          |          |          |
+ domain    storage    metadata   launcher   extensions
+   |          |          |          |          |
+   +----------+----------+----------+----------+
+                         |
+           per-platform service adapters
+             Windows             Linux
+```
+
+Suggested Cargo workspace boundaries:
+
+| Crate | Responsibility |
+|---|---|
+| `lb-domain` | Games, platforms, categories, playlists, emulators, media, saves, settings, stable IDs, validation |
+| `lb-storage` | LaunchBox XML read/write, SQLite local DB/cache, migrations, backups, atomic writes, path portability |
+| `lb-query` | Search, filter, sort, suggestions, automatic playlists, sidebar hierarchy |
+| `lb-metadata` | Games DB/provider traits, matching, regional/media priorities, download queue, cleanup |
+| `lb-import` | ROM, folder, drag/drop, storefront, DOS, MAME, image-pack, and Android export workflows |
+| `lb-launcher` | Launch plans, emulator mappings, archives, mounts, scripts/hooks, startup/pause, saves, process supervision |
+| `lb-integrations` | Achievements, high scores, OBS, LEDBlinky, cloud, emulator adapters, updater |
+| `lb-extensions` | Versioned plugin protocol, out-of-process .NET compatibility host where feasible, theme manifest/model |
+| `lb-platform` | Trait definitions plus Windows and Linux process/window/input/tray/notification/power implementations |
+| `lb-ui-bridge` | CXX-Qt `QObject`s, models, properties, signals, async command/result bridges |
+| `launchbox` | Desktop QML application and desktop-specific presentation state |
+| `bigbox` | Full-screen QML application, navigation state machine, attract/screensaver/marquee behavior |
+
+Rules for the UI boundary:
+
+- Rust owns domain state, persistence, orchestration, and long-running work.
+- QML owns composition, animation, focus, themes, and responsive layout.
+- CXX-Qt exposes narrow typed view models and list models; it must not become a
+  second business-logic layer.
+- Provider and OS behavior sits behind traits and is testable without Qt.
+- Both executables consume the same commands/events and library snapshots.
+
+## Compatibility policy to decide early
+
+Three compatibility levels must not be conflated:
+
+1. **Data compatibility**: existing `Data`, `Images`, `Videos`, `Manuals`,
+   `Music`, and other user folders load without loss and can be round-tripped.
+2. **Behavioral compatibility**: feature scenarios produce equivalent visible
+   results, files, process arguments, and provider requests.
+3. **Binary/theme compatibility**: existing .NET plugins and WPF XAML themes
+   run unchanged.
+
+Data and behavioral compatibility are core goals. Full binary/theme
+compatibility is not natively possible in Qt: WPF controls cannot render in a
+QML scene and arbitrary .NET plugins can call Windows-only APIs. The practical
+plan is:
+
+- a new versioned, cross-platform plugin protocol;
+- an optional out-of-process .NET host for non-UI legacy plugins whose public
+  API calls can be serialized;
+- a converter for common BigBox XAML layouts/bindings into a QML theme model;
+- explicit reports for unsupported custom WPF controls or theme plugin code;
+- a documented QML theme SDK and migration tool.
+
+This preserves useful compatibility without claiming arbitrary WPF/.NET code
+can become native Qt automatically.
+
+## Execution phases and gates
+
+### Phase 0: close the evidence gap
+
+Deliverables:
+
+- working licensed Windows/Wine oracle with a disposable library fixture;
+- runtime menu/settings census for LaunchBox and BigBox;
+- schema snapshots and file-diff harness;
+- screenshot/input/process/network capture harnesses;
+- post-protection IL capture for selected methods where black-box behavior is
+  insufficient;
+- feature matrix split into executable scenarios with stable IDs.
+
+Exit gate: every visible menu, option page, wizard, plugin hook, themed view,
+and installed adapter is assigned to a scenario, a justified platform-only
+bucket, or proven dead/deprecated code. Static source count is not the gate.
+
+### Phase 1: repository and compatibility foundation
+
+Deliverables:
+
+- Rust/CXX-Qt/Qt 6 workspace, Nix dev shell, formatter/linter/test CI;
+- domain IDs and models;
+- lossless readers for oracle XML/settings and local DB schemas;
+- immutable fixture library and golden round-trip tests;
+- platform traits and fake adapters;
+- event/command protocol shared by both front ends.
+
+Exit gate: an untouched fixture loads and saves with no semantic diff; unknown
+fields are preserved; corrupt/partial writes are recoverable.
+
+### Phase 2: desktop library vertical slice
+
+Deliverables:
+
+- LaunchBox QML shell, sidebar, grid/list, search/filter/sort;
+- game/platform/category/playlist CRUD;
+- manual ROM import;
+- emulator mapping and basic launch supervision;
+- images, game details, play counts, favorites/completion;
+- backup/restore and settings.
+
+Exit gate: a user can import, organize, close/reopen, and launch a small fixture
+library on both Windows and Linux, with golden file and UI scenario parity.
+
+### Phase 3: metadata, media, and importer breadth
+
+Deliverables:
+
+- provider traits, matching, queues, retries, cancellation, and cache;
+- Games DB/authorized provider integration;
+- image/video/manual/music handling and cleanup;
+- automated folder, bulk, drag/drop, DOS, MAME, storefront, image-pack, and
+  Android export workflows;
+- audit, bulk edit, ROM scans, consolidation, and migration tools.
+
+Exit gate: all `IMP-*` and `MED-*` scenarios pass on both platforms or carry an
+explicit external-service blocker with an approved substitute.
+
+### Phase 4: launch orchestration parity
+
+Deliverables:
+
+- robust quoting/path translation/process trees;
+- archives, multi-disc playlists, mounts, dependencies, BIOS, and cores;
+- startup/pause/shutdown flows and per-game overrides;
+- cross-platform action hooks replacing AutoHotkey, plus a Windows AutoHotkey
+  compatibility adapter;
+- save management and emulator-specific adapters;
+- Linux window/process/input implementations for X11 and Wayland.
+
+Exit gate: a locked emulator/game matrix verifies exact arguments, lifecycle,
+cleanup, focus restoration, controller behavior, and saves on Windows/Linux.
+
+### Phase 5: BigBox
+
+Deliverables:
+
+- controller navigation/focus state machine;
+- all filter and game view families;
+- details, popups, media, startup/pause, screensavers, attract mode, security;
+- marquee window and multi-monitor routing;
+- QML theme engine, bundled clean-room themes, theme manager, and converter;
+- performance work for very large libraries and media-heavy views.
+
+Exit gate: every `BB-*` scenario passes with keyboard and at least two gamepad
+families, at 1080p and 4K, in X11/Wayland and Windows multi-monitor runs.
+
+### Phase 6: integrations and extension ecosystem
+
+Deliverables:
+
+- RetroAchievements, authorized MAME/Steam/GOG data, OBS, LEDBlinky, cloud, and
+  provider-specific emulator features;
+- cross-platform plugin SDK and sample plugins;
+- legacy non-UI plugin host and compatibility report;
+- QML theme SDK, migration diagnostics, and validation tooling;
+- updater, crash recovery, telemetry policy, localization workflow.
+
+Exit gate: all `INT-*`, `DESK-*`, and `OPS-*` scenarios pass, and compatibility
+limitations are machine-reported rather than silently ignored.
+
+### Phase 7: parity hardening and release
+
+Deliverables:
+
+- full regression suite against frozen 13.27 fixtures and maintained live
+  service contracts;
+- accessibility, localization, keyboard-only, gamepad-only, offline, corrupt
+  data, and interruption tests;
+- package/sign/install/uninstall/update flows for Linux and Windows;
+- licensing, trademark, privacy, and third-party asset review;
+- migration/rollback tooling and user documentation.
+
+Exit gate: the mechanically computed parity ledger is complete and no
+uncategorized feature surface remains.
+
+## Parity ledger
+
+Each scenario has independent state; a single percentage must be derived from
+these fields, never entered manually:
+
+| Field | Meaning |
+|---|---|
+| `censused` | Upstream surface has stable evidence and ownership |
+| `specified` | Inputs, outputs, errors, persistence, and visible behavior captured |
+| `implemented` | New Rust/Qt path exists and has unit/integration tests |
+| `windows_verified` | Scenario matches the Windows oracle |
+| `linux_verified` | Native Linux scenario passes |
+| `cross_platform_verified` | Data exchanged between OSes remains compatible |
+
+Completion is earned only when all reachable scenarios are verified or placed
+in an explicitly reviewed exclusion class. Test coverage, code volume, type
+count, and a decompiler successfully emitting files are supporting metrics, not
+completion metrics.
+
+## Immediate next milestone
+
+The repository and a narrow library-browsing vertical slice now exist. Exact
+multi-document transactions, golden semantic-diff/failure coverage, and the
+36-role `QAbstractListModel` now pass. Pending recovery, write-conflict UX,
+safe rollback, and the first transactional desktop game-state edit also pass a
+temporary-library Qt smoke with a targeted `dataChanged`. Transactional title
+editing has expanded into 18 descriptive fields through a versioned typed
+payload; it recomputes sort/search membership, removes explicitly cleared
+optional elements, and is checked through the real dialog in a two-backup
+runtime scenario. Existing-platform UUID additions and conservative
+reference-gated removals now use targeted Qt row signals and have their own
+backup-chain runtime scenario. The first shell-free direct/default-emulator
+launch plan now also runs through both Qt front ends on Linux; checked-in
+argument recorders prove its exact `argv`, command-line variable expansion,
+explicit unassigned-emulator semantics, mapped Windows-drive handling, and
+transactional play-statistics writes. Generated archive and M3U fixtures now
+also prove
+ZIP/7z/RAR preparation semantics, extracted-variable expansion, explicit-disc
+priority order, path-resolved playlist generation, supervised temporary-
+resource lifetime, and cleanup in both shells. Typed DOSBox mount records now
+round-trip losslessly and feed a dedicated launch adapter; a mixed-separator
+fixture proves native host paths, DOS guest paths, folder/image mount commands,
+and play-statistics persistence through both shells. A legacy ScummVM fixture
+likewise proves
+native game/save/extras paths, target and display flags, and transactional
+session updates through both shells. The launch boundary now increments
+PlayCount and records LastPlayed at primary spawn, adds directly observed
+whole-second child runtime to PlayTime on exit, retains exact backups, and
+surfaces transaction failures. Source-indexed alternate names and custom fields
+now edit through the same real Qt dialog and transaction; retained rows keep
+unknown XML, new rows survive reload, and the custom-field fixture is explicitly
+13.27-contract-derived because the older real library contains none. The next milestone is
+to close the remaining
+Phase 0/1 evidence and product-safety gates:
+
+1. Make the 13.27 oracle run in a supported Windows VM if Wine remains blocked.
+2. Capture first-run and edit/import/launch diffs for the fixture.
+3. Convert the first ten critical runtime scenarios into structured fixtures
+   and map them to feature-matrix IDs.
+4. Expand desktop editing into new-platform CRUD and reviewed
+   cascade/remediation choices for dependencies. Alternate names and custom
+   fields now pass typed storage and real-dialog runtime gates. The
+   launch-configuration subset now edits direct/emulator/DOSBox/ScummVM fields
+   transactionally, preserves stored Windows path syntax, and proves a fresh
+   Linux process can execute the edited path; rich descriptive metadata,
+   existing-platform add/remove, and conservative cross-document validation
+   also pass.
+5. Extend the launcher beyond the now-working direct/default-emulator, Launch
+   With, automatic additional-app, persisted host-mapping, archive
+   auto-extraction, multi-disc/M3U, DOSBox mount, and legacy ScummVM paths into
+   script/lifecycle/focus/startup/pause behavior, descendant-process
+   supervision, and focus-aware play-time parity.
+6. Run the native Qt shell and transaction scenarios on Windows as well as
+   Linux; the current Windows gate covers the non-Qt core crates.
+
+The initial QML shells must remain evidence clients for these contracts, not a
+substitute for earning behavior and data parity.
+
+## Known risks and external decisions
+
+| Risk | Required treatment |
+|---|---|
+| Closed-source code, trademarks, premium assets/features | Obtain legal/rights guidance before publishing or distributing; do not bypass entitlement checks |
+| LaunchBox Games DB, cloud, theme/plugin downloads, and other hosted services | Use documented/authorized APIs or replace with configurable providers |
+| Protected implementation bodies | Prefer behavior specs; dump runtime IL only for owned/licensed analysis where necessary and keep provenance |
+| WPF theme and .NET plugin compatibility | Use conversion/out-of-process bridges with explicit compatibility reports; do not promise arbitrary binary compatibility |
+| AutoHotkey and Windows shell/process assumptions | Define portable action and OS service APIs; retain Windows compatibility adapters |
+| Wayland focus/global-input restrictions | Design around portal/compositor constraints and test supported compositors explicitly |
+| Emulator/provider drift | Version adapter contracts and maintain live conformance fixtures separately from the frozen 13.27 oracle |

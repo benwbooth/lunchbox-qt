@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <Emulator>
+    <ID>fixture-m3u-emulator</ID>
+    <Title>Fixture M3U Emulator</Title>
+    <ApplicationPath>Emulators/m3u-recorder</ApplicationPath>
+    <CommandLine>--fallback-should-not-be-used</CommandLine>
+    <AutoExtract>true</AutoExtract>
+    <FileNameWithoutExtensionAndPath>false</FileNameWithoutExtensionAndPath>
+    <HideConsole>false</HideConsole>
+    <NoSpace>false</NoSpace>
+  </Emulator>
+  <EmulatorPlatform>
+    <Emulator>fixture-m3u-emulator</Emulator>
+    <Platform>M3U Fixture</Platform>
+    <CommandLine>--playlist %romfile% --dir %romlocation%</CommandLine>
+    <Default>true</Default>
+    <M3uDiscLoadEnabled>true</M3uDiscLoadEnabled>
+  </EmulatorPlatform>
+</LaunchBox>

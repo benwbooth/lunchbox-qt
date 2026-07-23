@@ -1,0 +1,14 @@
+[
+  {
+    "document": "Data/Platforms/Fixture Console.xml",
+    "path": "/LaunchBox/Game[0]/Title[0]",
+    "before": "Fixture Adventure",
+    "after": "Transactional Adventure"
+  },
+  {
+    "document": "Data/Settings.xml",
+    "path": "/LaunchBox/Settings[0]/Theme[0]",
+    "before": "Fixture Theme",
+    "after": "Transactional Theme"
+  }
+]
