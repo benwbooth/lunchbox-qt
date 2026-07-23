@@ -101,6 +101,7 @@ retroarch_save_scan_root=$(mktemp -d)
 dolphin_save_scan_root=$(mktemp -d)
 pcsx2_save_scan_root=$(mktemp -d)
 game_save_backup_root=$(mktemp -d)
+pcsx2_save_backup_root=$(mktemp -d)
 game_save_delete_root=$(mktemp -d)
 game_save_active_delete_root=$(mktemp -d)
 game_save_restore_root=$(mktemp -d)
@@ -117,7 +118,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -946,6 +947,114 @@ if find "$game_save_backup_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox manager-driven save backup, portable vault naming, exact bytes, full metadata, XML rollback backup, and cleanup validated."
+
+cp -R fixtures/launchbox/Data "$pcsx2_save_backup_root/Data"
+pcsx2_save_backup_platform="$pcsx2_save_backup_root/Data/Platforms/Fixture Console.xml"
+sed -i \
+  -e 's|<EmulatorFileName>fixture-emulator</EmulatorFileName>|<EmulatorFileName>pcsx2-qt</EmulatorFileName>|' \
+  -e 's|<FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>|<FilePath>Emulators\\PCSX2\\memcards\\Mcd001.ps2</FilePath>|' \
+  -e '/    <Slot>1<\/Slot>/d' \
+  -e '/    <Title>Before the Final Puzzle<\/Title>/a\    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>pcsx2:Mcd001:BASLUS-12345SAVE</SaveGroupId>\n    <OriginalFileName>BASLUS-12345SAVE</OriginalFileName>' \
+  "$pcsx2_save_backup_platform"
+pcsx2_save_backup_member="$pcsx2_save_backup_root/Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-12345SAVE"
+mkdir -p \
+  "$pcsx2_save_backup_member" \
+  "$pcsx2_save_backup_root/Games/Fixture Adventure"
+printf %s 'fixture rom' \
+  > "$pcsx2_save_backup_root/Games/Fixture Adventure/adventure.rom"
+dd if=/dev/zero of="$pcsx2_save_backup_member/icon.sys" \
+  bs=148 count=1 status=none
+printf %s 'PS2D' | dd of="$pcsx2_save_backup_member/icon.sys" \
+  conv=notrunc status=none
+pcsx2_save_backup_bytes='runtime PCSX2 member bytes'
+printf %s "$pcsx2_save_backup_bytes" \
+  > "$pcsx2_save_backup_member/save.bin"
+cp "$pcsx2_save_backup_platform" \
+  "$pcsx2_save_backup_root/original-platform.xml"
+pcsx2_save_backup_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$pcsx2_save_backup_root" \
+    --pcsx2-save-backup-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$pcsx2_save_backup_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'PCSX2_SAVE_BACKUP_SMOKE_COMPLETE saves=2 writes=1 revision=1 data_changes=1' \
+  <<< "$pcsx2_save_backup_output"; then
+  printf '%s\n' "$pcsx2_save_backup_output" >&2
+  echo "LaunchBox did not validate manager-driven PCSX2 member backup." >&2
+  exit 1
+fi
+pcsx2_save_backup_archive="$pcsx2_save_backup_root/Saves/Fixture Console/adventure.7z"
+pcsx2_save_backup_extract="$pcsx2_save_backup_root/archive-check"
+mkdir "$pcsx2_save_backup_extract"
+7z x -y -bd -bb0 "-o$pcsx2_save_backup_extract" -- \
+  "$pcsx2_save_backup_archive" >/dev/null
+if ! cmp -s \
+    "$pcsx2_save_backup_member/icon.sys" \
+    "$pcsx2_save_backup_extract/icon.sys" \
+  || ! cmp -s \
+    "$pcsx2_save_backup_member/save.bin" \
+    "$pcsx2_save_backup_extract/save.bin"; then
+  echo "PCSX2 member backup archive did not preserve exact member bytes." >&2
+  exit 1
+fi
+pcsx2_icon_sha=$(
+  sha256sum "$pcsx2_save_backup_member/icon.sys" \
+    | cut -d ' ' -f 1 | tr '[:lower:]' '[:upper:]'
+)
+pcsx2_save_sha=$(
+  sha256sum "$pcsx2_save_backup_member/save.bin" \
+    | cut -d ' ' -f 1 | tr '[:lower:]' '[:upper:]'
+)
+pcsx2_manifest_signature=$(
+  printf 'icon.sys|%s\nsave.bin|%s\n' \
+    "$pcsx2_icon_sha" "$pcsx2_save_sha" \
+    | sha256sum | cut -d ' ' -f 1 | tr '[:lower:]' '[:upper:]'
+)
+pcsx2_logical_size=$((148 + ${#pcsx2_save_backup_bytes}))
+if [[ $(rg -c '<GameSave>' "$pcsx2_save_backup_platform") -ne 2 ]] \
+  || ! rg -q -F \
+    '<FilePath>Saves\Fixture Console\adventure.7z</FilePath>' \
+    "$pcsx2_save_backup_platform" \
+  || [[ $(rg -c -F \
+    '<SaveGroupId>pcsx2:Mcd001:BASLUS-12345SAVE</SaveGroupId>' \
+    "$pcsx2_save_backup_platform") -ne 2 ]] \
+  || ! rg -q -F \
+    '<OriginalFileName>BASLUS-12345SAVE</OriginalFileName>' \
+    "$pcsx2_save_backup_platform" \
+  || ! rg -q -F \
+    "<ReportedFileSizeBytes>$pcsx2_logical_size</ReportedFileSizeBytes>" \
+    "$pcsx2_save_backup_platform" \
+  || ! rg -q -F "<Md5>$pcsx2_manifest_signature</Md5>" \
+    "$pcsx2_save_backup_platform" \
+  || ! rg -q \
+    '<ReportedLastModifiedUtc>[^<]*\.[0-9]{7}Z</ReportedLastModifiedUtc>' \
+    "$pcsx2_save_backup_platform" \
+  || ! rg -q -F '<FutureRootElement>preserve-me</FutureRootElement>' \
+    "$pcsx2_save_backup_platform"; then
+  echo "PCSX2 member backup wrote incomplete or incompatible XML metadata." >&2
+  exit 1
+fi
+mapfile -t pcsx2_save_backup_backups < <(
+  find "$pcsx2_save_backup_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#pcsx2_save_backup_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${pcsx2_save_backup_backups[0]}" \
+    "$pcsx2_save_backup_root/original-platform.xml"; then
+  echo "PCSX2 member backup did not retain one exact XML recovery copy." >&2
+  exit 1
+fi
+if find "$pcsx2_save_backup_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful PCSX2 member backup left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox manager-driven PCSX2 folder-card member extraction, verified 7z backup, logical manifest metadata, exact XML recovery, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$game_save_delete_root/Data"
 game_save_delete_platform="$game_save_delete_root/Data/Platforms/Fixture Console.xml"

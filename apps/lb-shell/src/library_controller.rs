@@ -490,6 +490,12 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_pcsx2_save_backup_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_game_save_delete_smoke_success(
             self: &LibraryController,
             game_id: QString,
@@ -711,7 +717,8 @@ use lb_integrations::dolphin::{
     default_dolphin_user_directories, discover_dolphin_saves, is_dolphin_emulator, DolphinContent,
 };
 use lb_integrations::pcsx2::{
-    default_pcsx2_data_directories, discover_pcsx2_saves, is_pcsx2_emulator, Pcsx2Content,
+    default_pcsx2_data_directories, discover_pcsx2_saves, extract_pcsx2_memory_card_save,
+    folder_manifest_signature, is_pcsx2_emulator, Pcsx2Content,
 };
 use lb_integrations::retroarch::{
     discover_retroarch_saves, inspect_saturn_save_set, is_retroarch_emulator,
@@ -4022,14 +4029,14 @@ fn write_game_save_backup(
             .additional_applications
             .iter()
             .find(|application| application.id == application_id && application.game_id == game_id)
-            .map(|application| application.application_path.as_str())
+            .map(|application| application.application_path.clone())
             .ok_or_else(|| {
                 GameWriteFailure::Other(format!(
                     "additional application {application_id} no longer exists"
                 ))
             })?
     } else {
-        game.application_path.as_str()
+        game.application_path.clone()
     };
     let active_path = resolver
         .resolve(&root, &expected.file_path)
@@ -4042,12 +4049,32 @@ fn write_game_save_backup(
                 .into(),
         ));
     }
+    let rom_path = resolver
+        .resolve(&root, &application_path)
+        .map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not resolve the game path used for backup naming: {error}"
+            ))
+        })?;
+    if is_pcsx2_card_member(&expected) {
+        return write_pcsx2_card_member_backup(
+            root,
+            source,
+            game_id,
+            expected,
+            resolver,
+            document,
+            game,
+            rom_path,
+            active_path,
+        );
+    }
+    if save_requires_container_adapter(&expected) {
+        return Err(GameWriteFailure::Other(
+            "this active save requires its emulator container-member backup adapter".into(),
+        ));
+    }
     let inspected = inspect_game_save_set(&expected, &active_path)?;
-    let rom_path = resolver.resolve(&root, application_path).map_err(|error| {
-        GameWriteFailure::Other(format!(
-            "could not resolve the game path used for backup naming: {error}"
-        ))
-    })?;
     let sources = inspected
         .files
         .iter()
@@ -4139,6 +4166,163 @@ fn write_game_save_backup(
             "Backed up active save set ({} {}) to {}",
             targets.len(),
             if targets.len() == 1 { "file" } else { "files" },
+            target.display()
+        ),
+    })
+}
+
+fn is_pcsx2_card_member(save: &GameSave) -> bool {
+    save.save_group_id.as_deref().is_some_and(|group| {
+        let group = group.to_ascii_lowercase();
+        group.starts_with("pcsx2:") && !group.starts_with("pcsx2-state:")
+    })
+}
+
+fn pcsx2_card_member_name(save: &GameSave) -> Result<String, GameWriteFailure> {
+    let member = save
+        .original_file_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            save.save_group_id
+                .as_deref()
+                .and_then(|group| group.splitn(3, ':').nth(2))
+                .filter(|name| !name.trim().is_empty())
+        })
+        .or_else(|| {
+            save.save_group_name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+        })
+        .ok_or_else(|| {
+            GameWriteFailure::Other(
+                "PCSX2 save is missing its internal memory-card directory identifier".into(),
+            )
+        })?;
+    Ok(member.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_pcsx2_card_member_backup(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    expected: GameSave,
+    resolver: HostPathResolver,
+    mut document: PlatformDocument,
+    game: Game,
+    rom_path: PathBuf,
+    active_card: PathBuf,
+) -> Result<GameSaveWriteSuccess, GameWriteFailure> {
+    let member = pcsx2_card_member_name(&expected)?;
+    let staging = tempfile::Builder::new()
+        .prefix("launchbox-pcsx2-backup-")
+        .tempdir()
+        .map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not create a private PCSX2 backup staging directory: {error}"
+            ))
+        })?;
+    let extracted_directory = staging.path().join("member");
+    let extracted = extract_pcsx2_memory_card_save(&active_card, &member, &extracted_directory)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+
+    let archive = staging.path().join("member.7z");
+    let archive_tool = ArchiveExtractor::for_launchbox_root(&root);
+    archive_tool
+        .create_7z_from_directory(&extracted_directory, &archive)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let archive_contents = staging.path().join("archive-contents");
+    fs::create_dir(&archive_contents).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not create PCSX2 archive verification directory {}: {error}",
+            archive_contents.display()
+        ))
+    })?;
+    archive_tool
+        .extract_to_directory(&archive, &archive_contents)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let archive_signature = folder_manifest_signature(&archive_contents)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    if archive_signature != extracted.signature {
+        return Err(GameWriteFailure::Conflict(format!(
+            "PCSX2 archive verification changed member {member}; the active card was not modified"
+        )));
+    }
+
+    // Re-extract the live member after archive creation. This is the
+    // container equivalent of the regular-file revision check and catches a
+    // card write racing the backup without treating unrelated card bytes as
+    // part of the logical save.
+    let recheck_directory = staging.path().join("active-recheck");
+    let rechecked = extract_pcsx2_memory_card_save(&active_card, &member, &recheck_directory)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    if rechecked.signature != extracted.signature {
+        return Err(GameWriteFailure::Conflict(format!(
+            "PCSX2 memory-card member {member} changed while it was being backed up"
+        )));
+    }
+
+    let archive_file = inspect_save_file(&archive)?;
+    let targets = next_save_backup_targets(
+        &root,
+        &game.platform,
+        &rom_path,
+        std::slice::from_ref(&archive),
+    )?;
+    let target = targets
+        .first()
+        .cloned()
+        .ok_or_else(|| GameWriteFailure::Other("backup allocator returned no target".into()))?;
+    let stored_target = resolver
+        .stored_path_for_host_path(&root, &target)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let reported_last_modified_utc = extracted
+        .save
+        .modified
+        .map(|modified| {
+            let modified = DateTime::<Utc>::from(modified);
+            format!(
+                "{}.{:07}Z",
+                modified.format("%Y-%m-%dT%H:%M:%S"),
+                modified.timestamp_subsec_nanos() / 100
+            )
+        })
+        .or_else(|| expected.reported_last_modified_utc.clone());
+
+    let mut backup = expected;
+    backup.file_path = stored_target;
+    backup.original_file_name = Some(member.clone());
+    backup.reported_file_size_bytes = (extracted.save.total_bytes > 0)
+        .then_some(extracted.save.total_bytes)
+        .or(backup.reported_file_size_bytes);
+    backup.reported_last_modified_utc = reported_last_modified_utc;
+    backup.md5 = Some(extracted.signature.clone());
+    let saves = document
+        .add_game_save(backup)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_file_copy_with_revision(&archive_file.source, &target, archive_file.revision)
+        .map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&document)
+        .map_err(classify_transaction_error)?;
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .next()
+        .map(|write| write.backup)
+        .ok_or_else(|| GameWriteFailure::Other("transaction reported no platform write".into()))?;
+    Ok(GameSaveWriteSuccess {
+        game_id,
+        saves,
+        source,
+        backup,
+        operation: format!(
+            "Backed up PCSX2 memory-card member {member} to {}",
             target.display()
         ),
     })
@@ -8843,6 +9027,41 @@ impl qobject::LibraryController {
         if success {
             eprintln!(
                 "GAME_SAVE_BACKUP_SMOKE_COMPLETE saves=2 writes={} revision={} data_changes={}",
+                rust.game_save_write_notifications,
+                self.game_save_revision(),
+                rust.data_change_notifications,
+            );
+        }
+        success
+    }
+
+    pub fn report_pcsx2_save_backup_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let saves = rust.game_saves_by_game.get(&game_id);
+        let success = saves.is_some_and(|saves| {
+            saves.len() == 2
+                && saves[0].file_path == r"Emulators\PCSX2\memcards\Mcd001.ps2"
+                && saves[1].file_path == r"Saves\Fixture Console\adventure.7z"
+                && saves[0].save_group_id.as_deref() == Some("pcsx2:Mcd001:BASLUS-12345SAVE")
+                && saves[0].save_group_id == saves[1].save_group_id
+                && saves[1].original_file_name.as_deref() == Some("BASLUS-12345SAVE")
+                && saves[1].reported_file_size_bytes.is_some()
+                && saves[1].reported_last_modified_utc.is_some()
+                && saves[1].md5.as_ref().is_some_and(|signature| {
+                    signature.len() == 64
+                        && signature
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_lowercase())
+                })
+        }) && rust.game_save_write_notifications == 1
+            && *self.game_save_revision() == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "PCSX2_SAVE_BACKUP_SMOKE_COMPLETE saves=2 writes={} revision={} data_changes={}",
                 rust.game_save_write_notifications,
                 self.game_save_revision(),
                 rust.data_change_notifications,
@@ -13994,6 +14213,98 @@ mod tests {
         assert_eq!(fs::read(&platform_path).unwrap(), moved_card.as_bytes());
         assert_eq!(moved_card.matches("<GameSave>").count(), 3);
         assert!(moved_card.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+    }
+
+    #[test]
+    fn pcsx2_folder_card_member_backup_creates_verified_7z_and_manifest_row() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        fs::create_dir_all(&platform_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE
+            .replace(
+                "<EmulatorFileName>fixture-emulator</EmulatorFileName>",
+                "<EmulatorFileName>pcsx2-qt</EmulatorFileName>",
+            )
+            .replace(
+                r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+                r"<FilePath>Emulators\PCSX2\memcards\Mcd001.ps2</FilePath>",
+            )
+            .replace("    <Slot>1</Slot>\n", "")
+            .replace(
+                "    <Title>Before the Final Puzzle</Title>",
+                "    <Title>Current Card Member</Title>\n    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>pcsx2:Mcd001:BASLUS-12345SAVE</SaveGroupId>\n    <OriginalFileName>BASLUS-12345SAVE</OriginalFileName>",
+            );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let rom = directory
+            .path()
+            .join("Games/Fixture Adventure/adventure.rom");
+        let member = directory
+            .path()
+            .join("Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-12345SAVE");
+        fs::create_dir_all(rom.parent().unwrap()).unwrap();
+        fs::create_dir_all(&member).unwrap();
+        fs::write(&rom, b"fixture rom").unwrap();
+        let mut icon = vec![0_u8; 148];
+        icon[..4].copy_from_slice(b"PS2D");
+        icon[80..93].copy_from_slice(b"Fixture Racer");
+        fs::write(member.join("icon.sys"), icon).unwrap();
+        fs::write(member.join("save.bin"), b"member save bytes").unwrap();
+        let expected_signature = folder_manifest_signature(&member).unwrap();
+
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let active = document.library().game_saves[0].clone();
+        let result = write_game_save_backup(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-adventure".into(),
+            0,
+            active,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        let archive = directory.path().join("Saves/Fixture Console/adventure.7z");
+        assert!(archive.is_file());
+        let extracted = directory.path().join("archive-check");
+        fs::create_dir(&extracted).unwrap();
+        let files = ArchiveExtractor::for_launchbox_root(directory.path())
+            .extract_to_directory(&archive, &extracted)
+            .unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            fs::read(extracted.join("save.bin")).unwrap(),
+            b"member save bytes"
+        );
+        assert_eq!(
+            folder_manifest_signature(&extracted).unwrap(),
+            expected_signature
+        );
+        assert_eq!(
+            fs::read(member.join("save.bin")).unwrap(),
+            b"member save bytes"
+        );
+        assert_eq!(fs::read(&result.backup).unwrap(), platform_xml.as_bytes());
+        assert_eq!(result.saves.len(), 2);
+        let backup = &result.saves[1];
+        assert_eq!(backup.file_path, r"Saves\Fixture Console\adventure.7z");
+        assert_eq!(
+            backup.save_group_id.as_deref(),
+            Some("pcsx2:Mcd001:BASLUS-12345SAVE")
+        );
+        assert_eq!(
+            backup.original_file_name.as_deref(),
+            Some("BASLUS-12345SAVE")
+        );
+        assert_eq!(backup.reported_file_size_bytes, Some(165));
+        assert_eq!(backup.md5.as_deref(), Some(expected_signature.as_str()));
+        assert!(backup.reported_last_modified_utc.is_some());
+        assert!(result
+            .operation
+            .starts_with("Backed up PCSX2 memory-card member"));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

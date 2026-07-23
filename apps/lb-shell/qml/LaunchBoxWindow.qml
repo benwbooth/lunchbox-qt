@@ -65,6 +65,11 @@ ApplicationWindow {
             "--game-save-backup-smoke-test") >= 0
     property int gameSaveBackupSmokePhase: 0
     property bool gameSaveBackupSmokeFinished: false
+    property bool pcsx2SaveBackupSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--pcsx2-save-backup-smoke-test") >= 0
+    property int pcsx2SaveBackupSmokePhase: 0
+    property bool pcsx2SaveBackupSmokeFinished: false
     property bool gameSaveDeleteSmokeTest:
         Qt.application.arguments.indexOf(
             "--game-save-delete-smoke-test") >= 0
@@ -794,6 +799,63 @@ ApplicationWindow {
                           + window.gameSaveBackupSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(17)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.pcsx2SaveBackupSmokeTest
+                 && !window.pcsx2SaveBackupSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-adventure"
+            if (window.pcsx2SaveBackupSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 1) {
+                    console.error(
+                        "PCSX2_SAVE_BACKUP_SMOKE_MISSING_FIXTURE")
+                    Qt.exit(25)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Adventure")
+                const version = gameSaveManager.selectedVersion()
+                if (version === null || version.location_kind !== "active") {
+                    console.error(
+                        "PCSX2_SAVE_BACKUP_SMOKE_ACTIVE_NOT_RESOLVED")
+                    Qt.exit(25)
+                    return
+                }
+                window.pcsx2SaveBackupSmokePhase = 1
+                controller.backup_game_save(
+                    row, gameId, version.source_index)
+            } else if (window.pcsx2SaveBackupSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_save_revision === 1) {
+                if (!controller.report_pcsx2_save_backup_smoke_success(
+                        gameId)) {
+                    console.error(
+                        "PCSX2_SAVE_BACKUP_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(25)
+                    return
+                }
+                window.pcsx2SaveBackupSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.pcsx2SaveBackupSmokeTest
+                 && !window.pcsx2SaveBackupSmokeFinished
+        onTriggered: {
+            console.error("PCSX2_SAVE_BACKUP_SMOKE_TIMEOUT phase="
+                          + window.pcsx2SaveBackupSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(25)
         }
     }
 
@@ -2455,7 +2517,7 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.preferredWidth: 820
-                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads configured RetroArch, Dolphin, and PCSX2 launch targets and records newly discovered saves without deleting existing history. RetroArch discovery covers regular saves, states, and grouped Saturn companion sets. Dolphin discovery covers regular GameCube memory-card files and save states; Wii directory saves remain gated. PCSX2 discovery covers ordinary save states and folder-memory-card members; raw card parsing and all card-member mutations remain gated. Manual backup, restore, and deletion support regular files and complete RetroArch Saturn companion sets. Active deletion always archives the exact current bytes in the vault before removing live files."
+                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads configured RetroArch, Dolphin, and PCSX2 launch targets and records newly discovered saves without deleting existing history. RetroArch discovery covers regular saves, states, and grouped Saturn companion sets. Dolphin discovery covers regular GameCube memory-card files and save states; Wii directory saves remain gated. PCSX2 discovery covers ordinary save states and folder-format or raw memory-card members. Manual backup supports regular files, complete RetroArch Saturn companion sets, and PCSX2 card members as verified 7z archives. PCSX2 card-member restore and deletion remain gated. Active deletion always archives the exact current bytes in the vault before removing live files."
                 wrapMode: Text.Wrap
                 color: "#aeb8c5"
             }

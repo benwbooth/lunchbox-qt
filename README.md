@@ -265,17 +265,22 @@ not claimed by the ordinary-file adapter. PCSX2 discovery checks the recovered
 portable/legacy roots and the platform-native data root (`~/.config/PCSX2` by
 default on Linux), parses exact `.p2s`/`.p2z` state names, and matches serials
 from `SYSTEM.CNF` prefixes, content names, or game titles. It also enumerates
-folder-format `.ps2` card members with recovered `icon.sys`, GameIndex, serial,
-title, size, timestamp, group-ID, and owner rules. Ordinary PCSX2 state rows use
-the regular-file transaction path; folder-card members retain their card/member
-boundary and raw `.ps2` card files remain unclaimed until the native card
-filesystem is implemented. Manual backup derives collision-free
-portable
+folder-format and native raw `.ps2` card members with recovered `icon.sys`,
+GameIndex, serial, title, size, timestamp, group-ID, and owner rules. The
+raw-card reader supports logical-page images and physical 528-byte pages with
+spare/ECC data, follows the indirect/direct FAT and directory chains, and
+isolates an invalid card instead of aborting the scan. Ordinary PCSX2 state
+rows use the regular-file transaction path; card members retain their
+card/member boundary. Manual backup derives collision-free portable
 `Saves\<Platform>\<ROM name>[-NN].<ext>` targets through the host-path service,
 records exact aggregate size, seven-digit UTC modified time, and MD5, and
 commits either one regular file or the complete Saturn set with the full new
-`<GameSave>` row under one recovery manifest. A legacy ungrouped source
-receives an explicit group ID in that same transaction. The manager can also
+`<GameSave>` row under one recovery manifest. A PCSX2 member backup extracts
+only the named logical save, creates and re-extracts a flat verified 7z,
+records the recovered uppercase SHA-256 folder-manifest signature in the
+`<Md5>` field, rechecks the live member for a racing change, and commits the
+archive plus XML without writing to the card. A legacy ungrouped source receives
+an explicit group ID in that same transaction. The manager can also
 permanently remove one resolved regular-file vault backup or complete Saturn
 set and its exact source-indexed history row in one revision-checked
 transaction. The active files are excluded, and every vault member plus the
@@ -301,9 +306,9 @@ attempted deletion if a peer fails.
 Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
 Unresolved. Metadata operations never move or delete save files, and backup
-never changes active files. Other-emulator scanning, directory/container backup,
-Dolphin Wii directory and PCSX2 memory-card-member restore/deletion, raw PCSX2
-card parsing, full disc-image serial extraction, stale-row reconciliation,
+never changes active files. Other-emulator scanning, other directory/container
+backup, Dolphin Wii directory and PCSX2 memory-card-member restore/deletion or
+card repair/writes, full disc-image serial extraction, stale-row reconciliation,
 automatic-backup policy, repair, and the remaining emulator adapters remain
 open, as does manual game combine/expand.
 

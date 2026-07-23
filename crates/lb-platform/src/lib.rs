@@ -5,7 +5,9 @@ mod path;
 mod path_settings;
 mod scummvm;
 
-pub use archive::{ArchiveExtractionError, ArchiveExtractor, LaunchResourceLease};
+pub use archive::{
+    ArchiveCreationError, ArchiveExtractionError, ArchiveExtractor, LaunchResourceLease,
+};
 pub use dosbox::DosBoxPlanError;
 pub use m3u::M3uPreparationError;
 pub use path::{

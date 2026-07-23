@@ -1,9 +1,13 @@
 use crate::{DiscoveredContainerSave, DiscoveredEmulatorSave, EmulatorSaveKind};
-use encoding_rs::SHIFT_JIS;
+#[path = "pcsx2_card.rs"]
+mod card;
+pub use card::{
+    extract_pcsx2_memory_card_save, folder_manifest_signature, list_pcsx2_memory_card_saves,
+    ExtractedPcsx2MemoryCardSave, Pcsx2CardError, Pcsx2MemoryCardSave,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 use thiserror::Error;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
@@ -24,19 +28,11 @@ struct PreparedContent<'a> {
 }
 
 #[derive(Clone, Debug)]
-struct FolderSave {
-    directory_name: String,
-    title: String,
-    total_bytes: i64,
-    modified: Option<SystemTime>,
-}
-
-#[derive(Clone, Debug)]
 struct CardRecord<'a> {
     context: &'a PreparedContent<'a>,
     card_path: PathBuf,
     group_id: String,
-    save: FolderSave,
+    save: Pcsx2MemoryCardSave,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,12 +99,12 @@ pub fn default_pcsx2_data_directories(emulator_application_path: &Path) -> Vec<P
     existing_unique_directories(candidates)
 }
 
-/// Discovers PCSX2 save states and folder-memory-card members.
+/// Discovers PCSX2 save states and folder/raw-memory-card members.
 ///
 /// Save states are ordinary files and can use the application's regular save
-/// transactions. Folder-card members deliberately identify their containing
-/// card separately; raw `.ps2` card files are not returned until the native
-/// card filesystem parser is available.
+/// transactions. Memory-card members deliberately identify their containing
+/// card separately so the complete shared card can never fall through to an
+/// ordinary-file transaction.
 pub fn discover_pcsx2_saves(
     emulator_application_path: &Path,
     targets: &[Pcsx2Content],
@@ -184,13 +180,17 @@ fn discover_folder_card_saves<'a>(
                 path: entry.path(),
                 source,
             })?;
-            if !file_type.is_dir() || !has_extension(&entry.path(), "ps2") {
+            if (!file_type.is_dir() && !file_type.is_file())
+                || file_type.is_symlink()
+                || !has_extension(&entry.path(), "ps2")
+            {
                 continue;
             }
-            card_paths.push(canonical_directory(
-                &entry.path(),
-                "PCSX2 folder memory card",
-            )?);
+            card_paths.push(if file_type.is_dir() {
+                canonical_directory(&entry.path(), "PCSX2 folder memory card")?
+            } else {
+                canonical_regular_file(&entry.path(), "PCSX2 raw memory card")?
+            });
         }
     }
     card_paths.sort_by_key(|path| path_sort_key(path));
@@ -199,7 +199,11 @@ fn discover_folder_card_saves<'a>(
     let mut records = Vec::new();
     let mut identities = BTreeSet::new();
     for card_path in card_paths {
-        let saves = list_folder_saves(&card_path)?;
+        let Ok(saves) = list_pcsx2_memory_card_saves(&card_path) else {
+            // LaunchBox 13.27 treats an unreadable/corrupt card as an isolated
+            // probe failure so other configured cards and states still scan.
+            continue;
+        };
         let save_records = saves
             .into_iter()
             .map(|save| {
@@ -358,78 +362,9 @@ fn discover_state_files(
     Ok(discovered)
 }
 
-fn list_folder_saves(card_path: &Path) -> Result<Vec<FolderSave>, Pcsx2Error> {
-    let mut saves = Vec::new();
-    for entry in sorted_directory_entries(card_path)? {
-        let entry_path = entry.path();
-        let file_type = entry.file_type().map_err(|source| Pcsx2Error::Read {
-            path: entry_path.clone(),
-            source,
-        })?;
-        if !file_type.is_dir() {
-            continue;
-        }
-        let directory_name = entry
-            .file_name()
-            .to_str()
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| Pcsx2Error::NonUnicodePath {
-                path: entry_path.clone(),
-            })?
-            .to_string();
-        let mut total_bytes = 0_i64;
-        let mut modified = None;
-        let mut icon_title = None;
-        for file in sorted_directory_entries(&entry_path)? {
-            let file_path = file.path();
-            let file_type = file.file_type().map_err(|source| Pcsx2Error::Read {
-                path: file_path.clone(),
-                source,
-            })?;
-            if !file_type.is_file() {
-                continue;
-            }
-            let metadata = file.metadata().map_err(|source| Pcsx2Error::Read {
-                path: file_path.clone(),
-                source,
-            })?;
-            let length = i64::try_from(metadata.len()).map_err(|_| Pcsx2Error::TooLarge {
-                path: file_path.clone(),
-            })?;
-            total_bytes = total_bytes
-                .checked_add(length)
-                .ok_or_else(|| Pcsx2Error::TooLarge {
-                    path: entry_path.clone(),
-                })?;
-            if let Ok(candidate) = metadata.modified() {
-                modified =
-                    Some(modified.map_or(candidate, |current: SystemTime| current.max(candidate)));
-            }
-            if file
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.eq_ignore_ascii_case("icon.sys"))
-            {
-                let bytes = fs::read(&file_path).map_err(|source| Pcsx2Error::Read {
-                    path: file_path,
-                    source,
-                })?;
-                icon_title = parse_icon_title(&bytes);
-            }
-        }
-        saves.push(FolderSave {
-            title: icon_title.unwrap_or_else(|| directory_name.clone()),
-            directory_name,
-            total_bytes,
-            modified,
-        });
-    }
-    Ok(saves)
-}
-
 fn folder_save_matches(
     context: &PreparedContent<'_>,
-    save: &FolderSave,
+    save: &Pcsx2MemoryCardSave,
     save_serial: Option<&str>,
     game_index: &BTreeMap<String, String>,
 ) -> bool {
@@ -474,36 +409,6 @@ fn context_titles(context: &PreparedContent<'_>) -> Vec<String> {
         titles.push(cleaned);
     }
     titles
-}
-
-fn parse_icon_title(data: &[u8]) -> Option<String> {
-    if data.len() < 148 || data.get(..4)? != b"PS2D" {
-        return None;
-    }
-    let line_break = usize::from(u16::from_le_bytes([data[6], data[7]]));
-    let bytes = &data[80..148];
-    let end = bytes
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(bytes.len());
-    let (decoded, had_errors) = SHIFT_JIS.decode_without_bom_handling(&bytes[..end]);
-    if had_errors {
-        return None;
-    }
-    let mut characters = decoded.chars().collect::<Vec<_>>();
-    if line_break > 0 && line_break < characters.len() {
-        characters.insert(line_break, ' ');
-    }
-    let title = characters.into_iter().collect::<String>();
-    let title = title.trim();
-    is_valid_icon_title(title).then(|| title.to_string())
-}
-
-fn is_valid_icon_title(value: &str) -> bool {
-    !value.trim().is_empty()
-        && value
-            .chars()
-            .all(|character| (' '..='~').contains(&character) && character != '?')
 }
 
 fn parse_state_name(file_name: &str) -> Option<StateName> {
@@ -892,11 +797,14 @@ pub enum Pcsx2Error {
     NonUnicodePath { path: PathBuf },
     #[error("save metadata is too large: {path}")]
     TooLarge { path: PathBuf },
+    #[error(transparent)]
+    MemoryCard(#[from] Pcsx2CardError),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use encoding_rs::SHIFT_JIS;
 
     fn icon_sys(title: &str, line_break: usize) -> Vec<u8> {
         let mut bytes = vec![0_u8; 148];

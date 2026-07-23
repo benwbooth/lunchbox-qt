@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::{collections::BTreeSet, io::Write};
 
 use tempfile::{Builder, TempDir};
 use thiserror::Error;
@@ -42,6 +43,277 @@ impl ArchiveExtractor {
 
     pub fn executable(&self) -> &Path {
         &self.executable
+    }
+
+    /// Creates one flat, non-encrypted `.7z` archive from a real directory.
+    ///
+    /// This is the recovered LaunchBox 13.27 storage shape for emulator save
+    /// adapters that back up one logical container member as several files.
+    /// Source names are passed directly to 7-Zip without a command shell and
+    /// the resulting member listing is checked before success is returned.
+    pub fn create_7z_from_directory(
+        &self,
+        source_directory: &Path,
+        archive: &Path,
+    ) -> Result<(), ArchiveCreationError> {
+        let source_metadata =
+            fs::symlink_metadata(source_directory).map_err(|source| ArchiveCreationError::Io {
+                path: source_directory.to_path_buf(),
+                source,
+            })?;
+        if !source_metadata.file_type().is_dir() || source_metadata.file_type().is_symlink() {
+            return Err(ArchiveCreationError::SourceNotDirectory {
+                path: source_directory.to_path_buf(),
+            });
+        }
+        let source_directory =
+            fs::canonicalize(source_directory).map_err(|source| ArchiveCreationError::Io {
+                path: source_directory.to_path_buf(),
+                source,
+            })?;
+        let archive_name = archive
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| ArchiveCreationError::InvalidTarget {
+                path: archive.to_path_buf(),
+            })?;
+        if !archive
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
+        {
+            return Err(ArchiveCreationError::InvalidTarget {
+                path: archive.to_path_buf(),
+            });
+        }
+        let archive_parent =
+            archive
+                .parent()
+                .ok_or_else(|| ArchiveCreationError::InvalidTarget {
+                    path: archive.to_path_buf(),
+                })?;
+        let archive_parent =
+            fs::canonicalize(archive_parent).map_err(|source| ArchiveCreationError::Io {
+                path: archive_parent.to_path_buf(),
+                source,
+            })?;
+        let archive = archive_parent.join(archive_name);
+        match fs::symlink_metadata(&archive) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => return Err(ArchiveCreationError::TargetExists { path: archive }),
+            Err(source) => {
+                return Err(ArchiveCreationError::Io {
+                    path: archive,
+                    source,
+                })
+            }
+        }
+
+        let mut members = Vec::<(String, OsString)>::new();
+        let mut identities = BTreeSet::new();
+        let entries =
+            fs::read_dir(&source_directory).map_err(|source| ArchiveCreationError::Io {
+                path: source_directory.clone(),
+                source,
+            })?;
+        for entry in entries {
+            let entry = entry.map_err(|source| ArchiveCreationError::Io {
+                path: source_directory.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let metadata =
+                fs::symlink_metadata(&path).map_err(|source| ArchiveCreationError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+                return Err(ArchiveCreationError::UnsupportedSourceEntry { path });
+            }
+            let name = entry.file_name();
+            let name_text = name
+                .to_str()
+                .filter(|name| is_safe_archive_member(name))
+                .ok_or_else(|| ArchiveCreationError::UnsafeSourceName { path: path.clone() })?
+                .to_string();
+            if !identities.insert(name_text.to_ascii_lowercase()) {
+                return Err(ArchiveCreationError::DuplicateSourceName { name: name_text });
+            }
+            members.push((name_text, name));
+        }
+        members.sort_by(|left, right| {
+            left.0
+                .to_ascii_lowercase()
+                .cmp(&right.0.to_ascii_lowercase())
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        if members.is_empty() {
+            return Err(ArchiveCreationError::EmptySource {
+                path: source_directory,
+            });
+        }
+
+        let output = Command::new(&self.executable)
+            .current_dir(&source_directory)
+            .arg("a")
+            .arg("-t7z")
+            .arg("-mx=9")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg("-sccUTF-8")
+            .arg(&archive)
+            .arg("--")
+            .args(members.iter().map(|(_, name)| name))
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| ArchiveCreationError::ToolStart {
+                executable: self.executable.clone(),
+                archive: archive.clone(),
+                message: error.to_string(),
+            })?;
+        if !output.status.success() {
+            let _ = fs::remove_file(&archive);
+            return Err(ArchiveCreationError::ToolFailed {
+                executable: self.executable.clone(),
+                archive,
+                message: tool_output_message(&output.stdout, &output.stderr),
+            });
+        }
+        let archive_metadata =
+            fs::symlink_metadata(&archive).map_err(|source| ArchiveCreationError::Io {
+                path: archive.clone(),
+                source,
+            })?;
+        if !archive_metadata.file_type().is_file() || archive_metadata.file_type().is_symlink() {
+            let _ = fs::remove_file(&archive);
+            return Err(ArchiveCreationError::InvalidCreatedArchive { path: archive });
+        }
+        let listed = match self.list_entries(&archive).and_then(|entries| {
+            validate_entries(&archive, &entries)?;
+            Ok(entries)
+        }) {
+            Ok(entries) => entries,
+            Err(source) => {
+                let _ = fs::remove_file(&archive);
+                return Err(ArchiveCreationError::Verification {
+                    archive,
+                    source: Box::new(source),
+                });
+            }
+        };
+        let listed = listed
+            .into_iter()
+            .map(|entry| entry.path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        let expected = members
+            .iter()
+            .map(|(name, _)| name.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        if listed != expected {
+            let _ = fs::remove_file(&archive);
+            return Err(ArchiveCreationError::MemberMismatch {
+                archive,
+                expected: expected.into_iter().collect(),
+                actual: listed.into_iter().collect(),
+            });
+        }
+        let mut archive_file =
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&archive)
+                .map_err(|source| ArchiveCreationError::Io {
+                    path: archive.clone(),
+                    source,
+                })?;
+        archive_file
+            .flush()
+            .and_then(|()| archive_file.sync_all())
+            .map_err(|source| ArchiveCreationError::Io {
+                path: archive,
+                source,
+            })
+    }
+
+    /// Safely extracts every member into an existing empty real directory.
+    ///
+    /// Unlike launch preparation, this does not choose a runnable file and
+    /// does not own the destination lifetime. It is intended for adapters
+    /// whose archive is a logical multi-file save rather than a game image.
+    pub fn extract_to_directory(
+        &self,
+        archive: &Path,
+        destination: &Path,
+    ) -> Result<Vec<PathBuf>, ArchiveExtractionError> {
+        if !archive.is_file() {
+            return Err(ArchiveExtractionError::ArchiveNotFound {
+                archive: archive.to_path_buf(),
+            });
+        }
+        let entries = self.list_entries(archive)?;
+        validate_entries(archive, &entries)?;
+        let metadata = fs::symlink_metadata(destination).map_err(|error| {
+            ArchiveExtractionError::ExtractedTree {
+                archive: archive.to_path_buf(),
+                path: destination.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err(ArchiveExtractionError::ExtractedTree {
+                archive: archive.to_path_buf(),
+                path: destination.to_path_buf(),
+                message: "destination is not a real directory".into(),
+            });
+        }
+        let destination = fs::canonicalize(destination).map_err(|error| {
+            ArchiveExtractionError::ExtractedTree {
+                archive: archive.to_path_buf(),
+                path: destination.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+        let mut destination_entries =
+            fs::read_dir(&destination).map_err(|error| ArchiveExtractionError::ExtractedTree {
+                archive: archive.to_path_buf(),
+                path: destination.clone(),
+                message: error.to_string(),
+            })?;
+        if destination_entries.next().is_some() {
+            return Err(ArchiveExtractionError::ExtractedTree {
+                archive: archive.to_path_buf(),
+                path: destination,
+                message: "destination directory is not empty".into(),
+            });
+        }
+        let mut output_directory_argument = OsString::from("-o");
+        output_directory_argument.push(&destination);
+        let output = Command::new(&self.executable)
+            .arg("x")
+            .arg("-y")
+            .arg("-aos")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg(output_directory_argument)
+            .arg("--")
+            .arg(archive)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| ArchiveExtractionError::ToolStart {
+                executable: self.executable.clone(),
+                operation: "extract",
+                archive: archive.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        if !output.status.success() {
+            return Err(ArchiveExtractionError::ToolFailed {
+                executable: self.executable.clone(),
+                operation: "extract",
+                archive: archive.to_path_buf(),
+                message: tool_output_message(&output.stdout, &output.stderr),
+            });
+        }
+        audit_extracted_tree(archive, &destination)
     }
 
     pub(crate) fn extract(
@@ -505,6 +777,58 @@ pub enum ArchiveExtractionError {
     },
 }
 
+#[derive(Debug, Error)]
+pub enum ArchiveCreationError {
+    #[error("archive source is not a real directory: {path}")]
+    SourceNotDirectory { path: PathBuf },
+    #[error("archive target must be a named .7z file below an existing directory: {path}")]
+    InvalidTarget { path: PathBuf },
+    #[error("archive target already exists: {path}")]
+    TargetExists { path: PathBuf },
+    #[error("archive source contains an unsupported entry: {path}")]
+    UnsupportedSourceEntry { path: PathBuf },
+    #[error("archive source contains an unsafe or non-Unicode filename: {path}")]
+    UnsafeSourceName { path: PathBuf },
+    #[error("archive source has a case-insensitive duplicate filename: {name}")]
+    DuplicateSourceName { name: String },
+    #[error("archive source contains no files: {path}")]
+    EmptySource { path: PathBuf },
+    #[error("could not read or write {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("could not start {executable} to create {archive}: {message}")]
+    ToolStart {
+        executable: PathBuf,
+        archive: PathBuf,
+        message: String,
+    },
+    #[error("{executable} could not create {archive}: {message}")]
+    ToolFailed {
+        executable: PathBuf,
+        archive: PathBuf,
+        message: String,
+    },
+    #[error("7-Zip did not create a real archive file: {path}")]
+    InvalidCreatedArchive { path: PathBuf },
+    #[error("could not verify created archive {archive}: {source}")]
+    Verification {
+        archive: PathBuf,
+        #[source]
+        source: Box<ArchiveExtractionError>,
+    },
+    #[error(
+        "created archive {archive} has different members; expected {expected:?}, found {actual:?}"
+    )]
+    MemberMismatch {
+        archive: PathBuf,
+        expected: Vec<String>,
+        actual: Vec<String>,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,5 +901,37 @@ mod tests {
             select_launch_file(Path::new("/library/Collection.rar"), &files),
             Err(ArchiveExtractionError::AmbiguousLaunchFile { .. })
         ));
+    }
+
+    #[test]
+    fn creates_and_verifies_flat_7z_archives_without_a_shell() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("member");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("icon.sys"), b"icon bytes").unwrap();
+        fs::write(source.join("save.bin"), b"save bytes").unwrap();
+        let archive = directory.path().join("member.7z");
+
+        let tool = ArchiveExtractor::new("7z");
+        tool.create_7z_from_directory(&source, &archive).unwrap();
+
+        let entries = tool.list_entries(&archive).unwrap();
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["icon.sys".into(), "save.bin".into()])
+        );
+        assert!(matches!(
+            tool.create_7z_from_directory(&source, &archive),
+            Err(ArchiveCreationError::TargetExists { .. })
+        ));
+        let extracted = directory.path().join("extracted");
+        fs::create_dir(&extracted).unwrap();
+        let files = tool.extract_to_directory(&archive, &extracted).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(fs::read(extracted.join("icon.sys")).unwrap(), b"icon bytes");
+        assert_eq!(fs::read(extracted.join("save.bin")).unwrap(), b"save bytes");
     }
 }

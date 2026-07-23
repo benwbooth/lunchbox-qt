@@ -149,7 +149,8 @@ retaining an exact sibling recovery copy. RetroArch Saturn restore first
 commits and verifies the complete current companion set, then revision-checks
 and atomically replaces or creates all selected companions while retaining
 active members absent from the selected version like 13.27. Other-emulator
-scanning and directory/container backup remain open. Active deletion now first
+scanning and other directory/container backup remain open. Active deletion now
+first
 atomically replaces one regular or Saturn active row with its verified portable
 vault set, then revision-checks and deletes even host-mapped external live files
 with exact sibling recovery copies and all-or-rollback behavior.
@@ -177,19 +178,27 @@ recovered executable-relative and legacy roots plus current PCSX2's
 platform-native data root; current upstream PCSX2 defines Linux data under
 `$XDG_CONFIG_HOME/PCSX2` or `~/.config/PCSX2`, with `memcards` and `sstates`
 below it ([upstream source](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/Pcsx2Config.cpp)).
-It matches exact state serials and folder-card members using the recovered
-content/header serial, GameIndex title, alternate-title, ROM-name,
-`icon.sys`, grouping, and single-context rules. Container rows retain the card
-path and internal directory name without inventing a whole-card MD5; ordinary
-state rows use the existing regular-file transactions. Raw `.ps2` card parsing,
-compressed/full disc-image serial extraction, and card-member
-backup/restore/deletion remain explicit gates.
+It matches exact state serials and folder/raw-card members using the recovered
+content/header serial, GameIndex title, alternate-title, ROM-name, `icon.sys`,
+grouping, and single-context rules. The native read-only filesystem supports
+logical pages and 528-byte physical pages with spare/ECC data, traverses
+indirect/direct FAT and directory chains, and rejects corrupt or unsafe paths
+without aborting other-card discovery. It was also checked read-only against an
+authentic 8.65 MB ECC-bearing card, where it found both logical members, while
+an unformatted/invalid sibling card was isolated. Container rows retain the
+card path and internal directory name without inventing a whole-card digest;
+ordinary state rows use the existing regular-file transactions. PCSX2 manual
+backup extracts the named member, creates and re-extracts a flat 7z, verifies
+the recovered uppercase SHA-256 logical-folder manifest, rechecks the live card
+member for a racing change, and transactionally stores the archive plus XML
+without writing to the card. Compressed/full disc-image serial extraction and
+card-member restore/deletion or card repair/writes remain explicit gates.
 The 13.27 RetroArch plugin does not override `EmulatorPlugin.RemoveSave`, so
 the Windows implementation calls the base `File.Delete` on only the persisted
 primary path. The port deliberately deletes the already-established Saturn
 ownership set instead of orphaning `.bkr`/`.smpc` companions; the mandatory
 vault copy and per-member recovery copies make that safety extension explicit.
-Dolphin Wii directory/PCSX2 card-member restore/deletion, raw-card parsing,
+Dolphin Wii directory/PCSX2 card-member restore/deletion or card repair/writes,
 full PCSX2 disc-image serial extraction, stale-row reconciliation, automatic
 policy, repair, and the remaining adapters remain open.
 
