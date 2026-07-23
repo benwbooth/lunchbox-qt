@@ -180,6 +180,239 @@ pub struct GameReference {
     pub detail: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum PlatformReferenceKind {
+    Game,
+    EmulatorMapping,
+    EmulatorDefault,
+    ParentChild,
+    ParentTarget,
+    PlaylistGame,
+    PlaylistFilter,
+    NavigationLastSelectedChild,
+    ControllerAssociation,
+    FrontendSetting,
+}
+
+impl std::fmt::Display for PlatformReferenceKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Game => "game",
+            Self::EmulatorMapping => "emulator mapping",
+            Self::EmulatorDefault => "emulator default",
+            Self::ParentChild => "parent relationship child",
+            Self::ParentTarget => "parent relationship target",
+            Self::PlaylistGame => "playlist game",
+            Self::PlaylistFilter => "playlist filter",
+            Self::NavigationLastSelectedChild => "navigation selection",
+            Self::ControllerAssociation => "controller association",
+            Self::FrontendSetting => "frontend setting",
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformReference {
+    pub kind: PlatformReferenceKind,
+    pub source_path: PathBuf,
+    pub detail: String,
+}
+
+/// Freshly scans every modeled document that can refer to a platform. The
+/// platform's own catalog row and owned `PlatformFolder` rows are intentionally
+/// excluded because a lifecycle transaction removes those records itself.
+pub fn find_platform_references(
+    scope: impl AsRef<Path>,
+    platform_name: &str,
+) -> Result<Vec<PlatformReference>, StorageError> {
+    let scope = scope.as_ref();
+    let mut references = if scope.is_file() {
+        platform_game_platform_references(&LibraryIndex::load(scope)?, platform_name)
+    } else {
+        let data = LaunchBoxDataIndex::load(scope)?;
+        let mut references = platform_game_platform_references(data.platforms(), platform_name);
+
+        if let Some(configuration) = data.emulator_configuration() {
+            for mapping in configuration
+                .platforms
+                .iter()
+                .filter(|mapping| platform_names_equal(&mapping.platform, platform_name))
+            {
+                references.push(PlatformReference {
+                    kind: PlatformReferenceKind::EmulatorMapping,
+                    source_path: configuration.source_path.clone(),
+                    detail: mapping.emulator_id.clone(),
+                });
+            }
+            for emulator in configuration.emulators.iter().filter(|emulator| {
+                emulator
+                    .default_platform
+                    .as_deref()
+                    .is_some_and(|name| platform_names_equal(name, platform_name))
+            }) {
+                references.push(PlatformReference {
+                    kind: PlatformReferenceKind::EmulatorDefault,
+                    source_path: configuration.source_path.clone(),
+                    detail: emulator.title.clone(),
+                });
+            }
+        }
+
+        for relationship in data.parents() {
+            if relationship
+                .platform_name
+                .as_deref()
+                .is_some_and(|name| platform_names_equal(name, platform_name))
+            {
+                references.push(PlatformReference {
+                    kind: PlatformReferenceKind::ParentChild,
+                    source_path: data.data_root().join("Parents.xml"),
+                    detail: platform_name.to_string(),
+                });
+            }
+            if relationship
+                .parent_platform_name
+                .as_deref()
+                .is_some_and(|name| platform_names_equal(name, platform_name))
+            {
+                references.push(PlatformReference {
+                    kind: PlatformReferenceKind::ParentTarget,
+                    source_path: data.data_root().join("Parents.xml"),
+                    detail: platform_name.to_string(),
+                });
+            }
+        }
+
+        for document in data.playlists() {
+            for game in document
+                .games
+                .iter()
+                .filter(|game| platform_names_equal(&game.game_platform, platform_name))
+            {
+                references.push(PlatformReference {
+                    kind: PlatformReferenceKind::PlaylistGame,
+                    source_path: document.source_path.clone(),
+                    detail: format!("{} ({})", document.playlist.metadata.name, game.game_title),
+                });
+            }
+            for filter in document.filters.iter().filter(|filter| {
+                filter.field_key.eq_ignore_ascii_case("Platform")
+                    && platform_names_equal(&filter.value, platform_name)
+            }) {
+                references.push(PlatformReference {
+                    kind: PlatformReferenceKind::PlaylistFilter,
+                    source_path: document.source_path.clone(),
+                    detail: format!(
+                        "{} ({})",
+                        document.playlist.metadata.name, filter.comparison_type_key
+                    ),
+                });
+            }
+            if document
+                .playlist
+                .metadata
+                .last_selected_child
+                .as_deref()
+                .is_some_and(|name| platform_names_equal(name, platform_name))
+            {
+                references.push(PlatformReference {
+                    kind: PlatformReferenceKind::NavigationLastSelectedChild,
+                    source_path: document.source_path.clone(),
+                    detail: document.playlist.metadata.name.clone(),
+                });
+            }
+        }
+
+        if let Some(catalog) = data.platform_catalog() {
+            for metadata in catalog
+                .platforms
+                .iter()
+                .filter(|platform| !platform_names_equal(&platform.metadata.name, platform_name))
+                .map(|platform| &platform.metadata)
+                .chain(catalog.categories.iter().map(|category| &category.metadata))
+                .filter(|metadata| {
+                    metadata
+                        .last_selected_child
+                        .as_deref()
+                        .is_some_and(|name| platform_names_equal(name, platform_name))
+                })
+            {
+                references.push(PlatformReference {
+                    kind: PlatformReferenceKind::NavigationLastSelectedChild,
+                    source_path: catalog.source_path.clone(),
+                    detail: metadata.name.clone(),
+                });
+            }
+        }
+
+        for controller in data.game_controllers().iter().filter(|controller| {
+            controller
+                .associated_platforms
+                .as_deref()
+                .is_some_and(|names| {
+                    names
+                        .split(';')
+                        .any(|name| platform_names_equal(name.trim(), platform_name))
+                })
+        }) {
+            references.push(PlatformReference {
+                kind: PlatformReferenceKind::ControllerAssociation,
+                source_path: data.data_root().join("GameControllers.xml"),
+                detail: controller.name.clone(),
+            });
+        }
+
+        for settings in [data.settings(), data.big_box_settings()]
+            .into_iter()
+            .flatten()
+        {
+            for entry in settings.entries.iter().filter(|entry| {
+                entry.key.to_ascii_lowercase().contains("platform")
+                    && platform_names_equal(&entry.value, platform_name)
+            }) {
+                references.push(PlatformReference {
+                    kind: PlatformReferenceKind::FrontendSetting,
+                    source_path: settings.source_path.clone(),
+                    detail: entry.key.clone(),
+                });
+            }
+        }
+        references
+    };
+    references.sort_by(|left, right| {
+        left.source_path
+            .cmp(&right.source_path)
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.detail.cmp(&right.detail))
+    });
+    Ok(references)
+}
+
+fn platform_names_equal(left: &str, right: &str) -> bool {
+    left.to_lowercase() == right.to_lowercase()
+}
+
+fn platform_game_platform_references(
+    library: &LibraryIndex,
+    platform_name: &str,
+) -> Vec<PlatformReference> {
+    library
+        .platforms()
+        .iter()
+        .flat_map(|platform| {
+            platform
+                .games
+                .iter()
+                .filter(|game| platform_names_equal(&game.platform, platform_name))
+                .map(|game| PlatformReference {
+                    kind: PlatformReferenceKind::Game,
+                    source_path: platform.source_path.clone(),
+                    detail: format!("{} ({})", game.title, game.id),
+                })
+        })
+        .collect()
+}
+
 /// Freshly scans every modeled reference-bearing document in a library. A
 /// direct platform-file scope checks only that platform document.
 pub fn find_game_references(
@@ -3529,6 +3762,81 @@ mod tests {
                 .collect::<Vec<_>>(),
             [GameReferenceKind::ImportBlacklist]
         );
+    }
+
+    #[test]
+    fn platform_reference_scan_covers_every_modeled_dependency_family() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        let platforms = data.join("Platforms");
+        let playlists = data.join("Playlists");
+        fs::create_dir_all(&platforms).unwrap();
+        fs::create_dir_all(&playlists).unwrap();
+        fs::write(platforms.join("Fixture Console.xml"), FIXTURE).unwrap();
+
+        let playlist =
+            include_str!("../../../fixtures/launchbox/Data/Playlists/Fixture Playlist.xml")
+                .replace(
+                    "<FieldKey>Favorite</FieldKey>",
+                    "<FieldKey>Platform</FieldKey>",
+                )
+                .replace("<Value>true</Value>", "<Value>Fixture Console</Value>");
+        fs::write(playlists.join("Fixture Playlist.xml"), playlist).unwrap();
+
+        let catalog = include_str!("../../../fixtures/launchbox/Data/Platforms.xml").replace(
+            "</PlatformCategory>",
+            "<LastSelectedChild>Fixture Console</LastSelectedChild></PlatformCategory>",
+        );
+        fs::write(data.join("Platforms.xml"), catalog).unwrap();
+
+        let emulators = include_str!("../../../fixtures/launchbox/Data/Emulators.xml").replace(
+            "<Title>Fixture Emulator</Title>",
+            "<Title>Fixture Emulator</Title><DefaultPlatform>Fixture Console</DefaultPlatform>",
+        );
+        fs::write(data.join("Emulators.xml"), emulators).unwrap();
+
+        let parents = include_str!("../../../fixtures/launchbox/Data/Parents.xml").replace(
+            "</LaunchBox>",
+            "<Parent><ParentPlatformName>Fixture Console</ParentPlatformName><PlaylistId>fixture-playlist</PlaylistId></Parent></LaunchBox>",
+        );
+        fs::write(data.join("Parents.xml"), parents).unwrap();
+
+        let controllers = include_str!("../../../fixtures/launchbox/Data/GameControllers.xml")
+            .replace(
+                "<AssociatedPlatforms />",
+                "<AssociatedPlatforms>Other;Fixture Console</AssociatedPlatforms>",
+            );
+        fs::write(data.join("GameControllers.xml"), controllers).unwrap();
+
+        let settings = include_str!("../../../fixtures/launchbox/Data/Settings.xml").replace(
+            "</Settings>",
+            "<SelectedPlatform>Fixture Console</SelectedPlatform></Settings>",
+        );
+        fs::write(data.join("Settings.xml"), settings).unwrap();
+
+        let kinds = find_platform_references(directory.path(), "fixture console")
+            .unwrap()
+            .into_iter()
+            .map(|reference| reference.kind)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            kinds,
+            std::collections::BTreeSet::from([
+                PlatformReferenceKind::Game,
+                PlatformReferenceKind::EmulatorMapping,
+                PlatformReferenceKind::EmulatorDefault,
+                PlatformReferenceKind::ParentChild,
+                PlatformReferenceKind::ParentTarget,
+                PlatformReferenceKind::PlaylistGame,
+                PlatformReferenceKind::PlaylistFilter,
+                PlatformReferenceKind::NavigationLastSelectedChild,
+                PlatformReferenceKind::ControllerAssociation,
+                PlatformReferenceKind::FrontendSetting,
+            ])
+        );
+        assert!(find_platform_references(directory.path(), "No References")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

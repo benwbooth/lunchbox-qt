@@ -77,6 +77,7 @@ echo "LaunchBox and BigBox role-model runtime smokes validated."
 
 edit_root=$(mktemp -d)
 crud_root=$(mktemp -d)
+platform_crud_root=$(mktemp -d)
 emulator_launch_root=$(mktemp -d)
 direct_launch_root=$(mktemp -d)
 sequence_launch_root=$(mktemp -d)
@@ -84,7 +85,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$platform_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -284,6 +285,95 @@ if find "$crud_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox reference-gated add/remove CRUD and targeted Qt row signals validated."
+
+cp -R fixtures/launchbox/Data "$platform_crud_root/Data"
+platform_crud_catalog="$platform_crud_root/Data/Platforms.xml"
+platform_crud_document="$platform_crud_root/Data/Platforms/Dragon 32_64.xml"
+platform_crud_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$platform_crud_root" --platform-crud-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$platform_crud_output" >&2
+  exit 1
+}
+if ! rg -q 'PLATFORM_CRUD_SMOKE_COMPLETE platform="Dragon 32/64" blocked=1 inserts=1 removes=1 games=3 platforms=1' \
+  <<< "$platform_crud_output"; then
+  printf '%s\n' "$platform_crud_output" >&2
+  echo "LaunchBox did not validate dialog-driven platform creation and deletion." >&2
+  exit 1
+fi
+if [[ -e "$platform_crud_document" ]]; then
+  echo "Platform CRUD smoke retained the deleted portable platform document." >&2
+  exit 1
+fi
+if rg -q -F 'Dragon 32/64' "$platform_crud_catalog"; then
+  echo "Platform CRUD smoke retained the deleted catalog or folder records." >&2
+  exit 1
+fi
+for media_directory in Images Videos Manuals Music; do
+  if [[ -e "$platform_crud_root/$media_directory" ]]; then
+    echo "Platform CRUD unexpectedly created the $media_directory media directory." >&2
+    exit 1
+  fi
+done
+
+mapfile -t platform_catalog_backups < <(
+  find "$platform_crud_root/Data" -maxdepth 1 -type f \
+    -name 'Platforms.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#platform_catalog_backups[@]} -ne 2 ]]; then
+  echo "Platform create/delete did not retain exactly two catalog backups." >&2
+  exit 1
+fi
+platform_original_catalog_backups=0
+platform_created_catalog_backups=0
+for backup in "${platform_catalog_backups[@]}"; do
+  if cmp -s "$backup" fixtures/launchbox/Data/Platforms.xml; then
+    ((platform_original_catalog_backups += 1))
+  elif rg -q -F '<Name>Dragon 32/64</Name>' "$backup" \
+    && rg -q -F '<ScrapeAs>Dragon 32/64</ScrapeAs>' "$backup" \
+    && [[ $(rg -c -F '<Platform>Dragon 32/64</Platform>' "$backup") -eq 51 ]] \
+    && rg -q -F '<FolderPath>Images\Dragon 32_64\Box - Front</FolderPath>' "$backup"; then
+    ((platform_created_catalog_backups += 1))
+  fi
+done
+if [[ $platform_original_catalog_backups -ne 1 \
+  || $platform_created_catalog_backups -ne 1 ]]; then
+  echo "Platform catalog backups do not prove the expected portable create/delete chain." >&2
+  exit 1
+fi
+
+mapfile -t platform_document_backups < <(
+  find "$platform_crud_root/Data/Platforms" -maxdepth 1 -type f \
+    -name 'Dragon 32_64.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#platform_document_backups[@]} -ne 3 ]]; then
+  echo "Platform add-game/remove-game/delete did not retain exactly three document backups." >&2
+  exit 1
+fi
+platform_game_backups=0
+platform_empty_backups=0
+for backup in "${platform_document_backups[@]}"; do
+  if rg -q -F '<Title>Dragon Test</Title>' "$backup" \
+    && rg -q -F '<Platform>Dragon 32/64</Platform>' "$backup" \
+    && rg -q -F '<ApplicationPath>Games\Dragon 32_64\test.vdk</ApplicationPath>' "$backup"; then
+    ((platform_game_backups += 1))
+  elif ! rg -q -F '<Game>' "$backup"; then
+    ((platform_empty_backups += 1))
+  fi
+done
+if [[ $platform_game_backups -ne 1 || $platform_empty_backups -ne 2 ]]; then
+  echo "Platform document backups do not prove empty/add/remove/delete transitions." >&2
+  exit 1
+fi
+if find "$platform_crud_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful platform CRUD smoke left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-driven platform lifecycle, portable filenames, lexical Windows paths, reference gating, exact backups, and media isolation validated."
 
 cp -R fixtures/launchbox/Data "$emulator_launch_root/Data"
 mkdir -p "$emulator_launch_root/Emulators"

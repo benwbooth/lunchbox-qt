@@ -21,6 +21,8 @@ ApplicationWindow {
     property bool loadSmokeTest: Qt.application.arguments.indexOf("--load-smoke-test") >= 0
     property bool editSmokeTest: Qt.application.arguments.indexOf("--edit-smoke-test") >= 0
     property bool crudSmokeTest: Qt.application.arguments.indexOf("--crud-smoke-test") >= 0
+    property bool platformCrudSmokeTest:
+        Qt.application.arguments.indexOf("--platform-crud-smoke-test") >= 0
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
     property bool pathMappingSmokeTest:
         Qt.application.arguments.indexOf("--path-mapping-smoke-test") >= 0
@@ -32,6 +34,10 @@ ApplicationWindow {
     property int crudBlockedReferences: 0
     property string crudAddedGameId: ""
     property bool crudSmokeFinished: false
+    property int platformCrudSmokePhase: 0
+    property int platformCrudBlockedReferences: 0
+    property string platformCrudAddedGameId: ""
+    property bool platformCrudSmokeFinished: false
     property int launchSmokePhase: 0
     property bool launchSmokeFinished: false
     property int pathMappingSmokePhase: 0
@@ -45,6 +51,13 @@ ApplicationWindow {
 
     function platformName(row) { return controller.platform_name_at(row) }
     function platformGameCount(row) { return controller.platform_game_count_at(row) }
+    function platformIndex(name) {
+        for (let index = 0; index < controller.platform_entry_count; ++index) {
+            if (platformName(index) === name)
+                return index
+        }
+        return -1
+    }
 
     function verifyModelRoles(index, gameId, gameTitle, gamePlatform, gameFavorite,
                               gameCompleted, gamePlayCount, gameStarRating,
@@ -361,6 +374,77 @@ ApplicationWindow {
     Timer {
         interval: 25
         repeat: true
+        running: window.platformCrudSmokeTest && !window.platformCrudSmokeFinished
+        onTriggered: {
+            const platformName = "Dragon 32/64"
+            if (window.platformCrudSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3
+                    && controller.platform_entry_count === 1) {
+                window.platformCrudSmokePhase = 1
+                addPlatformDialog.smokeCreate(platformName, platformName)
+            } else if (window.platformCrudSmokePhase === 1 && !controller.writing
+                       && controller.platform_entry_count === 2) {
+                const platformIndex = window.platformIndex(platformName)
+                if (platformIndex < 0 || controller.platform_game_count_at(platformIndex) !== 0) {
+                    console.error("PLATFORM_CRUD_SMOKE_EMPTY_PLATFORM_MISSING")
+                    Qt.exit(9)
+                    return
+                }
+                window.platformCrudSmokePhase = 2
+                addGameDialog.smokeAdd("Dragon Test",
+                                       "Games\\Dragon 32_64\\test.vdk",
+                                       platformName)
+            } else if (window.platformCrudSmokePhase === 2 && !controller.writing
+                       && controller.game_count === 4
+                       && controller.last_added_game_id.length > 0) {
+                window.platformCrudAddedGameId = controller.last_added_game_id
+                window.platformCrudSmokePhase = 3
+                deletePlatformConfirmation.smokeDelete(platformName)
+            } else if (window.platformCrudSmokePhase === 3 && !controller.writing
+                       && controller.delete_blocker_count > 0) {
+                window.platformCrudBlockedReferences = controller.delete_blocker_count
+                const row = controller.row_for_game_id(window.platformCrudAddedGameId)
+                if (row < 0) {
+                    console.error("PLATFORM_CRUD_SMOKE_ADDED_GAME_MISSING")
+                    Qt.exit(9)
+                    return
+                }
+                window.platformCrudSmokePhase = 4
+                deleteConfirmation.smokeDelete(
+                    row, window.platformCrudAddedGameId, "Dragon Test")
+            } else if (window.platformCrudSmokePhase === 4 && !controller.writing
+                       && controller.game_count === 3) {
+                window.platformCrudSmokePhase = 5
+                deletePlatformConfirmation.smokeDelete(platformName)
+            } else if (window.platformCrudSmokePhase === 5 && !controller.writing
+                       && controller.platform_entry_count === 1) {
+                if (!controller.report_platform_crud_smoke_success(
+                        platformName, window.platformCrudBlockedReferences)) {
+                    console.error("PLATFORM_CRUD_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(9)
+                    return
+                }
+                window.platformCrudSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.platformCrudSmokeTest && !window.platformCrudSmokeFinished
+        onTriggered: {
+            console.error("PLATFORM_CRUD_SMOKE_TIMEOUT phase="
+                          + window.platformCrudSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(9)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
         running: window.launchSmokeTest && !window.launchSmokeFinished
         onTriggered: {
             if (window.launchSmokePhase === 0 && !controller.loading
@@ -533,27 +617,59 @@ ApplicationWindow {
                 anchors.margins: 12
                 spacing: 8
 
-                Label {
-                    text: "Platforms"
-                    color: "#aeb8c5"
-                    font.bold: true
-                    font.pixelSize: 16
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Platforms"
+                        color: "#aeb8c5"
+                        font.bold: true
+                        font.pixelSize: 16
+                    }
+                    ToolButton {
+                        text: "+"
+                        Accessible.name: "Add platform"
+                        enabled: controller.library_path.length > 0
+                                 && !controller.loading && !controller.writing
+                                 && !controller.launching
+                                 && !controller.write_conflict
+                                 && controller.pending_recovery_count === 0
+                        onClicked: addPlatformDialog.prepare()
+                    }
+                    ToolButton {
+                        text: "−"
+                        Accessible.name: "Delete selected platform"
+                        enabled: window.selectedPlatform.length > 0
+                                 && !controller.loading && !controller.writing
+                                 && !controller.launching
+                                 && !controller.write_conflict
+                                 && controller.pending_recovery_count === 0
+                        onClicked: deletePlatformConfirmation.prepare(
+                                       window.selectedPlatform)
+                    }
                 }
                 ListView {
                     id: platformList
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    model: controller.platform_entry_count + 1
+                    model: {
+                        const revision = controller.platform_revision
+                        return controller.platform_entry_count + 1
+                    }
                     delegate: ItemDelegate {
                         id: platformDelegate
                         required property int index
-                        property string entryName: index === 0
-                                                   ? "All Games"
-                                                   : window.platformName(index - 1)
-                        property int entryCount: index === 0
-                                                 ? controller.game_count
-                                                 : window.platformGameCount(index - 1)
+                        property string entryName: {
+                            const revision = controller.platform_revision
+                            return index === 0 ? "All Games"
+                                               : window.platformName(index - 1)
+                        }
+                        property int entryCount: {
+                            const revision = controller.platform_revision
+                            return index === 0 ? controller.game_count
+                                               : window.platformGameCount(index - 1)
+                        }
                         width: platformList.width
                         highlighted: (index === 0 && window.selectedPlatform === "")
                                      || entryName === window.selectedPlatform
@@ -1549,6 +1665,86 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: addPlatformDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Add Platform"
+        standardButtons: Dialog.Save | Dialog.Cancel
+
+        function prepare() {
+            addPlatformName.text = ""
+            addPlatformScrapeAs.text = ""
+            open()
+        }
+
+        function smokeCreate(name, scrapeAs) {
+            prepare()
+            addPlatformName.text = name
+            addPlatformScrapeAs.text = scrapeAs
+            Qt.callLater(function() { addPlatformDialog.accept() })
+        }
+
+        onAccepted: controller.add_platform(addPlatformName.text,
+                                            addPlatformScrapeAs.text)
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label { text: "Name" }
+            TextField {
+                id: addPlatformName
+                Layout.preferredWidth: 440
+                placeholderText: "Platform name"
+            }
+            Label { text: "Scrape as (optional)" }
+            TextField {
+                id: addPlatformScrapeAs
+                Layout.fillWidth: true
+                placeholderText: "Metadata platform name"
+            }
+            Label {
+                Layout.preferredWidth: 440
+                text: "Creates a portable platform XML document and LaunchBox-compatible media-folder records in one recoverable transaction. Stored LaunchBox paths keep their native backslash syntax; media directories are not created."
+                wrapMode: Text.Wrap
+                color: "#7d8590"
+            }
+        }
+    }
+
+    Dialog {
+        id: deletePlatformConfirmation
+        anchors.centerIn: parent
+        modal: true
+        title: "Delete " + platformName + "?"
+        standardButtons: Dialog.Yes | Dialog.No
+        property string platformName: ""
+
+        function prepare(name) {
+            platformName = name
+            open()
+        }
+
+        function smokeDelete(name) {
+            prepare(name)
+            Qt.callLater(function() { deletePlatformConfirmation.accept() })
+        }
+
+        onAccepted: {
+            const deleting = platformName
+            if (window.selectedPlatform === deleting) {
+                window.selectedPlatform = ""
+                controller.apply_filters(searchField.text, "")
+            }
+            controller.delete_platform(deleting)
+        }
+
+        contentItem: Label {
+            width: 440
+            text: "Deletion is refused while any game, emulator, playlist, navigation, controller, or frontend setting refers to this platform. Only its catalog records and empty platform XML are removed; media files and directories are never deleted."
+            wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
         id: addGameDialog
         anchors.centerIn: parent
         modal: true
@@ -1567,6 +1763,19 @@ ApplicationWindow {
             }
             addPlatform.currentIndex = selectedIndex
             open()
+        }
+
+        function smokeAdd(title, applicationPath, platformName) {
+            prepare()
+            addTitle.text = title
+            addApplicationPath.text = applicationPath
+            for (let index = 0; index < controller.platform_entry_count; ++index) {
+                if (window.platformName(index) === platformName) {
+                    addPlatform.currentIndex = index
+                    break
+                }
+            }
+            Qt.callLater(function() { addGameDialog.accept() })
         }
 
         onAccepted: controller.add_game(addTitle.text, addApplicationPath.text,
@@ -1622,6 +1831,11 @@ ApplicationWindow {
             gameId = id
             gameTitle = title
             open()
+        }
+
+        function smokeDelete(row, id, title) {
+            prepare(row, id, title)
+            Qt.callLater(function() { deleteConfirmation.accept() })
         }
 
         onAccepted: controller.delete_game(modelRow, gameId)

@@ -112,6 +112,15 @@ Existing-platform game additions generate UUIDs and use targeted Qt row
 insertion. Deletion freshly scans every modeled platform, playlist, navigation,
 clone, save, controller, and blacklist reference and refuses orphaning; an
 unreferenced game uses targeted row removal and never deletes media files.
+The platform sidebar also creates and deletes platforms through recoverable
+two-document transactions. Platform names are converted to portable XML
+filenames only by `lb-platform` (for example, `Dragon 32/64` becomes
+`Dragon 32_64.xml`), while all 51 default media-folder values remain lexical
+LaunchBox paths with backslashes. Platform deletion scans games, emulator
+mappings/defaults, parents, playlists/filters, navigation state, controller
+associations, and frontend settings, requires an empty platform document, and
+removes only the catalog/folder records and XML document—never media. Empty
+catalog platforms remain visible and can receive their first game.
 Interrupted transactions require an explicit Recover action; conflicts require
 a reload and never offer a blind overwrite.
 

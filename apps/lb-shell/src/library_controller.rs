@@ -36,6 +36,7 @@ pub mod qobject {
         #[qproperty(i32, game_count)]
         #[qproperty(i32, filtered_count)]
         #[qproperty(i32, platform_entry_count)]
+        #[qproperty(i32, platform_revision)]
         #[qproperty(i32, pending_recovery_count)]
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
@@ -128,6 +129,12 @@ pub mod qobject {
             application_path: QString,
             platform: QString,
         );
+
+        #[qinvokable]
+        fn add_platform(self: Pin<&mut LibraryController>, name: QString, scrape_as: QString);
+
+        #[qinvokable]
+        fn delete_platform(self: Pin<&mut LibraryController>, name: QString);
 
         #[qinvokable]
         fn delete_game(self: Pin<&mut LibraryController>, row: i32, game_id: QString);
@@ -242,6 +249,13 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_platform_crud_smoke_success(
+            self: &LibraryController,
+            platform_name: QString,
+            blocked_references: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_launch_smoke_success(self: &LibraryController, game_id: QString) -> bool;
 
         #[qinvokable]
@@ -347,23 +361,26 @@ use cxx_qt_lib::{
 };
 use lb_domain::{
     AdditionalApplication, AlternateName, CustomField, EmulatorConfiguration, Game,
-    GameLaunchConfiguration, GameMetadata, Mount, UNASSIGNED_EMULATOR_ID,
+    GameLaunchConfiguration, GameMetadata, Mount, NavigationMetadata, PlatformDefinition,
+    UNASSIGNED_EMULATOR_ID,
 };
 use lb_platform::{
-    default_host_path_mappings_path, execute_launch_sequence,
-    prepare_game_launch_sequence_with_mounts_context_and_resolver,
+    default_host_path_mappings_path, default_platform_folders, execute_launch_sequence,
+    platform_document_file_name, prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     ArchiveExtractor, HostPathMappings, HostPathResolver, LaunchContext, LaunchKind,
     LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchTarget,
 };
 use lb_query::{filter_game_indices, GameFilter};
 use lb_storage::{
-    find_game_references, pending_transaction_manifests, recover_pending_transactions,
-    GameReference, IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction,
-    NewGame, PlatformDocument, StorageError, TransactionError,
+    find_game_references, find_platform_references, pending_transaction_manifests,
+    recover_pending_transactions, AuxiliaryDocument, GameReference, IndexedPlatformRecordEdit,
+    LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame, PlatformDocument,
+    PlatformReference, StorageError, TransactionError,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 use uuid::Uuid;
@@ -516,6 +533,7 @@ pub struct LibraryControllerRust {
     game_count: i32,
     filtered_count: i32,
     platform_entry_count: i32,
+    platform_revision: i32,
     pending_recovery_count: i32,
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
@@ -532,6 +550,8 @@ pub struct LibraryControllerRust {
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
+    platform_names: Vec<String>,
+    platform_sources: BTreeMap<String, PathBuf>,
     library_root: Option<PathBuf>,
     launchbox_root: Option<PathBuf>,
     emulator_configuration: Option<EmulatorConfiguration>,
@@ -566,6 +586,8 @@ struct LoadedLibrary {
     mounts_by_game: BTreeMap<String, Vec<Mount>>,
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
+    platform_names: Vec<String>,
+    platform_sources: BTreeMap<String, PathBuf>,
     pending_recovery_count: usize,
     launchbox_root: Option<PathBuf>,
     emulator_configuration: Option<EmulatorConfiguration>,
@@ -578,6 +600,8 @@ struct LibraryReplacement {
     mounts_by_game: BTreeMap<String, Vec<Mount>>,
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
+    platform_names: Vec<String>,
+    platform_sources: BTreeMap<String, PathBuf>,
     library_root: Option<PathBuf>,
     launchbox_root: Option<PathBuf>,
     emulator_configuration: Option<EmulatorConfiguration>,
@@ -602,6 +626,7 @@ impl LoadedLibrary {
             let mount_count = mounts_by_game.values().map(Vec::len).sum::<usize>();
             let alternate_names_by_game = collect_alternate_names_by_game(&library);
             let custom_fields_by_game = collect_custom_fields_by_game(&library);
+            let (platform_names, platform_sources) = platform_state_from_library(&library);
             let name = library
                 .platforms()
                 .first()
@@ -630,6 +655,8 @@ impl LoadedLibrary {
                 mounts_by_game,
                 alternate_names_by_game,
                 custom_fields_by_game,
+                platform_names,
+                platform_sources,
                 pending_recovery_count,
                 launchbox_root: None,
                 emulator_configuration: None,
@@ -638,7 +665,8 @@ impl LoadedLibrary {
 
         let data = LaunchBoxDataIndex::load(&path).map_err(|error| error.to_string())?;
         let emulator_configuration = data.emulator_configuration().cloned();
-        let platform_count = data.platforms().platforms().len();
+        let (platform_names, platform_sources) = platform_state_from_data(&data)?;
+        let platform_count = platform_names.len();
         let (games, game_sources) = collect_games_and_sources(data.platforms());
         let additional_applications_by_game =
             collect_additional_applications_by_game(data.platforms());
@@ -676,11 +704,76 @@ impl LoadedLibrary {
             mounts_by_game,
             alternate_names_by_game,
             custom_fields_by_game,
+            platform_names,
+            platform_sources,
             pending_recovery_count,
             launchbox_root,
             emulator_configuration,
         })
     }
+}
+
+fn platform_key(name: &str) -> String {
+    name.to_lowercase()
+}
+
+fn platform_state_from_library(library: &LibraryIndex) -> (Vec<String>, BTreeMap<String, PathBuf>) {
+    let mut names = library
+        .platforms()
+        .iter()
+        .map(|platform| platform.name.clone())
+        .collect::<Vec<_>>();
+    names.sort_by_key(|name| platform_key(name));
+    names.dedup_by(|left, right| platform_key(left) == platform_key(right));
+    let sources = library
+        .platforms()
+        .iter()
+        .map(|platform| (platform_key(&platform.name), platform.source_path.clone()))
+        .collect();
+    (names, sources)
+}
+
+fn platform_state_from_data(
+    data: &LaunchBoxDataIndex,
+) -> Result<(Vec<String>, BTreeMap<String, PathBuf>), String> {
+    let mut names = Vec::new();
+    let mut sources = BTreeMap::new();
+    let mut claimed_sources = std::collections::BTreeSet::new();
+    if let Some(catalog) = data.platform_catalog() {
+        for platform in &catalog.platforms {
+            let name = platform.metadata.name.clone();
+            let expected = data
+                .data_root()
+                .join("Platforms")
+                .join(platform_document_file_name(&name).map_err(|error| error.to_string())?);
+            let source = data
+                .platforms()
+                .platforms()
+                .iter()
+                .find(|document| platform_key(&document.name) == platform_key(&name))
+                .map(|document| document.source_path.clone())
+                .or_else(|| expected.is_file().then_some(expected));
+            if let Some(source) = source {
+                claimed_sources.insert(source.clone());
+                sources.insert(platform_key(&name), source);
+            }
+            names.push(name);
+        }
+    }
+    for document in data.platforms().platforms() {
+        if claimed_sources.contains(&document.source_path) {
+            continue;
+        }
+        let key = platform_key(&document.name);
+        if !names.iter().any(|name| platform_key(name) == key) {
+            names.push(document.name.clone());
+        }
+        sources
+            .entry(key)
+            .or_insert_with(|| document.source_path.clone());
+    }
+    names.sort_by_key(|name| platform_key(name));
+    Ok((names, sources))
 }
 
 fn collect_games_and_sources(library: &LibraryIndex) -> (Vec<Game>, Vec<PathBuf>) {
@@ -791,6 +884,21 @@ struct GameDeleteSuccess {
     backup: PathBuf,
 }
 
+struct PlatformCreateSuccess {
+    name: String,
+    source: PathBuf,
+    catalog_backup: PathBuf,
+    folder_count: usize,
+}
+
+struct PlatformDeleteSuccess {
+    name: String,
+    source: PathBuf,
+    catalog_backup: PathBuf,
+    platform_backup: PathBuf,
+    folder_count: usize,
+}
+
 #[derive(Clone)]
 struct GameLaunchSuccess {
     game_id: String,
@@ -857,6 +965,13 @@ enum GameWriteFailure {
     Conflict(String),
     PendingRecovery { count: usize, message: String },
     Referenced(Vec<GameReference>),
+    Other(String),
+}
+
+enum PlatformWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Referenced(Vec<PlatformReference>),
     Other(String),
 }
 
@@ -1142,7 +1257,8 @@ fn add_game_to_platform(
     source: PathBuf,
     new_game: NewGame,
 ) -> Result<GameAddSuccess, GameWriteFailure> {
-    let mut document = PlatformDocument::load(&source)
+    let platform_name = new_game.platform.clone();
+    let mut document = PlatformDocument::load_for_platform(&source, platform_name)
         .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
     let game = document
         .add_game(new_game)
@@ -1163,6 +1279,178 @@ fn add_game_to_platform(
         source,
         backup,
     })
+}
+
+fn create_platform_in_library(
+    root: PathBuf,
+    name: String,
+    scrape_as: String,
+) -> Result<PlatformCreateSuccess, PlatformWriteFailure> {
+    let data = LaunchBoxDataIndex::load(&root)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let data_root = data.data_root().to_path_buf();
+    let catalog_path = data_root.join("Platforms.xml");
+    let target =
+        data_root
+            .join("Platforms")
+            .join(platform_document_file_name(&name).map_err(|error| {
+                PlatformWriteFailure::Other(format!("invalid platform name: {error}"))
+            })?);
+
+    let mut catalog = AuxiliaryDocument::load(&catalog_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let folders = default_platform_folders(&name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    catalog
+        .add_platform_definition(
+            PlatformDefinition {
+                metadata: NavigationMetadata {
+                    name: name.clone(),
+                    scrape_as: (!scrape_as.trim().is_empty()).then_some(scrape_as),
+                    ..NavigationMetadata::default()
+                },
+                ..PlatformDefinition::default()
+            },
+            folders.clone(),
+        )
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    ensure_portable_target_is_absent(&target)?;
+
+    let platform = PlatformDocument::new_empty(&target, &name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&catalog)
+        .map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_new_platform(&platform)
+        .map_err(classify_platform_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_platform_transaction_error)?;
+    let catalog_backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == catalog_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(
+                "platform creation transaction reported no catalog write".into(),
+            )
+        })?;
+    if !report
+        .created_targets
+        .iter()
+        .any(|created| created == &target)
+    {
+        return Err(PlatformWriteFailure::Other(
+            "platform creation transaction reported no created document".into(),
+        ));
+    }
+
+    Ok(PlatformCreateSuccess {
+        name,
+        source: target,
+        catalog_backup,
+        folder_count: folders.len(),
+    })
+}
+
+fn delete_platform_from_library(
+    root: PathBuf,
+    source: PathBuf,
+    name: String,
+) -> Result<PlatformDeleteSuccess, PlatformWriteFailure> {
+    let references = find_platform_references(&root, &name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    if !references.is_empty() {
+        return Err(PlatformWriteFailure::Referenced(references));
+    }
+
+    let data = LaunchBoxDataIndex::load(&root)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let catalog_path = data.data_root().join("Platforms.xml");
+    let mut catalog = AuxiliaryDocument::load(&catalog_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let removed = catalog
+        .remove_platform_definition(&name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let exact_name = removed.platform.metadata.name;
+    let folder_count = removed.folders.len();
+    let platform = PlatformDocument::load_for_platform(&source, &exact_name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&catalog)
+        .map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_delete_platform(&platform)
+        .map_err(classify_platform_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_platform_transaction_error)?;
+    let catalog_backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == catalog_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(
+                "platform deletion transaction reported no catalog write".into(),
+            )
+        })?;
+    let platform_backup = report
+        .deleted_targets
+        .into_iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(
+                "platform deletion transaction reported no platform deletion".into(),
+            )
+        })?;
+
+    Ok(PlatformDeleteSuccess {
+        name: exact_name,
+        source,
+        catalog_backup,
+        platform_backup,
+        folder_count,
+    })
+}
+
+fn ensure_portable_target_is_absent(target: &Path) -> Result<(), PlatformWriteFailure> {
+    let parent = target.parent().ok_or_else(|| {
+        PlatformWriteFailure::Other(format!(
+            "platform document has no parent directory: {}",
+            target.display()
+        ))
+    })?;
+    let expected_name = target.file_name().ok_or_else(|| {
+        PlatformWriteFailure::Other(format!(
+            "platform document has no filename: {}",
+            target.display()
+        ))
+    })?;
+    for entry in fs::read_dir(parent).map_err(|error| {
+        PlatformWriteFailure::Other(format!("could not read {}: {error}", parent.display()))
+    })? {
+        let entry = entry.map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&expected_name.to_string_lossy())
+        {
+            return Err(PlatformWriteFailure::Other(format!(
+                "portable platform filename collides with existing {}",
+                entry.path().display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn delete_game_from_platform(
@@ -1214,6 +1502,26 @@ fn classify_transaction_error(error: TransactionError) -> GameWriteFailure {
             GameWriteFailure::PendingRecovery { count: 1, message }
         }
         _ => GameWriteFailure::Other(message),
+    }
+}
+
+fn classify_platform_transaction_error(error: TransactionError) -> PlatformWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            PlatformWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            PlatformWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            PlatformWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => PlatformWriteFailure::Other(message),
     }
 }
 
@@ -1563,6 +1871,8 @@ impl qobject::LibraryController {
                     mounts_by_game,
                     alternate_names_by_game,
                     custom_fields_by_game,
+                    platform_names: vec![document.library().name.clone()],
+                    platform_sources: BTreeMap::new(),
                     library_root: None,
                     launchbox_root: None,
                     emulator_configuration: None,
@@ -1741,6 +2051,103 @@ impl qobject::LibraryController {
             self.as_mut().set_writing(false);
             self.as_mut()
                 .set_status_message(qstring(format!("Could not start game add: {error}")));
+        }
+    }
+
+    pub fn add_platform(mut self: Pin<&mut Self>, name: QString, scrape_as: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let name = name.to_string().trim().to_string();
+        let scrape_as = scrape_as.to_string().trim().to_string();
+        if name.is_empty() {
+            self.as_mut()
+                .set_status_message(qstring("A platform name is required."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Platform creation requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_delete_blocker_count(0);
+        self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Creating platform {name}...")));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-platform-create".to_string())
+            .spawn(move || {
+                let result = create_platform_in_library(root, name, scrape_as);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_platform_create(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start platform creation: {error}"
+            )));
+        }
+    }
+
+    pub fn delete_platform(mut self: Pin<&mut Self>, name: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let name = name.to_string().trim().to_string();
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Platform deletion requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let Some(source) = self
+            .as_ref()
+            .rust()
+            .platform_sources
+            .get(&platform_key(&name))
+            .cloned()
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The selected platform has no loaded writable platform document.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_delete_blocker_count(0);
+        self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Checking references before deleting platform {name}..."
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-platform-delete".to_string())
+            .spawn(move || {
+                let result = delete_platform_from_library(root, source, name);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_platform_delete(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start platform deletion: {error}"
+            )));
         }
     }
 
@@ -2270,6 +2677,43 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_platform_crud_smoke_success(
+        &self,
+        platform_name: QString,
+        blocked_references: i32,
+    ) -> bool {
+        let platform_name = platform_name.to_string();
+        let rust = self.rust();
+        let success = !rust
+            .platform_names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&platform_name))
+            && !rust
+                .games
+                .iter()
+                .any(|game| game.platform.eq_ignore_ascii_case(&platform_name))
+            && rust.games.len() == 3
+            && rust.platform_names.len() == 1
+            && rust.model_reset_notifications == 1
+            && rust.row_insert_notifications == 1
+            && rust.row_remove_notifications == 1
+            && blocked_references == 1
+            && *self.platform_entry_count() == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "PLATFORM_CRUD_SMOKE_COMPLETE platform=\"{platform_name}\" blocked={blocked_references} inserts={} removes={} games={} platforms={}",
+                rust.row_insert_notifications,
+                rust.row_remove_notifications,
+                rust.games.len(),
+                rust.platform_names.len()
+            );
+        }
+        success
+    }
+
     pub fn report_launch_smoke_success(&self, game_id: QString) -> bool {
         let game_id = game_id.to_string();
         let rust = self.rust();
@@ -2676,6 +3120,8 @@ impl qobject::LibraryController {
                     mounts_by_game: loaded.mounts_by_game,
                     alternate_names_by_game: loaded.alternate_names_by_game,
                     custom_fields_by_game: loaded.custom_fields_by_game,
+                    platform_names: loaded.platform_names,
+                    platform_sources: loaded.platform_sources,
                     library_root: Some(loaded.root),
                     launchbox_root: loaded.launchbox_root,
                     emulator_configuration: loaded.emulator_configuration,
@@ -3077,6 +3523,135 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_platform_create(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<PlatformCreateSuccess, PlatformWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(created) => {
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.platform_names.push(created.name.clone());
+                    rust.platform_names.sort_by_key(|name| platform_key(name));
+                    rust.platform_names
+                        .dedup_by(|left, right| platform_key(left) == platform_key(right));
+                    rust.platform_sources
+                        .insert(platform_key(&created.name), created.source.clone());
+                }
+                self.as_mut().update_library_counts();
+                let platform_count = self.as_ref().rust().platform_names.len();
+                self.as_mut().set_library_name(qstring(format!(
+                    "LaunchBox Library ({platform_count} platforms)"
+                )));
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Created {} with {} default media-folder records at {}. Exact catalog backup: {}. No media directories were created.",
+                    created.name,
+                    created.folder_count,
+                    created.source.display(),
+                    created.catalog_backup.display()
+                )));
+            }
+            Err(PlatformWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict while creating platform: {message}. Reload before retrying."
+                )));
+            }
+            Err(PlatformWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(PlatformWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not create platform: unexpected reference result ({})",
+                    references.len()
+                )));
+            }
+            Err(PlatformWriteFailure::Other(message)) => self
+                .as_mut()
+                .set_status_message(qstring(format!("Could not create platform: {message}"))),
+        }
+    }
+
+    fn finish_platform_delete(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<PlatformDeleteSuccess, PlatformWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(deleted) => {
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.platform_names
+                        .retain(|name| !name.eq_ignore_ascii_case(&deleted.name));
+                    rust.platform_sources.remove(&platform_key(&deleted.name));
+                }
+                if self
+                    .as_ref()
+                    .platform_filter()
+                    .to_string()
+                    .eq_ignore_ascii_case(&deleted.name)
+                {
+                    self.as_mut().set_platform_filter(QString::default());
+                    self.as_mut().refresh_filtered_games();
+                }
+                self.as_mut().update_library_counts();
+                let platform_count = self.as_ref().rust().platform_names.len();
+                self.as_mut().set_library_name(qstring(format!(
+                    "LaunchBox Library ({platform_count} platforms)"
+                )));
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Deleted {} and {} owned media-folder records. Exact catalog backup: {}. Exact platform backup: {}. No media files or directories were deleted (former document: {}).",
+                    deleted.name,
+                    deleted.folder_count,
+                    deleted.catalog_backup.display(),
+                    deleted.platform_backup.display(),
+                    deleted.source.display()
+                )));
+            }
+            Err(PlatformWriteFailure::Referenced(references)) => {
+                let summary = summarize_platform_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Platform delete blocked by {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(PlatformWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict while deleting platform: {message}. Reload before retrying."
+                )));
+            }
+            Err(PlatformWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(PlatformWriteFailure::Other(message)) => self
+                .as_mut()
+                .set_status_message(qstring(format!("Could not delete platform: {message}"))),
+        }
+    }
+
     fn finish_game_delete(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -3201,11 +3776,9 @@ impl qobject::LibraryController {
     fn platform_write_target(&self, platform: &str) -> Option<(PathBuf, PathBuf)> {
         let source = self
             .rust()
-            .games
-            .iter()
-            .zip(&self.rust().game_sources)
-            .find(|(game, _)| game.platform == platform)
-            .map(|(_, source)| source.clone())?;
+            .platform_sources
+            .get(&platform_key(platform))
+            .cloned()?;
         let root = self.rust().library_root.clone()?;
         Some((source, root))
     }
@@ -3245,7 +3818,7 @@ impl qobject::LibraryController {
             (
                 saturating_i32(rust.games.len()),
                 saturating_i32(rust.filtered_indices.len()),
-                collect_platform_counts(&rust.games),
+                collect_platform_counts(&rust.games, &rust.platform_names),
             )
         };
         let platform_entry_count = saturating_i32(platform_counts.len());
@@ -3253,6 +3826,8 @@ impl qobject::LibraryController {
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_filtered_count(filtered_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
+        let revision = self.as_ref().rust().platform_revision.wrapping_add(1);
+        self.as_mut().set_platform_revision(revision);
     }
 
     fn replace_library(mut self: Pin<&mut Self>, replacement: LibraryReplacement) {
@@ -3263,6 +3838,8 @@ impl qobject::LibraryController {
             mounts_by_game,
             alternate_names_by_game,
             custom_fields_by_game,
+            platform_names,
+            platform_sources,
             library_root,
             launchbox_root,
             emulator_configuration,
@@ -3272,7 +3849,7 @@ impl qobject::LibraryController {
         } = replacement;
         debug_assert!(game_sources.is_empty() || game_sources.len() == games.len());
         let game_count = saturating_i32(games.len());
-        let platform_counts = collect_platform_counts(&games);
+        let platform_counts = collect_platform_counts(&games, &platform_names);
         let platform_entry_count = saturating_i32(platform_counts.len());
         let filtered_indices = (0..games.len()).collect();
         self.as_mut().begin_reset_model();
@@ -3286,6 +3863,8 @@ impl qobject::LibraryController {
             rust.custom_fields_by_game = custom_fields_by_game;
             rust.filtered_indices = filtered_indices;
             rust.platform_counts = platform_counts;
+            rust.platform_names = platform_names;
+            rust.platform_sources = platform_sources;
             rust.library_root = library_root;
             rust.launchbox_root = launchbox_root;
             rust.emulator_configuration = emulator_configuration;
@@ -3301,6 +3880,8 @@ impl qobject::LibraryController {
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_filtered_count(game_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
+        let revision = self.as_ref().rust().platform_revision.wrapping_add(1);
+        self.as_mut().set_platform_revision(revision);
         self.as_mut()
             .set_pending_recovery_count(saturating_i32(pending_recovery_count));
         self.as_mut().set_delete_blocker_count(0);
@@ -3413,18 +3994,38 @@ impl qobject::LibraryController {
     }
 }
 
-fn collect_platform_counts(games: &[Game]) -> Vec<PlatformCount> {
-    let mut counts = BTreeMap::<String, usize>::new();
+fn collect_platform_counts(games: &[Game], platform_names: &[String]) -> Vec<PlatformCount> {
+    let mut counts = BTreeMap::<String, (String, usize)>::new();
+    for name in platform_names {
+        counts
+            .entry(platform_key(name))
+            .or_insert_with(|| (name.clone(), 0));
+    }
     for game in games {
-        *counts.entry(game.platform.clone()).or_default() += 1;
+        let entry = counts
+            .entry(platform_key(&game.platform))
+            .or_insert_with(|| (game.platform.clone(), 0));
+        entry.1 += 1;
     }
     counts
         .into_iter()
-        .map(|(name, count)| PlatformCount { name, count })
+        .map(|(_, (name, count))| PlatformCount { name, count })
         .collect()
 }
 
 fn summarize_game_references(references: &[GameReference]) -> String {
+    let mut counts = BTreeMap::new();
+    for reference in references {
+        *counts.entry(reference.kind).or_insert(0usize) += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(kind, count)| format!("{count} {kind}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn summarize_platform_references(references: &[PlatformReference]) -> String {
     let mut counts = BTreeMap::new();
     for reference in references {
         *counts.entry(reference.kind).or_insert(0usize) += 1;
@@ -3479,6 +4080,187 @@ mod tests {
             failure,
             GameWriteFailure::PendingRecovery { count: 2, .. }
         ));
+    }
+
+    #[test]
+    fn platform_counts_retain_catalog_entries_without_games() {
+        let games = vec![Game {
+            platform: "fixture console".into(),
+            ..Game::default()
+        }];
+        let counts =
+            collect_platform_counts(&games, &["Fixture Console".into(), "Empty Console".into()]);
+        assert_eq!(
+            counts
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.count))
+                .collect::<Vec<_>>(),
+            [("Empty Console", 0), ("Fixture Console", 1)]
+        );
+    }
+
+    #[test]
+    fn platform_lifecycle_is_transactional_portable_and_reference_safe() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data_directory = directory.path().join("Data");
+        let platform_directory = data_directory.join("Platforms");
+        fs::create_dir_all(&platform_directory).expect("create platform directory");
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        let catalog_path = data_directory.join("Platforms.xml");
+        let mut original_catalog =
+            fs::read_to_string(fixture_root.join("Platforms.xml")).expect("read catalog fixture");
+        original_catalog = original_catalog.replace(
+            "</LaunchBox>",
+            "  <FutureCatalogRecord><KeepMe>yes</KeepMe></FutureCatalogRecord>\n</LaunchBox>",
+        );
+        fs::write(&catalog_path, original_catalog.as_bytes()).expect("write catalog fixture");
+        fs::copy(
+            fixture_root.join("Platforms/Fixture Console.xml"),
+            platform_directory.join("Fixture Console.xml"),
+        )
+        .expect("copy platform fixture");
+
+        let created = match create_platform_in_library(
+            directory.path().to_path_buf(),
+            "Dragon 32/64".into(),
+            "Dragon 32/64".into(),
+        ) {
+            Ok(created) => created,
+            Err(_) => panic!("platform creation failed"),
+        };
+        assert_eq!(created.source.file_name().unwrap(), "Dragon 32_64.xml");
+        assert_eq!(created.folder_count, 51);
+        assert_eq!(
+            fs::read(&created.catalog_backup).expect("read catalog backup"),
+            original_catalog.as_bytes()
+        );
+        assert!(created.source.is_file());
+        assert!(!directory.path().join("Images").exists());
+        assert!(!directory.path().join("Videos").exists());
+
+        let created_catalog_bytes = fs::read(&catalog_path).expect("read created catalog");
+        let catalog = AuxiliaryDocument::load(&catalog_path)
+            .expect("load created catalog")
+            .platform_catalog()
+            .expect("parse created catalog");
+        let dragon = catalog
+            .platforms
+            .iter()
+            .find(|platform| platform.metadata.name == "Dragon 32/64")
+            .expect("created platform definition");
+        assert_eq!(dragon.metadata.scrape_as.as_deref(), Some("Dragon 32/64"));
+        assert_eq!(
+            catalog
+                .folders
+                .iter()
+                .filter(|folder| folder.platform == "Dragon 32/64")
+                .count(),
+            51
+        );
+        assert!(catalog.folders.iter().any(|folder| {
+            folder.platform == "Dragon 32/64"
+                && folder.folder_path == "Images\\Dragon 32_64\\Box - Front"
+        }));
+        assert!(String::from_utf8_lossy(&created_catalog_bytes).contains("FutureCatalogRecord"));
+        let loaded = LoadedLibrary::load(directory.path().to_string_lossy().into_owned())
+            .expect("load library with empty portable platform");
+        assert_eq!(loaded.games.len(), 3);
+        assert!(loaded
+            .platform_names
+            .iter()
+            .any(|name| name == "Dragon 32/64"));
+        assert_eq!(
+            loaded.platform_sources.get(&platform_key("Dragon 32/64")),
+            Some(&created.source)
+        );
+
+        let collision = create_platform_in_library(
+            directory.path().to_path_buf(),
+            "Dragon 32\\64".into(),
+            String::new(),
+        );
+        assert!(matches!(
+            collision,
+            Err(PlatformWriteFailure::Other(message)) if message.contains("collides")
+        ));
+
+        let added = match add_game_to_platform(
+            directory.path().to_path_buf(),
+            created.source.clone(),
+            NewGame {
+                id: "dragon-test-game".into(),
+                title: "Dragon Test".into(),
+                platform: "Dragon 32/64".into(),
+                application_path: "Games\\Dragon 32_64\\test.vdk".into(),
+            },
+        ) {
+            Ok(added) => added,
+            Err(error) => panic!(
+                "add to empty platform failed: {}",
+                describe_game_write_failure(&error)
+            ),
+        };
+        assert_eq!(added.game.platform, "Dragon 32/64");
+        let blocked = delete_platform_from_library(
+            directory.path().to_path_buf(),
+            created.source.clone(),
+            "Dragon 32/64".into(),
+        );
+        assert!(matches!(
+            blocked,
+            Err(PlatformWriteFailure::Referenced(references))
+                if references.iter().any(|reference| reference.kind == lb_storage::PlatformReferenceKind::Game)
+        ));
+
+        delete_game_from_platform(
+            directory.path().to_path_buf(),
+            directory.path().to_path_buf(),
+            created.source.clone(),
+            added.game.id,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "delete temporary game failed: {}",
+                describe_game_write_failure(&error)
+            )
+        });
+        let deleted = match delete_platform_from_library(
+            directory.path().to_path_buf(),
+            created.source.clone(),
+            "Dragon 32/64".into(),
+        ) {
+            Ok(deleted) => deleted,
+            Err(_) => panic!("platform deletion failed"),
+        };
+        assert_eq!(deleted.folder_count, 51);
+        assert!(!created.source.exists());
+        assert_eq!(
+            fs::read(&deleted.catalog_backup).expect("read pre-delete catalog backup"),
+            created_catalog_bytes
+        );
+        let deleted_document =
+            PlatformDocument::load_for_platform(&deleted.platform_backup, "Dragon 32/64")
+                .expect("load deleted platform backup");
+        assert!(deleted_document.library().games.is_empty());
+
+        let final_catalog_bytes = fs::read(&catalog_path).expect("read final catalog");
+        assert!(String::from_utf8_lossy(&final_catalog_bytes).contains("FutureCatalogRecord"));
+        let final_catalog = AuxiliaryDocument::load(&catalog_path)
+            .expect("load final catalog")
+            .platform_catalog()
+            .expect("parse final catalog");
+        assert!(final_catalog
+            .platforms
+            .iter()
+            .all(|platform| platform.metadata.name != "Dragon 32/64"));
+        assert!(final_catalog
+            .folders
+            .iter()
+            .all(|folder| folder.platform != "Dragon 32/64"));
+        assert!(pending_transaction_manifests(directory.path())
+            .expect("inspect pending transactions")
+            .is_empty());
     }
 
     #[test]
