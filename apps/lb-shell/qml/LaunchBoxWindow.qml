@@ -373,8 +373,8 @@ ApplicationWindow {
                 romImportDialog.smokeSubmitPreview()
             } else if (window.importSmokePhase === 2
                        && !controller.writing
-                       && controller.last_import_count === 2) {
-                if (!controller.report_import_smoke_success(2, 2, 0)) {
+                       && controller.last_import_count === 1) {
+                if (!controller.report_import_smoke_success(1, 2, 0)) {
                     console.error("IMPORT_SMOKE_MODEL_CONTRACT_FAILED")
                     Qt.exit(12)
                     return
@@ -3366,6 +3366,7 @@ ApplicationWindow {
             recursiveFolders.checked = true
             folderTitles.checked = false
             duplicateFiles.checked = false
+            combineDiscSets.checked = true
             importFilePolicy.currentIndex = 1
             extensionFilter.text = ""
             selectPlatform(window.selectedPlatform)
@@ -3411,6 +3412,7 @@ ApplicationWindow {
                 "file_policy": filePolicy(),
                 "duplicate_policy": duplicateFiles.checked ? "import" : "skip",
                 "extensions": extensions,
+                "combine_disc_sets": combineDiscSets.checked,
                 "emulator_id": emulatorId.length === 0 ? null : emulatorId
             }
         }
@@ -3440,7 +3442,8 @@ ApplicationWindow {
                     "applicationPath": row.application_path,
                     "rowState": row.state,
                     "included": row.included,
-                    "message": row.message
+                    "message": row.message,
+                    "fileCount": 1 + row.additional_discs.length
                 })
             }
             awaitingPreview = false
@@ -3629,6 +3632,10 @@ ApplicationWindow {
                         id: duplicateFiles
                         text: "Import files already referenced by another game"
                     }
+                    CheckBox {
+                        id: combineDiscSets
+                        text: "Combine complete (Disc N) sets into one game"
+                    }
                     Label { text: "File extensions (optional, comma-separated)" }
                     TextField {
                         id: extensionFilter
@@ -3659,7 +3666,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Label {
                             Layout.fillWidth: true
-                            text: importPreviewRows.count + " discovered file(s)"
+                            text: importPreviewRows.count + " planned game(s)"
                             font.bold: true
                         }
                         Label {
@@ -3689,6 +3696,7 @@ ApplicationWindow {
                                 required property string rowState
                                 required property bool included
                                 required property string message
+                                required property int fileCount
                                 width: ListView.view.width
                                 height: 92
                                 color: index % 2 === 0 ? "#171b22" : "#14181e"
@@ -3718,6 +3726,10 @@ ApplicationWindow {
                                         Label {
                                             Layout.fillWidth: true
                                             text: importPreviewDelegate.sourcePath
+                                                  + (importPreviewDelegate.fileCount > 1
+                                                     ? "  (+" + (importPreviewDelegate.fileCount - 1)
+                                                       + " disc file(s))"
+                                                     : "")
                                             elide: Text.ElideMiddle
                                             color: "#8b949e"
                                         }

@@ -5619,11 +5619,26 @@ impl qobject::LibraryController {
                     && game.emulator_id.as_deref() == Some("fixture-emulator")
             })
         });
+        let imported_disc_sets_present = rust.last_imported_game_ids.iter().all(|id| {
+            rust.additional_applications_by_game
+                .get(id)
+                .is_some_and(|applications| {
+                    applications.len() == 2
+                        && applications.iter().enumerate().all(|(index, application)| {
+                            let disc = u32::try_from(index).unwrap_or_default() + 1;
+                            application.disc == Some(disc)
+                                && application.priority == i32::try_from(disc).unwrap_or_default()
+                                && application.use_emulator
+                                && application.emulator_id.as_deref() == Some("fixture-emulator")
+                        })
+                })
+        });
         let success = *self.last_import_count() == expected_count
             && *self.last_import_created_file_count() == expected_created_files
             && *self.last_import_moved_file_count() == expected_moved_files
             && saturating_i32(rust.last_imported_game_ids.len()) == expected_count
             && imported_games_present
+            && imported_disc_sets_present
             && !*self.import_scanning()
             && !*self.loading()
             && !*self.writing()
@@ -6142,7 +6157,7 @@ impl qobject::LibraryController {
             Ok((json, count)) => {
                 self.as_mut().set_import_preview_json(qstring(json));
                 self.as_mut().set_status_message(qstring(format!(
-                    "ROM import preview ready: {count} file(s) selected for import."
+                    "ROM import preview ready: {count} planned game(s) selected for import."
                 )));
             }
             Err(error) => {
@@ -6178,6 +6193,19 @@ impl qobject::LibraryController {
                     let mut rust = self.as_mut().rust_mut();
                     rust.games.extend(report.games);
                     rust.game_sources.extend(std::iter::repeat_n(source, count));
+                    for application in report.additional_applications {
+                        rust.additional_applications_by_game
+                            .entry(application.game_id.clone())
+                            .or_default()
+                            .push(application);
+                    }
+                    for applications in rust.additional_applications_by_game.values_mut() {
+                        applications.sort_by(|left, right| {
+                            left.priority
+                                .cmp(&right.priority)
+                                .then_with(|| left.id.cmp(&right.id))
+                        });
+                    }
                     rust.last_imported_game_ids = game_ids;
                 }
                 self.as_mut().refresh_filtered_games();

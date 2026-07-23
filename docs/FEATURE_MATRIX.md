@@ -55,9 +55,12 @@ files stream through the same durable transaction as the platform XML; move
 deletes each source only after that commit and a byte-revision match. The
 emulator page preserves LaunchBox's distinct platform-default, direct-launch,
 and explicitly configured-emulator states and revalidates configured IDs on
-preview and execution. Metadata and media downloads, multi-disc combining,
-emulator installation/BIOS handling, cancellation, and runtime-oracle
-edge-case parity remain open, so `IMP-001` is not complete.
+preview and execution. Complete unambiguous `(Disc N)` and `(Disc N of M)`
+filename sets can collapse to one game with every disc represented as an
+ordered additional application, including the primary Disc 1 record, matching
+the older real installation. Metadata and media downloads, database-driven
+version combining, emulator installation/BIOS handling, cancellation, and
+runtime-oracle edge-case parity remain open, so `IMP-001` is not complete.
 Playlist generation (`LIB-009`) and theme-specific playlist views remain open.
 Persisted Windows-style paths remain lexical until the cross-platform launch
 service resolves them. None of those complete their family: bulk editing, all

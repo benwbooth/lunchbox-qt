@@ -308,41 +308,49 @@ fi
 echo "LaunchBox reference-gated add/remove CRUD and targeted Qt row signals validated."
 
 cp -R fixtures/launchbox/Data "$import_root/Data"
-printf 'alpha-import-bytes' > "$import_source_root/Alpha Import.rom"
-printf 'beta-import-bytes' > "$import_source_root/Beta Import.zip"
+printf 'disc-one-import-bytes' > \
+  "$import_source_root/Fixture Saga (USA) - (Disc 1 of 2).rom"
+printf 'disc-two-import-bytes' > \
+  "$import_source_root/Fixture Saga (USA) - (Disc 2 of 2).rom"
 import_platform="$import_root/Data/Platforms/Fixture Console.xml"
 import_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
     --library "$import_root" --import-smoke-test \
-    --import-rom-1 "$import_source_root/Alpha Import.rom" \
-    --import-rom-2 "$import_source_root/Beta Import.zip" \
+    --import-rom-1 "$import_source_root/Fixture Saga (USA) - (Disc 1 of 2).rom" \
+    --import-rom-2 "$import_source_root/Fixture Saga (USA) - (Disc 2 of 2).rom" \
     --path-mappings-file "$empty_path_mappings" 2>&1
 ) || {
   printf '%s\n' "$import_output" >&2
   exit 1
 }
-if ! rg -q 'IMPORT_SMOKE_COMPLETE imported=2 created=2 moved=0 model_games=5' \
+if ! rg -q 'IMPORT_SMOKE_COMPLETE imported=1 created=2 moved=0 model_games=4' \
   <<< "$import_output"; then
   printf '%s\n' "$import_output" >&2
   echo "LaunchBox did not complete the dialog-driven ROM import preview and copy." >&2
   exit 1
 fi
 for expected in \
-  '<Title>Alpha Import</Title>' \
-  '<ApplicationPath>Games\Fixture Console\Alpha Import.rom</ApplicationPath>' \
-  '<Title>Beta Import</Title>' \
-  '<ApplicationPath>Games\Fixture Console\Beta Import.zip</ApplicationPath>' \
+  '<Title>Fixture Saga (USA)</Title>' \
+  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) - (Disc 1 of 2).rom</ApplicationPath>' \
+  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) - (Disc 2 of 2).rom</ApplicationPath>' \
+  '<Disc>1</Disc>' \
+  '<Disc>2</Disc>' \
+  '<Priority>1</Priority>' \
+  '<Priority>2</Priority>' \
   '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>'; do
   if ! rg -q -F "$expected" "$import_platform"; then
     echo "ROM import platform XML is missing: $expected" >&2
     exit 1
   fi
 done
-if [[ $(rg -c -F '<Emulator>fixture-emulator</Emulator>' "$import_platform") -ne 3 ]]; then
-  echo "ROM import did not pin the selected emulator on both imported games." >&2
+if [[ $(rg -c -F '<Emulator>fixture-emulator</Emulator>' "$import_platform") -ne 2 ]] \
+  || [[ $(rg -c -F '<EmulatorId>fixture-emulator</EmulatorId>' "$import_platform") -ne 2 ]]; then
+  echo "ROM import did not pin the selected emulator on the game and both disc records." >&2
   exit 1
 fi
-for file_name in 'Alpha Import.rom' 'Beta Import.zip'; do
+for file_name in \
+  'Fixture Saga (USA) - (Disc 1 of 2).rom' \
+  'Fixture Saga (USA) - (Disc 2 of 2).rom'; do
   if ! cmp -s "$import_source_root/$file_name" \
     "$import_root/Games/Fixture Console/$file_name"; then
     echo "ROM import did not preserve exact bytes for $file_name." >&2
@@ -365,7 +373,7 @@ if find "$import_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox dialog-driven ROM import preview, validated emulator selection, editable batch selection, portable copied paths, exact streamed bytes, shared transaction recovery, and source preservation validated."
+echo "LaunchBox dialog-driven multi-disc ROM import, validated emulator selection, editable grouped preview, portable copied paths, exact streamed bytes, additional-application persistence, shared transaction recovery, and source preservation validated."
 
 cp -R fixtures/launchbox/Data "$platform_crud_root/Data"
 platform_crud_catalog="$platform_crud_root/Data/Platforms.xml"

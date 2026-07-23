@@ -174,8 +174,13 @@ preview and execution both revalidate named emulators against
 `Data/Emulators.xml`. Copy never overwrites a destination. Move commits the
 copy and XML first, then removes a source only after both files have matching
 SHA-256 revisions; a cleanup failure retains the source and reports a warning.
-Metadata/media lookup, multi-disc combining, MAME-specific options, and the
-remaining import families are still open.
+When requested, complete unambiguous `(Disc N)` or `(Disc N of M)` sets in one
+folder and extension collapse to one game. Disc 1 remains the main application
+and every disc, including Disc 1, is persisted as a priority-ordered additional
+application, matching the older real-install records and the existing M3U
+launch contract. Incomplete or colliding sets remain separate preview rows.
+Metadata/media lookup, database-driven version combining, MAME-specific
+options, and the remaining import families are still open.
 
 Both front ends now expose a shared launch vertical. A launch plan selects
 an explicit or single default emulator mapping (or a direct executable), keeps

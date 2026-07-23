@@ -1775,6 +1775,37 @@ impl PlatformDocument {
         Ok(game)
     }
 
+    /// Adds a new additional application without rewriting any existing
+    /// platform records. The owner must already exist in this document and
+    /// IDs remain unique across the additional-application family.
+    pub fn add_additional_application(
+        &mut self,
+        application: AdditionalApplication,
+    ) -> Result<AdditionalApplication, StorageError> {
+        self.require_game(&application.game_id)?;
+        application.validate()?;
+        if self
+            .library
+            .additional_applications
+            .iter()
+            .any(|existing| existing.id == application.id)
+        {
+            return Err(StorageError::DuplicateAdditionalApplicationId { id: application.id });
+        }
+
+        let element = additional_application_element(&application);
+        parse_additional_application(&element)?;
+        let insertion = platform_record_insertion_index(&self.root, "AdditionalApplication");
+        self.root
+            .children
+            .insert(insertion, XMLNode::Element(element));
+        self.library
+            .additional_applications
+            .push(application.clone());
+        self.library.validate()?;
+        Ok(application)
+    }
+
     pub fn remove_game(&mut self, id: &str) -> Result<Game, StorageError> {
         let references = platform_library_game_references(&self.library, id);
         if !references.is_empty() {
@@ -4628,6 +4659,103 @@ fn minimal_game_element(game: &Game) -> Element {
     element
 }
 
+fn additional_application_element(application: &AdditionalApplication) -> Element {
+    let mut element = Element::new("AdditionalApplication");
+    set_child_text(
+        &mut element,
+        "ApplicationPath",
+        &application.application_path,
+    );
+    set_child_text(
+        &mut element,
+        "AutoRunAfter",
+        &application.auto_run_after.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "AutoRunBefore",
+        &application.auto_run_before.to_string(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "CommandLine",
+        application.command_line.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "EmulatorId",
+        application.emulator_id.as_deref(),
+    );
+    set_child_text(&mut element, "GameID", &application.game_id);
+    set_optional_child_text(&mut element, "GogAppId", application.gog_app_id.as_deref());
+    set_child_text(
+        &mut element,
+        "HasCloudSynced",
+        &application.has_cloud_synced.to_string(),
+    );
+    set_child_text(&mut element, "Id", &application.id);
+    let installed = application.installed.map(|value| value.to_string());
+    set_optional_child_text(&mut element, "Installed", installed.as_deref());
+    set_optional_child_text(
+        &mut element,
+        "LastPlayed",
+        application.last_played.as_deref(),
+    );
+    set_child_text(&mut element, "Name", &application.name);
+    set_optional_child_text(
+        &mut element,
+        "OriginAppId",
+        application.origin_app_id.as_deref(),
+    );
+    set_optional_child_text(
+        &mut element,
+        "OriginInstallPath",
+        application.origin_install_path.as_deref(),
+    );
+    set_child_text(
+        &mut element,
+        "PlayCount",
+        &application.play_count.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "PlayTime",
+        &application.play_time_seconds.to_string(),
+    );
+    set_child_text(&mut element, "Priority", &application.priority.to_string());
+    set_child_text(&mut element, "SideA", &application.side_a.to_string());
+    set_child_text(&mut element, "SideB", &application.side_b.to_string());
+    set_child_text(
+        &mut element,
+        "UseDosBox",
+        &application.use_dos_box.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "UseEmulator",
+        &application.use_emulator.to_string(),
+    );
+    set_child_text(
+        &mut element,
+        "WaitForExit",
+        &application.wait_for_exit.to_string(),
+    );
+    if let Some(disc) = application.disc {
+        set_child_text(&mut element, "Disc", &disc.to_string());
+    }
+    for (field, value) in [
+        ("Developer", application.developer.as_deref()),
+        ("Publisher", application.publisher.as_deref()),
+        ("Region", application.region.as_deref()),
+        ("ReleaseDate", application.release_date.as_deref()),
+        ("Status", application.status.as_deref()),
+        ("Version", application.version.as_deref()),
+    ] {
+        set_optional_child_text(&mut element, field, value);
+    }
+    element
+}
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("failed to read {path}: {source}")]
@@ -4739,6 +4867,8 @@ pub enum StorageError {
     GameNotFound { id: String },
     #[error("additional application {id} was not found")]
     AdditionalApplicationNotFound { id: String },
+    #[error("additional application ID {id} already exists")]
+    DuplicateAdditionalApplicationId { id: String },
     #[error("last-played timestamp cannot be empty")]
     EmptyLastPlayedTimestamp,
     #[error("{record} {id} {field} would overflow its persisted integer type")]
@@ -5128,6 +5258,52 @@ mod tests {
                 .and_then(Element::get_text)
                 .as_deref(),
             Some("preserve-me")
+        );
+    }
+
+    #[test]
+    fn adding_an_additional_application_is_typed_and_lossless() {
+        let mut document = PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes())
+            .expect("parse fixture");
+        let application = AdditionalApplication {
+            id: "fixture-disc-two".into(),
+            game_id: "fixture-adventure".into(),
+            name: "Play Disc 2".into(),
+            application_path: r"Games\Fixture Adventure\disc-2.rom".into(),
+            use_emulator: true,
+            emulator_id: Some("fixture-emulator".into()),
+            priority: 2,
+            disc: Some(2),
+            ..AdditionalApplication::default()
+        };
+        assert_eq!(
+            document
+                .add_additional_application(application.clone())
+                .expect("add additional application"),
+            application
+        );
+        assert!(matches!(
+            document.add_additional_application(application),
+            Err(StorageError::DuplicateAdditionalApplicationId { .. })
+        ));
+
+        let bytes = document.to_xml_bytes().expect("serialize");
+        let reparsed = PlatformDocument::from_reader("Fixture Console.xml", bytes.as_slice())
+            .expect("reparse");
+        let added = reparsed
+            .library()
+            .additional_applications
+            .iter()
+            .find(|application| application.id == "fixture-disc-two")
+            .expect("find added application");
+        assert_eq!(added.disc, Some(2));
+        assert_eq!(added.priority, 2);
+        assert_eq!(added.emulator_id.as_deref(), Some("fixture-emulator"));
+        assert_eq!(
+            String::from_utf8_lossy(&bytes)
+                .matches("<FutureAdditionalApplicationElement>")
+                .count(),
+            1
         );
     }
 
