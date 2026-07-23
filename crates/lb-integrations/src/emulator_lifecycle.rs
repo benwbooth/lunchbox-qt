@@ -48,7 +48,7 @@ impl Pcsx2ArtifactKind {
         match self {
             Self::LinuxAppImageX64 => "pcsx2-qt.AppImage",
             Self::WindowsQt7zX64 => "pcsx2-qt.exe",
-            Self::MacosQtTarXz => "pcsx2-qt",
+            Self::MacosQtTarXz => "PCSX2.app/Contents/MacOS/PCSX2",
         }
     }
 
@@ -65,7 +65,10 @@ impl Pcsx2ArtifactKind {
         {
             return Ok(Self::WindowsQt7zX64);
         }
-        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        #[cfg(all(
+            target_os = "macos",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
         {
             return Ok(Self::MacosQtTarXz);
         }
@@ -219,6 +222,7 @@ impl ManagedEmulatorInstall {
                 message: "artifact or executable metadata is inconsistent".into(),
             });
         }
+        validate_portable_relative_path(&self.executable_name)?;
         validate_sha256(&self.asset_sha256)?;
         validate_sha256(&self.executable_sha256)?;
 
@@ -1040,6 +1044,17 @@ mod tests {
             windows.asset_sha256,
             format!("{:x}", Sha256::digest(windows_bytes))
         );
+
+        let macos = select_pcsx2_release(&catalog, Pcsx2ArtifactKind::MacosQtTarXz).unwrap();
+        assert!(macos.asset_name.ends_with("-macos-Qt.tar.xz"));
+        assert_eq!(
+            macos.asset_sha256,
+            format!("{:x}", Sha256::digest(b"macos"))
+        );
+        assert_eq!(
+            macos.artifact_kind.executable_name(),
+            "PCSX2.app/Contents/MacOS/PCSX2"
+        );
     }
 
     #[test]
@@ -1315,6 +1330,7 @@ mod tests {
         let linux_name = "pcsx2-v2.7.492-linux-appimage-x64-Qt.AppImage";
         let windows_symbols = "pcsx2-v2.7.492-windows-x64-Qt-symbols.7z";
         let windows_name = "pcsx2-v2.7.492-windows-x64-Qt.7z";
+        let macos_name = "pcsx2-v2.7.492-macos-Qt.tar.xz";
         serde_json::to_vec(&serde_json::json!([
             {
                 "tag_name": "v2.7.492",
@@ -1346,6 +1362,14 @@ mod tests {
                         ),
                         "size": windows_bytes.len(),
                         "digest": format!("sha256:{:x}", Sha256::digest(windows_bytes))
+                    },
+                    {
+                        "name": macos_name,
+                        "browser_download_url": format!(
+                            "{GITHUB_ASSET_PREFIX}v2.7.492/{macos_name}"
+                        ),
+                        "size": 5,
+                        "digest": format!("sha256:{:x}", Sha256::digest(b"macos"))
                     }
                 ]
             }

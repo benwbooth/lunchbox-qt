@@ -270,11 +270,14 @@ artifact paths, portable marker, complete portable ownership manifest, and
 emulator configuration commit together. Existing managed state is audited for
 current/update/repair classification, unsafe or unmanaged executable targets
 are blocked, and Linux AppImages keep execute permission and launch through
-packaged `appimage-run` without a shell. Offline managed removal is now
+packaged `appimage-run` without a shell. The official macOS tar.xz is now
+handled through bounded single-stream decompression followed by the shared
+safe tar boundary, stable app-root normalization, complete file ownership, and
+main-executable mode preservation. Offline managed removal is now
 implemented with exact digest checks, fresh emulator-reference refusal, one
 recoverable file/XML transaction, and explicit preservation of settings,
-unrelated files, and directories. Managed macOS bundles, other emulator
-providers, dependencies, cores, and automatic update policy remain open
+unrelated files, and directories. Other emulator providers, dependencies,
+cores, automatic update policy, and native macOS runtime validation remain open
 under `RUN-003`. The first `RUN-004` subset audits the complete recovered
 PCSX2 BIOS group of 73 alternatives without executing PCSX2 or mutating its
 configuration or firmware. It honors the portable marker and portable/native

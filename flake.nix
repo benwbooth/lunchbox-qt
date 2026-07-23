@@ -31,7 +31,11 @@
             "rust-src"
             "rustfmt"
           ];
-          targets = [ "x86_64-pc-windows-gnu" ];
+          targets = [
+            "aarch64-apple-darwin"
+            "x86_64-apple-darwin"
+            "x86_64-pc-windows-gnu"
+          ];
         };
 
         qtModules =

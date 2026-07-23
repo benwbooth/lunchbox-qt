@@ -183,12 +183,16 @@ transaction. User settings, unrelated files, and directories remain. Linux uses
 the official AppImage, preserves its executable mode, and the Nix package
 routes `.AppImage` launches through packaged `appimage-run` without a command
 shell. Windows selects the official Qt x64 7z and uses the safe archive
-boundary; managed macOS bundle installation, other emulators, dependencies,
-cores, and automatic update policy remain open. A configured PCSX2 entry also exposes
-a read-only BIOS audit using the complete recovered
-13.27 group of 73 filename-and-MD5 alternatives. It resolves `portable.ini`
-and `inis/PCSX2.ini` or the host-native PCSX2 configuration root, streams
-hashes without loading firmware into memory, requires any one valid alternative
+boundary. macOS selects the official Qt tar.xz, bounds and verifies its single
+XZ stream, audits the nested tar through the same traversal/link boundary,
+normalizes the versioned upstream root to a stable `PCSX2.app`, and preserves
+the main executable mode. The upstream bundle is x86-64, so Apple Silicon needs
+Rosetta 2; native macOS runtime execution still needs a real-host gate. Other
+emulators, dependencies, cores, and automatic update policy remain open. A
+configured PCSX2 entry also exposes a read-only BIOS audit using the complete
+recovered 13.27 group of 73 filename-and-MD5 alternatives. It resolves
+`portable.ini` and `inis/PCSX2.ini` or the host-native PCSX2 configuration root,
+streams hashes without loading firmware into memory, requires any one valid alternative
 for the required group, and reports missing, mismatched, unreadable, or unsafe
 symlink entries without executing PCSX2 or writing any file or directory.
 Other-emulator BIOS adapters and all firmware acquisition or mutation remain

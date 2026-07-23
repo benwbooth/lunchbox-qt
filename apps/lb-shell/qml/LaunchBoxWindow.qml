@@ -5446,6 +5446,15 @@ ApplicationWindow {
             }
             Label {
                 Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                         && pcsx2InstallManager.review.release.artifact_kind
+                            === "macos_qt_tar_xz"
+                text: "The official macOS bundle is x86-64. Intel Macs run it natively; Apple Silicon requires Rosetta 2. Native macOS execution still needs a real-host verification gate."
+                wrapMode: Text.Wrap
+                color: "#d29922"
+            }
+            Label {
+                Layout.fillWidth: true
                 visible: pcsx2InstallManager.managedReview !== null
                          && pcsx2InstallManager.managedReview.managed_install
                             !== null

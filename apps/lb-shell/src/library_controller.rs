@@ -2028,6 +2028,7 @@ const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_RELEASE_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION: u32 = 1;
+const MAX_PCSX2_MACOS_TAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
 
@@ -7166,9 +7167,7 @@ fn install_managed_pcsx2(
             prepare_pcsx2_windows_archive(&root, &artifact, temporary.path())?
         }
         Pcsx2ArtifactKind::MacosQtTarXz => {
-            return Err(EmulatorWriteFailure::Other(
-                "Managed PCSX2 macOS bundle installation is not implemented yet.".into(),
-            ));
+            prepare_pcsx2_macos_archive(&root, &artifact, temporary.path())?
         }
     };
     install_sources.sort_by(|left, right| left.relative_target.cmp(&right.relative_target));
@@ -7294,13 +7293,35 @@ fn install_managed_pcsx2(
         transaction
             .stage_auxiliary(&document)
             .map_err(classify_emulator_transaction_error)?;
+        let initial_install = state.managed_install.is_none();
+        let previously_owned_paths = state
+            .managed_install
+            .as_ref()
+            .map(|audit| {
+                audit
+                    .installed_files
+                    .iter()
+                    .map(|file| managed_relative_path_key(&file.relative_path))
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
         for file in &install_sources {
             let target = state.install_directory.join(&file.relative_target);
             let source_revision = FileRevision::read(&file.source)
                 .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+            let relative_key = managed_relative_path_key(
+                &file.relative_target.to_string_lossy().replace('\\', "/"),
+            );
+            let previously_owned = previously_owned_paths.contains(&relative_key)
+                || state.managed_install.as_ref().is_some_and(|audit| {
+                    !audit.ownership_manifest_current() && target == audit.executable_path
+                });
             match fs::symlink_metadata(&target) {
                 Ok(metadata)
-                    if metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
+                    if !initial_install
+                        && previously_owned
+                        && metadata.file_type().is_file()
+                        && !metadata.file_type().is_symlink() =>
                 {
                     let target_revision = FileRevision::read(&target)
                         .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
@@ -7312,6 +7333,12 @@ fn install_managed_pcsx2(
                             target_revision,
                         )
                         .map_err(classify_emulator_transaction_error)?;
+                }
+                Ok(_) if initial_install || !previously_owned => {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing to overwrite unmanaged PCSX2 install path {}.",
+                        target.display()
+                    )));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     if file.preserve_permissions {
@@ -7367,9 +7394,37 @@ fn install_managed_pcsx2(
             }
         }
         let portable_marker = state.install_directory.join("portable.ini");
-        stage_small_install_file(&mut transaction, &portable_marker, Vec::new())?;
+        if initial_install {
+            transaction
+                .stage_new_file_bytes(&portable_marker, Vec::new())
+                .map_err(classify_emulator_transaction_error)?;
+        } else {
+            let portable_previously_owned = previously_owned_paths
+                .contains(&managed_relative_path_key("portable.ini"))
+                || state.managed_install.as_ref().is_some_and(|audit| {
+                    !audit.ownership_manifest_current()
+                        && fs::symlink_metadata(&portable_marker).is_ok_and(|metadata| {
+                            metadata.file_type().is_file()
+                                && !metadata.file_type().is_symlink()
+                                && metadata.len() == 0
+                        })
+                });
+            if fs::symlink_metadata(&portable_marker).is_ok() && !portable_previously_owned {
+                return Err(EmulatorWriteFailure::Other(format!(
+                    "Refusing to overwrite unmanaged PCSX2 install path {}.",
+                    portable_marker.display()
+                )));
+            }
+            stage_small_install_file(&mut transaction, &portable_marker, Vec::new())?;
+        }
         let manifest_path = state.install_directory.join(MANAGED_INSTALL_MANIFEST_NAME);
-        stage_small_install_file(&mut transaction, &manifest_path, manifest_bytes)?;
+        if initial_install {
+            transaction
+                .stage_new_file_bytes(&manifest_path, manifest_bytes)
+                .map_err(classify_emulator_transaction_error)?;
+        } else {
+            stage_small_install_file(&mut transaction, &manifest_path, manifest_bytes)?;
+        }
         if cancel.load(Ordering::Relaxed) {
             return Err(EmulatorWriteFailure::Other(
                 EmulatorLifecycleError::Cancelled.to_string(),
@@ -7517,6 +7572,154 @@ fn prepare_pcsx2_windows_archive(
         .collect()
 }
 
+fn prepare_pcsx2_macos_archive(
+    root: &Path,
+    artifact: &Path,
+    temporary_root: &Path,
+) -> Result<Vec<PreparedInstallFile>, EmulatorWriteFailure> {
+    let stream_extraction = temporary_root.join("macos-stream");
+    let bundle_extraction = temporary_root.join("macos-bundle");
+    fs::create_dir(&stream_extraction).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not create the PCSX2 macOS stream directory: {error}"
+        ))
+    })?;
+    fs::create_dir(&bundle_extraction).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not create the PCSX2 macOS bundle directory: {error}"
+        ))
+    })?;
+    let files = ArchiveExtractor::for_launchbox_root(root)
+        .extract_tar_xz_to_directory(
+            artifact,
+            &stream_extraction,
+            &bundle_extraction,
+            MAX_PCSX2_MACOS_TAR_BYTES,
+        )
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let bundle_extraction = fs::canonicalize(&bundle_extraction).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not resolve the PCSX2 macOS bundle directory: {error}"
+        ))
+    })?;
+    let root_entries = fs::read_dir(&bundle_extraction)
+        .map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "Could not inspect the PCSX2 macOS bundle root: {error}"
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "Could not inspect an entry in the PCSX2 macOS bundle root: {error}"
+            ))
+        })?;
+    let [app_entry] = root_entries.as_slice() else {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "PCSX2 macOS archive must contain exactly one top-level app bundle, found {} entries.",
+            root_entries.len()
+        )));
+    };
+    let app_metadata = fs::symlink_metadata(app_entry.path()).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not inspect the PCSX2 macOS app bundle: {error}"
+        ))
+    })?;
+    if !app_metadata.file_type().is_dir() || app_metadata.file_type().is_symlink() {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "PCSX2 macOS archive top-level entry is not a real directory: {}.",
+            app_entry.path().display()
+        )));
+    }
+    let app_root = app_entry.file_name();
+    if !Path::new(&app_root)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "PCSX2 macOS archive top-level entry is not an app bundle: {}.",
+            Path::new(&app_root).display()
+        )));
+    }
+
+    for source in &files {
+        let relative = source.strip_prefix(&bundle_extraction).map_err(|_| {
+            EmulatorWriteFailure::Other(format!(
+                "PCSX2 macOS bundle member is outside its extraction root: {}",
+                source.display()
+            ))
+        })?;
+        if relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "PCSX2 macOS bundle contains a non-normal path: {}",
+                relative.display()
+            )));
+        }
+        let member_app_root = relative
+            .components()
+            .next()
+            .and_then(|component| match component {
+                std::path::Component::Normal(name) => Some(name.to_os_string()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                EmulatorWriteFailure::Other(format!(
+                    "PCSX2 macOS bundle produced an empty member path: {}",
+                    source.display()
+                ))
+            })?;
+        if member_app_root != app_root {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "PCSX2 macOS member is outside the single app bundle: {}",
+                source.display()
+            )));
+        }
+    }
+    let executable = bundle_extraction
+        .join(&app_root)
+        .join("Contents/MacOS/PCSX2");
+    let executable_matches = files.iter().filter(|source| **source == executable).count();
+    if executable_matches != 1 {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "Expected exactly one Contents/MacOS/PCSX2 in the verified macOS bundle, found {executable_matches}."
+        )));
+    }
+    make_file_executable(&executable).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not make the PCSX2 macOS bundle executable runnable: {error}"
+        ))
+    })?;
+
+    files
+        .into_iter()
+        .map(|source| {
+            let relative = source
+                .strip_prefix(bundle_extraction.join(&app_root))
+                .map_err(|_| {
+                    EmulatorWriteFailure::Other(format!(
+                        "PCSX2 macOS member is outside its app bundle: {}",
+                        source.display()
+                    ))
+                })?;
+            if relative.as_os_str().is_empty() {
+                return Err(EmulatorWriteFailure::Other(
+                    "PCSX2 macOS archive produced an empty file path.".into(),
+                ));
+            }
+            let relative_target = PathBuf::from("PCSX2.app").join(relative);
+            Ok(PreparedInstallFile {
+                preserve_permissions: source == executable,
+                source,
+                relative_target,
+            })
+        })
+        .collect()
+}
+
 fn prepare_install_directories(
     root: &Path,
     install_directory: &Path,
@@ -7528,12 +7731,18 @@ fn prepare_install_directories(
     let emulators = root.join("Emulators");
     ensure_real_install_directory(&root, &emulators, created)?;
     ensure_real_install_directory(&root, install_directory, created)?;
-    let mut directories = sources
+    let mut directories = Vec::new();
+    for parent in sources
         .iter()
         .filter_map(|file| file.relative_target.parent())
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map(|parent| install_directory.join(parent))
-        .collect::<Vec<_>>();
+    {
+        for ancestor in parent
+            .ancestors()
+            .filter(|ancestor| !ancestor.as_os_str().is_empty())
+        {
+            directories.push(install_directory.join(ancestor));
+        }
+    }
     directories.sort_by_key(|path| path.components().count());
     directories.dedup();
     for directory in directories {
@@ -17856,6 +18065,7 @@ mod tests {
     };
     use lb_storage::FileRevision;
     use std::fs;
+    use std::process::Command;
     use std::time::UNIX_EPOCH;
 
     #[test]
@@ -18029,6 +18239,304 @@ mod tests {
             asset_byte_len: receipt.byte_len,
             asset_sha256: receipt.sha256,
         }
+    }
+
+    fn pcsx2_macos_test_offer(fixture: &Path, version: &str) -> Pcsx2ReleaseOffer {
+        let source = fixture.join(format!("macos-source-{version}"));
+        let app = source.join(format!("PCSX2-v{version}.app"));
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+        fs::write(
+            app.join("Contents/MacOS/PCSX2"),
+            format!("macOS PCSX2 {version}\n"),
+        )
+        .unwrap();
+        fs::write(
+            app.join("Contents/Info.plist"),
+            format!("<plist><string>{version}</string></plist>\n"),
+        )
+        .unwrap();
+        fs::write(
+            app.join("Contents/Resources/default.ini"),
+            b"Renderer=Metal\n",
+        )
+        .unwrap();
+        fs::write(
+            app.join(format!("Contents/Resources/release-{version}.dat")),
+            format!("provider data {version}\n"),
+        )
+        .unwrap();
+
+        let asset_name = format!("pcsx2-v{version}-macos-Qt.tar.xz");
+        let asset = fixture.join(&asset_name);
+        let tar = fixture.join(format!("pcsx2-v{version}-macos-Qt.tar"));
+        let tar_output = Command::new("7z")
+            .current_dir(&source)
+            .arg("a")
+            .arg("-ttar")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg(&tar)
+            .arg("--")
+            .arg(app.file_name().unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            tar_output.status.success(),
+            "could not create macOS PCSX2 tar: {}",
+            String::from_utf8_lossy(&tar_output.stderr)
+        );
+        let xz_output = Command::new("7z")
+            .current_dir(fixture)
+            .arg("a")
+            .arg("-txz")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg(&asset)
+            .arg("--")
+            .arg(tar.file_name().unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            xz_output.status.success(),
+            "could not create macOS PCSX2 xz: {}",
+            String::from_utf8_lossy(&xz_output.stderr)
+        );
+        fs::remove_file(tar).unwrap();
+        let receipt = file_receipt(&asset).unwrap();
+        Pcsx2ReleaseOffer {
+            version: version.into(),
+            tag: format!("v{version}"),
+            release_name: format!("PCSX2 v{version}"),
+            release_url: format!("https://github.com/PCSX2/pcsx2/releases/tag/v{version}"),
+            prerelease: true,
+            artifact_kind: Pcsx2ArtifactKind::MacosQtTarXz,
+            asset_name: asset_name.clone(),
+            asset_url: format!(
+                "https://github.com/PCSX2/pcsx2/releases/download/v{version}/{asset_name}"
+            ),
+            asset_byte_len: receipt.byte_len,
+            asset_sha256: receipt.sha256,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_pcsx2_macos_bundle_uses_stable_paths_and_recoverable_removal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temporary library");
+        let fixture = tempfile::tempdir().expect("release fixture");
+        let data = directory.path().join("Data");
+        let platforms = data.join("Platforms");
+        fs::create_dir_all(&platforms).unwrap();
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/launchbox/Data/Emulators.xml"),
+            data.join("Emulators.xml"),
+        )
+        .unwrap();
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/launchbox/Data/Platforms/Fixture Console.xml"),
+            platforms.join("Fixture Console.xml"),
+        )
+        .unwrap();
+        let emulator_document = data.join("Emulators.xml");
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let resolver = HostPathResolver::default();
+        let offer = pcsx2_macos_test_offer(fixture.path(), "2.7.492");
+        let state =
+            inspect_pcsx2_release_state(directory.path(), Some(&configuration), &resolver, offer)
+                .expect("inspect macOS managed install");
+        assert_eq!(state.action, Pcsx2InstallAction::Install);
+        assert_eq!(
+            state.executable_path,
+            directory
+                .path()
+                .join("Emulators/PCSX2/PCSX2.app/Contents/MacOS/PCSX2")
+        );
+        let original_xml = fs::read(&emulator_document).unwrap();
+        let install_directory = directory.path().join("Emulators/PCSX2");
+        let collision = install_directory.join("PCSX2.app/Contents/Info.plist");
+        fs::create_dir_all(collision.parent().unwrap()).unwrap();
+        fs::write(&collision, b"user-owned collision\n").unwrap();
+        let user_settings = install_directory.join("User Settings.ini");
+        fs::write(&user_settings, b"user-owned=true\n").unwrap();
+        let collision_failure = match install_managed_pcsx2(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            vec!["Sony PlayStation 2".into()],
+            state.clone(),
+            Box::new(FileReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        ) {
+            Ok(_) => panic!("unmanaged bundle collision was overwritten"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            collision_failure,
+            EmulatorWriteFailure::Other(message)
+                if message.contains("Refusing to overwrite unmanaged PCSX2 install path")
+        ));
+        assert_eq!(fs::read(&collision).unwrap(), b"user-owned collision\n");
+        assert_eq!(fs::read(&emulator_document).unwrap(), original_xml);
+        assert!(!install_directory.join("portable.ini").exists());
+        assert!(!install_directory
+            .join(MANAGED_INSTALL_MANIFEST_NAME)
+            .exists());
+        fs::remove_file(&collision).unwrap();
+
+        let first = install_managed_pcsx2(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            vec!["Sony PlayStation 2".into()],
+            state,
+            Box::new(FileReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("install managed macOS PCSX2 bundle");
+        assert_eq!(
+            first.manifest.artifact_kind,
+            Pcsx2ArtifactKind::MacosQtTarXz
+        );
+        assert_eq!(
+            first.manifest.executable_name,
+            "PCSX2.app/Contents/MacOS/PCSX2"
+        );
+        assert_eq!(first.manifest.installed_files.len(), 5);
+        assert_eq!(first.installed_file_count, 6);
+        assert_eq!(
+            fs::read_to_string(&first.executable).unwrap(),
+            "macOS PCSX2 2.7.492\n"
+        );
+        assert_ne!(
+            fs::metadata(&first.executable)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+        assert!(directory
+            .path()
+            .join("Emulators/PCSX2/PCSX2.app/Contents/Info.plist")
+            .is_file());
+        assert!(!directory
+            .path()
+            .join("Emulators/PCSX2/PCSX2-v2.7.492.app")
+            .exists());
+        assert_eq!(
+            first.emulator_write.emulator.application_path,
+            r"Emulators\PCSX2\PCSX2.app\Contents\MacOS\PCSX2"
+        );
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let update_state = inspect_pcsx2_release_state(
+            directory.path(),
+            Some(&configuration),
+            &resolver,
+            pcsx2_macos_test_offer(fixture.path(), "2.7.493"),
+        )
+        .expect("inspect macOS managed update");
+        assert_eq!(update_state.action, Pcsx2InstallAction::Update);
+        let new_provider_path =
+            install_directory.join("PCSX2.app/Contents/Resources/release-2.7.493.dat");
+        fs::write(&new_provider_path, b"user collision on new provider path\n").unwrap();
+        let update_collision = match install_managed_pcsx2(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            vec!["Sony PlayStation 2".into()],
+            update_state.clone(),
+            Box::new(FileReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        ) {
+            Ok(_) => panic!("managed update overwrote an unowned new path"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            update_collision,
+            EmulatorWriteFailure::Other(message)
+                if message.contains("Refusing to overwrite unmanaged PCSX2 install path")
+        ));
+        assert_eq!(
+            fs::read(&new_provider_path).unwrap(),
+            b"user collision on new provider path\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&first.executable).unwrap(),
+            "macOS PCSX2 2.7.492\n"
+        );
+        fs::remove_file(&new_provider_path).unwrap();
+        let installed = install_managed_pcsx2(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            vec!["Sony PlayStation 2".into()],
+            update_state,
+            Box::new(FileReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("update managed macOS PCSX2 bundle");
+        assert_eq!(installed.manifest.version, "2.7.493");
+        assert_eq!(
+            fs::read_to_string(&installed.executable).unwrap(),
+            "macOS PCSX2 2.7.493\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&new_provider_path).unwrap(),
+            "provider data 2.7.493\n"
+        );
+        assert!(!install_directory
+            .join("PCSX2.app/Contents/Resources/release-2.7.492.dat")
+            .exists());
+        assert!(installed.recovery_files.iter().any(|backup| {
+            fs::read_to_string(backup).is_ok_and(|bytes| bytes == "provider data 2.7.492\n")
+        }));
+
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let removable =
+            inspect_managed_pcsx2_removal(directory.path(), Some(&configuration), &resolver)
+                .expect("review macOS managed removal");
+        assert!(removable.can_remove);
+        let removed = remove_managed_pcsx2(directory.path().to_path_buf(), resolver, removable)
+            .expect("remove managed macOS PCSX2 bundle");
+        assert_eq!(removed.removed_file_count, 6);
+        assert_eq!(removed.recovery_files.len(), 6);
+        assert!(!installed.executable.exists());
+        assert!(!directory
+            .path()
+            .join("Emulators/PCSX2/PCSX2.app/Contents/Info.plist")
+            .exists());
+        assert!(!directory
+            .path()
+            .join("Emulators/PCSX2/portable.ini")
+            .exists());
+        assert!(!directory
+            .path()
+            .join("Emulators/PCSX2/.launchbox-port-install.json")
+            .exists());
+        assert_eq!(fs::read(&user_settings).unwrap(), b"user-owned=true\n");
+        assert!(directory
+            .path()
+            .join("Emulators/PCSX2/PCSX2.app/Contents/MacOS")
+            .is_dir());
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

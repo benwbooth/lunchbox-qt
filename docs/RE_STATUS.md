@@ -218,8 +218,13 @@ supplies an asset `digest` used as a required SHA-256 oracle. The port selects
 the exact x86-64 Linux AppImage or Windows Qt 7z suffix, checks the official
 release URL/name/size/digest, and commits the artifact, marker, port-owned
 manifest, and emulator XML together without executing the downloaded program.
-The Linux Nix runtime supplies `appimage-run`; macOS bundle installation and
-the recovered first-time wizard remain open.
+The Linux Nix runtime supplies `appimage-run`. The official macOS Qt tar.xz is
+a single XZ stream containing one versioned `.app`; the port bounds that stream,
+audits the derived tar with the existing traversal/link checks, requires the
+expected bundle executable, normalizes the install to stable `PCSX2.app`, and
+records every regular file in the same ownership transaction. The official
+bundle is x86-64 and requires Rosetta 2 on Apple Silicon. Native macOS runtime
+execution and the recovered first-time wizard remain open.
 
 The recovered 13.27 PCSX2 plugin uses the exact
 `SERIAL (CRC).NN.p2s`/`.p2z` contract for ordinary state files, but treats each

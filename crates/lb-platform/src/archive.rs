@@ -4,7 +4,10 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::{collections::BTreeSet, io::Write};
+use std::{
+    collections::BTreeSet,
+    io::{Read, Write},
+};
 
 use tempfile::{Builder, TempDir};
 use thiserror::Error;
@@ -316,6 +319,210 @@ impl ArchiveExtractor {
         audit_extracted_tree(archive, &destination)
     }
 
+    /// Extracts one bounded `.tar.xz` payload through two audited stages.
+    ///
+    /// XZ is a single compressed stream and does not carry a member pathname,
+    /// so 7-Zip's normal technical listing has no `Path` record to validate.
+    /// This boundary instead requires an exact `.tar.xz` name, verifies the XZ
+    /// signature and declared unpacked size, extracts the one derived `.tar`
+    /// file into an empty real directory, and then sends that tar through the
+    /// ordinary traversal/link/special-file checks. Both 7-Zip invocations are
+    /// direct process calls with argument vectors; no command shell is used.
+    pub fn extract_tar_xz_to_directory(
+        &self,
+        archive: &Path,
+        stream_directory: &Path,
+        destination: &Path,
+        max_tar_bytes: u64,
+    ) -> Result<Vec<PathBuf>, ArchiveExtractionError> {
+        let metadata =
+            fs::symlink_metadata(archive).map_err(|_| ArchiveExtractionError::ArchiveNotFound {
+                archive: archive.to_path_buf(),
+            })?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(ArchiveExtractionError::ArchiveNotFound {
+                archive: archive.to_path_buf(),
+            });
+        }
+        let archive_name =
+            archive
+                .file_name()
+                .ok_or_else(|| ArchiveExtractionError::MissingArchiveFileName {
+                    archive: archive.to_path_buf(),
+                })?;
+        let archive_name_text = archive_name.to_string_lossy();
+        if !archive_name_text.to_ascii_lowercase().ends_with(".tar.xz") {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the source name does not end in .tar.xz".into(),
+            });
+        }
+        let expected_tar_name = Path::new(archive_name)
+            .file_stem()
+            .filter(|name| {
+                Path::new(name)
+                    .extension()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tar"))
+            })
+            .ok_or_else(|| ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the source has no derived .tar filename".into(),
+            })?
+            .to_os_string();
+
+        let mut signature = [0_u8; 6];
+        fs::File::open(archive)
+            .and_then(|mut file| file.read_exact(&mut signature))
+            .map_err(|error| ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!("could not read the XZ signature: {error}"),
+            })?;
+        if signature != [0xfd, b'7', b'z', b'X', b'Z', 0x00] {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the source does not have an XZ stream signature".into(),
+            });
+        }
+        if max_tar_bytes == 0 {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the permitted unpacked size is zero".into(),
+            });
+        }
+
+        let output = Command::new(&self.executable)
+            .arg("l")
+            .arg("-slt")
+            .arg("-sccUTF-8")
+            .arg("-ba")
+            .arg("--")
+            .arg(archive)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| ArchiveExtractionError::ToolStart {
+                executable: self.executable.clone(),
+                operation: "list",
+                archive: archive.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        if !output.status.success() {
+            return Err(ArchiveExtractionError::ToolFailed {
+                executable: self.executable.clone(),
+                operation: "list",
+                archive: archive.to_path_buf(),
+                message: tool_output_message(&output.stdout, &output.stderr),
+            });
+        }
+        let listing = String::from_utf8(output.stdout).map_err(|error| {
+            ArchiveExtractionError::InvalidToolOutput {
+                archive: archive.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+        if !parse_technical_listing(&listing).is_empty() {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the XZ listing unexpectedly contains named members".into(),
+            });
+        }
+        let unpacked_sizes = listing
+            .lines()
+            .filter_map(|line| line.trim_end_matches('\r').strip_prefix("Size = "))
+            .collect::<Vec<_>>();
+        let [unpacked_size] = unpacked_sizes.as_slice() else {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the XZ listing does not contain exactly one unpacked size".into(),
+            });
+        };
+        let unpacked_size = unpacked_size.parse::<u64>().map_err(|error| {
+            ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!("the XZ unpacked size is invalid: {error}"),
+            }
+        })?;
+        if unpacked_size == 0 || unpacked_size > max_tar_bytes {
+            return Err(ArchiveExtractionError::CompressedTarTooLarge {
+                archive: archive.to_path_buf(),
+                unpacked_size,
+                max_tar_bytes,
+            });
+        }
+
+        let stream_directory =
+            empty_real_directory(archive, stream_directory, "stream extraction")?;
+        let destination = empty_real_directory(archive, destination, "tar extraction")?;
+        if stream_directory == destination {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: "the stream and tar extraction directories are identical".into(),
+            });
+        }
+        let mut output_directory_argument = OsString::from("-o");
+        output_directory_argument.push(&stream_directory);
+        let output = Command::new(&self.executable)
+            .arg("x")
+            .arg("-y")
+            .arg("-aos")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg(output_directory_argument)
+            .arg("--")
+            .arg(archive)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| ArchiveExtractionError::ToolStart {
+                executable: self.executable.clone(),
+                operation: "extract XZ stream",
+                archive: archive.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        if !output.status.success() {
+            return Err(ArchiveExtractionError::ToolFailed {
+                executable: self.executable.clone(),
+                operation: "extract XZ stream",
+                archive: archive.to_path_buf(),
+                message: tool_output_message(&output.stdout, &output.stderr),
+            });
+        }
+        let stream_files = audit_extracted_tree(archive, &stream_directory)?;
+        let [tar_path] = stream_files.as_slice() else {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!(
+                    "the XZ stream produced {} files instead of one",
+                    stream_files.len()
+                ),
+            });
+        };
+        if tar_path.file_name() != Some(expected_tar_name.as_os_str()) {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!(
+                    "the XZ stream produced unexpected file {}",
+                    tar_path.display()
+                ),
+            });
+        }
+        let actual_size = fs::symlink_metadata(tar_path)
+            .map_err(|error| ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!("could not inspect extracted tar: {error}"),
+            })?
+            .len();
+        if actual_size != unpacked_size {
+            return Err(ArchiveExtractionError::InvalidCompressedTar {
+                archive: archive.to_path_buf(),
+                message: format!(
+                    "the extracted tar size is {actual_size}, expected {unpacked_size}"
+                ),
+            });
+        }
+
+        self.extract_to_directory(tar_path, &destination)
+    }
+
     pub(crate) fn extract(
         &self,
         archive: &Path,
@@ -510,6 +717,46 @@ fn parse_technical_listing(listing: &str) -> Vec<ArchiveEntry> {
         }
     }
     entries
+}
+
+fn empty_real_directory(
+    archive: &Path,
+    directory: &Path,
+    label: &str,
+) -> Result<PathBuf, ArchiveExtractionError> {
+    let metadata =
+        fs::symlink_metadata(directory).map_err(|error| ArchiveExtractionError::ExtractedTree {
+            archive: archive.to_path_buf(),
+            path: directory.to_path_buf(),
+            message: format!("{label} directory cannot be inspected: {error}"),
+        })?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(ArchiveExtractionError::ExtractedTree {
+            archive: archive.to_path_buf(),
+            path: directory.to_path_buf(),
+            message: format!("{label} destination is not a real directory"),
+        });
+    }
+    let directory =
+        fs::canonicalize(directory).map_err(|error| ArchiveExtractionError::ExtractedTree {
+            archive: archive.to_path_buf(),
+            path: directory.to_path_buf(),
+            message: format!("{label} directory cannot be resolved: {error}"),
+        })?;
+    let mut entries =
+        fs::read_dir(&directory).map_err(|error| ArchiveExtractionError::ExtractedTree {
+            archive: archive.to_path_buf(),
+            path: directory.clone(),
+            message: format!("{label} directory cannot be read: {error}"),
+        })?;
+    if entries.next().is_some() {
+        return Err(ArchiveExtractionError::ExtractedTree {
+            archive: archive.to_path_buf(),
+            path: directory,
+            message: format!("{label} destination is not empty"),
+        });
+    }
+    Ok(directory)
 }
 
 fn validate_entries(
@@ -750,6 +997,16 @@ pub enum ArchiveExtractionError {
     InvalidToolOutput { archive: PathBuf, message: String },
     #[error("archive is empty: {archive}")]
     EmptyArchive { archive: PathBuf },
+    #[error("archive {archive} is not a valid single-stream .tar.xz payload: {message}")]
+    InvalidCompressedTar { archive: PathBuf, message: String },
+    #[error(
+        "archive {archive} expands to {unpacked_size} bytes, above the {max_tar_bytes}-byte tar limit"
+    )]
+    CompressedTarTooLarge {
+        archive: PathBuf,
+        unpacked_size: u64,
+        max_tar_bytes: u64,
+    },
     #[error("encrypted archive member is unsupported in {archive}: {entry}")]
     EncryptedEntry { archive: PathBuf, entry: String },
     #[error("unsafe archive member path in {archive}: {entry}")]
@@ -927,5 +1184,111 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(fs::read(extracted.join("icon.sys")).unwrap(), b"icon bytes");
         assert_eq!(fs::read(extracted.join("save.bin")).unwrap(), b"save bytes");
+    }
+
+    #[test]
+    fn extracts_bounded_tar_xz_through_two_audited_stages() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let bundle = source.join("Fixture.app");
+        fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
+        fs::write(bundle.join("Contents/MacOS/Fixture"), b"fixture executable").unwrap();
+        fs::write(bundle.join("Contents/Resources/default.ini"), b"setting=1").unwrap();
+
+        let tar = directory.path().join("fixture.tar");
+        let tar_output = Command::new("7z")
+            .current_dir(&source)
+            .arg("a")
+            .arg("-ttar")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg(&tar)
+            .arg("--")
+            .arg("Fixture.app")
+            .output()
+            .unwrap();
+        assert!(
+            tar_output.status.success(),
+            "{}",
+            tool_output_message(&tar_output.stdout, &tar_output.stderr)
+        );
+        let archive = directory.path().join("fixture.tar.xz");
+        let xz_output = Command::new("7z")
+            .current_dir(directory.path())
+            .arg("a")
+            .arg("-txz")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg(&archive)
+            .arg("--")
+            .arg(tar.file_name().unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            xz_output.status.success(),
+            "{}",
+            tool_output_message(&xz_output.stdout, &xz_output.stderr)
+        );
+        fs::remove_file(&tar).unwrap();
+
+        let rejected_stream = directory.path().join("rejected-stream");
+        let rejected_destination = directory.path().join("rejected-destination");
+        fs::create_dir(&rejected_stream).unwrap();
+        fs::create_dir(&rejected_destination).unwrap();
+        let extractor = ArchiveExtractor::new("7z");
+        assert!(matches!(
+            extractor.extract_tar_xz_to_directory(
+                &archive,
+                &rejected_stream,
+                &rejected_destination,
+                1
+            ),
+            Err(ArchiveExtractionError::CompressedTarTooLarge { .. })
+        ));
+        assert_eq!(fs::read_dir(&rejected_stream).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&rejected_destination).unwrap().count(), 0);
+
+        let stream = directory.path().join("stream");
+        let destination = directory.path().join("destination");
+        fs::create_dir(&stream).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let files = extractor
+            .extract_tar_xz_to_directory(&archive, &stream, &destination, 1024 * 1024)
+            .unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            fs::read(destination.join("Fixture.app/Contents/MacOS/Fixture")).unwrap(),
+            b"fixture executable"
+        );
+        assert_eq!(
+            fs::read(destination.join("Fixture.app/Contents/Resources/default.ini")).unwrap(),
+            b"setting=1"
+        );
+        assert_eq!(
+            fs::read_dir(&stream)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>(),
+            [tar.file_name().unwrap().to_os_string()]
+        );
+
+        let invalid = directory.path().join("invalid.tar.xz");
+        fs::write(&invalid, b"not xz").unwrap();
+        let invalid_stream = directory.path().join("invalid-stream");
+        let invalid_destination = directory.path().join("invalid-destination");
+        fs::create_dir(&invalid_stream).unwrap();
+        fs::create_dir(&invalid_destination).unwrap();
+        assert!(matches!(
+            extractor.extract_tar_xz_to_directory(
+                &invalid,
+                &invalid_stream,
+                &invalid_destination,
+                1024
+            ),
+            Err(ArchiveExtractionError::InvalidCompressedTar { .. })
+        ));
     }
 }
