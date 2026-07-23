@@ -43,8 +43,10 @@ subset: stable-ID nested navigation, manual membership/order, recovered
 automatic filter grouping, mutable metadata and BigBox fields, multiple
 placements, paired playlist/parent transactions, optional list-cache cleanup,
 and detach-to-root deletion all pass real-dialog and storage gates. Unique-name
-and ID rename remain gated by the getter-only 13.27 contract. Playlist
-generation (`LIB-009`) and full BigBox playlist navigation remain open.
+and ID rename remain gated by the getter-only 13.27 contract. The `BB-002`
+subset now provides keyboard-first category/platform/playlist navigation,
+exact membership filtering, active-filter state, and `HideInBigBox` handling.
+Playlist generation (`LIB-009`) and theme-specific playlist views remain open.
 Persisted Windows-style paths remain lexical until the cross-platform launch
 service resolves them. None of those complete their family: bulk editing, all
 filter/sort modes, reset commands, rating downloads, and full Windows behavior

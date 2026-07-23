@@ -15,10 +15,14 @@ ApplicationWindow {
     title: "BigBox Port"
     color: "#07090d"
     property bool smokeTest: Qt.application.arguments.indexOf("--smoke-test") >= 0
+    property bool navigationSmokeTest:
+        Qt.application.arguments.indexOf("--navigation-smoke-test") >= 0
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
     property int smokePhase: 0
+    property int navigationSmokePhase: 0
     property int launchSmokePhase: 0
     property bool launchSmokeFinished: false
+    property string activeNavigationName: "All Games"
     property string launchSmokeGameId: {
         const requested = argumentValue("--launch-game-id")
         return requested.length > 0 ? requested : "fixture-racer"
@@ -44,6 +48,55 @@ ApplicationWindow {
                           gameList.currentIndex, gameId)
         if (gameId.length > 0 && count > 0)
             launchWithDialog.prepare(gameList.currentIndex, gameId, count)
+    }
+
+    function bigBoxNavigationIndex(kind, key) {
+        for (let index = 0; index < controller.big_box_navigation_entry_count; ++index) {
+            if (controller.big_box_navigation_entry_kind_at(index) === kind
+                    && controller.big_box_navigation_entry_key_at(index) === key)
+                return index
+        }
+        return -1
+    }
+
+    function openNavigation() {
+        navigationDrawer.open()
+        navigationList.currentIndex = 0
+        for (let index = 0; index < controller.big_box_navigation_entry_count; ++index) {
+            const kind = controller.big_box_navigation_entry_kind_at(index)
+            const key = controller.big_box_navigation_entry_key_at(index)
+            if (kind === controller.navigation_filter_kind
+                    && key === controller.navigation_filter_key) {
+                navigationList.currentIndex = index + 1
+                break
+            }
+        }
+        navigationList.positionViewAtIndex(navigationList.currentIndex,
+                                           ListView.Contain)
+        navigationList.forceActiveFocus()
+    }
+
+    function activateNavigationRow(row) {
+        if (row <= 0) {
+            activeNavigationName = "All Games"
+            controller.apply_filters("", "")
+        } else {
+            const index = row - 1
+            const kind = controller.big_box_navigation_entry_kind_at(index)
+            const key = controller.big_box_navigation_entry_key_at(index)
+            activeNavigationName = controller.big_box_navigation_entry_name_at(index)
+            if (kind === "category")
+                controller.apply_category_filter("", key)
+            else if (kind === "playlist")
+                controller.apply_playlist_filter("", key)
+            else if (kind === "platform")
+                controller.apply_filters("", key)
+            else
+                return
+        }
+        navigationDrawer.close()
+        gameList.currentIndex = gameList.count > 0 ? 0 : -1
+        gameList.forceActiveFocus()
     }
 
     function verifyModelRoles(index, gameId, gameTitle, gamePlatform, gameFavorite,
@@ -118,6 +171,100 @@ ApplicationWindow {
     Timer {
         interval: 25
         repeat: true
+        running: window.navigationSmokeTest
+        onTriggered: {
+            if (window.navigationSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0
+                    && controller.big_box_navigation_entry_count === 3) {
+                const category = window.bigBoxNavigationIndex(
+                                   "category", "Fixture Category")
+                const platform = window.bigBoxNavigationIndex(
+                                   "platform", "Fixture Console")
+                const playlist = window.bigBoxNavigationIndex(
+                                   "playlist", "fixture-playlist")
+                if (category < 0 || platform < 0 || playlist < 0
+                        || navigationList.count !== 4
+                        || controller.big_box_navigation_entry_depth_at(category) !== 0
+                        || controller.big_box_navigation_entry_depth_at(platform) !== 1
+                        || controller.big_box_navigation_entry_depth_at(playlist) !== 0
+                        || controller.big_box_navigation_entry_game_count_at(category) !== 3
+                        || controller.big_box_navigation_entry_game_count_at(platform) !== 3
+                        || controller.big_box_navigation_entry_game_count_at(playlist) !== 1) {
+                    console.error("BIGBOX_NAVIGATION_SMOKE_STRUCTURE_FAILED entries="
+                                  + controller.big_box_navigation_entry_count
+                                  + " category=" + category + " platform=" + platform
+                                  + " playlist=" + playlist)
+                    Qt.exit(8)
+                    return
+                }
+                window.navigationSmokePhase = 1
+                window.openNavigation()
+            } else if (window.navigationSmokePhase === 1
+                       && navigationDrawer.opened
+                       && navigationList.activeFocus) {
+                const playlist = window.bigBoxNavigationIndex(
+                                   "playlist", "fixture-playlist")
+                navigationList.currentIndex = playlist + 1
+                window.navigationSmokePhase = 2
+                window.activateNavigationRow(navigationList.currentIndex)
+            } else if (window.navigationSmokePhase === 2
+                       && controller.navigation_filter_kind === "playlist"
+                       && controller.navigation_filter_key === "fixture-playlist"
+                       && controller.filtered_count === 1) {
+                if (controller.game_id_at(0) !== "fixture-adventure") {
+                    console.error("BIGBOX_NAVIGATION_SMOKE_PLAYLIST_FAILED id="
+                                  + controller.game_id_at(0))
+                    Qt.exit(8)
+                    return
+                }
+                window.navigationSmokePhase = 3
+                window.activateNavigationRow(
+                            window.bigBoxNavigationIndex(
+                                "category", "Fixture Category") + 1)
+            } else if (window.navigationSmokePhase === 3
+                       && controller.navigation_filter_kind === "category"
+                       && controller.navigation_filter_key === "Fixture Category"
+                       && controller.filtered_count === 3) {
+                window.navigationSmokePhase = 4
+                window.activateNavigationRow(
+                            window.bigBoxNavigationIndex(
+                                "platform", "Fixture Console") + 1)
+            } else if (window.navigationSmokePhase === 4
+                       && controller.navigation_filter_kind === "platform"
+                       && controller.navigation_filter_key === "Fixture Console"
+                       && controller.filtered_count === 3) {
+                window.navigationSmokePhase = 5
+                window.activateNavigationRow(0)
+            } else if (window.navigationSmokePhase === 5
+                       && controller.navigation_filter_kind.length === 0
+                       && controller.navigation_filter_key.length === 0
+                       && controller.filtered_count === 3) {
+                if (!controller.report_big_box_navigation_smoke_success()) {
+                    console.error("BIGBOX_NAVIGATION_SMOKE_FINAL_STATE_FAILED")
+                    Qt.exit(8)
+                    return
+                }
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 6000
+        running: window.navigationSmokeTest
+        onTriggered: {
+            console.error("BIGBOX_NAVIGATION_SMOKE_TIMEOUT phase="
+                          + window.navigationSmokePhase + " entries="
+                          + controller.big_box_navigation_entry_count + " filtered="
+                          + controller.filtered_count + " status="
+                          + controller.status_message)
+            Qt.exit(8)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
         running: window.launchSmokeTest && !window.launchSmokeFinished
         onTriggered: {
             if (window.launchSmokePhase === 0 && !controller.loading
@@ -176,6 +323,119 @@ ApplicationWindow {
         }
     }
 
+    Drawer {
+        id: navigationDrawer
+        width: Math.min(window.width * 0.42, 500)
+        height: window.height
+        edge: Qt.LeftEdge
+        modal: true
+        closePolicy: Popup.CloseOnPressOutside
+        onOpened: navigationList.forceActiveFocus()
+        onClosed: gameList.forceActiveFocus()
+
+        background: Rectangle {
+            color: "#101824"
+            border.color: "#4679ad"
+            border.width: 2
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 14
+            anchors.fill: parent
+            anchors.margins: 24
+
+            Label {
+                Layout.fillWidth: true
+                text: "BROWSE LIBRARY"
+                color: "#67b3ff"
+                font.pixelSize: 26
+                font.bold: true
+                font.letterSpacing: 2
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: "Platforms, categories, and playlists"
+                color: "#9badc4"
+                font.pixelSize: 15
+            }
+
+            ListView {
+                id: navigationList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 6
+                clip: true
+                focus: true
+                keyNavigationWraps: true
+                model: controller.big_box_navigation_entry_count + 1
+                Keys.onReturnPressed: function(event) {
+                    window.activateNavigationRow(currentIndex)
+                    event.accepted = true
+                }
+                Keys.onEnterPressed: function(event) {
+                    window.activateNavigationRow(currentIndex)
+                    event.accepted = true
+                }
+                Keys.onRightPressed: function(event) {
+                    navigationDrawer.close()
+                    gameList.forceActiveFocus()
+                    event.accepted = true
+                }
+
+                delegate: ItemDelegate {
+                    id: navigationDelegate
+                    required property int index
+                    readonly property int sourceIndex: index - 1
+                    readonly property string entryKind: index === 0 ? "all"
+                        : controller.big_box_navigation_entry_kind_at(sourceIndex)
+                    readonly property string entryKey: index === 0 ? ""
+                        : controller.big_box_navigation_entry_key_at(sourceIndex)
+                    readonly property string entryName: index === 0 ? "All Games"
+                        : controller.big_box_navigation_entry_name_at(sourceIndex)
+                    readonly property int entryDepth: index === 0 ? 0
+                        : controller.big_box_navigation_entry_depth_at(sourceIndex)
+                    readonly property int entryCount: index === 0 ? controller.game_count
+                        : controller.big_box_navigation_entry_game_count_at(sourceIndex)
+                    readonly property bool activeEntry: index === 0
+                        ? controller.navigation_filter_kind.length === 0
+                        : controller.navigation_filter_kind === entryKind
+                          && controller.navigation_filter_key === entryKey
+                    width: ListView.view.width
+                    height: 62
+                    leftPadding: 18 + entryDepth * 22
+                    rightPadding: 16
+                    highlighted: navigationList.currentIndex === index
+                    text: (entryKind === "category" ? "▾  "
+                           : entryKind === "playlist" ? "≡  "
+                           : entryKind === "platform" ? "▪  " : "◆  ")
+                          + entryName + "    " + entryCount
+                    font.pixelSize: 19
+                    font.bold: activeEntry
+                    Accessible.name: entryName + ", " + entryCount + " games"
+                    onClicked: window.activateNavigationRow(index)
+
+                    background: Rectangle {
+                        radius: 7
+                        color: navigationDelegate.highlighted
+                               ? "#2f5680"
+                               : navigationDelegate.activeEntry ? "#213d5c" : "transparent"
+                        border.color: navigationDelegate.activeEntry
+                                      ? "#67b3ff" : "transparent"
+                        border.width: 2
+                    }
+                }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: "↑ ↓  SELECT     ENTER  APPLY     →  GAMES"
+                color: "#9badc4"
+                font.pixelSize: 14
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 48
@@ -195,6 +455,13 @@ ApplicationWindow {
                 text: controller.library_name
                 color: "#b8c5d6"
                 font.pixelSize: 20
+            }
+            Label {
+                text: window.activeNavigationName.toUpperCase()
+                      + "  •  " + controller.filtered_count
+                color: "#67b3ff"
+                font.pixelSize: 18
+                font.bold: true
             }
         }
 
@@ -221,6 +488,10 @@ ApplicationWindow {
                 }
                 Keys.onEnterPressed: function(event) {
                     window.launchSelection()
+                    event.accepted = true
+                }
+                Keys.onUpPressed: function(event) {
+                    window.openNavigation()
                     event.accepted = true
                 }
 
@@ -292,6 +563,11 @@ ApplicationWindow {
 
         RowLayout {
             Layout.fillWidth: true
+            Button {
+                text: "FILTERS: " + window.activeNavigationName.toUpperCase()
+                enabled: !controller.loading && !controller.writing
+                onClicked: window.openNavigation()
+            }
             Label {
                 Layout.fillWidth: true
                 text: gameList.count > 0
@@ -314,7 +590,7 @@ ApplicationWindow {
             Label {
                 text: controller.launching
                       ? "LAUNCHING…"
-                      : "← →  BROWSE     ENTER  PLAY     ESC  EXIT"
+                      : "↑ / TAB  FILTERS     ← →  BROWSE     ENTER  PLAY     ESC  EXIT"
                 color: "#9badc4"
                 font.pixelSize: 18
             }
@@ -374,7 +650,31 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "Tab"
+        onActivated: {
+            if (navigationDrawer.opened) {
+                navigationDrawer.close()
+                gameList.forceActiveFocus()
+            } else {
+                window.openNavigation()
+            }
+        }
+    }
+
+    Shortcut {
+        sequence: "F"
+        onActivated: window.openNavigation()
+    }
+
+    Shortcut {
         sequence: "Esc"
-        onActivated: Qt.quit()
+        onActivated: {
+            if (navigationDrawer.opened) {
+                navigationDrawer.close()
+                gameList.forceActiveFocus()
+            } else {
+                Qt.quit()
+            }
+        }
     }
 }

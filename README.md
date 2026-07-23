@@ -151,6 +151,12 @@ rows when present, and detaches direct children to root. Game XML and media are
 never modified or deleted. Playlist filenames use the platform layer's shared
 Windows/Linux/macOS-safe component rules, while stored video and game paths
 remain lexical LaunchBox strings.
+BigBox exposes the same hierarchy through a keyboard-first filter drawer:
+Up, Tab, or F opens the category/platform/playlist list, Enter applies exact
+membership, and Right returns to the horizontal game wheel. Stable playlist
+IDs stay behind display names, the active filter is controller-owned state,
+and nodes marked `HideInBigBox` are omitted while visible descendants are
+reparented to the nearest visible level.
 Interrupted transactions require an explicit Recover action; conflicts require
 a reload and never offer a blind overwrite.
 

@@ -75,6 +75,23 @@ done
 
 echo "LaunchBox and BigBox role-model runtime smokes validated."
 
+bigbox_navigation_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed --library "$workspace_root/fixtures/launchbox" \
+    --navigation-smoke-test --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$bigbox_navigation_output" >&2
+  exit 1
+}
+if ! rg -q 'BIGBOX_NAVIGATION_SMOKE_COMPLETE entries=3 playlist=1 category=3 platform=3' \
+  <<< "$bigbox_navigation_output"; then
+  printf '%s\n' "$bigbox_navigation_output" >&2
+  echo "BigBox did not validate category, platform, and playlist navigation." >&2
+  exit 1
+fi
+
+echo "BigBox category/platform/playlist navigation and exact membership filtering validated."
+
 edit_root=$(mktemp -d)
 crud_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)

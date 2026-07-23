@@ -37,6 +37,9 @@ pub mod qobject {
         #[qproperty(i32, filtered_count)]
         #[qproperty(i32, platform_entry_count)]
         #[qproperty(i32, navigation_entry_count)]
+        #[qproperty(i32, big_box_navigation_entry_count)]
+        #[qproperty(QString, navigation_filter_kind)]
+        #[qproperty(QString, navigation_filter_key)]
         #[qproperty(i32, platform_revision)]
         #[qproperty(i32, pending_recovery_count)]
         #[qproperty(i32, delete_blocker_count)]
@@ -334,6 +337,9 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_big_box_navigation_smoke_success(self: &LibraryController) -> bool;
+
+        #[qinvokable]
         fn report_launch_smoke_success(self: &LibraryController, game_id: QString) -> bool;
 
         #[qinvokable]
@@ -373,6 +379,21 @@ pub mod qobject {
 
         #[qinvokable]
         fn navigation_entry_game_count_at(self: &LibraryController, index: i32) -> i32;
+
+        #[qinvokable]
+        fn big_box_navigation_entry_kind_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_navigation_entry_key_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_navigation_entry_name_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_navigation_entry_depth_at(self: &LibraryController, index: i32) -> i32;
+
+        #[qinvokable]
+        fn big_box_navigation_entry_game_count_at(self: &LibraryController, index: i32) -> i32;
     }
 
     unsafe extern "RustQt" {
@@ -629,6 +650,9 @@ pub struct LibraryControllerRust {
     filtered_count: i32,
     platform_entry_count: i32,
     navigation_entry_count: i32,
+    big_box_navigation_entry_count: i32,
+    navigation_filter_kind: QString,
+    navigation_filter_key: QString,
     platform_revision: i32,
     pending_recovery_count: i32,
     delete_blocker_count: i32,
@@ -650,6 +674,7 @@ pub struct LibraryControllerRust {
     platform_sources: BTreeMap<String, PathBuf>,
     navigation_catalog: NavigationCatalog,
     navigation_entries: Vec<NavigationEntry>,
+    big_box_navigation_entries: Vec<NavigationEntry>,
     category_platforms: BTreeMap<String, BTreeSet<String>>,
     category_game_ids: BTreeMap<String, BTreeSet<String>>,
     playlist_game_ids: BTreeMap<String, BTreeSet<String>>,
@@ -685,6 +710,7 @@ struct PlatformCount {
 
 #[derive(Clone, Debug, Default)]
 struct NavigationCatalog {
+    platforms: Vec<PlatformDefinition>,
     categories: Vec<PlatformCategory>,
     parents: Vec<ParentRelationship>,
     playlists: Vec<PlaylistDocument>,
@@ -704,6 +730,7 @@ struct NavigationEntry {
     name: String,
     depth: usize,
     game_count: usize,
+    visible_in_big_box: bool,
 }
 
 struct LoadedLibrary {
@@ -801,6 +828,10 @@ impl LoadedLibrary {
         let emulator_configuration = data.emulator_configuration().cloned();
         let (platform_names, platform_sources) = platform_state_from_data(&data)?;
         let navigation_catalog = NavigationCatalog {
+            platforms: data
+                .platform_catalog()
+                .map(|catalog| catalog.platforms.clone())
+                .unwrap_or_default(),
             categories: data
                 .platform_catalog()
                 .map(|catalog| catalog.categories.clone())
@@ -1029,6 +1060,7 @@ struct GameDeleteSuccess {
 
 struct PlatformCreateSuccess {
     name: String,
+    platform: PlatformDefinition,
     source: PathBuf,
     catalog_backup: PathBuf,
     folder_count: usize,
@@ -1036,6 +1068,7 @@ struct PlatformCreateSuccess {
 
 struct PlatformEditSuccess {
     name: String,
+    platform: PlatformDefinition,
     catalog_backup: PathBuf,
     folder_count: usize,
 }
@@ -3253,6 +3286,7 @@ fn write_platform_definition(
     original_name: String,
     payload: PlatformEditPayload,
 ) -> Result<PlatformEditSuccess, PlatformWriteFailure> {
+    let platform = payload.platform.clone();
     let catalog_path = platform_catalog_path(&root)?;
     let mut document = AuxiliaryDocument::load(&catalog_path)
         .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
@@ -3293,6 +3327,7 @@ fn write_platform_definition(
         })?;
     Ok(PlatformEditSuccess {
         name: original_name,
+        platform,
         catalog_backup,
         folder_count,
     })
@@ -3318,18 +3353,16 @@ fn create_platform_in_library(
         .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
     let folders = default_platform_folders(&name)
         .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let platform_definition = PlatformDefinition {
+        metadata: NavigationMetadata {
+            name: name.clone(),
+            scrape_as: (!scrape_as.trim().is_empty()).then_some(scrape_as),
+            ..NavigationMetadata::default()
+        },
+        ..PlatformDefinition::default()
+    };
     catalog
-        .add_platform_definition(
-            PlatformDefinition {
-                metadata: NavigationMetadata {
-                    name: name.clone(),
-                    scrape_as: (!scrape_as.trim().is_empty()).then_some(scrape_as),
-                    ..NavigationMetadata::default()
-                },
-                ..PlatformDefinition::default()
-            },
-            folders.clone(),
-        )
+        .add_platform_definition(platform_definition.clone(), folders.clone())
         .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
     ensure_portable_target_is_absent(&target)?;
 
@@ -3368,6 +3401,7 @@ fn create_platform_in_library(
 
     Ok(PlatformCreateSuccess {
         name,
+        platform: platform_definition,
         source: target,
         catalog_backup,
         folder_count: folders.len(),
@@ -3953,8 +3987,17 @@ impl qobject::LibraryController {
     }
 
     pub fn apply_filters(mut self: Pin<&mut Self>, search_text: QString, platform: QString) {
+        let platform_key = platform.to_string();
         self.as_mut().set_search_text(search_text);
         self.as_mut().set_platform_filter(platform);
+        self.as_mut()
+            .set_navigation_filter_kind(qstring(if platform_key.is_empty() {
+                ""
+            } else {
+                "platform"
+            }));
+        self.as_mut()
+            .set_navigation_filter_key(qstring(platform_key));
         self.as_mut().rust_mut().category_filter = None;
         self.as_mut().rust_mut().playlist_filter = None;
         self.as_mut().refresh_filtered_games();
@@ -3980,6 +4023,9 @@ impl qobject::LibraryController {
         }
         self.as_mut().set_search_text(search_text);
         self.as_mut().set_platform_filter(QString::default());
+        self.as_mut()
+            .set_navigation_filter_kind(qstring("category"));
+        self.as_mut().set_navigation_filter_key(qstring(&category));
         self.as_mut().rust_mut().category_filter = Some(category_key);
         self.as_mut().rust_mut().playlist_filter = None;
         self.as_mut().refresh_filtered_games();
@@ -4005,6 +4051,10 @@ impl qobject::LibraryController {
         }
         self.as_mut().set_search_text(search_text);
         self.as_mut().set_platform_filter(QString::default());
+        self.as_mut()
+            .set_navigation_filter_kind(qstring("playlist"));
+        self.as_mut()
+            .set_navigation_filter_key(qstring(&playlist_id));
         self.as_mut().rust_mut().category_filter = None;
         self.as_mut().rust_mut().playlist_filter = Some(playlist_key);
         self.as_mut().refresh_filtered_games();
@@ -5352,6 +5402,40 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_big_box_navigation_smoke_success(&self) -> bool {
+        let rust = self.rust();
+        let expected = [
+            ("category", "Fixture Category", 0usize, 3usize),
+            ("platform", "Fixture Console", 1usize, 3usize),
+            ("playlist", "fixture-playlist", 0usize, 1usize),
+        ];
+        let success = rust.big_box_navigation_entries.len() == expected.len()
+            && rust
+                .big_box_navigation_entries
+                .iter()
+                .zip(expected)
+                .all(|(entry, expected)| {
+                    (
+                        entry.kind,
+                        entry.key.as_str(),
+                        entry.depth,
+                        entry.game_count,
+                    ) == expected
+                })
+            && rust.filtered_indices.len() == 3
+            && self.navigation_filter_kind().to_string().is_empty()
+            && self.navigation_filter_key().to_string().is_empty()
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            eprintln!(
+                "BIGBOX_NAVIGATION_SMOKE_COMPLETE entries={} playlist=1 category=3 platform=3",
+                rust.big_box_navigation_entries.len()
+            );
+        }
+        success
+    }
+
     pub fn report_launch_smoke_success(&self, game_id: QString) -> bool {
         let game_id = game_id.to_string();
         let rust = self.rust();
@@ -5594,6 +5678,36 @@ impl qobject::LibraryController {
 
     pub fn navigation_entry_game_count_at(&self, index: i32) -> i32 {
         self.navigation_entry_at(index)
+            .map(|entry| saturating_i32(entry.game_count))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_navigation_entry_kind_at(&self, index: i32) -> QString {
+        self.big_box_navigation_entry_at(index)
+            .map(|entry| qstring(entry.kind))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_navigation_entry_key_at(&self, index: i32) -> QString {
+        self.big_box_navigation_entry_at(index)
+            .map(|entry| qstring(&entry.key))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_navigation_entry_name_at(&self, index: i32) -> QString {
+        self.big_box_navigation_entry_at(index)
+            .map(|entry| qstring(&entry.name))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_navigation_entry_depth_at(&self, index: i32) -> i32 {
+        self.big_box_navigation_entry_at(index)
+            .map(|entry| saturating_i32(entry.depth))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_navigation_entry_game_count_at(&self, index: i32) -> i32 {
+        self.big_box_navigation_entry_at(index)
             .map(|entry| saturating_i32(entry.game_count))
             .unwrap_or_default()
     }
@@ -6211,6 +6325,9 @@ impl qobject::LibraryController {
                         .dedup_by(|left, right| platform_key(left) == platform_key(right));
                     rust.platform_sources
                         .insert(platform_key(&created.name), created.source.clone());
+                    rust.navigation_catalog
+                        .platforms
+                        .push(created.platform.clone());
                 }
                 self.as_mut().update_library_counts();
                 let platform_count = self.as_ref().rust().platform_names.len();
@@ -6262,9 +6379,18 @@ impl qobject::LibraryController {
         }
         match result {
             Ok(edited) => {
+                if let Some(platform) = self
+                    .as_mut()
+                    .rust_mut()
+                    .navigation_catalog
+                    .platforms
+                    .iter_mut()
+                    .find(|platform| platform.metadata.name.eq_ignore_ascii_case(&edited.name))
+                {
+                    *platform = edited.platform.clone();
+                }
+                self.as_mut().update_library_counts();
                 self.as_mut().set_write_conflict(false);
-                let revision = self.as_ref().rust().platform_revision.wrapping_add(1);
-                self.as_mut().set_platform_revision(revision);
                 self.as_mut().set_status_message(qstring(format!(
                     "Saved {} and {} media-folder records. Exact catalog backup: {}",
                     edited.name,
@@ -6313,6 +6439,9 @@ impl qobject::LibraryController {
                     rust.platform_names
                         .retain(|name| !name.eq_ignore_ascii_case(&deleted.name));
                     rust.platform_sources.remove(&platform_key(&deleted.name));
+                    rust.navigation_catalog.platforms.retain(|platform| {
+                        !platform.metadata.name.eq_ignore_ascii_case(&deleted.name)
+                    });
                 }
                 if self
                     .as_ref()
@@ -6321,6 +6450,8 @@ impl qobject::LibraryController {
                     .eq_ignore_ascii_case(&deleted.name)
                 {
                     self.as_mut().set_platform_filter(QString::default());
+                    self.as_mut().set_navigation_filter_kind(QString::default());
+                    self.as_mut().set_navigation_filter_key(QString::default());
                     self.as_mut().refresh_filtered_games();
                 }
                 self.as_mut().update_library_counts();
@@ -6413,6 +6544,10 @@ impl qobject::LibraryController {
                     rust.last_category_detached_children = detached_children;
                 }
                 self.as_mut().update_library_counts();
+                if deleting_selected_filter {
+                    self.as_mut().set_navigation_filter_kind(QString::default());
+                    self.as_mut().set_navigation_filter_key(QString::default());
+                }
                 if self.as_ref().rust().category_filter.is_some() || deleting_selected_filter {
                     self.as_mut().refresh_filtered_games();
                 }
@@ -6513,6 +6648,10 @@ impl qobject::LibraryController {
                         .saturating_add(removed_cache_rows);
                 }
                 self.as_mut().update_library_counts();
+                if deleting_selected_filter {
+                    self.as_mut().set_navigation_filter_kind(QString::default());
+                    self.as_mut().set_navigation_filter_key(QString::default());
+                }
                 if self.as_ref().rust().playlist_filter.is_some() || deleting_selected_filter {
                     self.as_mut().refresh_filtered_games();
                 }
@@ -6784,10 +6923,13 @@ impl qobject::LibraryController {
         };
         let platform_entry_count = saturating_i32(platform_counts.len());
         let navigation_entry_count = saturating_i32(navigation_entries.len());
+        let big_box_navigation_entries = build_big_box_navigation_entries(&navigation_entries);
+        let big_box_navigation_entry_count = saturating_i32(big_box_navigation_entries.len());
         {
             let mut rust = self.as_mut().rust_mut();
             rust.platform_counts = platform_counts;
             rust.navigation_entries = navigation_entries;
+            rust.big_box_navigation_entries = big_box_navigation_entries;
             rust.category_platforms = category_platforms;
             rust.category_game_ids = category_game_ids;
             rust.playlist_game_ids = playlist_game_ids;
@@ -6797,6 +6939,8 @@ impl qobject::LibraryController {
         self.as_mut().set_platform_entry_count(platform_entry_count);
         self.as_mut()
             .set_navigation_entry_count(navigation_entry_count);
+        self.as_mut()
+            .set_big_box_navigation_entry_count(big_box_navigation_entry_count);
         let revision = self.as_ref().rust().platform_revision.wrapping_add(1);
         self.as_mut().set_platform_revision(revision);
     }
@@ -6826,6 +6970,8 @@ impl qobject::LibraryController {
         let (navigation_entries, category_platforms, category_game_ids, playlist_game_ids) =
             build_navigation_entries(&navigation_catalog, &platform_names, &games);
         let navigation_entry_count = saturating_i32(navigation_entries.len());
+        let big_box_navigation_entries = build_big_box_navigation_entries(&navigation_entries);
+        let big_box_navigation_entry_count = saturating_i32(big_box_navigation_entries.len());
         let filtered_indices = (0..games.len()).collect();
         self.as_mut().begin_reset_model();
         {
@@ -6842,6 +6988,7 @@ impl qobject::LibraryController {
             rust.platform_sources = platform_sources;
             rust.navigation_catalog = navigation_catalog;
             rust.navigation_entries = navigation_entries;
+            rust.big_box_navigation_entries = big_box_navigation_entries;
             rust.category_platforms = category_platforms;
             rust.category_game_ids = category_game_ids;
             rust.playlist_game_ids = playlist_game_ids;
@@ -6869,6 +7016,8 @@ impl qobject::LibraryController {
         self.as_mut().set_platform_entry_count(platform_entry_count);
         self.as_mut()
             .set_navigation_entry_count(navigation_entry_count);
+        self.as_mut()
+            .set_big_box_navigation_entry_count(big_box_navigation_entry_count);
         let revision = self.as_ref().rust().platform_revision.wrapping_add(1);
         self.as_mut().set_platform_revision(revision);
         self.as_mut()
@@ -6883,6 +7032,8 @@ impl qobject::LibraryController {
         self.as_mut().set_launch_session_active(false);
         self.as_mut().set_search_text(QString::default());
         self.as_mut().set_platform_filter(QString::default());
+        self.as_mut().set_navigation_filter_kind(QString::default());
+        self.as_mut().set_navigation_filter_key(QString::default());
     }
 
     fn refresh_filtered_games(mut self: Pin<&mut Self>) {
@@ -6936,6 +7087,12 @@ impl qobject::LibraryController {
         usize::try_from(index)
             .ok()
             .and_then(|index| self.rust().navigation_entries.get(index))
+    }
+
+    fn big_box_navigation_entry_at(&self, index: i32) -> Option<&NavigationEntry> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().big_box_navigation_entries.get(index))
     }
 
     fn additional_applications_for_model(
@@ -7031,6 +7188,7 @@ struct NavigationNodeInfo {
     key: String,
     name: String,
     sort_key: String,
+    visible_in_big_box: bool,
 }
 
 type NavigationBuildResult = (
@@ -7067,10 +7225,16 @@ fn build_navigation_entries(
                     .filter(|title| !title.trim().is_empty())
                     .unwrap_or(&category.metadata.name)
                     .to_lowercase(),
+                visible_in_big_box: !category.metadata.hide_in_big_box,
             },
         );
     }
     for platform in platform_names {
+        let visible_in_big_box = catalog
+            .platforms
+            .iter()
+            .find(|definition| definition.metadata.name.eq_ignore_ascii_case(platform))
+            .is_none_or(|definition| !definition.metadata.hide_in_big_box);
         nodes.insert(
             NavigationNodeKey::Platform(platform_key(platform)),
             NavigationNodeInfo {
@@ -7078,6 +7242,7 @@ fn build_navigation_entries(
                 key: platform.clone(),
                 name: platform.clone(),
                 sort_key: platform_key(platform),
+                visible_in_big_box,
             },
         );
     }
@@ -7103,6 +7268,7 @@ fn build_navigation_entries(
                     .filter(|title| !title.trim().is_empty())
                     .unwrap_or(&playlist.metadata.name)
                     .to_lowercase(),
+                visible_in_big_box: !playlist.metadata.hide_in_big_box,
             },
         );
     }
@@ -7240,6 +7406,22 @@ fn build_navigation_entries(
         category_game_ids,
         playlist_game_ids,
     )
+}
+
+fn build_big_box_navigation_entries(entries: &[NavigationEntry]) -> Vec<NavigationEntry> {
+    let mut hidden_by_depth = Vec::<bool>::new();
+    let mut visible = Vec::new();
+    for entry in entries {
+        hidden_by_depth.truncate(entry.depth);
+        let hidden_ancestors = hidden_by_depth.iter().filter(|hidden| **hidden).count();
+        hidden_by_depth.push(!entry.visible_in_big_box);
+        if entry.visible_in_big_box {
+            let mut entry = entry.clone();
+            entry.depth = entry.depth.saturating_sub(hidden_ancestors);
+            visible.push(entry);
+        }
+    }
+    visible
 }
 
 fn relationship_child_key(relationship: &ParentRelationship) -> Option<NavigationNodeKey> {
@@ -7484,6 +7666,7 @@ fn flatten_navigation_node(
         name: info.name.clone(),
         depth,
         game_count,
+        visible_in_big_box: info.visible_in_big_box,
     });
     if let Some(node_children) = children.get(node) {
         let mut node_children = node_children.iter().cloned().collect::<Vec<_>>();
@@ -7595,6 +7778,7 @@ mod tests {
     #[test]
     fn nested_navigation_flattens_categories_and_filters_descendant_platforms() {
         let catalog = NavigationCatalog {
+            platforms: Vec::new(),
             categories: vec![
                 PlatformCategory {
                     metadata: NavigationMetadata {
@@ -7680,6 +7864,95 @@ mod tests {
     }
 
     #[test]
+    fn big_box_navigation_hides_marked_nodes_and_reparents_visible_descendants() {
+        let catalog = NavigationCatalog {
+            platforms: vec![
+                PlatformDefinition {
+                    metadata: NavigationMetadata {
+                        name: "Visible Console".into(),
+                        ..NavigationMetadata::default()
+                    },
+                    ..PlatformDefinition::default()
+                },
+                PlatformDefinition {
+                    metadata: NavigationMetadata {
+                        name: "Hidden Console".into(),
+                        hide_in_big_box: true,
+                        ..NavigationMetadata::default()
+                    },
+                    ..PlatformDefinition::default()
+                },
+            ],
+            categories: vec![PlatformCategory {
+                metadata: NavigationMetadata {
+                    name: "Hidden Category".into(),
+                    hide_in_big_box: true,
+                    ..NavigationMetadata::default()
+                },
+                ..PlatformCategory::default()
+            }],
+            parents: vec![
+                ParentRelationship {
+                    platform_category_name: Some("Hidden Category".into()),
+                    ..ParentRelationship::default()
+                },
+                ParentRelationship {
+                    platform_name: Some("Visible Console".into()),
+                    parent_platform_category_name: Some("Hidden Category".into()),
+                    ..ParentRelationship::default()
+                },
+                ParentRelationship {
+                    playlist_id: Some("visible-list".into()),
+                    parent_platform_name: Some("Visible Console".into()),
+                    ..ParentRelationship::default()
+                },
+            ],
+            playlists: vec![
+                PlaylistDocument {
+                    playlist: Playlist {
+                        id: "visible-list".into(),
+                        metadata: NavigationMetadata {
+                            name: "Visible Playlist".into(),
+                            ..NavigationMetadata::default()
+                        },
+                        ..Playlist::default()
+                    },
+                    ..PlaylistDocument::default()
+                },
+                PlaylistDocument {
+                    playlist: Playlist {
+                        id: "hidden-list".into(),
+                        metadata: NavigationMetadata {
+                            name: "Hidden Playlist".into(),
+                            hide_in_big_box: true,
+                            ..NavigationMetadata::default()
+                        },
+                        ..Playlist::default()
+                    },
+                    ..PlaylistDocument::default()
+                },
+            ],
+        };
+        let (entries, _, _, _) = build_navigation_entries(
+            &catalog,
+            &["Visible Console".into(), "Hidden Console".into()],
+            &[],
+        );
+        assert_eq!(entries.len(), 5);
+        let big_box_entries = build_big_box_navigation_entries(&entries);
+        assert_eq!(
+            big_box_entries
+                .iter()
+                .map(|entry| (entry.kind, entry.key.as_str(), entry.depth))
+                .collect::<Vec<_>>(),
+            [
+                ("platform", "Visible Console", 0),
+                ("playlist", "visible-list", 1),
+            ]
+        );
+    }
+
+    #[test]
     fn playlist_navigation_uses_ids_and_launchbox_or_within_and_across_filter_groups() {
         let games = vec![
             Game {
@@ -7706,6 +7979,7 @@ mod tests {
             },
         ];
         let catalog = NavigationCatalog {
+            platforms: Vec::new(),
             categories: vec![PlatformCategory {
                 metadata: NavigationMetadata {
                     name: "Collections".into(),
@@ -7963,6 +8237,7 @@ mod tests {
         let catalog_document = AuxiliaryDocument::load(&catalog_path).unwrap();
         let parents_document = AuxiliaryDocument::load(&parents_path).unwrap();
         let navigation_catalog = NavigationCatalog {
+            platforms: Vec::new(),
             categories: catalog_document.platform_catalog().unwrap().categories,
             parents: parents_document.parent_relationships().unwrap(),
             playlists: vec![PlaylistDocument {
@@ -8008,6 +8283,7 @@ mod tests {
         let created_parents = fs::read(&parents_path).unwrap();
 
         let current_navigation = NavigationCatalog {
+            platforms: Vec::new(),
             categories: created.categories.clone(),
             parents: created.parents.clone(),
             playlists: navigation_catalog.playlists.clone(),
@@ -8106,6 +8382,7 @@ mod tests {
         let original_platform = fs::read(&platform_path).unwrap();
         let parents_document = AuxiliaryDocument::load(&parents_path).unwrap();
         let navigation_catalog = NavigationCatalog {
+            platforms: Vec::new(),
             categories: vec![PlatformCategory {
                 metadata: NavigationMetadata {
                     name: "Fixture Category".into(),
@@ -8171,6 +8448,7 @@ mod tests {
         let created_parent_bytes = fs::read(&parents_path).unwrap();
 
         let current = NavigationCatalog {
+            platforms: Vec::new(),
             categories: vec![PlatformCategory {
                 metadata: NavigationMetadata {
                     name: "Fixture Category".into(),
@@ -8256,6 +8534,7 @@ mod tests {
             directory.path().to_path_buf(),
             created.id.clone(),
             NavigationCatalog {
+                platforms: Vec::new(),
                 categories: vec![],
                 parents: edited.parents,
                 playlists: edited.playlists,
