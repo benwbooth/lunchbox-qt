@@ -4316,6 +4316,7 @@ impl qobject::LibraryController {
             title,
             platform,
             application_path,
+            emulator_id: None,
         };
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_delete_blocker_count(0);
@@ -5612,9 +5613,11 @@ impl qobject::LibraryController {
     ) -> bool {
         let rust = self.rust();
         let imported_games_present = rust.last_imported_game_ids.iter().all(|id| {
-            rust.games
-                .iter()
-                .any(|game| game.id == *id && game.platform == "Fixture Console")
+            rust.games.iter().any(|game| {
+                game.id == *id
+                    && game.platform == "Fixture Console"
+                    && game.emulator_id.as_deref() == Some("fixture-emulator")
+            })
         });
         let success = *self.last_import_count() == expected_count
             && *self.last_import_created_file_count() == expected_created_files
@@ -8974,6 +8977,7 @@ mod tests {
                 title: "Dragon Test".into(),
                 platform: "Dragon 32/64".into(),
                 application_path: "Games\\Dragon 32_64\\test.vdk".into(),
+                emulator_id: None,
             },
         ) {
             Ok(added) => added,

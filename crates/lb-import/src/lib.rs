@@ -1,10 +1,10 @@
-use lb_domain::Game;
+use lb_domain::{is_unassigned_emulator_id, EmulatorConfiguration, Game, UNASSIGNED_EMULATOR_ID};
 use lb_platform::{
     portable_storage_name, portable_stored_path, HostPathResolver, LaunchPathError,
     LaunchPathResolver, PlatformPathError,
 };
 use lb_storage::{
-    FileRevision, LibraryIndex, LibraryTransaction, NewGame, PlatformDocument, StorageError,
+    FileRevision, LaunchBoxDataIndex, LibraryTransaction, NewGame, PlatformDocument, StorageError,
     TransactionError,
 };
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,11 @@ pub struct ManualImportRequest {
     pub duplicate_policy: ImportDuplicatePolicy,
     #[serde(default)]
     pub extensions: Vec<String>,
+    /// `None` inherits the platform default. LaunchBox's all-zero sentinel
+    /// explicitly selects direct launch; any other value selects a configured
+    /// emulator by ID.
+    #[serde(default)]
+    pub emulator_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -124,7 +129,7 @@ pub struct ManualImportReport {
 pub fn preview_manual_import(
     launchbox_root: impl AsRef<Path>,
     resolver: &HostPathResolver,
-    request: ManualImportRequest,
+    mut request: ManualImportRequest,
 ) -> Result<ManualImportPreview, ImportError> {
     let supplied_root = launchbox_root.as_ref();
     let launchbox_root = fs::canonicalize(supplied_root).map_err(|source| ImportError::Io {
@@ -138,7 +143,8 @@ pub fn preview_manual_import(
         return Err(ImportError::NoLocations);
     }
 
-    let library = LibraryIndex::load(&launchbox_root)?;
+    let data = LaunchBoxDataIndex::load(&launchbox_root)?;
+    let library = data.platforms();
     if !library
         .platforms()
         .iter()
@@ -148,6 +154,10 @@ pub fn preview_manual_import(
             platform: request.platform.clone(),
         });
     }
+    request.emulator_id = normalize_emulator_selection(
+        data.emulator_configuration(),
+        request.emulator_id.as_deref(),
+    )?;
 
     let extensions = normalize_extensions(&request.extensions);
     let sources = collect_sources(&request.locations, request.recursive)?;
@@ -327,6 +337,7 @@ where
             title: title.clone(),
             platform: preview.request.platform.clone(),
             application_path: row.application_path.clone(),
+            emulator_id: preview.request.emulator_id.clone(),
         })?);
     }
 
@@ -439,6 +450,38 @@ fn normalize_extensions(extensions: &[String]) -> BTreeSet<String> {
         })
         .filter(|extension| !extension.is_empty())
         .collect()
+}
+
+fn normalize_emulator_selection(
+    configuration: Option<&EmulatorConfiguration>,
+    selected_id: Option<&str>,
+) -> Result<Option<String>, ImportError> {
+    let Some(selected_id) = selected_id else {
+        return Ok(None);
+    };
+    let selected_id = selected_id.trim();
+    if selected_id.is_empty() {
+        return Err(ImportError::EmptyEmulatorId);
+    }
+    if is_unassigned_emulator_id(selected_id) {
+        return Ok(Some(UNASSIGNED_EMULATOR_ID.to_string()));
+    }
+
+    let matches = configuration
+        .into_iter()
+        .flat_map(|configuration| &configuration.emulators)
+        .filter(|emulator| emulator.id.eq_ignore_ascii_case(selected_id))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [emulator] => Ok(Some(emulator.id.clone())),
+        [] => Err(ImportError::UnknownEmulator {
+            id: selected_id.to_string(),
+        }),
+        _ => Err(ImportError::AmbiguousEmulator {
+            id: selected_id.to_string(),
+            count: matches.len(),
+        }),
+    }
 }
 
 fn collect_sources(
@@ -572,6 +615,12 @@ pub enum ImportError {
     NoLocations,
     #[error("platform is not present in the loaded library: {platform}")]
     UnknownPlatform { platform: String },
+    #[error("an emulator selection cannot be empty; omit it to use the platform default")]
+    EmptyEmulatorId,
+    #[error("emulator is not present in the loaded LaunchBox configuration: {id}")]
+    UnknownEmulator { id: String },
+    #[error("emulator ID {id} appears {count} times in the LaunchBox configuration")]
+    AmbiguousEmulator { id: String, count: usize },
     #[error("import location is not a regular file: {path}")]
     LocationNotFile { path: PathBuf },
     #[error("import location is not a folder: {path}")]
@@ -622,6 +671,14 @@ mod tests {
         (directory, platform)
     }
 
+    fn configure_fixture_emulator(library: &Path) {
+        fs::write(
+            library.join("Data/Emulators.xml"),
+            include_str!("../../../fixtures/launchbox/Data/Emulators.xml"),
+        )
+        .unwrap();
+    }
+
     fn request(
         locations: Vec<ImportLocation>,
         file_policy: ImportFilePolicy,
@@ -634,6 +691,7 @@ mod tests {
             file_policy,
             duplicate_policy: ImportDuplicatePolicy::Skip,
             extensions: vec!["rom".into(), ".zip".into()],
+            emulator_id: None,
         }
     }
 
@@ -767,6 +825,105 @@ mod tests {
             imported[0].application_path,
             r"Games\Fixture Console\First Game.rom"
         );
+    }
+
+    #[test]
+    fn explicit_emulator_is_validated_canonicalized_and_persisted() {
+        let (library, platform) = library();
+        configure_fixture_emulator(library.path());
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("Pinned Emulator.rom");
+        fs::write(&source, b"rom").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: source,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Leave,
+        );
+        import_request.emulator_id = Some("FIXTURE-EMULATOR".into());
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(
+            preview.request.emulator_id.as_deref(),
+            Some("fixture-emulator")
+        );
+        let report = execute_manual_import_with_ids(
+            library.path(),
+            &platform,
+            &HostPathResolver::default(),
+            selection(&preview),
+            || "pinned-emulator-game".into(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.games[0].emulator_id.as_deref(),
+            Some("fixture-emulator")
+        );
+        let persisted = PlatformDocument::load(&platform).unwrap();
+        assert_eq!(
+            persisted
+                .library()
+                .games
+                .iter()
+                .find(|game| game.id == "pinned-emulator-game")
+                .and_then(|game| game.emulator_id.as_deref()),
+            Some("fixture-emulator")
+        );
+    }
+
+    #[test]
+    fn direct_launch_sentinel_is_valid_without_emulator_configuration() {
+        let (library, _) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("Direct.rom");
+        fs::write(&source, b"rom").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: source,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Leave,
+        );
+        import_request.emulator_id = Some(UNASSIGNED_EMULATOR_ID.to_ascii_uppercase());
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(
+            preview.request.emulator_id.as_deref(),
+            Some(UNASSIGNED_EMULATOR_ID)
+        );
+    }
+
+    #[test]
+    fn unknown_or_empty_emulator_selection_is_rejected_during_preview() {
+        let (library, _) = library();
+        configure_fixture_emulator(library.path());
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("Unknown Emulator.rom");
+        fs::write(&source, b"rom").unwrap();
+        let location = ImportLocation {
+            path: source,
+            kind: ImportLocationKind::File,
+        };
+
+        let mut unknown = request(vec![location.clone()], ImportFilePolicy::Leave);
+        unknown.emulator_id = Some("missing-emulator".into());
+        assert!(matches!(
+            preview_manual_import(library.path(), &HostPathResolver::default(), unknown),
+            Err(ImportError::UnknownEmulator { id }) if id == "missing-emulator"
+        ));
+
+        let mut empty = request(vec![location], ImportFilePolicy::Leave);
+        empty.emulator_id = Some("  ".into());
+        assert!(matches!(
+            preview_manual_import(library.path(), &HostPathResolver::default(), empty),
+            Err(ImportError::EmptyEmulatorId)
+        ));
     }
 
     #[test]

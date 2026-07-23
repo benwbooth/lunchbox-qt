@@ -52,9 +52,12 @@ optional extension filter, derives editable file- or folder-based titles,
 detects already referenced sources and portable destination collisions, and
 previews leave/copy/move policies before one revalidated batch commit. Copied
 files stream through the same durable transaction as the platform XML; move
-deletes each source only after that commit and a byte-revision match. Metadata
-and media downloads, multi-disc combining, emulator selection, cancellation,
-and runtime-oracle edge-case parity remain open, so `IMP-001` is not complete.
+deletes each source only after that commit and a byte-revision match. The
+emulator page preserves LaunchBox's distinct platform-default, direct-launch,
+and explicitly configured-emulator states and revalidates configured IDs on
+preview and execution. Metadata and media downloads, multi-disc combining,
+emulator installation/BIOS handling, cancellation, and runtime-oracle
+edge-case parity remain open, so `IMP-001` is not complete.
 Playlist generation (`LIB-009`) and theme-specific playlist views remain open.
 Persisted Windows-style paths remain lexical until the cross-platform launch
 service resolves them. None of those complete their family: bulk editing, all

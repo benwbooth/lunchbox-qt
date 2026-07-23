@@ -338,6 +338,10 @@ for expected in \
     exit 1
   fi
 done
+if [[ $(rg -c -F '<Emulator>fixture-emulator</Emulator>' "$import_platform") -ne 3 ]]; then
+  echo "ROM import did not pin the selected emulator on both imported games." >&2
+  exit 1
+fi
 for file_name in 'Alpha Import.rom' 'Beta Import.zip'; do
   if ! cmp -s "$import_source_root/$file_name" \
     "$import_root/Games/Fixture Console/$file_name"; then
@@ -361,7 +365,7 @@ if find "$import_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox dialog-driven ROM import preview, editable batch selection, portable copied paths, exact streamed bytes, shared transaction recovery, and source preservation validated."
+echo "LaunchBox dialog-driven ROM import preview, validated emulator selection, editable batch selection, portable copied paths, exact streamed bytes, shared transaction recovery, and source preservation validated."
 
 cp -R fixtures/launchbox/Data "$platform_crud_root/Data"
 platform_crud_catalog="$platform_crud_root/Data/Platforms.xml"

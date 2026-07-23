@@ -125,6 +125,10 @@ pub struct NewGame {
     pub title: String,
     pub platform: String,
     pub application_path: String,
+    /// `None` inherits the platform default. The all-zero LaunchBox sentinel
+    /// explicitly launches the game directly, while any other value pins a
+    /// configured emulator.
+    pub emulator_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1748,6 +1752,7 @@ impl PlatformDocument {
             title: new_game.title,
             platform: new_game.platform,
             application_path: new_game.application_path,
+            emulator_id: new_game.emulator_id,
             ..Game::default()
         };
         game.validate()?;
@@ -4619,6 +4624,7 @@ fn minimal_game_element(game: &Game) -> Element {
     ] {
         set_child_text(&mut element, field, value);
     }
+    set_optional_child_text(&mut element, "Emulator", game.emulator_id.as_deref());
     element
 }
 
@@ -5088,6 +5094,7 @@ mod tests {
             title: "Fixture Added".into(),
             platform: "Fixture Console".into(),
             application_path: r"Games\Fixture Added\added.rom".into(),
+            emulator_id: None,
         };
         let game = document.add_game(added.clone()).expect("add game");
         assert_eq!(game.id, "fixture-added");

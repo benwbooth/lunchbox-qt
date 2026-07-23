@@ -3346,6 +3346,17 @@ ApplicationWindow {
             importPlatform.currentIndex = selectedIndex
         }
 
+        function selectEmulator(emulatorId) {
+            let selectedIndex = 0
+            for (let index = 0; index < controller.emulator_entry_count(); ++index) {
+                if (controller.emulator_id_at(index) === emulatorId) {
+                    selectedIndex = index
+                    break
+                }
+            }
+            importEmulator.currentIndex = selectedIndex
+        }
+
         function prepare() {
             page = 0
             awaitingPreview = false
@@ -3358,6 +3369,7 @@ ApplicationWindow {
             importFilePolicy.currentIndex = 1
             extensionFilter.text = ""
             selectPlatform(window.selectedPlatform)
+            selectEmulator("")
             controller.clear_rom_import_preview()
             open()
         }
@@ -3367,6 +3379,7 @@ ApplicationWindow {
             for (let index = 0; index < paths.length; ++index)
                 addLocation(paths[index], "file")
             selectPlatform(platformName)
+            selectEmulator("fixture-emulator")
             importFilePolicy.currentIndex = 1
             page = 1
             requestPreview()
@@ -3389,6 +3402,7 @@ ApplicationWindow {
             const extensions = extensionFilter.text.split(",")
                   .map(function(value) { return value.trim() })
                   .filter(function(value) { return value.length > 0 })
+            const emulatorId = controller.emulator_id_at(importEmulator.currentIndex)
             return {
                 "platform": window.platformName(importPlatform.currentIndex),
                 "locations": locations,
@@ -3396,7 +3410,8 @@ ApplicationWindow {
                 "use_folder_names": folderTitles.checked,
                 "file_policy": filePolicy(),
                 "duplicate_policy": duplicateFiles.checked ? "import" : "skip",
-                "extensions": extensions
+                "extensions": extensions,
+                "emulator_id": emulatorId.length === 0 ? null : emulatorId
             }
         }
 
@@ -3576,6 +3591,25 @@ ApplicationWindow {
                             width: importPlatform.width
                             text: window.platformName(index)
                         }
+                    }
+                    Label { text: "Emulator" }
+                    ComboBox {
+                        id: importEmulator
+                        Layout.fillWidth: true
+                        model: controller.emulator_entry_count()
+                        displayText: currentIndex >= 0
+                                     ? controller.emulator_title_at(currentIndex) : ""
+                        delegate: ItemDelegate {
+                            required property int index
+                            width: importEmulator.width
+                            text: controller.emulator_title_at(index)
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Platform default leaves the Emulator field absent. Direct launch writes LaunchBox's explicit no-emulator sentinel; a named emulator pins its configured ID."
+                        wrapMode: Text.Wrap
+                        color: "#7d8590"
                     }
                     Label { text: "What should happen to the selected files?" }
                     ComboBox {

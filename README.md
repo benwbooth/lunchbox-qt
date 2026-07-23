@@ -168,9 +168,12 @@ real Rust-generated plan, and execution re-plans it before writing. Portable
 copies use `Games\<platform>\<file>` regardless of host separator; leave-in-
 place paths use the shared reverse path-mapping service. Large files stream
 into the same durable transaction as the platform XML rather than being held
-in memory. Copy never overwrites a destination. Move commits the copy and XML
-first, then removes a source only after both files have matching SHA-256
-revisions; a cleanup failure retains the source and reports a warning.
+in memory. The options page can inherit the platform default emulator, select
+LaunchBox's explicit direct-launch sentinel, or pin a configured emulator ID;
+preview and execution both revalidate named emulators against
+`Data/Emulators.xml`. Copy never overwrites a destination. Move commits the
+copy and XML first, then removes a source only after both files have matching
+SHA-256 revisions; a cleanup failure retains the source and reports a warning.
 Metadata/media lookup, multi-disc combining, MAME-specific options, and the
 remaining import families are still open.
 
