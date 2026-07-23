@@ -249,29 +249,34 @@ launch, emulator, version metadata, provider/cloud, and play-statistics fields
 onto the owning game while preserving game identity and game-only data. Save
 records now use the full persisted 13.27 contract in both readers. A per-game
 Saves manager displays grouped version history and provides transactional
-Rename Version, Rename Group, Combine, and Make New Save metadata operations,
-plus manual backup for a resolved regular active-save file. Manual backup
-derives the portable `Saves\<Platform>\<ROM name>[-NN].<ext>` target through
-the host-path service, records the exact size, seven-digit UTC modified time,
-and MD5, and commits the streamed vault copy with the full new `<GameSave>` row
-under one recovery manifest. A legacy ungrouped source receives an explicit
-group ID in that same transaction. The manager can also permanently remove one
-resolved regular-file vault backup and its exact source-indexed history row in
-one revision-checked transaction. The active file is excluded, both the vault
-file and XML receive exact recovery copies, and RetroArch Saturn companion sets
-are refused until their adapter is implemented. Restore requires one compatible
-regular active row in the same stable group. It first commits the current active
-bytes as a new vault version, verifies that copy, then revision-checks and
-atomically replaces the active file from the selected vault version while
-retaining a second exact sibling recovery copy. Dolphin, PCSX2, RetroArch Saturn,
+Rename Version, Rename Group, Combine, and Make New Save metadata operations.
+Its first native emulator adapter reads RetroArch's host-resolved
+`retroarch.cfg`, applies content/core sorting, discovers regular saves and
+numbered/auto states for main and emulator-owned additional applications, and
+appends only new active rows without deleting history. Saturn `.bcr`, `.bkr`,
+and `.smpc` files are one explicit companion set with the 13.27 group-ID and
+composite-signature rules. Manual backup derives collision-free portable
+`Saves\<Platform>\<ROM name>[-NN].<ext>` targets through the host-path service,
+records exact aggregate size, seven-digit UTC modified time, and MD5, and
+commits either one regular file or the complete Saturn set with the full new
+`<GameSave>` row under one recovery manifest. A legacy ungrouped source
+receives an explicit group ID in that same transaction. The manager can also
+permanently remove one resolved regular-file vault backup or complete Saturn
+set and its exact source-indexed history row in one revision-checked
+transaction. The active files are excluded, and every vault member plus the
+XML receives an exact recovery copy. Restore requires one compatible regular
+active row in the same stable group. It first commits the current active bytes
+as a new vault version, verifies that copy, then revision-checks and atomically
+replaces the active file from the selected vault version while retaining a
+second exact sibling recovery copy. Dolphin, PCSX2, RetroArch Saturn restore,
 directory, and ambiguous-active cases remain adapter-gated.
 Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
 Unresolved. Metadata operations never move or delete save files, and backup
-never changes the active file. Save scanning, directory/container and companion
-file backup, emulator-specific restore, active/container/companion-set deletion,
-automatic-backup policy, repair, and emulator-specific adapters remain open, as
-does manual game combine/expand.
+never changes active files. Non-RetroArch scanning, directory/container backup,
+emulator-specific restore, active/container deletion, stale-row reconciliation,
+automatic-backup policy, repair, and the remaining emulator adapters remain
+open, as does manual game combine/expand.
 
 Emulator
 auto-extraction invokes 7-Zip without a shell for ZIP, 7z, and RAR inputs,

@@ -127,22 +127,27 @@ Its Qt Saves manager treats an existing group ID as authoritative and gives
 each ungrouped legacy row a separate in-memory key rather than guessing a 13.27
 migration. Rename, combine, and split edit only title/group fields through an
 indexed XML transaction. File ownership and emulator operations remain outside
-that metadata transaction. The first filesystem-backed operation manually
-backs up a resolved regular active file: it uses the documented
-`Saves\<Platform>\<ROM name>[-NN].<ext>` vault shape, captures exact
-size/seven-digit UTC modified time/MD5, and commits the revision-checked streamed
-copy and full new save row as one recoverable transaction. The active file is
-read-only. The port can also delete one resolved regular-file vault copy and
-its source-indexed row in a single revision-checked transaction with exact file
-and XML recovery copies. Active saves are excluded, and the known RetroArch
-Saturn companion extensions/core are adapter-gated. Plain regular-file restore
+that metadata transaction. Static 13.27 RetroArch code recovers the exact
+configuration keys, `fileName*.*` and `.state*` scans, `.srm`/`.mcr`
+preference, state-slot parsing, Saturn extension ranking/group ID, companion
+copy, and CRLF-manifest signature rules. A new platform-neutral adapter now
+implements those semantics against native or mapped host paths and persists
+only newly discovered active rows. The first filesystem-backed operation backs
+up a resolved regular active file or complete present Saturn
+`.bcr`/`.bkr`/`.smpc` set: it uses collision-free
+`Saves\<Platform>\<ROM name>[-NN].<ext>` targets, captures exact aggregate
+size/seven-digit UTC modified time/MD5, and commits revision-checked streamed
+copies plus the full new row as one recoverable transaction. Active files are
+read-only. The port can also delete one resolved regular-file vault copy or
+complete Saturn set and its source-indexed row in a single revision-checked
+transaction with exact file and XML recovery copies. Plain regular-file restore
 requires one compatible active row in the same stable group, first commits and
 verifies a new vault version of the active bytes, then revision-checks and
 atomically replaces the active path from the selected vault file while
-retaining an exact sibling recovery copy. Directory/container and companion-file
-backup, emulator-specific restore, active/container/companion-set deletion,
-scanning, automatic policy, repair, and RetroArch/Dolphin/PCSX2 adapters remain
-open.
+retaining an exact sibling recovery copy. Non-RetroArch scanning,
+directory/container backup, emulator-specific set restore, active/container
+deletion, stale-row reconciliation, automatic policy, repair, and
+Dolphin/PCSX2/remaining adapters remain open.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

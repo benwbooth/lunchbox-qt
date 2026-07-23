@@ -1,0 +1,13 @@
+[package]
+name = "lb-integrations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lb-platform.workspace = true
+md-5.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

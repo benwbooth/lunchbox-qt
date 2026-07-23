@@ -4,6 +4,7 @@ members = [
     "apps/lb-shell",
     "crates/lb-domain",
     "crates/lb-import",
+    "crates/lb-integrations",
     "crates/lb-metadata",
     "crates/lb-platform",
     "crates/lb-query",
@@ -26,6 +27,7 @@ cxx-qt-lib = { version = "0.8.1", features = ["qt_full"] }
 fs2 = "0.4"
 lb-domain = { path = "crates/lb-domain" }
 lb-import = { path = "crates/lb-import" }
+lb-integrations = { path = "crates/lb-integrations" }
 lb-metadata = { path = "crates/lb-metadata" }
 lb-platform = { path = "crates/lb-platform" }
 lb-query = { path = "crates/lb-query" }

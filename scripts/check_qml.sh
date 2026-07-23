@@ -97,6 +97,7 @@ crud_root=$(mktemp -d)
 additional_application_crud_root=$(mktemp -d)
 additional_application_default_root=$(mktemp -d)
 game_save_metadata_root=$(mktemp -d)
+retroarch_save_scan_root=$(mktemp -d)
 game_save_backup_root=$(mktemp -d)
 game_save_delete_root=$(mktemp -d)
 game_save_restore_root=$(mktemp -d)
@@ -112,7 +113,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -598,6 +599,104 @@ if find "$game_save_metadata_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox dialog-driven save grouping/version metadata, active/vault path classification, lexical Windows paths, exact backup chain, and unknown XML preservation validated."
+
+cp -R fixtures/launchbox/Data "$retroarch_save_scan_root/Data"
+retroarch_save_scan_platform="$retroarch_save_scan_root/Data/Platforms/Fixture Console.xml"
+retroarch_save_scan_emulators="$retroarch_save_scan_root/Data/Emulators.xml"
+sed -i \
+  -e 's|<Title>Fixture Emulator</Title>|<Title>RetroArch</Title>|' \
+  -e 's|<ApplicationPath>Emulators/fixture-emulator</ApplicationPath>|<ApplicationPath>Emulators/RetroArch/retroarch</ApplicationPath>|' \
+  -e 's|<CommandLine>--fullscreen</CommandLine>|<CommandLine>-L cores/mesen_libretro.so</CommandLine>|' \
+  -e 's|<CommandLine>--platform fixture</CommandLine>|<CommandLine>-L cores/mesen_libretro.so</CommandLine>|' \
+  "$retroarch_save_scan_emulators"
+mkdir -p \
+  "$retroarch_save_scan_root/Emulators/RetroArch/saves" \
+  "$retroarch_save_scan_root/Emulators/RetroArch/states" \
+  "$retroarch_save_scan_root/Games/Fixture Racer"
+printf %s 'retroarch runtime fixture' \
+  > "$retroarch_save_scan_root/Emulators/RetroArch/retroarch"
+printf '%s\n' \
+  'savefile_directory = "saves"' \
+  'savestate_directory = "states"' \
+  'savefiles_in_content_dir = "false"' \
+  'savestates_in_content_dir = "false"' \
+  'sort_savefiles_by_content_enable = "false"' \
+  'sort_savefiles_enable = "false"' \
+  'sort_savestates_by_content_enable = "false"' \
+  'sort_savestates_enable = "false"' \
+  > "$retroarch_save_scan_root/Emulators/RetroArch/retroarch.cfg"
+printf %s 'fixture racer rom' \
+  > "$retroarch_save_scan_root/Games/Fixture Racer/racer.rom"
+printf %s 'runtime racer save bytes' \
+  > "$retroarch_save_scan_root/Emulators/RetroArch/saves/racer.srm"
+printf %s 'runtime racer state bytes' \
+  > "$retroarch_save_scan_root/Emulators/RetroArch/states/racer.state"
+printf %s 'runtime racer auto state bytes' \
+  > "$retroarch_save_scan_root/Emulators/RetroArch/states/racer.state.auto"
+cp "$retroarch_save_scan_platform" \
+  "$retroarch_save_scan_root/original-platform.xml"
+retroarch_save_scan_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$retroarch_save_scan_root" \
+    --retroarch-save-scan-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$retroarch_save_scan_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'RETROARCH_SAVE_SCAN_SMOKE_COMPLETE saves=3 writes=1 revision=1 data_changes=1' \
+  <<< "$retroarch_save_scan_output"; then
+  printf '%s\n' "$retroarch_save_scan_output" >&2
+  echo "LaunchBox did not validate manager-driven RetroArch save discovery." >&2
+  exit 1
+fi
+if [[ $(rg -c '<GameSave>' "$retroarch_save_scan_platform") -ne 4 ]] \
+  || [[ $(rg -c -F '<EmulatorCore>mesen_libretro</EmulatorCore>' \
+    "$retroarch_save_scan_platform") -ne 3 ]] \
+  || [[ $(rg -c -F '<EmulatorFileName>retroarch</EmulatorFileName>' \
+    "$retroarch_save_scan_platform") -ne 3 ]] \
+  || [[ $(rg -c '<ReportedFileSizeBytes>' \
+    "$retroarch_save_scan_platform") -ne 3 ]] \
+  || [[ $(rg -c '<ReportedLastModifiedUtc>.*\.[0-9]{7}Z' \
+    "$retroarch_save_scan_platform") -ne 3 ]] \
+  || [[ $(rg -c '<Md5>[0-9A-F]{32}</Md5>' \
+    "$retroarch_save_scan_platform") -ne 3 ]]; then
+  echo "RetroArch save discovery wrote incomplete owner or file metadata." >&2
+  exit 1
+fi
+for expected in \
+  '<FilePath>Emulators\RetroArch\saves\racer.srm</FilePath>' \
+  '<FilePath>Emulators\RetroArch\states\racer.state</FilePath>' \
+  '<FilePath>Emulators\RetroArch\states\racer.state.auto</FilePath>' \
+  '<OriginalFileName>racer.srm</OriginalFileName>' \
+  '<OriginalFileName>racer.state</OriginalFileName>' \
+  '<OriginalFileName>racer.state.auto</OriginalFileName>' \
+  '<Slot>0</Slot>' \
+  '<Slot>-1</Slot>' \
+  '<FutureRootElement>preserve-me</FutureRootElement>'; do
+  if ! rg -q -F "$expected" "$retroarch_save_scan_platform"; then
+    echo "RetroArch save discovery did not persist: $expected" >&2
+    exit 1
+  fi
+done
+mapfile -t retroarch_save_scan_backups < <(
+  find "$retroarch_save_scan_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#retroarch_save_scan_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${retroarch_save_scan_backups[0]}" \
+    "$retroarch_save_scan_root/original-platform.xml"; then
+  echo "RetroArch save discovery did not retain one exact XML recovery copy." >&2
+  exit 1
+fi
+if find "$retroarch_save_scan_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful RetroArch save discovery left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox manager-driven RetroArch config discovery, regular saves, state slots, portable paths, full metadata, exact XML rollback backup, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$game_save_backup_root/Data"
 game_save_backup_platform="$game_save_backup_root/Data/Platforms/Fixture Console.xml"

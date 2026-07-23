@@ -546,6 +546,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lb-integrations"
+version = "0.1.0"
+dependencies = [
+ "lb-platform",
+ "md-5",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "lb-metadata"
 version = "0.1.0"
 dependencies = [
@@ -584,6 +594,7 @@ dependencies = [
  "cxx-qt-lib",
  "lb-domain",
  "lb-import",
+ "lb-integrations",
  "lb-platform",
  "lb-query",
  "lb-storage",

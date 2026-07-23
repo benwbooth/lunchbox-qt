@@ -280,22 +280,26 @@ launch/version fields onto the owning game; a second real-dialog smoke proves
 the edit/default backup chain, direct-launch sentinel, model refresh, lexical
 Windows path, and game-only/unknown-data retention. The first save-management
 subset now models the full persisted 13.27 save record and provides lossless
-group/version inventory plus rename, combine, and split metadata operations.
-Manual backup now covers one resolved regular active file with documented
-portable vault naming, a full size/time/MD5 row, source-revision checking, and
-one recoverable file-plus-XML transaction; it never changes the active file.
-A separate confirmed action deletes one resolved regular-file vault backup and
-its exact history row in a single revision-checked transaction while retaining
-exact file/XML recovery copies and leaving the active save untouched.
-Regular-file restore requires one compatible resolved active row in the same
-stable group, commits and verifies a new vault version of its current bytes,
-then revision-checks and atomically replaces the active file from the selected
-vault version while retaining an exact sibling recovery copy. Known
-RetroArch-companion, Dolphin, and PCSX2 cases remain adapter-gated.
-File/folder scanning, directory/container and companion-file backup/restore,
-active/container/companion-set deletion, automatic policy, repair, and the
-emulator-specific adapters remain open, as do the manual combine/expand actions
-in `LIB-010`.
+group/version inventory plus rename, combine, and split metadata operations. A
+new platform-neutral `lb-integrations` boundary owns the first explicit
+emulator adapter. RetroArch discovery reads the native host-resolved
+configuration, follows content/core sort settings, reuses launch emulator
+selection, covers main and emulator-owned additional applications, and appends
+regular saves, numbered/auto states, or one grouped Saturn companion set
+without deleting history. Manual backup now covers one resolved regular active
+file or all present `.bcr`/`.bkr`/`.smpc` members with collision-free portable
+vault naming, aggregate size/time and 13.27-compatible MD5 metadata,
+source-revision checking, and one recoverable file-set-plus-XML transaction; it
+never changes active files. A separate confirmed action deletes one resolved
+regular-file vault backup or complete Saturn set and its exact history row
+while retaining exact file/XML recovery copies. Regular-file restore requires
+one compatible resolved active row in the same stable group, commits and
+verifies a new vault version of its current bytes, then revision-checks and
+atomically replaces the active file from the selected vault version while
+retaining an exact sibling recovery copy. Non-RetroArch scanning,
+directory/container backup, emulator-specific set restore, active/container
+deletion, stale-row reconciliation, automatic policy, repair, and the remaining
+adapters remain open, as do the manual combine/expand actions in `LIB-010`.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:

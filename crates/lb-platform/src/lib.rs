@@ -1069,6 +1069,19 @@ fn select_emulator<'a>(
     Ok(Some((emulator, mapping)))
 }
 
+/// Resolves the emulator and optional platform mapping that own a game's
+/// runtime integration.
+///
+/// Save discovery and other emulator adapters use the exact same explicit,
+/// default, unassigned, missing, and ambiguity rules as launch planning. This
+/// keeps adapter ownership out of the Qt and storage layers.
+pub fn select_emulator_for_game<'a>(
+    game: &Game,
+    configuration: Option<&'a EmulatorConfiguration>,
+) -> Result<Option<(&'a Emulator, Option<&'a EmulatorPlatform>)>, LaunchPlanError> {
+    select_emulator(game, configuration)
+}
+
 fn is_archive_path(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
