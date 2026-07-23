@@ -334,14 +334,18 @@ title ID. Stable Dolphin group IDs preserve idempotency even if a persisted
 path moves. PCSX2 discovery checks the recovered
 portable/legacy roots and the platform-native data root (`~/.config/PCSX2` by
 default on Linux), parses exact `.p2s`/`.p2z` state names, and matches serials
-from `SYSTEM.CNF` prefixes, content names, or game titles. It also enumerates
-folder-format and native raw `.ps2` card members with recovered `icon.sys`,
-GameIndex, serial, title, size, timestamp, group-ID, and owner rules. The
-raw-card reader supports logical-page images and physical 528-byte pages with
-spare/ECC data, follows the indirect/direct FAT and directory chains, and
-isolates an invalid card instead of aborting the scan. Ordinary PCSX2 state
-rows use the regular-file transaction path; card members retain their
-card/member boundary. Manual backup derives collision-free portable
+from the disc filesystem before the recovered content-name and game-title
+fallbacks. The native, shell-free reader locates ISO9660 `SYSTEM.CNF` through
+plain ISO and raw-sector layouts, GZip, CSO, CHD v5, MDF/MDS, and NRG images
+with bounded metadata/decompression reads, symlink refusal, and a
+path/size/modified-time cache. It also enumerates folder-format and native raw
+`.ps2` card members with recovered `icon.sys`, GameIndex, serial, title, size,
+timestamp, group-ID, and owner rules. The raw-card reader supports logical-page
+images and physical 528-byte pages with spare/ECC data, follows the
+indirect/direct FAT and directory chains, and isolates an invalid card instead
+of aborting the scan. Ordinary PCSX2 state rows use the regular-file
+transaction path; card members retain their card/member boundary. Manual
+backup derives collision-free portable
 `Saves\<Platform>\<ROM name>[-NN].<ext>` targets through the host-path service,
 records exact aggregate size, seven-digit UTC modified time, and MD5, and
 commits either one regular file or the complete Saturn set with the full new
@@ -395,10 +399,9 @@ Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
 Unresolved. Metadata operations never move or delete save files, and backup
 never changes active files. Other-emulator scanning, other directory/container
-backup, PCSX2 filesystem repair/capacity
-recovery, full disc-image serial extraction, stale-row reconciliation,
-automatic-backup policy, repair, and the remaining emulator adapters remain
-open. Manual game combine/expand is now a separate transactional library
+backup, stale-row reconciliation, automatic-backup policy, general repair
+commands, and the remaining emulator adapters remain open. Manual game
+combine/expand is now a separate transactional library
 operation: same-platform games become selectable version applications, modeled
 platform/navigation/playlist/clone/save/controller/blacklist references migrate
 to the retained root, and launchable versions expand back to standalone games.

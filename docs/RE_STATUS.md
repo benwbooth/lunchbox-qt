@@ -241,16 +241,25 @@ platform-native data root; current upstream PCSX2 defines Linux data under
 below it ([upstream source](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/Pcsx2Config.cpp)).
 It matches exact state serials and folder/raw-card members using the recovered
 content/header serial, GameIndex title, alternate-title, ROM-name, `icon.sys`,
-grouping, and single-context rules. The native filesystem supports logical
-pages and 528-byte physical pages with spare/ECC data, traverses indirect/direct
-FAT and directory chains, and rejects corrupt or unsafe paths without aborting
-other-card discovery. Its mutation path allocates and frees FAT chains, extends
-the root directory, serializes member/file directory entries, writes file
-clusters, and regenerates each modified physical page's spare/ECC bytes with
-the recovered 13.27 algorithm. It was also checked read-only against an
-authentic 8.65 MB ECC-bearing card, where it found both logical members, while
-an unformatted/invalid sibling card was isolated. Container rows retain the
-card path and internal directory name without inventing a whole-card digest;
+grouping, and single-context rules. The recovered content-header path first
+searches an ISO9660 primary volume and root directory for `SYSTEM.CNF`; plain
+ISO and 2,336/2,352/2,448-byte raw sectors, GZip, CSO, CHD v5, MDF/MDS, and NRG
+readers supply the logical sectors. The port implements those readers natively
+with bounded scans, metadata and decompression limits, symlink refusal, and a
+path/size/modified-time cache. Known disc formats do not accept the old fuzzy
+prefix fallback after a failed filesystem parse. Unknown formats retain the
+recovered bounded prefix fallback.
+
+The native memory-card filesystem supports logical pages and 528-byte physical
+pages with spare/ECC data, traverses indirect/direct FAT and directory chains,
+and rejects corrupt or unsafe paths without aborting other-card discovery. Its
+mutation path allocates and frees FAT chains, extends the root directory,
+serializes member/file directory entries, writes file clusters, and regenerates
+each modified physical page's spare/ECC bytes with the recovered 13.27
+algorithm. It was also checked read-only against an authentic 8.65 MB
+ECC-bearing card, where it found both logical members, while an
+unformatted/invalid sibling card was isolated. Container rows retain the card
+path and internal directory name without inventing a whole-card digest;
 ordinary state rows use the existing regular-file transactions. PCSX2 manual
 backup extracts the named member, creates and re-extracts a flat 7z, verifies
 the recovered uppercase SHA-256 logical-folder manifest, rechecks the live card
@@ -280,15 +289,18 @@ count through the Qt status, completes selected restore, commits mandatory
 pre-restore and pre-delete vault versions, deletes the active member, and
 retains both exact complete-card recovery files plus exact XML history with no
 transaction residue. Controller coverage separately retains the folder-card
-whole-tree path. Compressed/full disc-image serial extraction remains an
-explicit gate.
+whole-tree path. Synthetic CHD v5 DVD and 2,448-byte CD images generated and
+verified with `chdman`, plus ISO, raw-sector, MDF/MDS, NRG, GZip, and compressed
+CSO fixtures, require the `SYSTEM.CNF` serial even when the content filename
+and game title are opaque. The real-button offscreen PCSX2 scan uses that
+compressed CHD path and persists the matching state and card member.
 The 13.27 RetroArch plugin does not override `EmulatorPlugin.RemoveSave`, so
 the Windows implementation calls the base `File.Delete` on only the persisted
 primary path. The port deliberately deletes the already-established Saturn
 ownership set instead of orphaning `.bkr`/`.smpc` companions; the mandatory
 vault copy and per-member recovery copies make that safety extension explicit.
-Full PCSX2 disc-image serial extraction, stale-row reconciliation, automatic policy,
-repair, and the remaining adapters remain open.
+Stale-row reconciliation, automatic policy, general repair commands, and the
+remaining adapters remain open.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

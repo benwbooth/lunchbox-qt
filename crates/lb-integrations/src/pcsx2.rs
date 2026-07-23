@@ -1,6 +1,8 @@
 use crate::{DiscoveredContainerSave, DiscoveredEmulatorSave, EmulatorSaveKind};
 #[path = "pcsx2_card.rs"]
 mod card;
+#[path = "pcsx2_disc.rs"]
+mod disc;
 #[cfg(feature = "test-fixtures")]
 pub use card::test_fixtures;
 pub use card::{
@@ -9,6 +11,9 @@ pub use card::{
     ExtractedPcsx2MemoryCardSave, Pcsx2CardError, Pcsx2MemoryCardSave,
     PreparedPcsx2MemoryCardRestore,
 };
+pub use disc::extract_pcsx2_disc_serial;
+#[cfg(feature = "test-fixtures")]
+pub use disc::test_fixtures as disc_test_fixtures;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -131,7 +136,7 @@ pub fn discover_pcsx2_saves(
                 path: content_path.clone(),
             })?
             .to_string();
-        let serial = extract_serial_from_content(&content_path)
+        let serial = extract_pcsx2_disc_serial(&content_path)
             .or_else(|| extract_serial_from_text(&content_stem))
             .or_else(|| extract_serial_from_text(&target.title));
         prepared.push(PreparedContent {
@@ -446,39 +451,6 @@ fn parse_state_name(file_name: &str) -> Option<StateName> {
         crc: crc.to_ascii_uppercase(),
         slot: slot.parse().ok()?,
     })
-}
-
-fn extract_serial_from_content(path: &Path) -> Option<String> {
-    let mut file = fs::File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    use std::io::Read;
-    file.by_ref()
-        .take(1024 * 1024)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    extract_system_cnf_serial(&bytes)
-}
-
-fn extract_system_cnf_serial(bytes: &[u8]) -> Option<String> {
-    for window in bytes.windows(11) {
-        if window[..4].iter().all(u8::is_ascii_alphabetic)
-            && window[4] == b'_'
-            && window[5..8].iter().all(u8::is_ascii_digit)
-            && window[8] == b'.'
-            && window[9..11].iter().all(u8::is_ascii_digit)
-        {
-            let mut serial = String::with_capacity(9);
-            serial.extend(
-                window[..4]
-                    .iter()
-                    .map(|byte| char::from(*byte).to_ascii_uppercase()),
-            );
-            serial.extend(window[5..8].iter().map(|byte| char::from(*byte)));
-            serial.extend(window[9..11].iter().map(|byte| char::from(*byte)));
-            return Some(serial);
-        }
-    }
-    None
 }
 
 fn extract_serial_from_text(value: &str) -> Option<String> {
@@ -945,6 +917,52 @@ mod tests {
     }
 
     #[test]
+    fn compressed_disc_filesystem_serial_owns_card_member_and_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let emulator_root = directory.path().join("PCSX2");
+        let member = emulator_root
+            .join("memcards/Mcd001.ps2")
+            .join("BASLUS-20312SAVE");
+        let states = emulator_root.join("sstates");
+        fs::create_dir_all(&member).unwrap();
+        fs::create_dir_all(&states).unwrap();
+        let emulator = emulator_root.join("pcsx2-qt");
+        fs::write(&emulator, b"pcsx2").unwrap();
+        fs::write(member.join("data.bin"), b"card save").unwrap();
+        fs::write(states.join("SLUS-20312 (DEADBEEF).03.p2s"), b"save state").unwrap();
+        let content = directory.path().join("opaque-content.chd");
+        fs::write(
+            &content,
+            include_bytes!("../../../fixtures/pcsx2/synthetic-cd.chd"),
+        )
+        .unwrap();
+
+        let saves = discover_pcsx2_saves(
+            &emulator,
+            &[Pcsx2Content {
+                game_id: "game".into(),
+                additional_application_id: None,
+                content_path: content,
+                title: "Opaque Game".into(),
+                alternate_titles: Vec::new(),
+            }],
+            &[emulator_root],
+        )
+        .unwrap();
+
+        assert_eq!(saves.len(), 2);
+        assert!(saves.iter().any(|save| {
+            save.container_save
+                .as_ref()
+                .is_some_and(|member| member.original_file_name == "BASLUS-20312SAVE")
+        }));
+        assert!(saves.iter().any(|save| {
+            save.kind == EmulatorSaveKind::State { slot: 3 }
+                && save.primary_path.ends_with("SLUS-20312 (DEADBEEF).03.p2s")
+        }));
+    }
+
+    #[test]
     fn parses_1327_state_names_and_strict_title_similarity() {
         assert_eq!(
             parse_state_name("baSLUS-20312 (00ab12CD).09.P2Z"),
@@ -958,9 +976,5 @@ mod tests {
         assert!(parse_state_name("../SLUS-20312 (00AB12CD).09.p2s").is_none());
         assert!(titles_similar("Gran Turismo 4", "Gran Turismo 4 (Europe)"));
         assert!(!titles_similar("Gran Turismo 3", "Gran Turismo 4"));
-        assert_eq!(
-            extract_system_cnf_serial(b"BOOT2 = cdrom0:\\\\SLUS_203.12;1"),
-            Some("SLUS20312".into())
-        );
     }
 }

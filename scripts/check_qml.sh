@@ -834,24 +834,27 @@ cp -R fixtures/launchbox/Data "$pcsx2_save_scan_root/Data"
 pcsx2_save_scan_platform="$pcsx2_save_scan_root/Data/Platforms/Fixture Console.xml"
 pcsx2_save_scan_emulators="$pcsx2_save_scan_root/Data/Emulators.xml"
 sed -i \
-  -e 's|racer\.rom|racer-SLUS-12345.iso|' \
+  -e 's|racer\.rom|opaque-content.chd|' \
   "$pcsx2_save_scan_platform"
 sed -i \
   -e 's|<Title>Fixture Emulator</Title>|<Title>PCSX2</Title>|' \
   -e 's|<ApplicationPath>Emulators/fixture-emulator</ApplicationPath>|<ApplicationPath>Emulators/PCSX2/pcsx2-qt</ApplicationPath>|' \
   "$pcsx2_save_scan_emulators"
 mkdir -p \
-  "$pcsx2_save_scan_root/Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-12345SAVE" \
+  "$pcsx2_save_scan_root/Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-20312SAVE" \
   "$pcsx2_save_scan_root/Emulators/PCSX2/sstates" \
   "$pcsx2_save_scan_root/Games/Fixture Racer"
 printf %s 'pcsx2 runtime fixture' \
   > "$pcsx2_save_scan_root/Emulators/PCSX2/pcsx2-qt"
-printf %s 'fixture racer ps2 disc bytes' \
-  > "$pcsx2_save_scan_root/Games/Fixture Racer/racer-SLUS-12345.iso"
+"$process_fixture" \
+  --fixture-mode pcsx2-disc-image \
+  --path "$pcsx2_save_scan_root/Games/Fixture Racer/opaque-content.chd" \
+  --format chd-cd \
+  --serial SLUS_203.12
 printf %s 'runtime folder card save bytes' \
-  > "$pcsx2_save_scan_root/Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-12345SAVE/data.bin"
+  > "$pcsx2_save_scan_root/Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-20312SAVE/data.bin"
 printf %s 'runtime state three bytes' \
-  > "$pcsx2_save_scan_root/Emulators/PCSX2/sstates/SLUS-12345 (DEADBEEF).03.p2s"
+  > "$pcsx2_save_scan_root/Emulators/PCSX2/sstates/SLUS-20312 (DEADBEEF).03.p2s"
 cp "$pcsx2_save_scan_platform" \
   "$pcsx2_save_scan_root/original-platform.xml"
 pcsx2_save_scan_output=$(
@@ -884,11 +887,11 @@ if [[ $(rg -c '<GameSave>' "$pcsx2_save_scan_platform") -ne 3 ]] \
 fi
 for expected in \
   '<FilePath>Emulators\PCSX2\memcards\Mcd001.ps2</FilePath>' \
-  '<FilePath>Emulators\PCSX2\sstates\SLUS-12345 (DEADBEEF).03.p2s</FilePath>' \
-  '<SaveGroupId>pcsx2:Mcd001:BASLUS-12345SAVE</SaveGroupId>' \
-  '<SaveGroupId>pcsx2-state:SLUS12345:03</SaveGroupId>' \
-  '<OriginalFileName>BASLUS-12345SAVE</OriginalFileName>' \
-  '<OriginalFileName>SLUS-12345 (DEADBEEF).03.p2s</OriginalFileName>' \
+  '<FilePath>Emulators\PCSX2\sstates\SLUS-20312 (DEADBEEF).03.p2s</FilePath>' \
+  '<SaveGroupId>pcsx2:Mcd001:BASLUS-20312SAVE</SaveGroupId>' \
+  '<SaveGroupId>pcsx2-state:SLUS20312:03</SaveGroupId>' \
+  '<OriginalFileName>BASLUS-20312SAVE</OriginalFileName>' \
+  '<OriginalFileName>SLUS-20312 (DEADBEEF).03.p2s</OriginalFileName>' \
   '<Slot>3</Slot>' \
   '<FutureRootElement>preserve-me</FutureRootElement>'; do
   if ! rg -q -F "$expected" "$pcsx2_save_scan_platform"; then
@@ -912,7 +915,7 @@ if find "$pcsx2_save_scan_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox manager-driven PCSX2 portable folder-card/member discovery, exact state matching, container metadata, regular-file state eligibility, exact XML rollback backup, and cleanup validated."
+echo "LaunchBox manager-driven PCSX2 compressed-CHD filesystem serial extraction, portable folder-card/member discovery, exact state matching, container metadata, regular-file state eligibility, exact XML rollback backup, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$game_save_backup_root/Data"
 game_save_backup_platform="$game_save_backup_root/Data/Platforms/Fixture Console.xml"

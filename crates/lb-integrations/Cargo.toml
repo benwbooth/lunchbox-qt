@@ -9,7 +9,9 @@ test-fixtures = []
 
 [dependencies]
 chrono.workspace = true
+chd.workspace = true
 encoding_rs.workspace = true
+flate2.workspace = true
 lb-platform.workspace = true
 md-5.workspace = true
 serde.workspace = true

@@ -354,13 +354,16 @@ stable group IDs. It also derives the recovered disc and WAD high/low title IDs
 and discovers Wii `data` directories behind an explicit directory-container
 result.
 PCSX2 checks portable/legacy and OS-native data roots, parses the recovered
-state filename/slot/group contract, and discovers both folder-format and raw
-`.ps2` card members with recovered serial, GameIndex, title, `icon.sys`,
-grouping, and single-context fallback rules. Its native reader handles logical
-pages or physical 528-byte pages with spare/ECC data and traverses the
-indirect/direct FAT and directory chains. An explicit integration type
-preserves the card/member boundary, and invalid cards are isolated from the
-rest of discovery. Ordinary state rows use the regular-file path.
+state filename/slot/group contract, extracts the content serial from ISO9660
+`SYSTEM.CNF`, and discovers both folder-format and raw `.ps2` card members with
+recovered serial, GameIndex, title, `icon.sys`, grouping, and single-context
+fallback rules. The disc reader handles plain ISO and raw-sector layouts,
+GZip, CSO, CHD v5, MDF/MDS, and NRG through native Rust with bounded reads,
+symlink refusal, and no subprocess. The card reader handles logical pages or
+physical 528-byte pages with spare/ECC data and traverses the indirect/direct
+FAT and directory chains. An explicit integration type preserves the
+card/member boundary, and invalid cards are isolated from the rest of
+discovery. Ordinary state rows use the regular-file path.
 Manual backup now covers one resolved regular active
 file or all present `.bcr`/`.bkr`/`.smpc` members with collision-free portable
 vault naming, aggregate size/time and 13.27-compatible MD5 metadata,
@@ -409,8 +412,8 @@ card is never repaired in place, a zero-cluster repair still retries like
 occurred. Active deletion
 commits the vault archive and removes the active XML row before swapping the
 validated deletion copy, so a final conflict remains recoverable through Find
-Active Saves. Full PCSX2 disc-image serial extraction, stale-row reconciliation,
-automatic policy, repair, and the remaining adapters remain open. The manual
+Active Saves. Stale-row reconciliation, automatic policy, general repair
+commands, and the remaining adapters remain open. The manual
 `LIB-010` subset now
 combines same-platform games into launchable version applications and expands
 them back transactionally; collapse and remaining presentation parity stay

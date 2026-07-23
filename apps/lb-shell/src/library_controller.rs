@@ -13622,14 +13622,14 @@ impl qobject::LibraryController {
                 && saves.iter().any(|save| {
                     save.file_path == r"Emulators\PCSX2\memcards\Mcd001.ps2"
                         && save.slot.is_none()
-                        && save.original_file_name.as_deref() == Some("BASLUS-12345SAVE")
-                        && save.save_group_id.as_deref() == Some("pcsx2:Mcd001:BASLUS-12345SAVE")
+                        && save.original_file_name.as_deref() == Some("BASLUS-20312SAVE")
+                        && save.save_group_id.as_deref() == Some("pcsx2:Mcd001:BASLUS-20312SAVE")
                         && save.md5.is_none()
                 })
                 && saves.iter().any(|save| {
-                    save.file_path == r"Emulators\PCSX2\sstates\SLUS-12345 (DEADBEEF).03.p2s"
+                    save.file_path == r"Emulators\PCSX2\sstates\SLUS-20312 (DEADBEEF).03.p2s"
                         && save.slot == Some(3)
-                        && save.save_group_id.as_deref() == Some("pcsx2-state:SLUS12345:03")
+                        && save.save_group_id.as_deref() == Some("pcsx2-state:SLUS20312:03")
                         && save.md5.as_deref().is_some_and(|md5| md5.len() == 32)
                 })
         }) && rust.game_save_write_notifications == 1
@@ -21295,14 +21295,14 @@ mod tests {
     }
 
     #[test]
-    fn pcsx2_scan_persists_folder_card_member_and_regular_state_once() {
+    fn pcsx2_scan_uses_compressed_disc_filesystem_serial_and_persists_once() {
         let directory = tempfile::tempdir().unwrap();
         let platform_directory = directory.path().join("Data/Platforms");
         fs::create_dir_all(&platform_directory).unwrap();
         let platform_path = platform_directory.join("Fixture Console.xml");
         let platform_xml = FIXTURE.replace(
             r"Games\Fixture Racer\racer.rom",
-            r"Games\Fixture Racer\racer-SLUS-12345.iso",
+            r"Games\Fixture Racer\opaque-content.chd",
         );
         fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
         let emulator_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -21319,19 +21319,23 @@ mod tests {
         let executable = directory.path().join("Emulators/PCSX2/pcsx2-qt");
         let content = directory
             .path()
-            .join("Games/Fixture Racer/racer-SLUS-12345.iso");
+            .join("Games/Fixture Racer/opaque-content.chd");
         let member = directory
             .path()
-            .join("Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-12345SAVE");
+            .join("Emulators/PCSX2/memcards/Mcd001.ps2/BASLUS-20312SAVE");
         let state = directory
             .path()
-            .join("Emulators/PCSX2/sstates/SLUS-12345 (DEADBEEF).03.p2s");
+            .join("Emulators/PCSX2/sstates/SLUS-20312 (DEADBEEF).03.p2s");
         for path in [&executable, &content, &state] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
         }
         fs::create_dir_all(&member).unwrap();
         fs::write(&executable, b"pcsx2").unwrap();
-        fs::write(&content, b"disc bytes").unwrap();
+        fs::write(
+            &content,
+            lb_integrations::pcsx2::disc_test_fixtures::chd_cd(),
+        )
+        .unwrap();
         fs::write(member.join("data.bin"), b"folder card save").unwrap();
         fs::write(&state, b"state three").unwrap();
 
@@ -21367,9 +21371,9 @@ mod tests {
         assert_eq!(card.file_path, r"Emulators\PCSX2\memcards\Mcd001.ps2");
         assert_eq!(
             card.save_group_id.as_deref(),
-            Some("pcsx2:Mcd001:BASLUS-12345SAVE")
+            Some("pcsx2:Mcd001:BASLUS-20312SAVE")
         );
-        assert_eq!(card.original_file_name.as_deref(), Some("BASLUS-12345SAVE"));
+        assert_eq!(card.original_file_name.as_deref(), Some("BASLUS-20312SAVE"));
         assert_eq!(card.reported_file_size_bytes, Some(16));
         assert!(card.reported_last_modified_utc.is_some());
         assert!(card.md5.is_none());
@@ -21382,11 +21386,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             state.file_path,
-            r"Emulators\PCSX2\sstates\SLUS-12345 (DEADBEEF).03.p2s"
+            r"Emulators\PCSX2\sstates\SLUS-20312 (DEADBEEF).03.p2s"
         );
         assert_eq!(
             state.save_group_id.as_deref(),
-            Some("pcsx2-state:SLUS12345:03")
+            Some("pcsx2-state:SLUS20312:03")
         );
         assert!(state.md5.as_ref().is_some_and(|md5| md5.len() == 32));
         assert!(!save_requires_container_adapter(state));

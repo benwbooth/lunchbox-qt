@@ -122,6 +122,16 @@ fn run_explicit_mode(mode: &OsStr, arguments: &[OsString]) -> Result<(), String>
                 .map(|_| ())
                 .map_err(|error| format!("extract PCSX2 fixture member: {error}"))
         }
+        Some("pcsx2-disc-image") => {
+            let path = option_path(arguments, "--path")?;
+            let format = option(arguments, "--format")?
+                .to_str()
+                .ok_or_else(|| "--format must be Unicode".to_string())?;
+            let serial = option(arguments, "--serial")?
+                .to_str()
+                .ok_or_else(|| "--serial must be Unicode".to_string())?;
+            write_pcsx2_disc_image(&path, format, serial)
+        }
         _ => Err(format!("unknown explicit fixture mode {mode:?}")),
     }
 }
@@ -153,6 +163,32 @@ fn write_pcsx2_restore_source(path: &Path) -> Result<(), String> {
         let _ = fs::remove_dir_all(path);
     }
     result
+}
+
+fn write_pcsx2_disc_image(path: &Path, format: &str, serial: &str) -> Result<(), String> {
+    let bytes = match format {
+        "iso" => lb_integrations::pcsx2::disc_test_fixtures::iso(serial),
+        "gzip" => lb_integrations::pcsx2::disc_test_fixtures::gzip(serial),
+        "cso" => lb_integrations::pcsx2::disc_test_fixtures::cso(serial),
+        "chd-cd" => {
+            if serial != "SLUS_203.12" {
+                return Err("the authentic CHD fixture serial must be SLUS_203.12".into());
+            }
+            lb_integrations::pcsx2::disc_test_fixtures::chd_cd().to_vec()
+        }
+        "chd-dvd" => {
+            if serial != "SLUS_203.12" {
+                return Err("the authentic CHD fixture serial must be SLUS_203.12".into());
+            }
+            lb_integrations::pcsx2::disc_test_fixtures::chd_dvd().to_vec()
+        }
+        _ => {
+            return Err(format!(
+                "unsupported PCSX2 disc fixture format {format:?}; expected iso, gzip, cso, chd-cd, or chd-dvd"
+            ))
+        }
+    };
+    write_new_bytes(path, &bytes, "PCSX2 disc-image fixture")
 }
 
 fn write_new_bytes(path: &Path, bytes: &[u8], kind: &str) -> Result<(), String> {
@@ -470,5 +506,35 @@ mod tests {
         .unwrap();
 
         assert_eq!(fs::read(output.join("save.bin")).unwrap(), b"save bytes");
+    }
+
+    #[test]
+    fn pcsx2_disc_image_mode_creates_images_readable_by_the_real_adapter() {
+        let directory = tempfile::tempdir().unwrap();
+        for (format, extension) in [
+            ("iso", "iso"),
+            ("gzip", "gz"),
+            ("cso", "cso"),
+            ("chd-cd", "cd.chd"),
+            ("chd-dvd", "dvd.chd"),
+        ] {
+            let path = directory.path().join(format!("disc.{extension}"));
+            run_explicit_mode(
+                OsStr::new("pcsx2-disc-image"),
+                &[
+                    OsString::from("--path"),
+                    path.clone().into_os_string(),
+                    OsString::from("--format"),
+                    OsString::from(format),
+                    OsString::from("--serial"),
+                    OsString::from("SLUS_203.12"),
+                ],
+            )
+            .unwrap();
+            assert_eq!(
+                lb_integrations::pcsx2::extract_pcsx2_disc_serial(&path).as_deref(),
+                Some("SLUS-20312")
+            );
+        }
     }
 }
