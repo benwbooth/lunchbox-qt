@@ -359,26 +359,48 @@ ApplicationWindow {
                     && controller.game_count === 3) {
                 const first = window.argumentValue("--import-rom-1")
                 const second = window.argumentValue("--import-rom-2")
-                if (first.length === 0 || second.length === 0) {
+                const third = window.argumentValue("--import-rom-3")
+                const fourth = window.argumentValue("--import-rom-4")
+                if (first.length === 0 || second.length === 0
+                        || third.length === 0 || fourth.length === 0) {
                     console.error("IMPORT_SMOKE_MISSING_SOURCE_ARGUMENTS")
                     Qt.exit(12)
                     return
                 }
                 window.importSmokePhase = 1
-                romImportDialog.smokePrepare([first, second], "Fixture Console")
+                romImportDialog.smokePrepare(
+                    [first, second, third, fourth], "Fixture Console")
             } else if (window.importSmokePhase === 1
                        && !controller.import_scanning
                        && controller.import_preview_json.length > 0) {
                 const preview = JSON.parse(controller.import_preview_json)
-                if (preview.rows.length !== 1
-                        || preview.rows[0].metadata_candidate_count !== 2
-                        || preview.rows[0].metadata_match_kind !== "partial"
-                        || preview.rows[0].metadata_candidates.length !== 2
-                        || preview.rows[0].metadata_candidates[0].database_id !== 4242
-                        || preview.rows[0].manual_candidate_count !== 1
-                        || preview.rows[0].manual === null
-                        || preview.rows[0].manual.stored_path
-                           !== "Games\\Fixture Console\\Fixture Sag (USA)\\Fixture Sag (USA) - (Disc 1 of 2).pdf") {
+                let partialRow = null
+                let versionRow = null
+                for (let index = 0; index < preview.rows.length; ++index) {
+                    const row = preview.rows[index]
+                    if (row.metadata_match_kind === "partial")
+                        partialRow = row
+                    else if (row.metadata_match_kind === "exact")
+                        versionRow = row
+                }
+                if (preview.rows.length !== 2 || partialRow === null
+                        || partialRow.metadata_candidate_count !== 2
+                        || partialRow.metadata_candidates.length !== 2
+                        || partialRow.metadata_candidates[0].database_id !== 4242
+                        || partialRow.manual_candidate_count !== 1
+                        || partialRow.manual === null
+                        || partialRow.manual.stored_path
+                           !== "Games\\Fixture Console\\Fixture Sag\\Fixture Sag (USA) - (Disc 1 of 2).pdf"
+                        || partialRow.additional_roms.length !== 1
+                        || versionRow === null
+                        || versionRow.metadata_candidate_count !== 1
+                        || versionRow.metadata.database_id !== 4242
+                        || versionRow.version !== "(USA)"
+                        || versionRow.region !== "North America"
+                        || versionRow.additional_roms.length !== 1
+                        || versionRow.additional_roms[0].version
+                           !== "(World) (Rev 1)"
+                        || versionRow.additional_roms[0].region !== "World") {
                     console.error("IMPORT_SMOKE_MANUAL_PREVIEW_CONTRACT_FAILED")
                     Qt.exit(12)
                     return
@@ -387,8 +409,8 @@ ApplicationWindow {
                 romImportDialog.smokeSubmitPreview()
             } else if (window.importSmokePhase === 2
                        && !controller.writing
-                       && controller.last_import_count === 1) {
-                if (!controller.report_import_smoke_success(1, 5, 0)) {
+                       && controller.last_import_count === 2) {
+                if (!controller.report_import_smoke_success(2, 7, 0)) {
                     console.error("IMPORT_SMOKE_MODEL_CONTRACT_FAILED")
                     Qt.exit(12)
                     return
@@ -3383,6 +3405,7 @@ ApplicationWindow {
             copySameNameFiles.checked = true
             copyToSubfolders.checked = false
             combineDiscSets.checked = true
+            combineMatchingTitles.checked = true
             searchLocalMetadata.checked = true
             lookForPdfManuals.checked = true
             importFilePolicy.currentIndex = 1
@@ -3434,6 +3457,7 @@ ApplicationWindow {
                 "copy_files_with_same_name": copySameNameFiles.checked,
                 "copy_to_subfolders": copyToSubfolders.checked,
                 "combine_disc_sets": combineDiscSets.checked,
+                "combine_matching_titles": combineMatchingTitles.checked,
                 "search_local_metadata": searchLocalMetadata.checked,
                 "look_for_pdf_manuals": lookForPdfManuals.checked,
                 "emulator_id": emulatorId.length === 0 ? null : emulatorId
@@ -3442,8 +3466,8 @@ ApplicationWindow {
 
         function companionFileCount(row) {
             let count = row.same_name_files.length
-            for (let index = 0; index < row.additional_discs.length; ++index)
-                count += row.additional_discs[index].same_name_files.length
+            for (let index = 0; index < row.additional_roms.length; ++index)
+                count += row.additional_roms[index].same_name_files.length
             return count
         }
 
@@ -3516,7 +3540,7 @@ ApplicationWindow {
                     "rowState": row.state,
                     "included": row.included,
                     "message": row.message,
-                    "discFileCount": 1 + row.additional_discs.length,
+                    "romFileCount": 1 + row.additional_roms.length,
                     "companionFileCount": companionFileCount(row),
                     "metadataCandidateCount": row.metadata_candidate_count,
                     "metadataMatchKind": row.metadata_match_kind === null
@@ -3758,6 +3782,10 @@ ApplicationWindow {
                         text: "Combine complete (Disc N) sets into one game"
                     }
                     CheckBox {
+                        id: combineMatchingTitles
+                        text: "Combine ROMs with matching titles into one game"
+                    }
+                    CheckBox {
                         id: searchLocalMetadata
                         text: "Search for game information in the local metadata database (recommended)"
                     }
@@ -3825,7 +3853,7 @@ ApplicationWindow {
                                 required property string rowState
                                 required property bool included
                                 required property string message
-                                required property int discFileCount
+                                required property int romFileCount
                                 required property int companionFileCount
                                 required property int metadataCandidateCount
                                 required property string metadataMatchKind
@@ -3882,9 +3910,9 @@ ApplicationWindow {
                                         Label {
                                             Layout.fillWidth: true
                                             text: importPreviewDelegate.sourcePath
-                                                  + (importPreviewDelegate.discFileCount > 1
-                                                     ? "  (+" + (importPreviewDelegate.discFileCount - 1)
-                                                       + " disc file(s))"
+                                                  + (importPreviewDelegate.romFileCount > 1
+                                                     ? "  (+" + (importPreviewDelegate.romFileCount - 1)
+                                                       + " combined ROM file(s))"
                                                      : "")
                                                   + (importPreviewDelegate.companionFileCount > 0
                                                      ? "  (+" + importPreviewDelegate.companionFileCount

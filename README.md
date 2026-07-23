@@ -208,8 +208,17 @@ folder and extension collapse to one game. Disc 1 remains the main application
 and every disc, including Disc 1, is persisted as a priority-ordered additional
 application, matching the older real-install records and the existing M3U
 launch contract. Incomplete or colliding sets remain separate preview rows.
-Online media acquisition, database-driven version combining, MAME-specific
-options, and the remaining import families are still open.
+The recovered LaunchBox “combine ROMs with matching titles” option runs after
+local metadata resolution, so primary or alternate filenames that resolve to
+the same database game collapse deterministically even when their source names
+differ. Exact cleaned titles provide the no-metadata fallback; ambiguous
+metadata rows stay separate for review. Filename qualifiers are parsed without
+host-native separator assumptions into LaunchBox `Version` and normalized
+`Region` fields. Every grouped ROM, including the primary, is retained as a
+priority-ordered selectable application named `Play {version} Version...` with
+its path, emulator, version, region, developer, publisher, release date, and
+import status. Online media acquisition, MAME-specific options, and the
+remaining import families are still open.
 
 Both front ends now expose a shared launch vertical. A launch plan selects
 an explicit or single default emulator mapping (or a direct executable), keeps

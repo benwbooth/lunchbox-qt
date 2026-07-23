@@ -130,8 +130,11 @@ pub struct NewGameMetadata {
     pub play_mode: Option<String>,
     pub publisher: Option<String>,
     pub rating: Option<String>,
+    pub region: Option<String>,
     pub release_date: Option<String>,
     pub release_type: Option<String>,
+    pub status: Option<String>,
+    pub version: Option<String>,
     pub wikipedia_url: Option<String>,
     pub video_url: Option<String>,
     pub community_star_rating: Option<f64>,
@@ -1781,8 +1784,11 @@ impl PlatformDocument {
             play_mode: new_game.metadata.play_mode,
             publisher: new_game.metadata.publisher,
             rating: new_game.metadata.rating,
+            region: new_game.metadata.region,
             release_date: new_game.metadata.release_date,
             release_type: new_game.metadata.release_type,
+            status: new_game.metadata.status,
+            version: new_game.metadata.version,
             wikipedia_url: new_game.metadata.wikipedia_url,
             video_url: new_game.metadata.video_url,
             community_star_rating: new_game.metadata.community_star_rating.unwrap_or_default(),
@@ -4706,8 +4712,11 @@ fn minimal_game_element(game: &Game) -> Element {
     set_optional_child_text(&mut element, "PlayMode", game.play_mode.as_deref());
     set_optional_child_text(&mut element, "Publisher", game.publisher.as_deref());
     set_optional_child_text(&mut element, "Rating", game.rating.as_deref());
+    set_optional_child_text(&mut element, "Region", game.region.as_deref());
     set_optional_child_text(&mut element, "ReleaseDate", game.release_date.as_deref());
     set_optional_child_text(&mut element, "ReleaseType", game.release_type.as_deref());
+    set_optional_child_text(&mut element, "Status", game.status.as_deref());
+    set_optional_child_text(&mut element, "Version", game.version.as_deref());
     set_optional_child_text(&mut element, "WikipediaURL", game.wikipedia_url.as_deref());
     set_optional_child_text(&mut element, "VideoUrl", game.video_url.as_deref());
     set_optional_child_text(
@@ -5296,8 +5305,11 @@ mod tests {
                 play_mode: Some("Cooperative; Multiplayer".into()),
                 publisher: Some("Fixture Press".into()),
                 rating: Some("E10+".into()),
+                region: Some("North America".into()),
                 release_date: Some("2002-03-04".into()),
                 release_type: Some("Released".into()),
+                status: Some("Imported ROM".into()),
+                version: Some("(USA)".into()),
                 wikipedia_url: Some("https://example.org/fixture".into()),
                 video_url: Some("https://video.example/fixture".into()),
                 community_star_rating: Some(4.75),

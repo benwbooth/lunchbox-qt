@@ -27,6 +27,13 @@
     "Platforms",
     "Playlists"
   ],
+  "combined_roms": {
+    "groups_using_exact_version_name_formula": 2601,
+    "groups_with_contiguous_one_based_priorities": 5763,
+    "groups_with_primary_path_record": 6261,
+    "multi_entry_groups": 6261,
+    "version_application_records": 15430
+  },
   "document_groups": {
     "BigBoxSettings.xml": {
       "file_count": 1,

@@ -5619,32 +5619,72 @@ impl qobject::LibraryController {
                     && game.platform == "Fixture Console"
                     && game.database_id == Some(4242)
                     && game.emulator_id.as_deref() == Some("fixture-emulator")
-                    && game.manual_path.as_deref()
-                        == Some(
-                            r"Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Sag (USA) - (Disc 1 of 2).pdf",
-                        )
+                    && game.version.as_deref() == Some("(USA)")
+                    && game.region.as_deref() == Some("North America")
+                    && game.status.as_deref() == Some("Imported ROM")
             })
         });
-        let imported_disc_sets_present = rust.last_imported_game_ids.iter().all(|id| {
-            rust.additional_applications_by_game
-                .get(id)
-                .is_some_and(|applications| {
-                    applications.len() == 2
-                        && applications.iter().enumerate().all(|(index, application)| {
-                            let disc = u32::try_from(index).unwrap_or_default() + 1;
-                            application.disc == Some(disc)
-                                && application.priority == i32::try_from(disc).unwrap_or_default()
-                                && application.use_emulator
-                                && application.emulator_id.as_deref() == Some("fixture-emulator")
-                        })
-                })
-        });
+        let imported_groups = rust
+            .last_imported_game_ids
+            .iter()
+            .filter_map(|id| {
+                let game = rust.games.iter().find(|game| game.id == *id)?;
+                let applications = rust.additional_applications_by_game.get(id)?;
+                Some((game, applications))
+            })
+            .collect::<Vec<_>>();
+        let imported_disc_sets = imported_groups
+            .iter()
+            .filter(|(game, applications)| {
+                game.manual_path.as_deref()
+                    == Some(
+                        r"Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Sag (USA) - (Disc 1 of 2).pdf",
+                    )
+                    && applications.len() == 2
+                    && applications.iter().enumerate().all(|(index, application)| {
+                        let disc = u32::try_from(index).unwrap_or_default() + 1;
+                        application.disc == Some(disc)
+                            && application.name == format!("Play (USA) Disc {disc}...")
+                            && application.priority == i32::try_from(disc).unwrap_or_default()
+                            && application.version.as_deref() == Some("(USA)")
+                            && application.region.as_deref() == Some("North America")
+                            && application.status.as_deref() == Some("Imported ROM")
+                            && application.use_emulator
+                            && application.emulator_id.as_deref() == Some("fixture-emulator")
+                    })
+            })
+            .count();
+        let imported_version_groups = imported_groups
+            .iter()
+            .filter(|(game, applications)| {
+                game.manual_path.is_none()
+                    && applications.len() == 2
+                    && applications[0].name == "Play (USA) Version..."
+                    && applications[0].priority == 1
+                    && applications[0].disc.is_none()
+                    && applications[0].version.as_deref() == Some("(USA)")
+                    && applications[0].region.as_deref() == Some("North America")
+                    && applications[0].application_path == game.application_path
+                    && applications[1].name == "Play (World) (Rev 1) Version..."
+                    && applications[1].priority == 2
+                    && applications[1].disc.is_none()
+                    && applications[1].version.as_deref() == Some("(World) (Rev 1)")
+                    && applications[1].region.as_deref() == Some("World")
+                    && applications.iter().all(|application| {
+                        application.status.as_deref() == Some("Imported ROM")
+                            && application.use_emulator
+                            && application.emulator_id.as_deref() == Some("fixture-emulator")
+                    })
+            })
+            .count();
         let success = *self.last_import_count() == expected_count
             && *self.last_import_created_file_count() == expected_created_files
             && *self.last_import_moved_file_count() == expected_moved_files
             && saturating_i32(rust.last_imported_game_ids.len()) == expected_count
             && imported_games_present
-            && imported_disc_sets_present
+            && imported_groups.len() == 2
+            && imported_disc_sets == 1
+            && imported_version_groups == 1
             && !*self.import_scanning()
             && !*self.loading()
             && !*self.writing()

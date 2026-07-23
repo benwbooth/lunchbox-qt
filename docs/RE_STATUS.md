@@ -35,6 +35,17 @@ stored paths, accounts, or license data. It found 37 platform files, 35,869
 games, 16,752 additional applications, 20,739 alternate names, 54 playlists,
 zero custom-field records, and no XML parse errors.
 
+The same value-free census now measures the persisted combined-ROM contract.
+The 13.24 library contains 6,261 games with at least two `Play … Version...`
+additional applications and 15,430 such records. Every group includes an
+application whose path equals the primary game's path, proving the chooser
+retains the primary ROM instead of only secondary variants. Of those groups,
+5,763 still have contiguous one-based priorities and 2,601 use
+`Play {Version} Version...` for every entry; nonconforming groups include
+MAME short-name choices and subsequently edited priorities. These are aggregate
+counts in `analysis/real-install-schema.json`; no IDs, titles, names, versions,
+or paths are retained.
+
 The Rust read index independently loaded all 37 platform documents and all
 35,869 games. A value-free compatibility audit matched the union of all real
 game fields to the canonical 107-field model with no missing or extra names,

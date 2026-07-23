@@ -244,8 +244,13 @@ now covers the recovered metadata surface and source-indexed folder rows in the
 real dialog; retained records keep unknown XML, and the create/edit/delete
 backup chain is verified without creating media directories. Identity remains
 read-only until a Windows runtime oracle resolves the getter-only 13.27 name
-contract and cross-document rename behavior. The first shell-free direct/default-emulator
-launch plan now also runs through both Qt front ends on Linux; checked-in
+contract and cross-document rename behavior. The ROM importer now resolves
+primary and alternate filenames through the local database, combines matching
+stable IDs into one deterministic game, recovers separator-neutral
+version/region qualifiers, and retains every ROM including the primary as an
+ordered LaunchBox-compatible chooser entry; the real-dialog smoke covers this
+alongside multi-disc import. The first shell-free direct/default-emulator launch
+plan now also runs through both Qt front ends on Linux; checked-in
 argument recorders prove its exact `argv`, command-line variable expansion,
 explicit unassigned-emulator semantics, mapped Windows-drive handling, and
 transactional play-statistics writes. Generated archive and M3U fixtures now

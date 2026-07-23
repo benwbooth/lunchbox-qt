@@ -58,12 +58,18 @@ and explicitly configured-emulator states and revalidates configured IDs on
 preview and execution. Complete unambiguous `(Disc N)` and `(Disc N of M)`
 filename sets can collapse to one game with every disc represented as an
 ordered additional application, including the primary Disc 1 record, matching
-the older real installation. Copy/move also implements the recovered
+the older real installation. The database-driven matching-title option now
+groups unique primary/alternate-title metadata matches by stable database ID,
+falls back to exact cleaned titles when metadata is absent, retains ambiguous
+rows for review, and persists every version—including the primary ROM—as an
+ordered `Play {version} Version...` additional application. Filename qualifier
+parsing recovers `Version` and normalized `Region` through separator-neutral
+lexical handling. Copy/move also implements the recovered
 same-filename/different-extension option as an atomic companion-file bundle,
 including per-disc companions and collision refusal. Metadata and media
-downloads, database-driven version combining, emulator installation/BIOS
-handling, descriptor-content dependency copying, cancellation, and
-runtime-oracle edge-case parity remain open, so `IMP-001` is not complete.
+downloads, emulator installation/BIOS handling, descriptor-content dependency
+copying, broader naming grammars, cancellation, and runtime-oracle edge-case
+parity remain open, so `IMP-001` is not complete.
 The implemented local-database subset opens LaunchBox's SQLite file read-only,
 canonicalizes platform aliases, applies recovered exact-title and qualifier
 rules, falls back only when necessary to recovered substring/all-word matching

@@ -56,6 +56,55 @@ def sorted_directory_names(root: Path) -> list[str]:
     return sorted(entry.name for entry in root.iterdir() if entry.is_dir())
 
 
+def combined_rom_census(data_root: Path) -> dict[str, int]:
+    """Count combined-version shapes without retaining any library values."""
+    counts: Counter[str] = Counter()
+    for path in sorted((data_root / "Platforms").glob("*.xml")):
+        try:
+            root = ET.parse(path).getroot()
+        except (ET.ParseError, OSError):
+            continue
+        games = {
+            game.findtext("ID", default=""): game.findtext(
+                "ApplicationPath", default=""
+            )
+            for game in root.findall("Game")
+        }
+        grouped: dict[str, list[ET.Element]] = defaultdict(list)
+        for application in root.findall("AdditionalApplication"):
+            name = application.findtext("Name", default="")
+            if name.startswith("Play ") and name.endswith(" Version..."):
+                grouped[application.findtext("GameID", default="")].append(
+                    application
+                )
+        for game_id, applications in grouped.items():
+            if len(applications) < 2 or game_id not in games:
+                continue
+            counts["multi_entry_groups"] += 1
+            counts["version_application_records"] += len(applications)
+            if any(
+                application.findtext("ApplicationPath", default="")
+                == games[game_id]
+                for application in applications
+            ):
+                counts["groups_with_primary_path_record"] += 1
+            if all(
+                application.findtext("Name", default="")
+                == "Play "
+                + application.findtext("Version", default="")
+                + " Version..."
+                for application in applications
+            ):
+                counts["groups_using_exact_version_name_formula"] += 1
+            priorities = sorted(
+                int(application.findtext("Priority", default="0"))
+                for application in applications
+            )
+            if priorities == list(range(1, len(applications) + 1)):
+                counts["groups_with_contiguous_one_based_priorities"] += 1
+    return dict(sorted(counts.items()))
+
+
 def build_census(install_root: Path) -> dict[str, object]:
     data_root = install_root / "Data"
     if not data_root.is_dir():
@@ -119,6 +168,7 @@ def build_census(install_root: Path) -> dict[str, object]:
         "launchbox_version": launchbox_version(install_root),
         "install_layout_directories": sorted_directory_names(install_root),
         "data_layout_directories": sorted_directory_names(data_root),
+        "combined_roms": combined_rom_census(data_root),
         "document_groups": serializable_groups,
     }
 

@@ -75,6 +75,12 @@ pub struct ManualImportRequest {
     /// extension; incomplete or colliding sets remain separate games.
     #[serde(default)]
     pub combine_disc_sets: bool,
+    /// Combine import rows whose final, metadata-resolved titles match. The
+    /// first source in deterministic preview order remains the primary game;
+    /// every ROM, including that primary source, is persisted as a selectable
+    /// LaunchBox additional application.
+    #[serde(default)]
+    pub combine_matching_titles: bool,
     /// Search LaunchBox's local SQLite metadata database. Exact primary or
     /// alternate titles win; when none match, use the recovered partial-word
     /// fallback. Only one result is applied automatically, while missing or
@@ -131,10 +137,12 @@ pub struct ManualImportPreviewRow {
     pub included: bool,
     pub message: String,
     pub disc: Option<u32>,
+    pub version: Option<String>,
+    pub region: Option<String>,
     #[serde(default)]
     pub same_name_files: Vec<ManualImportCompanion>,
     #[serde(default)]
-    pub additional_discs: Vec<ManualImportDisc>,
+    pub additional_roms: Vec<ManualImportRom>,
     pub metadata: Option<ManualImportMetadata>,
     pub metadata_candidate_count: usize,
     pub metadata_match_kind: Option<ManualImportMetadataMatchKind>,
@@ -192,8 +200,11 @@ impl From<ManualImportMetadata> for NewGameMetadata {
             play_mode: metadata.play_mode,
             publisher: metadata.publisher,
             rating: metadata.rating,
+            region: None,
             release_date: metadata.release_date,
             release_type: metadata.release_type,
+            status: None,
+            version: None,
             wikipedia_url: metadata.wikipedia_url,
             video_url: metadata.video_url,
             community_star_rating: metadata.community_star_rating,
@@ -209,15 +220,15 @@ impl ManualImportPreviewRow {
     }
 
     pub fn file_count(&self) -> usize {
-        1usize.saturating_add(self.additional_discs.len())
+        1usize.saturating_add(self.additional_roms.len())
     }
 
     pub fn companion_file_count(&self) -> usize {
         self.same_name_files.len()
             + self
-                .additional_discs
+                .additional_roms
                 .iter()
-                .map(|disc| disc.same_name_files.len())
+                .map(|rom| rom.same_name_files.len())
                 .sum::<usize>()
     }
 
@@ -228,12 +239,20 @@ impl ManualImportPreviewRow {
 
     fn import_files(&self) -> impl Iterator<Item = ImportFileRef<'_>> {
         std::iter::once(ImportFileRef {
+            source_path: &self.source_path,
             application_path: &self.application_path,
             disc: self.disc,
+            version: self.version.as_deref(),
+            region: self.region.as_deref(),
+            metadata: self.metadata.as_ref(),
         })
-        .chain(self.additional_discs.iter().map(|disc| ImportFileRef {
-            application_path: &disc.application_path,
-            disc: Some(disc.disc),
+        .chain(self.additional_roms.iter().map(|rom| ImportFileRef {
+            source_path: &rom.source_path,
+            application_path: &rom.application_path,
+            disc: rom.disc,
+            version: rom.version.as_deref(),
+            region: rom.region.as_deref(),
+            metadata: rom.metadata.as_ref(),
         }))
     }
 
@@ -248,13 +267,13 @@ impl ManualImportPreviewRow {
                 .iter()
                 .map(ManualImportCompanion::transfer_file),
         );
-        for disc in &self.additional_discs {
+        for rom in &self.additional_roms {
             files.push(TransferFileRef {
-                source_path: &disc.source_path,
-                destination_path: disc.destination_path.as_deref(),
+                source_path: &rom.source_path,
+                destination_path: rom.destination_path.as_deref(),
             });
             files.extend(
-                disc.same_name_files
+                rom.same_name_files
                     .iter()
                     .map(ManualImportCompanion::transfer_file),
             );
@@ -280,22 +299,29 @@ impl ManualImportCompanion {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ManualImportDisc {
+pub struct ManualImportRom {
     pub source_path: PathBuf,
     pub extension: String,
     pub destination_path: Option<PathBuf>,
     pub application_path: String,
-    pub disc: u32,
+    pub disc: Option<u32>,
+    pub version: Option<String>,
+    pub region: Option<String>,
     #[serde(default)]
     pub same_name_files: Vec<ManualImportCompanion>,
+    pub metadata: Option<ManualImportMetadata>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ImportFileRef<'a> {
+    source_path: &'a Path,
     application_path: &'a str,
     disc: Option<u32>,
+    version: Option<&'a str>,
+    region: Option<&'a str>,
+    metadata: Option<&'a ManualImportMetadata>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -405,6 +431,8 @@ pub fn preview_manual_import(
             .unwrap_or_default()
             .to_ascii_lowercase();
         let title = derive_title(&source, request.use_folder_names);
+        let version = rom_version(&source, request.use_folder_names);
+        let region = rom_region(&source, request.use_folder_names);
         let mut state = ImportRowState::Ready;
         let mut message = "Ready to import".to_string();
         if !extensions.is_empty() && !extensions.contains(&extension) {
@@ -523,8 +551,10 @@ pub fn preview_manual_import(
             included,
             message,
             disc: None,
+            version,
+            region,
             same_name_files,
-            additional_discs: Vec::new(),
+            additional_roms: Vec::new(),
             metadata: None,
             metadata_candidate_count: 0,
             metadata_match_kind: None,
@@ -543,6 +573,9 @@ pub fn preview_manual_import(
             request.duplicate_policy,
             &mut rows,
         )?;
+    }
+    if request.combine_matching_titles {
+        rows = combine_matching_title_rows(rows, request.duplicate_policy);
     }
     if request.copy_to_subfolders
         && matches!(
@@ -682,6 +715,9 @@ where
         let mut metadata: NewGameMetadata =
             row.metadata.clone().map(Into::into).unwrap_or_default();
         metadata.manual_path = row.manual.as_ref().map(|manual| manual.stored_path.clone());
+        metadata.region = row.region.clone();
+        metadata.version = row.version.clone();
+        metadata.status = Some("Imported ROM".to_string());
         games.push(document.add_game(NewGame {
             id: game_id.clone(),
             title: title.clone(),
@@ -690,22 +726,24 @@ where
             emulator_id: preview.request.emulator_id.clone(),
             metadata,
         })?);
-        if row.disc.is_some() {
+        if row.file_count() > 1 {
             let use_emulator = preview
                 .request
                 .emulator_id
                 .as_deref()
                 .is_none_or(|id| !is_unassigned_emulator_id(id));
-            for file in row.import_files() {
-                let disc = file
-                    .disc
-                    .expect("a combined preview row gives every file a disc number");
-                let priority =
-                    i32::try_from(disc).map_err(|_| ImportError::DiscNumberTooLarge { disc })?;
+            for (index, file) in row.import_files().enumerate() {
+                let priority_number = index.saturating_add(1);
+                let priority = i32::try_from(priority_number).map_err(|_| {
+                    ImportError::CombinedRomPriorityTooLarge {
+                        priority: priority_number,
+                    }
+                })?;
+                let file_metadata = file.metadata.or(row.metadata.as_ref());
                 let application = AdditionalApplication {
                     id: next_id(),
                     game_id: game_id.clone(),
-                    name: format!("Play Disc {disc}"),
+                    name: combined_rom_application_name(file),
                     application_path: file.application_path.to_string(),
                     use_emulator,
                     emulator_id: if use_emulator {
@@ -714,7 +752,13 @@ where
                         None
                     },
                     priority,
-                    disc: Some(disc),
+                    disc: file.disc,
+                    version: file.version.map(ToOwned::to_owned),
+                    region: file.region.map(ToOwned::to_owned),
+                    developer: file_metadata.and_then(|metadata| metadata.developer.clone()),
+                    publisher: file_metadata.and_then(|metadata| metadata.publisher.clone()),
+                    release_date: file_metadata.and_then(|metadata| metadata.release_date.clone()),
+                    status: Some("Imported ROM".to_string()),
                     ..AdditionalApplication::default()
                 };
                 additional_applications.push(document.add_additional_application(application)?);
@@ -839,6 +883,26 @@ fn normalize_extensions(extensions: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
+fn combined_rom_application_name(file: ImportFileRef<'_>) -> String {
+    match (
+        file.version.filter(|version| !version.trim().is_empty()),
+        file.disc,
+    ) {
+        (Some(version), Some(disc)) => format!("Play {version} Disc {disc}..."),
+        (Some(version), None) => format!("Play {version} Version..."),
+        (None, Some(disc)) => format!("Play Disc {disc}"),
+        (None, None) => {
+            let label = file
+                .source_path
+                .file_stem()
+                .or_else(|| file.source_path.file_name())
+                .and_then(|value| value.to_str())
+                .unwrap_or("ROM");
+            format!("Play {label} Version...")
+        }
+    }
+}
+
 fn normalize_emulator_selection(
     configuration: Option<&EmulatorConfiguration>,
     selected_id: Option<&str>,
@@ -876,6 +940,12 @@ struct DiscDescriptor {
     number: u32,
     total: Option<u32>,
     base_title: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum MatchingTitleKey {
+    Database(u32),
+    Title(String),
 }
 
 fn combine_complete_disc_sets(
@@ -916,25 +986,28 @@ fn combine_complete_disc_sets(
         let any_duplicate = candidates
             .iter()
             .any(|(index, _)| rows[*index].state == ImportRowState::Duplicate);
-        let additional_discs = candidates
+        let additional_roms = candidates
             .iter()
             .skip(1)
             .map(|(index, descriptor)| {
                 let row = &rows[*index];
                 removed.insert(*index);
-                ManualImportDisc {
+                ManualImportRom {
                     source_path: row.source_path.clone(),
                     extension: row.extension.clone(),
                     destination_path: row.destination_path.clone(),
                     application_path: row.application_path.clone(),
-                    disc: descriptor.number,
+                    disc: Some(descriptor.number),
+                    version: row.version.clone(),
+                    region: row.region.clone(),
                     same_name_files: row.same_name_files.clone(),
+                    metadata: row.metadata.clone(),
                 }
             })
             .collect::<Vec<_>>();
         let primary = &mut rows[primary_index];
         primary.disc = Some(1);
-        primary.additional_discs = additional_discs;
+        primary.additional_roms = additional_roms;
         if !use_folder_names {
             primary.title = candidates[0].1.base_title.clone();
         }
@@ -951,6 +1024,83 @@ fn combine_complete_disc_sets(
         } else {
             format!("Ready to import as one {}-disc game", primary.file_count())
         };
+    }
+
+    rows.into_iter()
+        .enumerate()
+        .filter_map(|(index, row)| (!removed.contains(&index)).then_some(row))
+        .collect()
+}
+
+fn combine_matching_title_rows(
+    mut rows: Vec<ManualImportPreviewRow>,
+    duplicate_policy: ImportDuplicatePolicy,
+) -> Vec<ManualImportPreviewRow> {
+    let mut candidates = BTreeMap::<MatchingTitleKey, Vec<usize>>::new();
+    for (index, row) in rows.iter().enumerate() {
+        if !row.is_importable(duplicate_policy) || !row.included || row.metadata_candidate_count > 1
+        {
+            continue;
+        }
+        let key = match row.metadata.as_ref() {
+            Some(metadata) => MatchingTitleKey::Database(metadata.database_id),
+            None => {
+                let title = row
+                    .title
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_lowercase();
+                if title.is_empty() {
+                    continue;
+                }
+                MatchingTitleKey::Title(title)
+            }
+        };
+        candidates.entry(key).or_default().push(index);
+    }
+
+    let mut removed = BTreeSet::new();
+    for indices in candidates.values().filter(|indices| indices.len() > 1) {
+        let primary_index = indices[0];
+        let any_duplicate = indices
+            .iter()
+            .any(|index| rows[*index].state == ImportRowState::Duplicate);
+        let mut additional_roms = Vec::new();
+        for index in indices.iter().copied().skip(1) {
+            let secondary = &rows[index];
+            removed.insert(index);
+            additional_roms.push(ManualImportRom {
+                source_path: secondary.source_path.clone(),
+                extension: secondary.extension.clone(),
+                destination_path: secondary.destination_path.clone(),
+                application_path: secondary.application_path.clone(),
+                disc: secondary.disc,
+                version: secondary.version.clone(),
+                region: secondary.region.clone(),
+                same_name_files: secondary.same_name_files.clone(),
+                metadata: secondary.metadata.clone(),
+            });
+            additional_roms.extend(secondary.additional_roms.iter().cloned().map(|mut rom| {
+                if rom.metadata.is_none() {
+                    rom.metadata.clone_from(&secondary.metadata);
+                }
+                rom
+            }));
+        }
+
+        let primary = &mut rows[primary_index];
+        primary.additional_roms.extend(additional_roms);
+        primary.state = if any_duplicate {
+            ImportRowState::Duplicate
+        } else {
+            ImportRowState::Ready
+        };
+        primary.included = primary.is_importable(duplicate_policy);
+        primary.message.push_str(&format!(
+            "; combined {} matching-title ROMs as selectable versions",
+            primary.file_count()
+        ));
     }
 
     rows.into_iter()
@@ -1080,9 +1230,9 @@ fn apply_pdf_manuals(
         row.manual_candidate_count = candidates.len();
         let matching_stems = std::iter::once(row.source_path.as_path())
             .chain(
-                row.additional_discs
+                row.additional_roms
                     .iter()
-                    .map(|disc| disc.source_path.as_path()),
+                    .map(|rom| rom.source_path.as_path()),
             )
             .filter_map(|path| {
                 path.file_stem()
@@ -1211,16 +1361,16 @@ fn replan_subfolder_destinations(
         for companion in &mut row.same_name_files {
             assign_companion_subfolder_destination(companion, &destination_directory)?;
         }
-        for disc in &mut row.additional_discs {
+        for rom in &mut row.additional_roms {
             assign_subfolder_destination(
-                &disc.source_path,
+                &rom.source_path,
                 &destination_directory,
                 platform,
                 &folder_name,
-                &mut disc.destination_path,
-                &mut disc.application_path,
+                &mut rom.destination_path,
+                &mut rom.application_path,
             )?;
-            for companion in &mut disc.same_name_files {
+            for companion in &mut rom.same_name_files {
                 assign_companion_subfolder_destination(companion, &destination_directory)?;
             }
         }
@@ -1467,13 +1617,7 @@ fn disc_descriptor(path: &Path) -> Option<DiscDescriptor> {
         }
         let marker_end = start + "(disc ".len() + close + 1;
         let joined = format!("{} {}", &stem[..start], &stem[marker_end..]);
-        let base_title = joined
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim_end_matches(['-', '_'])
-            .trim()
-            .to_string();
+        let base_title = clean_rom_title(&joined);
         if !base_title.is_empty() {
             return Some(DiscDescriptor {
                 number,
@@ -1620,16 +1764,149 @@ fn canonical_regular_file(path: &Path) -> Result<PathBuf, ImportError> {
 }
 
 fn derive_title(path: &Path, use_folder_names: bool) -> String {
-    let value = if use_folder_names {
-        path.parent().and_then(Path::file_name)
-    } else {
-        path.file_stem().or_else(|| path.file_name())
-    };
-    value
-        .and_then(|value| value.to_str())
+    import_name(path, use_folder_names)
+        .map(clean_rom_title)
         .unwrap_or_default()
+}
+
+fn rom_version(path: &Path, use_folder_names: bool) -> Option<String> {
+    let name = import_name(path, use_folder_names)?;
+    let version = delimited_qualifiers(name)
+        .into_iter()
+        .filter(|qualifier| !is_disc_qualifier(qualifier))
+        .filter(|qualifier| !qualifier_body(qualifier).eq_ignore_ascii_case("bios"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!version.is_empty()).then_some(version)
+}
+
+fn rom_region(path: &Path, use_folder_names: bool) -> Option<String> {
+    let name = import_name(path, use_folder_names)?;
+    let mut regions = Vec::new();
+    for qualifier in delimited_qualifiers(name) {
+        for token in qualifier_body(&qualifier).split(',') {
+            let Some(region) = canonical_rom_region(token.trim()) else {
+                continue;
+            };
+            if !regions
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(region))
+            {
+                regions.push(region.to_string());
+            }
+        }
+    }
+    (!regions.is_empty()).then(|| regions.join(", "))
+}
+
+fn import_name(path: &Path, use_folder_names: bool) -> Option<&str> {
+    let lexical = path.to_str()?;
+    let value = if use_folder_names {
+        let file_start = lexical.rfind(['/', '\\'])?;
+        let parent = lexical[..file_start].trim_end_matches(['/', '\\']);
+        parent
+            .rfind(['/', '\\'])
+            .map_or(parent, |start| &parent[start + 1..])
+    } else {
+        let file_name = lexical
+            .rsplit(['/', '\\'])
+            .next()
+            .filter(|value| !value.is_empty())?;
+        file_name
+            .rfind('.')
+            .filter(|index| *index > 0)
+            .map_or(file_name, |index| &file_name[..index])
+    };
+    let value = value.trim();
+    let value = value.strip_suffix('.').unwrap_or(value).trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn clean_rom_title(value: &str) -> String {
+    let mut title = value.to_string();
+    for qualifier in delimited_qualifiers(value) {
+        title = title.replacen(&qualifier, " ", 1);
+    }
+    title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(['-', '_'])
         .trim()
         .to_string()
+}
+
+fn delimited_qualifiers(value: &str) -> Vec<String> {
+    let mut qualifiers = Vec::new();
+    let mut open = None;
+    for (index, character) in value.char_indices() {
+        match (open, character) {
+            (None, '(') => open = Some((index, ')')),
+            (None, '[') => open = Some((index, ']')),
+            (Some((start, expected)), closing) if closing == expected => {
+                qualifiers.push(value[start..index + closing.len_utf8()].to_string());
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    qualifiers
+}
+
+fn qualifier_body(qualifier: &str) -> &str {
+    qualifier
+        .strip_prefix(['(', '['])
+        .and_then(|value| value.strip_suffix([')', ']']))
+        .unwrap_or(qualifier)
+        .trim()
+}
+
+fn is_disc_qualifier(qualifier: &str) -> bool {
+    let body = qualifier_body(qualifier).to_ascii_lowercase();
+    ["disc ", "disk ", "cd "]
+        .iter()
+        .any(|prefix| body.strip_prefix(prefix).is_some_and(starts_with_number))
+        || matches!(body.as_str(), "side a" | "side b")
+}
+
+fn starts_with_number(value: &str) -> bool {
+    value
+        .trim_start()
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+fn canonical_rom_region(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "usa" | "u.s.a." | "us" | "north america" | "united states" => Some("North America"),
+        "europe" | "eur" => Some("Europe"),
+        "japan" | "jpn" => Some("Japan"),
+        "world" => Some("World"),
+        "asia" => Some("Asia"),
+        "australia" => Some("Australia"),
+        "brazil" => Some("Brazil"),
+        "canada" => Some("Canada"),
+        "china" => Some("China"),
+        "finland" => Some("Finland"),
+        "france" => Some("France"),
+        "germany" => Some("Germany"),
+        "greece" => Some("Greece"),
+        "holland" => Some("Holland"),
+        "hong kong" => Some("Hong Kong"),
+        "italy" => Some("Italy"),
+        "korea" => Some("Korea"),
+        "netherlands" | "the netherlands" => Some("The Netherlands"),
+        "norway" => Some("Norway"),
+        "oceania" => Some("Oceania"),
+        "russia" => Some("Russia"),
+        "south america" => Some("South America"),
+        "spain" => Some("Spain"),
+        "sweden" => Some("Sweden"),
+        "thailand" => Some("Thailand"),
+        "uk" | "united kingdom" => Some("United Kingdom"),
+        _ => None,
+    }
 }
 
 fn existing_library_paths<'a>(
@@ -1687,8 +1964,8 @@ pub enum ImportError {
     UnknownEmulator { id: String },
     #[error("emulator ID {id} appears {count} times in the LaunchBox configuration")]
     AmbiguousEmulator { id: String, count: usize },
-    #[error("disc number {disc} cannot be represented as a LaunchBox priority")]
-    DiscNumberTooLarge { disc: u32 },
+    #[error("combined ROM priority {priority} cannot be represented by LaunchBox")]
+    CombinedRomPriorityTooLarge { priority: usize },
     #[error("import location is not a regular file: {path}")]
     LocationNotFile { path: PathBuf },
     #[error("import location is not a folder: {path}")]
@@ -1784,6 +2061,7 @@ mod tests {
             copy_files_with_same_name: false,
             copy_to_subfolders: false,
             combine_disc_sets: false,
+            combine_matching_titles: false,
             search_local_metadata: false,
             look_for_pdf_manuals: false,
             emulator_id: None,
@@ -2706,12 +2984,14 @@ mod tests {
                 .unwrap();
         assert_eq!(preview.rows.len(), 1);
         assert_eq!(preview.importable_count, 1);
-        assert_eq!(preview.rows[0].title, "Fixture Saga (USA)");
+        assert_eq!(preview.rows[0].title, "Fixture Saga");
         assert_eq!(preview.rows[0].disc, Some(1));
+        assert_eq!(preview.rows[0].version.as_deref(), Some("(USA)"));
+        assert_eq!(preview.rows[0].region.as_deref(), Some("North America"));
         assert_eq!(preview.rows[0].file_count(), 2);
         assert_eq!(preview.rows[0].companion_file_count(), 2);
         assert_eq!(preview.rows[0].transfer_file_count(), 4);
-        assert_eq!(preview.rows[0].additional_discs[0].disc, 2);
+        assert_eq!(preview.rows[0].additional_roms[0].disc, Some(2));
 
         let mut ids = ["disc-game", "disc-app-one", "disc-app-two"].into_iter();
         let report = execute_manual_import_with_ids(
@@ -2783,15 +3063,252 @@ mod tests {
         assert_eq!(
             applications
                 .iter()
-                .map(|application| (application.disc, application.priority))
+                .map(|application| (
+                    application.disc,
+                    application.priority,
+                    application.version.as_deref(),
+                    application.region.as_deref(),
+                ))
                 .collect::<Vec<_>>(),
-            vec![(Some(1), 1), (Some(2), 2)]
+            vec![
+                (Some(1), 1, Some("(USA)"), Some("North America")),
+                (Some(2), 2, Some("(USA)"), Some("North America")),
+            ]
         );
         assert_eq!(applications[0].application_path, game.application_path);
         assert!(applications.iter().all(|application| {
             application.use_emulator
                 && application.emulator_id.as_deref() == Some("fixture-emulator")
         }));
+    }
+
+    #[test]
+    fn metadata_resolved_matching_titles_become_selectable_version_applications() {
+        let (library, platform) = library();
+        configure_fixture_metadata(library.path());
+        configure_fixture_emulator(library.path());
+        let source_directory = tempfile::tempdir().unwrap();
+        let usa = source_directory.path().join("Fixture Saga (USA).rom");
+        let world = source_directory
+            .path()
+            .join("Fixture Saga (World) (Rev 1).rom");
+        fs::write(&usa, b"north american rom").unwrap();
+        fs::write(&world, b"world revision rom").unwrap();
+        let mut import_request = request(
+            vec![
+                ImportLocation {
+                    path: world.clone(),
+                    kind: ImportLocationKind::File,
+                },
+                ImportLocation {
+                    path: usa.clone(),
+                    kind: ImportLocationKind::File,
+                },
+            ],
+            ImportFilePolicy::Leave,
+        );
+        import_request.search_local_metadata = true;
+        import_request.combine_matching_titles = true;
+        import_request.emulator_id = Some("fixture-emulator".into());
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows.len(), 1);
+        assert_eq!(preview.importable_count, 1);
+        let row = &preview.rows[0];
+        assert_eq!(row.source_path, fs::canonicalize(&usa).unwrap());
+        assert_eq!(row.title, "Fixture Saga (USA)");
+        assert_eq!(row.version.as_deref(), Some("(USA)"));
+        assert_eq!(row.region.as_deref(), Some("North America"));
+        assert_eq!(row.file_count(), 2);
+        assert_eq!(
+            row.additional_roms[0].source_path,
+            fs::canonicalize(&world).unwrap()
+        );
+        assert_eq!(
+            row.additional_roms[0].version.as_deref(),
+            Some("(World) (Rev 1)")
+        );
+        assert_eq!(row.additional_roms[0].region.as_deref(), Some("World"));
+        assert!(row
+            .message
+            .contains("combined 2 matching-title ROMs as selectable versions"));
+
+        let mut ids = ["version-game", "version-app-usa", "version-app-world"].into_iter();
+        let report = execute_manual_import_with_ids(
+            library.path(),
+            &platform,
+            &HostPathResolver::default(),
+            selection(&preview),
+            || ids.next().unwrap().to_string(),
+        )
+        .unwrap();
+        assert_eq!(report.games.len(), 1);
+        assert_eq!(report.additional_applications.len(), 2);
+
+        let persisted = PlatformDocument::load(&platform).unwrap();
+        let game = persisted
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "version-game")
+            .unwrap();
+        assert_eq!(game.version.as_deref(), Some("(USA)"));
+        assert_eq!(game.region.as_deref(), Some("North America"));
+        assert_eq!(game.status.as_deref(), Some("Imported ROM"));
+        let applications = persisted
+            .library()
+            .additional_applications
+            .iter()
+            .filter(|application| application.game_id == "version-game")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            applications
+                .iter()
+                .map(|application| (
+                    application.name.as_str(),
+                    application.priority,
+                    application.version.as_deref(),
+                    application.region.as_deref(),
+                    application.developer.as_deref(),
+                    application.publisher.as_deref(),
+                    application.status.as_deref(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "Play (USA) Version...",
+                    1,
+                    Some("(USA)"),
+                    Some("North America"),
+                    Some("Fixture Forge"),
+                    Some("Fixture Press"),
+                    Some("Imported ROM"),
+                ),
+                (
+                    "Play (World) (Rev 1) Version...",
+                    2,
+                    Some("(World) (Rev 1)"),
+                    Some("World"),
+                    Some("Fixture Forge"),
+                    Some("Fixture Press"),
+                    Some("Imported ROM"),
+                ),
+            ]
+        );
+        assert_eq!(applications[0].application_path, game.application_path);
+        assert!(applications.iter().all(|application| {
+            application.use_emulator
+                && application.emulator_id.as_deref() == Some("fixture-emulator")
+                && application.disc.is_none()
+        }));
+    }
+
+    #[test]
+    fn exact_cleaned_titles_combine_without_metadata() {
+        let (library, _) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let europe = source_directory
+            .path()
+            .join("Unlisted Adventure (Europe).rom");
+        let usa = source_directory.path().join("Unlisted Adventure (USA).rom");
+        fs::write(&europe, b"europe").unwrap();
+        fs::write(&usa, b"usa").unwrap();
+        let mut import_request = request(
+            vec![
+                ImportLocation {
+                    path: usa,
+                    kind: ImportLocationKind::File,
+                },
+                ImportLocation {
+                    path: europe,
+                    kind: ImportLocationKind::File,
+                },
+            ],
+            ImportFilePolicy::Leave,
+        );
+        import_request.combine_matching_titles = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows.len(), 1);
+        assert_eq!(preview.rows[0].title, "Unlisted Adventure");
+        assert_eq!(preview.rows[0].version.as_deref(), Some("(Europe)"));
+        assert_eq!(preview.rows[0].region.as_deref(), Some("Europe"));
+        assert_eq!(preview.rows[0].additional_roms.len(), 1);
+        assert_eq!(
+            preview.rows[0].additional_roms[0].version.as_deref(),
+            Some("(USA)")
+        );
+        assert_eq!(
+            preview.rows[0].additional_roms[0].region.as_deref(),
+            Some("North America")
+        );
+    }
+
+    #[test]
+    fn ambiguous_metadata_rows_remain_separate_for_review() {
+        let (library, _) = library();
+        let metadata_path = configure_fixture_metadata(library.path());
+        let connection = rusqlite::Connection::open(metadata_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO Games VALUES (
+                    4343, 'Fixture Saga Collector (USA)', 'FIXTURE SAGA COLLECTOR',
+                    NULL, 2004, 'Collector overview', 4, 'Released', 0, NULL,
+                    4.0, NULL, 'Fixture Console', 'E10+', 'Role-Playing',
+                    'Collector Forge', 'Collector Press'
+                )",
+                [],
+            )
+            .unwrap();
+        let source_directory = tempfile::tempdir().unwrap();
+        let europe = source_directory.path().join("Fixture Sag (Europe).rom");
+        let usa = source_directory.path().join("Fixture Sag (USA).rom");
+        fs::write(&europe, b"europe").unwrap();
+        fs::write(&usa, b"usa").unwrap();
+        let mut import_request = request(
+            vec![
+                ImportLocation {
+                    path: usa,
+                    kind: ImportLocationKind::File,
+                },
+                ImportLocation {
+                    path: europe,
+                    kind: ImportLocationKind::File,
+                },
+            ],
+            ImportFilePolicy::Leave,
+        );
+        import_request.search_local_metadata = true;
+        import_request.combine_matching_titles = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows.len(), 2);
+        assert!(preview.rows.iter().all(|row| {
+            row.metadata.is_none()
+                && row.metadata_candidate_count == 2
+                && row.metadata_match_kind == Some(ManualImportMetadataMatchKind::Partial)
+                && row.additional_roms.is_empty()
+        }));
+    }
+
+    #[test]
+    fn filename_title_version_and_region_recovery_is_platform_neutral() {
+        let path = Path::new(r"C:\Roms\Fixture Saga (Japan, USA) (En) (Rev 2) (Disc 1 of 2).chd");
+        assert_eq!(derive_title(path, false), "Fixture Saga");
+        assert_eq!(
+            rom_version(path, false).as_deref(),
+            Some("(Japan, USA) (En) (Rev 2)")
+        );
+        assert_eq!(
+            rom_region(path, false).as_deref(),
+            Some("Japan, North America")
+        );
     }
 
     #[test]
@@ -2829,7 +3346,7 @@ mod tests {
         assert!(preview
             .rows
             .iter()
-            .all(|row| row.additional_discs.is_empty()));
+            .all(|row| row.additional_roms.is_empty()));
     }
 
     #[test]
