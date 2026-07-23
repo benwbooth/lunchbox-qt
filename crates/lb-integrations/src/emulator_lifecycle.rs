@@ -8,13 +8,16 @@ use thiserror::Error;
 
 pub const PCSX2_RELEASES_API: &str =
     "https://api.github.com/repos/PCSX2/pcsx2/releases?per_page=20";
+pub const XEMU_RELEASES_API: &str =
+    "https://api.github.com/repos/xemu-project/xemu/releases/latest";
 pub const MANAGED_INSTALL_MANIFEST_NAME: &str = ".launchbox-port-install.json";
 pub const MANAGED_INSTALL_MANIFEST_VERSION: u32 = 2;
 const LEGACY_MANAGED_INSTALL_MANIFEST_VERSION: u32 = 1;
 
-const GITHUB_ASSET_PREFIX: &str = "https://github.com/PCSX2/pcsx2/releases/download/";
-const MAX_RELEASE_CATALOG_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+const PCSX2_GITHUB_ASSET_PREFIX: &str = "https://github.com/PCSX2/pcsx2/releases/download/";
+const XEMU_GITHUB_ASSET_PREFIX: &str = "https://github.com/xemu-project/xemu/releases/download/";
+pub(crate) const MAX_RELEASE_CATALOG_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_MANAGED_FILES: usize = 16 * 1024;
 const DOWNLOAD_BUFFER_BYTES: usize = 128 * 1024;
@@ -248,7 +251,7 @@ impl ManagedEmulatorInstall {
         }
         let expected_executable = match (self.profile_id.as_str(), self.provider.as_str()) {
             ("pcsx2", "github:PCSX2/pcsx2") => {
-                validate_github_asset_url(&self.asset_url)?;
+                validate_pcsx2_github_asset_url(&self.asset_url)?;
                 if self.asset_fnv1a64.is_some() {
                     return Err(EmulatorLifecycleError::InvalidManifest {
                         message: "PCSX2 manifest unexpectedly contains an FNV hash".into(),
@@ -262,6 +265,58 @@ impl ManagedEmulatorInstall {
                             self.artifact_kind
                         ),
                     })?
+            }
+            ("xemu", "github:xemu-project/xemu") => {
+                validate_xemu_github_asset_url(&self.asset_url)?;
+                if self.asset_fnv1a64.is_some() {
+                    return Err(EmulatorLifecycleError::InvalidManifest {
+                        message: "Xemu manifest unexpectedly contains an FNV hash".into(),
+                    });
+                }
+                let (expected_executable, expected_asset_name) = match self.artifact_kind.as_str() {
+                    "windows_zip_x64" => (
+                        "xemu.exe",
+                        format!("xemu-{}-windows-x86_64.zip", self.version),
+                    ),
+                    "windows_zip_arm64" => (
+                        "xemu.exe",
+                        format!("xemu-{}-windows-arm64.zip", self.version),
+                    ),
+                    "linux_appimage_x64" => (
+                        "xemu.AppImage",
+                        format!("xemu-{}-x86_64.AppImage", self.version),
+                    ),
+                    "linux_appimage_arm64" => (
+                        "xemu.AppImage",
+                        format!("xemu-{}-aarch64.AppImage", self.version),
+                    ),
+                    "macos_universal_zip" => (
+                        "xemu.app/Contents/MacOS/xemu",
+                        format!("xemu-{}-macos-universal.zip", self.version),
+                    ),
+                    _ => {
+                        return Err(EmulatorLifecycleError::InvalidManifest {
+                            message: format!(
+                                "managed Xemu artifact kind is unknown: {}",
+                                self.artifact_kind
+                            ),
+                        });
+                    }
+                };
+                let expected_tag = format!("v{}", self.version);
+                let expected_url =
+                    format!("{XEMU_GITHUB_ASSET_PREFIX}{expected_tag}/{expected_asset_name}");
+                if self.tag != expected_tag
+                    || self.asset_name != expected_asset_name
+                    || self.asset_url != expected_url
+                {
+                    return Err(EmulatorLifecycleError::InvalidManifest {
+                        message:
+                            "managed Xemu release metadata does not match the exact official asset"
+                                .into(),
+                    });
+                }
+                expected_executable
             }
             ("bigpemu", "richwhitehouse:bigpemu") => {
                 validate_bigpemu_manifest_url(&self.asset_url, &self.asset_name)?;
@@ -475,7 +530,7 @@ pub struct GithubReleaseTransport;
 
 impl ReleaseTransport for GithubReleaseTransport {
     fn fetch_catalog(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>, EmulatorLifecycleError> {
-        if url != PCSX2_RELEASES_API {
+        if !matches!(url, PCSX2_RELEASES_API | XEMU_RELEASES_API) {
             return Err(EmulatorLifecycleError::UntrustedUrl {
                 url: url.to_string(),
             });
@@ -491,7 +546,7 @@ impl ReleaseTransport for GithubReleaseTransport {
         read_limited(
             response.body_mut().as_reader(),
             max_bytes,
-            "PCSX2 release catalog",
+            "GitHub emulator release catalog",
         )
     }
 
@@ -503,7 +558,7 @@ impl ReleaseTransport for GithubReleaseTransport {
         progress: &mut dyn FnMut(u64, u64),
         should_cancel: &dyn Fn() -> bool,
     ) -> Result<DownloadReceipt, EmulatorLifecycleError> {
-        validate_github_asset_url(url)?;
+        validate_known_github_asset_url(url)?;
         if should_cancel() {
             return Err(EmulatorLifecycleError::Cancelled);
         }
@@ -554,7 +609,7 @@ impl ReleaseTransport for FileReleaseTransport {
             path: path.clone(),
             source,
         })?;
-        read_limited(source, max_bytes, "PCSX2 fixture release catalog")
+        read_limited(source, max_bytes, "emulator fixture release catalog")
     }
 
     fn download(
@@ -616,7 +671,7 @@ pub fn select_pcsx2_release(
             continue;
         };
         validate_asset_name(&asset.name)?;
-        validate_github_asset_url(&asset.browser_download_url)?;
+        validate_pcsx2_github_asset_url(&asset.browser_download_url)?;
         let digest = asset
             .digest
             .as_deref()
@@ -666,7 +721,7 @@ pub fn download_pcsx2_release(
     progress: &mut dyn FnMut(u64, u64),
     should_cancel: &dyn Fn() -> bool,
 ) -> Result<DownloadReceipt, EmulatorLifecycleError> {
-    validate_github_asset_url(&offer.asset_url)?;
+    validate_pcsx2_github_asset_url(&offer.asset_url)?;
     validate_asset_name(&offer.asset_name)?;
     validate_sha256(&offer.asset_sha256)?;
     if offer.asset_byte_len == 0 || offer.asset_byte_len > MAX_ARTIFACT_BYTES {
@@ -703,6 +758,12 @@ pub fn read_managed_pcsx2_install(
     install_directory: &Path,
 ) -> Result<Option<ManagedInstallAudit>, EmulatorLifecycleError> {
     read_managed_emulator_install(install_directory, "pcsx2", "github:PCSX2/pcsx2")
+}
+
+pub fn read_managed_xemu_install(
+    install_directory: &Path,
+) -> Result<Option<ManagedInstallAudit>, EmulatorLifecycleError> {
+    read_managed_emulator_install(install_directory, "xemu", "github:xemu-project/xemu")
 }
 
 pub fn read_managed_emulator_install(
@@ -1020,7 +1081,7 @@ fn read_limited(
     Ok(bytes)
 }
 
-fn validate_asset_name(name: &str) -> Result<(), EmulatorLifecycleError> {
+pub(crate) fn validate_asset_name(name: &str) -> Result<(), EmulatorLifecycleError> {
     if name.is_empty()
         || name
             != Path::new(name)
@@ -1038,8 +1099,11 @@ fn validate_asset_name(name: &str) -> Result<(), EmulatorLifecycleError> {
     Ok(())
 }
 
-fn validate_github_asset_url(url: &str) -> Result<(), EmulatorLifecycleError> {
-    if !url.starts_with(GITHUB_ASSET_PREFIX)
+fn validate_github_asset_url(
+    url: &str,
+    trusted_prefix: &str,
+) -> Result<(), EmulatorLifecycleError> {
+    if !url.starts_with(trusted_prefix)
         || url.contains(['\r', '\n'])
         || url
             .split('?')
@@ -1054,6 +1118,22 @@ fn validate_github_asset_url(url: &str) -> Result<(), EmulatorLifecycleError> {
         });
     }
     Ok(())
+}
+
+fn validate_pcsx2_github_asset_url(url: &str) -> Result<(), EmulatorLifecycleError> {
+    validate_github_asset_url(url, PCSX2_GITHUB_ASSET_PREFIX)
+}
+
+pub(crate) fn validate_xemu_github_asset_url(url: &str) -> Result<(), EmulatorLifecycleError> {
+    validate_github_asset_url(url, XEMU_GITHUB_ASSET_PREFIX)
+}
+
+fn validate_known_github_asset_url(url: &str) -> Result<(), EmulatorLifecycleError> {
+    if url.starts_with(PCSX2_GITHUB_ASSET_PREFIX) {
+        validate_pcsx2_github_asset_url(url)
+    } else {
+        validate_xemu_github_asset_url(url)
+    }
 }
 
 fn validate_bigpemu_manifest_url(
@@ -1085,7 +1165,7 @@ fn validate_fnv1a64(hash: &str) -> Result<(), EmulatorLifecycleError> {
     Ok(())
 }
 
-fn validate_sha256(digest: &str) -> Result<(), EmulatorLifecycleError> {
+pub(crate) fn validate_sha256(digest: &str) -> Result<(), EmulatorLifecycleError> {
     if digest.len() != 64
         || !digest
             .bytes()
@@ -1126,17 +1206,17 @@ pub enum EmulatorLifecycleError {
         os: &'static str,
         architecture: &'static str,
     },
-    #[error("could not find a compatible PCSX2 release for {artifact_kind}")]
+    #[error("could not find a compatible emulator release for {artifact_kind}")]
     NoCompatibleRelease { artifact_kind: &'static str },
-    #[error("PCSX2 release catalog is invalid: {message}")]
+    #[error("emulator release catalog is invalid: {message}")]
     InvalidCatalog { message: String },
-    #[error("PCSX2 release asset {asset} has no GitHub SHA-256 digest")]
+    #[error("emulator release asset {asset} has no GitHub SHA-256 digest")]
     MissingDigest { asset: String },
-    #[error("PCSX2 release asset name is unsafe: {name}")]
+    #[error("emulator release asset name is unsafe: {name}")]
     UnsafeAssetName { name: String },
     #[error("refusing an untrusted emulator release URL: {url}")]
     UntrustedUrl { url: String },
-    #[error("PCSX2 release asset {asset} has invalid size {byte_len}")]
+    #[error("emulator release asset {asset} has invalid size {byte_len}")]
     InvalidAssetSize { asset: String, byte_len: u64 },
     #[error("invalid lowercase SHA-256 digest: {digest}")]
     InvalidDigest { digest: String },
@@ -1482,6 +1562,74 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn managed_xemu_manifest_requires_the_official_provider_and_exact_kind() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("xemu.AppImage");
+        fs::write(&executable, b"xemu fixture").unwrap();
+        let receipt = file_receipt(&executable).unwrap();
+        let manifest = ManagedEmulatorInstall::from_release(
+            "xemu".into(),
+            "github:xemu-project/xemu".into(),
+            "xemu-id".into(),
+            "0.8.136".into(),
+            "v0.8.136".into(),
+            false,
+            "linux_appimage_x64".into(),
+            "xemu-0.8.136-x86_64.AppImage".into(),
+            "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-x86_64.AppImage".into(),
+            receipt.byte_len,
+            receipt.sha256.clone(),
+            None,
+            "xemu.AppImage".into(),
+            &receipt,
+            vec![ManagedInstalledFile::new(Path::new("xemu.AppImage"), &receipt).unwrap()],
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join(MANAGED_INSTALL_MANIFEST_NAME),
+            manifest.to_json_bytes().unwrap(),
+        )
+        .unwrap();
+        let audit = read_managed_xemu_install(directory.path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(audit.executable_state, ManagedExecutableState::Valid);
+        assert!(audit.safe_to_remove());
+
+        let mut wrong_kind = manifest.clone();
+        wrong_kind.artifact_kind = "linux_appimage".into();
+        assert!(matches!(
+            wrong_kind.validate(),
+            Err(EmulatorLifecycleError::InvalidManifest { .. })
+        ));
+        let mut wrong_asset = manifest.clone();
+        wrong_asset.asset_name = "xemu-latest-x86_64.AppImage".into();
+        assert!(matches!(
+            wrong_asset.validate(),
+            Err(EmulatorLifecycleError::InvalidManifest { .. })
+        ));
+        let mut wrong_tag = manifest.clone();
+        wrong_tag.tag = "latest".into();
+        assert!(matches!(
+            wrong_tag.validate(),
+            Err(EmulatorLifecycleError::InvalidManifest { .. })
+        ));
+        let mut wrong_url_name = manifest.clone();
+        wrong_url_name.asset_url =
+            "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu.AppImage".into();
+        assert!(matches!(
+            wrong_url_name.validate(),
+            Err(EmulatorLifecycleError::InvalidManifest { .. })
+        ));
+        let mut untrusted = manifest;
+        untrusted.asset_url = "https://example.com/xemu-0.8.136-x86_64.AppImage".into();
+        assert!(matches!(
+            untrusted.validate(),
+            Err(EmulatorLifecycleError::UntrustedUrl { .. })
+        ));
+    }
+
     #[cfg(unix)]
     #[test]
     fn fixture_manifest_and_executable_symlinks_are_refused() {
@@ -1550,7 +1698,7 @@ mod tests {
                     {
                         "name": linux_name,
                         "browser_download_url": format!(
-                            "{GITHUB_ASSET_PREFIX}v2.7.492/{linux_name}"
+                            "{PCSX2_GITHUB_ASSET_PREFIX}v2.7.492/{linux_name}"
                         ),
                         "size": linux_bytes.len(),
                         "digest": format!("sha256:{:x}", Sha256::digest(linux_bytes))
@@ -1558,7 +1706,7 @@ mod tests {
                     {
                         "name": windows_symbols,
                         "browser_download_url": format!(
-                            "{GITHUB_ASSET_PREFIX}v2.7.492/{windows_symbols}"
+                            "{PCSX2_GITHUB_ASSET_PREFIX}v2.7.492/{windows_symbols}"
                         ),
                         "size": 7,
                         "digest": format!("sha256:{:x}", Sha256::digest(b"symbols"))
@@ -1566,7 +1714,7 @@ mod tests {
                     {
                         "name": windows_name,
                         "browser_download_url": format!(
-                            "{GITHUB_ASSET_PREFIX}v2.7.492/{windows_name}"
+                            "{PCSX2_GITHUB_ASSET_PREFIX}v2.7.492/{windows_name}"
                         ),
                         "size": windows_bytes.len(),
                         "digest": format!("sha256:{:x}", Sha256::digest(windows_bytes))
@@ -1574,7 +1722,7 @@ mod tests {
                     {
                         "name": macos_name,
                         "browser_download_url": format!(
-                            "{GITHUB_ASSET_PREFIX}v2.7.492/{macos_name}"
+                            "{PCSX2_GITHUB_ASSET_PREFIX}v2.7.492/{macos_name}"
                         ),
                         "size": 5,
                         "digest": format!("sha256:{:x}", Sha256::digest(b"macos"))

@@ -262,7 +262,7 @@ then sends a selected candidate through the full typed editor with recovered
 13.27 defaults and shared reverse host-path conversion. Deterministic
 deduplication, the Unix `dolphin` name collision, existing platform defaults,
 candidate immutability, exact XML backup, and binary-directory isolation are
-tested. The next `RUN-003` slice implements PCSX2 as the first managed provider:
+tested. The first managed `RUN-003` provider is PCSX2:
 the recovered first-compatible-release policy drives exact official GitHub
 asset selection; size, URL, name, and SHA-256 are checked during a bounded
 streamed download; cancellation precedes all mutation; and the verified
@@ -282,7 +282,14 @@ publisher page; published byte counts and FNV-1a hashes plus local SHA-256 are
 checked; ZIP and bounded two-stage tar.gz extraction share the safe member
 boundary; the optional desktop helper is excluded; and install, update, repair,
 stale-file cleanup, removal, mappings, and executable modes are transactional.
-Other emulator providers, dependencies,
+Xemu is the third provider: exact official Windows x64/ARM64 ZIP, Linux
+x64/ARM64 AppImage, and signed universal macOS ZIP identities are modeled;
+debug, unsigned, moving-alias, duplicate, missing-digest, and untrusted assets
+are refused; byte count and SHA-256 are mandatory; ZIP layouts and bundle
+permissions are preserved through the shared safe extraction boundary; and
+install, update, repair, reference-gated removal, recovery copies, Xbox
+registration, executable mode, and user configuration/BIOS retention are
+transactional. Other emulator providers, dependencies,
 cores, automatic update policy, and native macOS runtime validation remain open
 under `RUN-003`. The first three `RUN-004` adapters audit the complete recovered
 PCSX2 BIOS group of 73 alternatives, Xemu's three required boot-ROM/HDD/

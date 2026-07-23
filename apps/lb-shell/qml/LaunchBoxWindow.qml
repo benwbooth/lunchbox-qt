@@ -5162,7 +5162,7 @@ ApplicationWindow {
 
             Label {
                 Layout.fillWidth: true
-                text: "Emulator definitions and per-platform mappings are stored in Data/Emulators.xml. Manual edits keep application paths as lexical LaunchBox values. The reviewed PCSX2 and BigPEmu workflows can separately install, update, repair, or remove verified official portable builds."
+                text: "Emulator definitions and per-platform mappings are stored in Data/Emulators.xml. Manual edits keep application paths as lexical LaunchBox values. The reviewed PCSX2, BigPEmu, and Xemu workflows can separately install, update, repair, or remove verified official portable builds."
                 wrapMode: Text.Wrap
                 color: "#7fbfff"
             }
@@ -5241,6 +5241,18 @@ ApplicationWindow {
                              && !controller.write_conflict
                              && controller.pending_recovery_count === 0
                     onClicked: pcsx2InstallManager.prepareBigPEmu()
+                }
+                Button {
+                    text: "Manage Xemu"
+                    enabled: !controller.loading && !controller.import_scanning
+                             && !controller.emulator_discovery_scanning
+                             && !controller.emulator_bios_scanning
+                             && !controller.emulator_release_checking
+                             && !controller.emulator_installing
+                             && !controller.writing && !controller.launching
+                             && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: pcsx2InstallManager.prepareXemu()
                 }
                 Button {
                     text: "Edit"
@@ -5416,7 +5428,8 @@ ApplicationWindow {
         standardButtons: Dialog.Close
         property string profileId: "pcsx2"
         property string displayName: profileId === "bigpemu"
-                                     ? "BigPEmu" : "PCSX2"
+                                     ? "BigPEmu"
+                                     : (profileId === "xemu" ? "Xemu" : "PCSX2")
         property var review: null
         property var managedReview: null
         property bool releaseCheckPending: false
@@ -5432,22 +5445,30 @@ ApplicationWindow {
                           ? managed : null
         }
 
-        function prepare() {
-            profileId = "pcsx2"
+        function prepareProfile(targetProfile) {
+            profileId = targetProfile
             review = null
             managedReview = null
             releaseCheckPending = true
             open()
-            controller.review_managed_pcsx2()
+            if (profileId === "bigpemu")
+                controller.review_managed_bigpemu()
+            else if (profileId === "xemu")
+                controller.review_managed_xemu()
+            else
+                controller.review_managed_pcsx2()
+        }
+
+        function prepare() {
+            prepareProfile("pcsx2")
         }
 
         function prepareBigPEmu() {
-            profileId = "bigpemu"
-            review = null
-            managedReview = null
-            releaseCheckPending = true
-            open()
-            controller.review_managed_bigpemu()
+            prepareProfile("bigpemu")
+        }
+
+        function prepareXemu() {
+            prepareProfile("xemu")
         }
 
         function smokeCheck() {
@@ -5482,6 +5503,8 @@ ApplicationWindow {
                     Qt.callLater(function() {
                         if (pcsx2InstallManager.profileId === "bigpemu")
                             controller.check_bigpemu_release()
+                        else if (pcsx2InstallManager.profileId === "xemu")
+                            controller.check_xemu_release()
                         else
                             controller.check_pcsx2_release()
                     })
@@ -5498,7 +5521,9 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 text: pcsx2InstallManager.profileId === "bigpemu"
                       ? "This provider checks Rich Whitehouse's official BigPEmu release page, selects the exact Windows or Linux artifact for this host, verifies its published byte count and 64-bit FNV-1a hash, computes SHA-256 locally, safely extracts it, excludes the optional Linux make_desktop.sh helper, and commits every owned path, an ownership manifest, and Data/Emulators.xml together. It never invokes a package script or downloaded executable during installation."
-                      : "This provider checks PCSX2/pcsx2 on GitHub, selects the exact native artifact, verifies GitHub's SHA-256 digest and byte count, then commits every portable artifact path, portable.ini, an ownership manifest, and Data/Emulators.xml together. It never runs the downloaded artifact during installation."
+                      : (pcsx2InstallManager.profileId === "xemu"
+                         ? "This provider checks xemu-project/xemu's official latest GitHub release, selects only the exact stable Windows or Linux asset or signed universal macOS asset for this host, verifies GitHub's SHA-256 digest and byte count, safely extracts ZIP bundles, and commits every owned path, an ownership manifest, and Data/Emulators.xml together. Debug, unsigned, and moving-alias assets are rejected, and no downloaded executable is run during installation."
+                         : "This provider checks PCSX2/pcsx2 on GitHub, selects the exact native artifact, verifies GitHub's SHA-256 digest and byte count, then commits every portable artifact path, portable.ini, an ownership manifest, and Data/Emulators.xml together. It never runs the downloaded artifact during installation.")
                 wrapMode: Text.Wrap
                 color: "#7fbfff"
             }
@@ -5523,7 +5548,10 @@ ApplicationWindow {
                                + release.version
                                + (pcsx2InstallManager.profileId === "pcsx2"
                                   ? (release.prerelease
-                                     ? " · nightly" : " · stable") : "")
+                                     ? " · nightly" : " · stable")
+                                  : (pcsx2InstallManager.profileId === "xemu"
+                                     ? (release.prerelease
+                                        ? " · prerelease" : " · stable") : ""))
                                + " · " + pcsx2InstallManager.actionLabel()
                     }
                     color: pcsx2InstallManager.review !== null
@@ -5537,7 +5565,8 @@ ApplicationWindow {
                              && !controller.emulator_managed_checking
                              && !controller.emulator_installing
                              && !controller.writing
-                    onClicked: pcsx2InstallManager.prepare()
+                    onClicked: pcsx2InstallManager.prepareProfile(
+                                   pcsx2InstallManager.profileId)
                 }
             }
             Label {
@@ -5564,7 +5593,7 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 visible: pcsx2InstallManager.review !== null
-                         && pcsx2InstallManager.profileId === "pcsx2"
+                         && pcsx2InstallManager.profileId !== "bigpemu"
                 text: pcsx2InstallManager.review === null ? ""
                       : "SHA-256: "
                         + pcsx2InstallManager.review.release.asset_sha256
@@ -5601,6 +5630,15 @@ ApplicationWindow {
                          && pcsx2InstallManager.review.release.artifact_kind
                             === "macos_qt_tar_xz"
                 text: "The official macOS bundle is x86-64. Intel Macs run it natively; Apple Silicon requires Rosetta 2. Native macOS execution still needs a real-host verification gate."
+                wrapMode: Text.Wrap
+                color: "#d29922"
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                         && pcsx2InstallManager.review.release.artifact_kind
+                            === "macos_universal_zip"
+                text: "The official Xemu bundle is universal for Intel and Apple Silicon. Its complete signed app structure is retained; native macOS execution still requires a real-host verification gate."
                 wrapMode: Text.Wrap
                 color: "#d29922"
             }
@@ -5673,6 +5711,8 @@ ApplicationWindow {
                     onClicked: {
                         if (pcsx2InstallManager.profileId === "bigpemu")
                             controller.install_bigpemu_release()
+                        else if (pcsx2InstallManager.profileId === "xemu")
+                            controller.install_xemu_release()
                         else
                             controller.install_pcsx2_release()
                     }
@@ -5720,6 +5760,8 @@ ApplicationWindow {
         onAccepted: {
             if (pcsx2InstallManager.profileId === "bigpemu")
                 controller.remove_managed_bigpemu()
+            else if (pcsx2InstallManager.profileId === "xemu")
+                controller.remove_managed_xemu()
             else
                 controller.remove_managed_pcsx2()
         }

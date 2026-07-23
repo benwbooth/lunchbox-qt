@@ -137,7 +137,7 @@ impl EmulatorDiscoveryProfile {
             Self::Dolphin => &["dolphin-emu"],
             Self::Pcsx2 => &["pcsx2-qt", "pcsx2"],
             Self::ScummVm => &["scummvm"],
-            Self::Xemu => &["xemu"],
+            Self::Xemu => &["xemu", "xemu.AppImage"],
         }
     }
 
@@ -470,6 +470,8 @@ mod tests {
         .expect("BigPEmu readme");
         let portable_xemu = if cfg!(target_os = "windows") {
             portable.join("Xemu/xemu.exe")
+        } else if cfg!(target_os = "linux") {
+            portable.join("Xemu/xemu.AppImage")
         } else {
             portable.join("Xemu/xemu")
         };

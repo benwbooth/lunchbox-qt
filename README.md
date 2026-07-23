@@ -198,8 +198,19 @@ member through the existing traversal/link/special-file boundary. The optional
 and launches the native executable directly. Install, update, repair, and
 removal share the complete ownership, conflict, recovery-copy, user-file
 retention, and lossless `Emulators.xml` transaction contract described above.
-Other managed emulators, dependencies, cores, and automatic update policy
-remain open. A
+Xemu is the third managed provider. It reads the official
+`xemu-project/xemu` GitHub release, selects only the exact versioned Windows
+x64/ARM64 ZIP, Linux x64/ARM64 AppImage, or signed universal macOS ZIP for the
+host, and rejects debug, unsigned, and moving-alias artifacts. Downloads require
+GitHub's byte count and SHA-256 digest. Linux installs a stable executable
+`xemu.AppImage`; Windows archives must contain root `xemu.exe` and
+`LICENSE.txt`; macOS archives must contain root `LICENSE.txt` and the exact
+`xemu.app/Contents/MacOS/xemu` bundle executable. ZIP members use the shared
+safe archive boundary, bundle permissions are retained, and install, update,
+repair, stale-owned-file cleanup, registration, and removal use the same
+recoverable ownership contract while retaining user configuration and BIOS
+files. Other managed emulators, dependencies, cores, and automatic update
+policy remain open. A
 configured PCSX2 entry also exposes a read-only BIOS audit using the complete
 recovered 13.27 group of 73 filename-and-MD5 alternatives. It resolves
 `portable.ini` and `inis/PCSX2.ini` or the host-native PCSX2 configuration root,

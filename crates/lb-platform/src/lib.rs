@@ -3479,5 +3479,21 @@ mod tests {
                 OsString::from("/launchbox/Games/game.iso"),
             ]
         );
+
+        let xemu = LaunchRequest::new("/launchbox/Emulators/Xemu/xemu.AppImage")
+            .arg("-full-screen")
+            .arg("-dvd_path")
+            .arg("/launchbox/Games/xbox.iso");
+        let (executable, arguments) = system_process_command(&xemu);
+        assert_eq!(executable, Path::new("appimage-run"));
+        assert_eq!(
+            arguments,
+            [
+                OsString::from("/launchbox/Emulators/Xemu/xemu.AppImage"),
+                OsString::from("-full-screen"),
+                OsString::from("-dvd_path"),
+                OsString::from("/launchbox/Games/xbox.iso"),
+            ]
+        );
     }
 }

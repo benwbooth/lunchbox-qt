@@ -240,6 +240,18 @@ pub mod qobject {
         fn remove_managed_bigpemu(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
+        fn check_xemu_release(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn review_managed_xemu(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn install_xemu_release(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn remove_managed_xemu(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
         fn cancel_emulator_install(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
@@ -948,10 +960,10 @@ use lb_integrations::emulator_discovery::{
 };
 use lb_integrations::emulator_lifecycle::{
     download_pcsx2_release, fetch_latest_pcsx2_release, file_receipt,
-    read_managed_emulator_install, read_managed_pcsx2_install, DownloadReceipt,
-    EmulatorLifecycleError, FileReleaseTransport, GithubReleaseTransport, ManagedEmulatorInstall,
-    ManagedExecutableState, ManagedInstallAudit, ManagedInstalledFile, Pcsx2ArtifactKind,
-    Pcsx2ReleaseOffer, ReleaseTransport, MANAGED_INSTALL_MANIFEST_NAME,
+    read_managed_emulator_install, read_managed_pcsx2_install, read_managed_xemu_install,
+    DownloadReceipt, EmulatorLifecycleError, FileReleaseTransport, GithubReleaseTransport,
+    ManagedEmulatorInstall, ManagedExecutableState, ManagedInstallAudit, ManagedInstalledFile,
+    Pcsx2ArtifactKind, Pcsx2ReleaseOffer, ReleaseTransport, MANAGED_INSTALL_MANIFEST_NAME,
 };
 use lb_integrations::pcsx2::{
     default_pcsx2_data_directories, discover_pcsx2_saves, extract_pcsx2_memory_card_save,
@@ -966,6 +978,10 @@ use lb_integrations::retroarch::{
 use lb_integrations::retroarch_bios::{
     audit_retroarch_bios, default_retroarch_configuration_paths, RetroArchBiosAudit,
     RetroArchBiosTarget,
+};
+use lb_integrations::xemu::{
+    download_xemu_release, fetch_latest_xemu_release, XemuArtifactKind, XemuReleaseOffer,
+    XEMU_PROVIDER,
 };
 use lb_integrations::xemu_bios::{
     audit_xemu_bios, default_xemu_data_directories, XemuBiosAudit, XemuBiosGroupKind,
@@ -1255,6 +1271,8 @@ pub struct LibraryControllerRust {
     pcsx2_remove_state: Option<Pcsx2RemoveState>,
     bigpemu_release_state: Option<BigPEmuReleaseState>,
     bigpemu_remove_state: Option<BigPEmuRemoveState>,
+    xemu_release_state: Option<XemuReleaseState>,
+    xemu_remove_state: Option<XemuRemoveState>,
     emulator_install_cancel: Option<Arc<AtomicBool>>,
     path_mapping_settings_file: Option<PathBuf>,
     path_mappings: HostPathMappings,
@@ -1951,6 +1969,26 @@ struct BigPEmuRemoveSuccess {
     recovery_files: Vec<PathBuf>,
 }
 
+struct XemuInstallSuccess {
+    emulator_write: EmulatorWriteSuccess,
+    manifest: ManagedEmulatorInstall,
+    executable: PathBuf,
+    installed_file_count: usize,
+    created_file_count: usize,
+    replaced_file_count: usize,
+    recovery_files: Vec<PathBuf>,
+}
+
+struct XemuRemoveSuccess {
+    configuration: EmulatorConfiguration,
+    removed_emulator: Option<Emulator>,
+    removed_mapping_count: usize,
+    emulator_document: PathBuf,
+    emulator_backup: Option<PathBuf>,
+    removed_file_count: usize,
+    recovery_files: Vec<PathBuf>,
+}
+
 struct CategoryWriteSuccess {
     name: String,
     categories: Vec<PlatformCategory>,
@@ -2470,6 +2508,78 @@ struct BigPEmuRemoveState {
 
 #[derive(Clone, Debug, Serialize)]
 struct BigPEmuRemovePayload {
+    version: u32,
+    profile_id: &'static str,
+    install_directory: String,
+    managed_install: Option<ManagedInstallAudit>,
+    emulator_id: Option<String>,
+    emulator_title: Option<String>,
+    reference_count: usize,
+    reference_summary: Option<String>,
+    owned_file_count: usize,
+    can_remove: bool,
+    blocked_reason: Option<String>,
+    read_only_check: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum XemuInstallAction {
+    Install,
+    Update,
+    Repair,
+    Current,
+    Blocked,
+}
+
+impl XemuInstallAction {
+    const fn can_install(self) -> bool {
+        matches!(self, Self::Install | Self::Update | Self::Repair)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct XemuReleaseState {
+    offer: XemuReleaseOffer,
+    install_directory: PathBuf,
+    executable_path: PathBuf,
+    existing_emulator_id: Option<String>,
+    existing_emulator_title: Option<String>,
+    managed_install: Option<ManagedInstallAudit>,
+    action: XemuInstallAction,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct XemuReleasePayload {
+    version: u32,
+    profile_id: &'static str,
+    emulator_name: &'static str,
+    release: XemuReleaseOffer,
+    install_directory: String,
+    executable_path: String,
+    existing_emulator_id: Option<String>,
+    existing_emulator_title: Option<String>,
+    managed_install: Option<ManagedInstallAudit>,
+    action: XemuInstallAction,
+    can_install: bool,
+    blocked_reason: Option<String>,
+    read_only_check: bool,
+}
+
+#[derive(Clone, Debug)]
+struct XemuRemoveState {
+    audit: Option<ManagedInstallAudit>,
+    emulator_id: Option<String>,
+    emulator_title: Option<String>,
+    reference_count: usize,
+    reference_summary: Option<String>,
+    can_remove: bool,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct XemuRemovePayload {
     version: u32,
     profile_id: &'static str,
     install_directory: String,
@@ -8407,6 +8517,396 @@ fn remove_managed_bigpemu(
     })
 }
 
+fn is_xemu_emulator(emulator: &Emulator, root: &Path, resolver: &HostPathResolver) -> bool {
+    if emulator.title.trim().eq_ignore_ascii_case("xemu") {
+        return true;
+    }
+    resolver
+        .resolve(root, &emulator.application_path)
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_ascii_lowercase)
+        })
+        .is_some_and(|name| name.contains("xemu"))
+}
+
+fn xemu_release_payload(state: &XemuReleaseState) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&XemuReleasePayload {
+        version: EMULATOR_RELEASE_PAYLOAD_VERSION,
+        profile_id: "xemu",
+        emulator_name: "Xemu",
+        release: state.offer.clone(),
+        install_directory: state.install_directory.to_string_lossy().into_owned(),
+        executable_path: state.executable_path.to_string_lossy().into_owned(),
+        existing_emulator_id: state.existing_emulator_id.clone(),
+        existing_emulator_title: state.existing_emulator_title.clone(),
+        managed_install: state.managed_install.clone(),
+        action: state.action,
+        can_install: state.action.can_install(),
+        blocked_reason: state.blocked_reason.clone(),
+        read_only_check: true,
+    })
+}
+
+fn inspect_xemu_release_state(
+    root: &Path,
+    configuration: Option<&EmulatorConfiguration>,
+    resolver: &HostPathResolver,
+    offer: XemuReleaseOffer,
+) -> Result<XemuReleaseState, EmulatorLifecycleError> {
+    let configured = configuration
+        .into_iter()
+        .flat_map(|configuration| &configuration.emulators)
+        .filter(|emulator| is_xemu_emulator(emulator, root, resolver))
+        .collect::<Vec<_>>();
+    if configured.len() > 1 {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message: format!(
+                "found {} configured Xemu entries; choose one explicitly before managed installation",
+                configured.len()
+            ),
+        });
+    }
+    let existing_emulator_id = configured.first().map(|emulator| emulator.id.clone());
+    let existing_emulator_title = configured.first().map(|emulator| emulator.title.clone());
+    let install_directory = root.join("Emulators/Xemu");
+    let executable_path = install_directory.join(offer.artifact_kind.executable_name());
+    let managed_install = read_managed_xemu_install(&install_directory)?;
+
+    let unsafe_install_directory = match fs::symlink_metadata(&install_directory) {
+        Ok(metadata) => !metadata.file_type().is_dir() || metadata.file_type().is_symlink(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(source) => {
+            return Err(EmulatorLifecycleError::Io {
+                path: install_directory,
+                source,
+            })
+        }
+    };
+    let (action, blocked_reason) = if unsafe_install_directory {
+        (
+            XemuInstallAction::Blocked,
+            Some("The portable Xemu install path is a symlink or non-directory entry.".into()),
+        )
+    } else if let Some(audit) = managed_install.as_ref() {
+        let unsafe_file = audit
+            .installed_files
+            .iter()
+            .find(|file| file.state == ManagedExecutableState::Unsafe);
+        let unreadable_file = audit
+            .installed_files
+            .iter()
+            .find(|file| file.state == ManagedExecutableState::Unreadable);
+        let repair_file = audit.installed_files.iter().find(|file| {
+            matches!(
+                file.state,
+                ManagedExecutableState::Missing | ManagedExecutableState::Modified
+            )
+        });
+        if audit.executable_state == ManagedExecutableState::Unsafe {
+            (
+                XemuInstallAction::Blocked,
+                Some("The managed Xemu executable is a symlink or non-regular entry.".into()),
+            )
+        } else if audit.executable_state == ManagedExecutableState::Unreadable {
+            (
+                XemuInstallAction::Blocked,
+                Some("The managed Xemu executable cannot be read safely.".into()),
+            )
+        } else if let Some(file) = unsafe_file {
+            (
+                XemuInstallAction::Blocked,
+                Some(format!(
+                    "Managed path {} is a symlink or non-regular entry.",
+                    file.relative_path
+                )),
+            )
+        } else if let Some(file) = unreadable_file {
+            (
+                XemuInstallAction::Blocked,
+                Some(format!(
+                    "Managed path {} cannot be read safely.",
+                    file.relative_path
+                )),
+            )
+        } else if !audit.ownership_manifest_current()
+            || audit.executable_state != ManagedExecutableState::Valid
+            || repair_file.is_some()
+        {
+            (XemuInstallAction::Repair, None)
+        } else if audit.update_available_for(
+            &offer.tag,
+            offer.artifact_kind.id(),
+            Some(&offer.asset_sha256),
+            None,
+        ) {
+            (XemuInstallAction::Update, None)
+        } else {
+            (XemuInstallAction::Current, None)
+        }
+    } else {
+        match fs::symlink_metadata(&executable_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (XemuInstallAction::Install, None)
+            }
+            Ok(_) => (
+                XemuInstallAction::Blocked,
+                Some(
+                    "The managed executable target already exists without a port-owned manifest."
+                        .into(),
+                ),
+            ),
+            Err(source) => {
+                return Err(EmulatorLifecycleError::Io {
+                    path: executable_path,
+                    source,
+                })
+            }
+        }
+    };
+    Ok(XemuReleaseState {
+        offer,
+        install_directory,
+        executable_path,
+        existing_emulator_id,
+        existing_emulator_title,
+        managed_install,
+        action,
+        blocked_reason,
+    })
+}
+
+fn inspect_managed_xemu_removal(
+    root: &Path,
+    configuration: Option<&EmulatorConfiguration>,
+    resolver: &HostPathResolver,
+) -> Result<XemuRemoveState, EmulatorWriteFailure> {
+    let install_directory = root.join("Emulators/Xemu");
+    validate_managed_install_directory(root, &install_directory, "Xemu")?;
+    let audit = read_managed_xemu_install(&install_directory)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let Some(audit) = audit else {
+        return Ok(XemuRemoveState {
+            audit: None,
+            emulator_id: None,
+            emulator_title: None,
+            reference_count: 0,
+            reference_summary: None,
+            can_remove: false,
+            blocked_reason: Some(
+                "No port-owned Xemu install manifest exists in the portable directory.".into(),
+            ),
+        });
+    };
+    let emulator_id = audit.manifest.emulator_id.clone();
+    let emulator = emulator_id.as_deref().and_then(|emulator_id| {
+        configuration.and_then(|configuration| {
+            configuration
+                .emulators
+                .iter()
+                .find(|emulator| emulator.id.eq_ignore_ascii_case(emulator_id))
+        })
+    });
+    let references = match emulator_id.as_deref() {
+        Some(emulator_id) => find_emulator_references(root, emulator_id)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?,
+        None => Vec::new(),
+    };
+    let reference_summary =
+        (!references.is_empty()).then(|| summarize_emulator_references(&references));
+    let mut blocked_reason = None;
+    if !audit.ownership_manifest_current() {
+        blocked_reason = Some(
+            "This install uses a legacy manifest that does not enumerate every provider-owned file. Repair or update it before removal.".into(),
+        );
+    } else if let Some(file) = audit
+        .installed_files
+        .iter()
+        .find(|file| file.state != ManagedExecutableState::Valid)
+    {
+        blocked_reason = Some(format!(
+            "Owned file {} is {}; repair the managed install before removal.",
+            file.relative_path,
+            managed_file_state_label(file.state)
+        ));
+    } else if configuration.is_none() {
+        blocked_reason = Some("The loaded library has no readable emulator configuration.".into());
+    } else if let Some(emulator) = emulator {
+        match resolver.resolve(root, &emulator.application_path) {
+            Ok(path) if path == audit.executable_path => {}
+            Ok(path) => {
+                blocked_reason = Some(format!(
+                    "Emulator {} now points to {} instead of the managed executable.",
+                    emulator.id,
+                    path.display()
+                ));
+            }
+            Err(error) => {
+                blocked_reason = Some(format!(
+                    "The managed emulator application path cannot be resolved safely: {error}"
+                ));
+            }
+        }
+    }
+    if blocked_reason.is_none() && !references.is_empty() {
+        blocked_reason = Some(format!(
+            "The managed emulator is pinned by {} dependent record(s): {}",
+            references.len(),
+            reference_summary.as_deref().unwrap_or("unknown references")
+        ));
+    }
+    Ok(XemuRemoveState {
+        emulator_id,
+        emulator_title: emulator.map(|emulator| emulator.title.clone()),
+        reference_count: references.len(),
+        reference_summary,
+        can_remove: blocked_reason.is_none() && audit.safe_to_remove(),
+        blocked_reason,
+        audit: Some(audit),
+    })
+}
+
+fn xemu_remove_payload(root: &Path, state: &XemuRemoveState) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&XemuRemovePayload {
+        version: EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION,
+        profile_id: "xemu",
+        install_directory: root.join("Emulators/Xemu").to_string_lossy().into_owned(),
+        managed_install: state.audit.clone(),
+        emulator_id: state.emulator_id.clone(),
+        emulator_title: state.emulator_title.clone(),
+        reference_count: state.reference_count,
+        reference_summary: state.reference_summary.clone(),
+        owned_file_count: state
+            .audit
+            .as_ref()
+            .map_or(0, |audit| audit.installed_files.len().saturating_add(1)),
+        can_remove: state.can_remove,
+        blocked_reason: state.blocked_reason.clone(),
+        read_only_check: true,
+    })
+}
+
+fn remove_managed_xemu(
+    root: PathBuf,
+    resolver: HostPathResolver,
+    reviewed: XemuRemoveState,
+) -> Result<XemuRemoveSuccess, EmulatorWriteFailure> {
+    if !reviewed.can_remove {
+        return Err(EmulatorWriteFailure::Other(
+            reviewed
+                .blocked_reason
+                .unwrap_or_else(|| "The managed Xemu install is not safe to remove.".into()),
+        ));
+    }
+    let install_directory = root.join("Emulators/Xemu");
+    validate_managed_install_directory(&root, &install_directory, "Xemu")?;
+    let current = read_managed_xemu_install(&install_directory)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if current != reviewed.audit {
+        return Err(EmulatorWriteFailure::Conflict(
+            "Xemu managed files changed after the removal review.".into(),
+        ));
+    }
+    let audit = current.ok_or_else(|| {
+        EmulatorWriteFailure::Conflict(
+            "The Xemu ownership manifest disappeared after the removal review.".into(),
+        )
+    })?;
+    if !audit.safe_to_remove() {
+        return Err(EmulatorWriteFailure::Conflict(
+            "A managed Xemu file is no longer exact after the removal review.".into(),
+        ));
+    }
+    let emulator_id = audit.manifest.emulator_id.as_deref().ok_or_else(|| {
+        EmulatorWriteFailure::Other(
+            "The Xemu ownership manifest has no managed emulator ID.".into(),
+        )
+    })?;
+    let references = find_emulator_references(&root, emulator_id)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if !references.is_empty() {
+        return Err(EmulatorWriteFailure::Referenced(references));
+    }
+
+    let emulator_document = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&emulator_document)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let before = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let managed_emulator = before
+        .emulators
+        .iter()
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(emulator_id))
+        .cloned();
+    if let Some(emulator) = managed_emulator.as_ref() {
+        let application_path = resolver
+            .resolve(&root, &emulator.application_path)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        if application_path != audit.executable_path {
+            return Err(EmulatorWriteFailure::Conflict(format!(
+                "Emulator {} no longer points to the managed Xemu executable.",
+                emulator.id
+            )));
+        }
+    }
+    let removed = managed_emulator
+        .as_ref()
+        .map(|_| {
+            document
+                .remove_emulator(emulator_id)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+        })
+        .transpose()?;
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_emulator_transaction_error)?;
+    if removed.is_some() {
+        transaction
+            .stage_auxiliary(&document)
+            .map_err(classify_emulator_transaction_error)?;
+    }
+    for file in &audit.installed_files {
+        let expected = FileRevision::read(&file.path)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        transaction
+            .stage_file_delete_with_revision(&file.path, expected)
+            .map_err(classify_emulator_transaction_error)?;
+    }
+    let manifest_revision = FileRevision::read(&audit.manifest_path)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    transaction
+        .stage_file_delete_with_revision(&audit.manifest_path, manifest_revision)
+        .map_err(classify_emulator_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_emulator_transaction_error)?;
+    let emulator_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == emulator_document)
+        .map(|write| write.backup.clone());
+    let recovery_files = report
+        .deleted_targets
+        .iter()
+        .map(|deleted| deleted.backup.clone())
+        .collect::<Vec<_>>();
+    Ok(XemuRemoveSuccess {
+        configuration,
+        removed_emulator: removed.as_ref().map(|removed| removed.emulator.clone()),
+        removed_mapping_count: removed.map_or(0, |removed| removed.platforms.len()),
+        emulator_document,
+        emulator_backup,
+        removed_file_count: report.deleted_targets.len(),
+        recovery_files,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EmulatorBiosAdapter {
     Pcsx2,
@@ -8631,6 +9131,50 @@ fn managed_bigpemu_emulator_payload(
         .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
     let candidate = DiscoveredEmulatorExecutable {
         profile: EmulatorDiscoveryProfile::BigPEmu,
+        executable: executable_path.to_path_buf(),
+        source: EmulatorDiscoverySource::PortableLibrary,
+        installed_version: None,
+    };
+    let serialized = discovered_emulator_payload(
+        &candidate,
+        root,
+        resolver,
+        platform_names,
+        Some(&configuration),
+    )?;
+    let mut payload = parse_emulator_edit_payload(None, &serialized, platform_names)
+        .map_err(EmulatorWriteFailure::Other)?;
+    payload.emulator.application_path = stored_path;
+    Ok(payload)
+}
+
+fn managed_xemu_emulator_payload(
+    root: &Path,
+    resolver: &HostPathResolver,
+    platform_names: &[String],
+    existing_emulator_id: Option<&str>,
+    executable_path: &Path,
+) -> Result<EmulatorEditPayload, EmulatorWriteFailure> {
+    let stored_path = resolver
+        .stored_path_for_host_path(root, executable_path)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if let Some(emulator_id) = existing_emulator_id {
+        let serialized = load_emulator_edit_payload(root, emulator_id, platform_names)?;
+        let mut payload =
+            parse_emulator_edit_payload(Some(emulator_id), &serialized, platform_names)
+                .map_err(EmulatorWriteFailure::Other)?;
+        payload.emulator.application_path = stored_path;
+        return Ok(payload);
+    }
+
+    let source = emulator_document_path(root)?;
+    let document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let candidate = DiscoveredEmulatorExecutable {
+        profile: EmulatorDiscoveryProfile::Xemu,
         executable: executable_path.to_path_buf(),
         source: EmulatorDiscoverySource::PortableLibrary,
         installed_version: None,
@@ -9383,11 +9927,485 @@ fn install_managed_bigpemu(
     })
 }
 
+fn install_managed_xemu(
+    root: PathBuf,
+    resolver: HostPathResolver,
+    platform_names: Vec<String>,
+    state: XemuReleaseState,
+    transport: Box<dyn ReleaseTransport>,
+    cancel: Arc<AtomicBool>,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<XemuInstallSuccess, EmulatorWriteFailure> {
+    if !state.action.can_install() {
+        return Err(EmulatorWriteFailure::Other(
+            state
+                .blocked_reason
+                .unwrap_or_else(|| "Xemu has no install or update action to apply.".into()),
+        ));
+    }
+    let temporary = tempfile::Builder::new()
+        .prefix(".lbport-xemu-download-")
+        .tempdir_in(&root)
+        .map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "could not create a private Xemu download directory: {error}"
+            ))
+        })?;
+    let artifact = temporary.path().join(&state.offer.asset_name);
+    let download = download_xemu_release(
+        transport.as_ref(),
+        &state.offer,
+        &artifact,
+        &mut progress,
+        &|| cancel.load(Ordering::Relaxed),
+    )
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EmulatorWriteFailure::Other(
+            EmulatorLifecycleError::Cancelled.to_string(),
+        ));
+    }
+
+    let mut install_sources =
+        prepare_xemu_artifact(&root, &state.offer, &artifact, temporary.path())?;
+    install_sources.sort_by(|left, right| left.relative_target.cmp(&right.relative_target));
+    if install_sources.is_empty() {
+        return Err(EmulatorWriteFailure::Other(
+            "The verified Xemu artifact contained no installable files.".into(),
+        ));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EmulatorWriteFailure::Other(
+            EmulatorLifecycleError::Cancelled.to_string(),
+        ));
+    }
+
+    revalidate_xemu_install_precondition(&state)?;
+    let executable_source = install_sources
+        .iter()
+        .find(|file| file.relative_target == Path::new(state.offer.artifact_kind.executable_name()))
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(format!(
+                "The verified Xemu artifact did not contain {}.",
+                state.offer.artifact_kind.executable_name()
+            ))
+        })?;
+    let executable_receipt = file_receipt(&executable_source.source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let payload = managed_xemu_emulator_payload(
+        &root,
+        &resolver,
+        &platform_names,
+        state.existing_emulator_id.as_deref(),
+        &state.executable_path,
+    )?;
+    let mut installed_files = install_sources
+        .iter()
+        .map(|file| {
+            let receipt = file_receipt(&file.source)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+            ManagedInstalledFile::new(&file.relative_target, &receipt)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    installed_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let manifest = ManagedEmulatorInstall::from_release(
+        "xemu".into(),
+        XEMU_PROVIDER.into(),
+        payload.emulator.id.clone(),
+        state.offer.version.clone(),
+        state.offer.tag.clone(),
+        state.offer.prerelease,
+        state.offer.artifact_kind.id().into(),
+        state.offer.asset_name.clone(),
+        state.offer.asset_url.clone(),
+        state.offer.asset_byte_len,
+        download.sha256,
+        None,
+        state.offer.artifact_kind.executable_name().into(),
+        &executable_receipt,
+        installed_files,
+    )
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let manifest_bytes = manifest
+        .to_json_bytes()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+
+    let source = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let operation = if let Some(existing_id) = state.existing_emulator_id.as_deref() {
+        let emulator = payload.emulator.clone();
+        let platform_edits = emulator_platform_records(&emulator.id, payload.platforms);
+        document
+            .set_emulator(existing_id, emulator, platform_edits)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        EmulatorWriteOperation::Edit
+    } else {
+        let emulator = payload.emulator.clone();
+        let platforms = emulator_platform_records(&emulator.id, payload.platforms)
+            .into_iter()
+            .map(|edit| edit.record)
+            .collect();
+        document
+            .add_emulator(emulator, platforms)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        EmulatorWriteOperation::Create
+    };
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulator = configuration
+        .emulators
+        .iter()
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(&payload.emulator.id))
+        .cloned()
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "Xemu disappeared from the candidate Emulators.xml document.".into(),
+            )
+        })?;
+    let mapping_count = configuration
+        .platforms
+        .iter()
+        .filter(|mapping| mapping.emulator_id.eq_ignore_ascii_case(&emulator.id))
+        .count();
+
+    let mut created_directories = Vec::new();
+    if let Err(error) = prepare_install_directories(
+        &root,
+        &state.install_directory,
+        &install_sources,
+        &mut created_directories,
+        "Xemu",
+    ) {
+        remove_created_empty_directories(&created_directories);
+        return Err(error);
+    }
+    let commit = (|| {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EmulatorWriteFailure::Other(
+                EmulatorLifecycleError::Cancelled.to_string(),
+            ));
+        }
+        let mut transaction =
+            LibraryTransaction::new(&root).map_err(classify_emulator_transaction_error)?;
+        transaction
+            .stage_auxiliary(&document)
+            .map_err(classify_emulator_transaction_error)?;
+        let initial_install = state.managed_install.is_none();
+        let previously_owned_paths = state
+            .managed_install
+            .as_ref()
+            .map(|audit| {
+                audit
+                    .installed_files
+                    .iter()
+                    .map(|file| managed_relative_path_key(&file.relative_path))
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        for file in &install_sources {
+            let target = state.install_directory.join(&file.relative_target);
+            let source_revision = FileRevision::read(&file.source)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+            let relative_key = managed_relative_path_key(
+                &file.relative_target.to_string_lossy().replace('\\', "/"),
+            );
+            let previously_owned = previously_owned_paths.contains(&relative_key)
+                || state.managed_install.as_ref().is_some_and(|audit| {
+                    !audit.ownership_manifest_current() && target == audit.executable_path
+                });
+            match fs::symlink_metadata(&target) {
+                Ok(metadata)
+                    if !initial_install
+                        && previously_owned
+                        && metadata.file_type().is_file()
+                        && !metadata.file_type().is_symlink() =>
+                {
+                    let target_revision = FileRevision::read(&target)
+                        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                    if file.preserve_permissions {
+                        transaction
+                            .stage_file_replace_with_revisions_preserving_permissions(
+                                &file.source,
+                                &target,
+                                source_revision,
+                                target_revision,
+                            )
+                            .map_err(classify_emulator_transaction_error)?;
+                    } else {
+                        transaction
+                            .stage_file_replace_with_revisions(
+                                &file.source,
+                                &target,
+                                source_revision,
+                                target_revision,
+                            )
+                            .map_err(classify_emulator_transaction_error)?;
+                    }
+                }
+                Ok(_) if initial_install || !previously_owned => {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing to overwrite unmanaged Xemu install path {}.",
+                        target.display()
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if file.preserve_permissions {
+                        transaction
+                            .stage_file_copy_with_revision_preserving_permissions(
+                                &file.source,
+                                &target,
+                                source_revision,
+                            )
+                            .map_err(classify_emulator_transaction_error)?;
+                    } else {
+                        transaction
+                            .stage_file_copy_with_revision(&file.source, &target, source_revision)
+                            .map_err(classify_emulator_transaction_error)?;
+                    }
+                }
+                Ok(_) => {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing unsafe Xemu install target {}.",
+                        target.display()
+                    )));
+                }
+                Err(error) => {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Could not inspect Xemu install target {}: {error}",
+                        target.display()
+                    )));
+                }
+            }
+        }
+        if let Some(previous) = state.managed_install.as_ref() {
+            let new_paths = manifest
+                .installed_files
+                .iter()
+                .map(|file| managed_relative_path_key(&file.relative_path))
+                .collect::<BTreeSet<_>>();
+            for file in &previous.installed_files {
+                if new_paths.contains(&managed_relative_path_key(&file.relative_path)) {
+                    continue;
+                }
+                if file.state != ManagedExecutableState::Valid {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing to remove stale managed path {} because it is {}.",
+                        file.path.display(),
+                        managed_file_state_label(file.state)
+                    )));
+                }
+                let expected = FileRevision::read(&file.path)
+                    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                transaction
+                    .stage_file_delete_with_revision(&file.path, expected)
+                    .map_err(classify_emulator_transaction_error)?;
+            }
+        }
+        let manifest_path = state.install_directory.join(MANAGED_INSTALL_MANIFEST_NAME);
+        if initial_install {
+            transaction
+                .stage_new_file_bytes(&manifest_path, manifest_bytes)
+                .map_err(classify_emulator_transaction_error)?;
+        } else {
+            stage_small_install_file(&mut transaction, &manifest_path, manifest_bytes, "Xemu")?;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EmulatorWriteFailure::Other(
+                EmulatorLifecycleError::Cancelled.to_string(),
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(classify_emulator_transaction_error)
+    })();
+    let report = match commit {
+        Ok(report) => report,
+        Err(error) => {
+            remove_created_empty_directories(&created_directories);
+            return Err(error);
+        }
+    };
+    let backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "Xemu install transaction reported no Emulators.xml backup.".into(),
+            )
+        })?;
+    let recovery_files = report
+        .writes
+        .iter()
+        .filter(|write| write.target != source)
+        .map(|write| write.backup.clone())
+        .chain(
+            report
+                .deleted_targets
+                .iter()
+                .map(|write| write.backup.clone()),
+        )
+        .collect::<Vec<_>>();
+    let created_file_count = report.created_targets.len();
+    let replaced_file_count = report
+        .writes
+        .iter()
+        .filter(|write| write.target != source)
+        .count();
+    Ok(XemuInstallSuccess {
+        emulator_write: EmulatorWriteSuccess {
+            operation,
+            emulator,
+            configuration,
+            source,
+            backup,
+            mapping_count,
+        },
+        manifest,
+        executable: state.executable_path,
+        installed_file_count: install_sources.len().saturating_add(1),
+        created_file_count,
+        replaced_file_count,
+        recovery_files,
+    })
+}
+
 #[derive(Clone, Debug)]
 struct PreparedInstallFile {
     source: PathBuf,
     relative_target: PathBuf,
     preserve_permissions: bool,
+}
+
+fn prepare_xemu_artifact(
+    root: &Path,
+    offer: &XemuReleaseOffer,
+    artifact: &Path,
+    temporary_root: &Path,
+) -> Result<Vec<PreparedInstallFile>, EmulatorWriteFailure> {
+    if !offer.artifact_kind.requires_extraction() {
+        make_file_executable(artifact).map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "Could not make the downloaded Xemu AppImage executable: {error}"
+            ))
+        })?;
+        return Ok(vec![PreparedInstallFile {
+            source: artifact.to_path_buf(),
+            relative_target: PathBuf::from(offer.artifact_kind.executable_name()),
+            preserve_permissions: true,
+        }]);
+    }
+
+    let extraction = temporary_root.join("xemu-extracted");
+    fs::create_dir(&extraction).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not create the Xemu extraction directory: {error}"
+        ))
+    })?;
+    let files = ArchiveExtractor::for_launchbox_root(root)
+        .extract_to_directory(artifact, &extraction)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let expected_executable = Path::new(offer.artifact_kind.executable_name());
+    let executable_matches = files
+        .iter()
+        .filter(|source| {
+            source
+                .strip_prefix(&extraction)
+                .ok()
+                .is_some_and(|relative| {
+                    if matches!(
+                        offer.artifact_kind,
+                        XemuArtifactKind::WindowsZipX64 | XemuArtifactKind::WindowsZipArm64
+                    ) {
+                        relative
+                            .parent()
+                            .is_some_and(|parent| parent.as_os_str().is_empty())
+                            && relative.file_name().is_some_and(|name| {
+                                name.to_string_lossy().eq_ignore_ascii_case("xemu.exe")
+                            })
+                    } else {
+                        relative == expected_executable
+                    }
+                })
+        })
+        .collect::<Vec<_>>();
+    let [executable] = executable_matches.as_slice() else {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "Expected exactly one root {} in the verified Xemu archive, found {}.",
+            expected_executable.display(),
+            executable_matches.len()
+        )));
+    };
+    let executable = (*executable).clone();
+    if !files.iter().any(|source| {
+        source
+            .strip_prefix(&extraction)
+            .ok()
+            .is_some_and(|relative| {
+                relative
+                    .parent()
+                    .is_some_and(|parent| parent.as_os_str().is_empty())
+                    && relative.file_name().is_some_and(|name| {
+                        name.to_string_lossy().eq_ignore_ascii_case("LICENSE.txt")
+                    })
+            })
+    }) {
+        return Err(EmulatorWriteFailure::Other(
+            "The verified Xemu archive has no root LICENSE.txt.".into(),
+        ));
+    }
+    make_file_executable(&executable).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not make the Xemu executable runnable: {error}"
+        ))
+    })?;
+
+    let preserve_bundle_permissions = offer.artifact_kind == XemuArtifactKind::MacosUniversalZip;
+    let mut prepared = Vec::with_capacity(files.len());
+    for source in files {
+        let relative_target = source
+            .strip_prefix(&extraction)
+            .map_err(|_| {
+                EmulatorWriteFailure::Other(format!(
+                    "Xemu archive member is outside its extraction root: {}",
+                    source.display()
+                ))
+            })?
+            .to_path_buf();
+        if relative_target.as_os_str().is_empty() {
+            return Err(EmulatorWriteFailure::Other(
+                "Xemu archive produced an empty member path.".into(),
+            ));
+        }
+        let reserved_root_metadata = relative_target.parent().is_some_and(|parent| {
+            parent.as_os_str().is_empty()
+                && relative_target.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .eq_ignore_ascii_case(MANAGED_INSTALL_MANIFEST_NAME)
+                })
+        });
+        if reserved_root_metadata {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "Xemu archive attempts to own reserved install metadata {}.",
+                relative_target.display()
+            )));
+        }
+        prepared.push(PreparedInstallFile {
+            preserve_permissions: preserve_bundle_permissions || source == executable,
+            source,
+            relative_target,
+        });
+    }
+    if prepared.is_empty() {
+        return Err(EmulatorWriteFailure::Other(
+            "The verified Xemu archive contained no installable files.".into(),
+        ));
+    }
+    Ok(prepared)
 }
 
 fn prepare_bigpemu_archive(
@@ -9884,6 +10902,24 @@ fn revalidate_bigpemu_install_precondition(
     if current.is_none() && fs::symlink_metadata(&state.executable_path).is_ok() {
         return Err(EmulatorWriteFailure::Conflict(
             "The managed BigPEmu executable target appeared after the release check.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn revalidate_xemu_install_precondition(
+    state: &XemuReleaseState,
+) -> Result<(), EmulatorWriteFailure> {
+    let current = read_managed_xemu_install(&state.install_directory)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if current != state.managed_install {
+        return Err(EmulatorWriteFailure::Conflict(
+            "Xemu install contents changed after the release check.".into(),
+        ));
+    }
+    if current.is_none() && fs::symlink_metadata(&state.executable_path).is_ok() {
+        return Err(EmulatorWriteFailure::Conflict(
+            "The managed Xemu executable target appeared after the release check.".into(),
         ));
     }
     Ok(())
@@ -16237,6 +17273,7 @@ impl qobject::LibraryController {
             let mut rust = self.as_mut().rust_mut();
             rust.pcsx2_remove_state = None;
             rust.bigpemu_remove_state = None;
+            rust.xemu_remove_state = None;
         }
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_emulator_managed_checking(true);
@@ -16369,6 +17406,7 @@ impl qobject::LibraryController {
             let mut rust = self.as_mut().rust_mut();
             rust.pcsx2_release_state = None;
             rust.bigpemu_release_state = None;
+            rust.xemu_release_state = None;
         }
         self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_emulator_release_checking(true);
@@ -16526,6 +17564,7 @@ impl qobject::LibraryController {
             let mut rust = self.as_mut().rust_mut();
             rust.pcsx2_remove_state = None;
             rust.bigpemu_remove_state = None;
+            rust.xemu_remove_state = None;
         }
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_emulator_managed_checking(true);
@@ -16658,6 +17697,7 @@ impl qobject::LibraryController {
             let mut rust = self.as_mut().rust_mut();
             rust.pcsx2_release_state = None;
             rust.bigpemu_release_state = None;
+            rust.xemu_release_state = None;
         }
         self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_emulator_release_checking(true);
@@ -16799,6 +17839,296 @@ impl qobject::LibraryController {
             self.as_mut().rust_mut().emulator_install_cancel = None;
             self.as_mut().set_status_message(qstring(format!(
                 "Could not start the BigPEmu installer: {error}"
+            )));
+        }
+    }
+
+    pub fn review_managed_xemu(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator review requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let configuration = self.as_ref().rust().emulator_configuration.clone();
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.pcsx2_remove_state = None;
+            rust.bigpemu_remove_state = None;
+            rust.xemu_remove_state = None;
+        }
+        self.as_mut().set_emulator_managed_json(QString::default());
+        self.as_mut().set_emulator_managed_checking(true);
+        self.as_mut().set_status_message(qstring(
+            "Auditing the local Xemu ownership manifest without changing files...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-xemu-managed-review".to_string())
+            .spawn(move || {
+                let result = inspect_managed_xemu_removal(&root, configuration.as_ref(), &resolver)
+                    .map(|state| (root, state));
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_managed_xemu_review(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_managed_checking(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the managed Xemu review: {error}"
+            )));
+        }
+    }
+
+    pub fn remove_managed_xemu(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        if *self.as_ref().pending_recovery_count() > 0 {
+            self.as_mut().set_status_message(qstring(
+                "Recover the interrupted transaction before removing managed Xemu files.",
+            ));
+            return;
+        }
+        if *self.as_ref().write_conflict() {
+            self.as_mut().set_status_message(qstring(
+                "Reload the library before removing Xemu after a write conflict.",
+            ));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator removal requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let Some(state) = self.as_ref().rust().xemu_remove_state.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Review the local managed Xemu install before removing it.",
+            ));
+            return;
+        };
+        if !state.can_remove {
+            self.as_mut().set_status_message(qstring(
+                state
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("The managed Xemu install is not safe to remove."),
+            ));
+            return;
+        }
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Removing only verified port-owned Xemu files in one recoverable transaction...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-xemu-managed-remove".to_string())
+            .spawn(move || {
+                let result = remove_managed_xemu(root, resolver, state);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_managed_xemu_remove(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start managed Xemu removal: {error}"
+            )));
+        }
+    }
+
+    pub fn check_xemu_release(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator installation requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let artifact_kind = match XemuArtifactKind::current_host() {
+            Ok(artifact_kind) => artifact_kind,
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not check Xemu releases: {error}")));
+                return;
+            }
+        };
+        let transport = match emulator_release_transport_from_command_line() {
+            Ok(transport) => transport,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not initialize the Xemu release provider: {error}"
+                )));
+                return;
+            }
+        };
+        let configuration = self.as_ref().rust().emulator_configuration.clone();
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.pcsx2_release_state = None;
+            rust.bigpemu_release_state = None;
+            rust.xemu_release_state = None;
+        }
+        self.as_mut().set_emulator_release_json(QString::default());
+        self.as_mut().set_emulator_release_checking(true);
+        self.as_mut().set_status_message(qstring(
+            "Checking the official Xemu GitHub release without changing the library...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-xemu-release-check".to_string())
+            .spawn(move || {
+                let result = fetch_latest_xemu_release(transport.as_ref(), artifact_kind).and_then(
+                    |offer| {
+                        inspect_xemu_release_state(&root, configuration.as_ref(), &resolver, offer)
+                    },
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_xemu_release_check(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_release_checking(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the Xemu release check: {error}"
+            )));
+        }
+    }
+
+    pub fn install_xemu_release(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        if *self.as_ref().pending_recovery_count() > 0 {
+            self.as_mut().set_status_message(qstring(
+                "Recover the interrupted transaction before installing Xemu.",
+            ));
+            return;
+        }
+        if *self.as_ref().write_conflict() {
+            self.as_mut().set_status_message(qstring(
+                "Reload the library before installing Xemu after a write conflict.",
+            ));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator installation requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let Some(state) = self.as_ref().rust().xemu_release_state.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Check the official Xemu release before installing or updating it.",
+            ));
+            return;
+        };
+        if !state.action.can_install() {
+            self.as_mut().set_status_message(qstring(
+                state
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("The checked Xemu release has no action to apply."),
+            ));
+            return;
+        }
+        let transport = match emulator_release_transport_from_command_line() {
+            Ok(transport) => transport,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not initialize the Xemu release provider: {error}"
+                )));
+                return;
+            }
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let platform_names = self.as_ref().rust().platform_names.clone();
+        let generation = self.as_ref().rust().request_generation;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.as_mut().rust_mut().emulator_install_cancel = Some(cancel.clone());
+        self.as_mut().set_emulator_install_progress(0.0);
+        self.as_mut().set_emulator_installing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Downloading and verifying Xemu {} before one transactional library update...",
+            state.offer.version
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let progress_thread = qt_thread.clone();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-xemu-install".to_string())
+            .spawn(move || {
+                let mut last_percent = None;
+                let result = install_managed_xemu(
+                    root,
+                    resolver,
+                    platform_names,
+                    state,
+                    transport,
+                    cancel,
+                    |received, total| {
+                        let percent = if total == 0 {
+                            0
+                        } else {
+                            received.saturating_mul(100).saturating_div(total).min(100)
+                        };
+                        if last_percent == Some(percent) {
+                            return;
+                        }
+                        last_percent = Some(percent);
+                        let progress = percent as f64 / 100.0;
+                        progress_thread
+                            .queue(move |mut controller| {
+                                controller
+                                    .as_mut()
+                                    .finish_emulator_install_progress(generation, progress);
+                            })
+                            .ok();
+                    },
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_xemu_install(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_installing(false);
+            self.as_mut().rust_mut().emulator_install_cancel = None;
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the Xemu installer: {error}"
             )));
         }
     }
@@ -17272,6 +18602,8 @@ impl qobject::LibraryController {
         self.as_mut().rust_mut().pcsx2_remove_state = None;
         self.as_mut().rust_mut().bigpemu_release_state = None;
         self.as_mut().rust_mut().bigpemu_remove_state = None;
+        self.as_mut().rust_mut().xemu_release_state = None;
+        self.as_mut().rust_mut().xemu_remove_state = None;
         self.as_mut().set_path_mapping_count(count);
         self.as_mut()
             .set_emulator_bios_audit_json(QString::default());
@@ -18594,6 +19926,8 @@ impl qobject::LibraryController {
                     rust.pcsx2_remove_state = None;
                     rust.bigpemu_release_state = None;
                     rust.bigpemu_remove_state = None;
+                    rust.xemu_release_state = None;
+                    rust.xemu_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_remove_notifications =
@@ -18781,6 +20115,8 @@ impl qobject::LibraryController {
                     rust.pcsx2_remove_state = None;
                     rust.bigpemu_release_state = None;
                     rust.bigpemu_remove_state = None;
+                    rust.xemu_release_state = None;
+                    rust.xemu_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_install_notifications =
@@ -18950,8 +20286,8 @@ impl qobject::LibraryController {
                     rust.pcsx2_remove_state = None;
                     rust.bigpemu_release_state = None;
                     rust.bigpemu_remove_state = None;
-                    rust.bigpemu_release_state = None;
-                    rust.bigpemu_remove_state = None;
+                    rust.xemu_release_state = None;
+                    rust.xemu_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_remove_notifications =
@@ -19128,6 +20464,8 @@ impl qobject::LibraryController {
                     rust.pcsx2_remove_state = None;
                     rust.bigpemu_release_state = None;
                     rust.bigpemu_remove_state = None;
+                    rust.xemu_release_state = None;
+                    rust.xemu_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_install_notifications =
@@ -19209,6 +20547,358 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_managed_xemu_review(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<(PathBuf, XemuRemoveState), EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_emulator_managed_checking(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok((root, state)) => {
+                let payload = match xemu_remove_payload(&root, &state) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.as_mut().set_status_message(qstring(format!(
+                            "Could not serialize the managed Xemu review: {error}"
+                        )));
+                        return;
+                    }
+                };
+                let can_remove = state.can_remove;
+                let owned_file_count = state
+                    .audit
+                    .as_ref()
+                    .map_or(0, |audit| audit.installed_files.len().saturating_add(1));
+                let blocked_reason = state.blocked_reason.clone();
+                self.as_mut().rust_mut().xemu_remove_state = Some(state);
+                self.as_mut().set_emulator_managed_json(qstring(payload));
+                let revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut().set_emulator_install_revision(revision);
+                self.as_mut().set_status_message(qstring(if can_remove {
+                    format!(
+                        "Managed Xemu removal is ready: {owned_file_count} exact port-owned file(s) can be removed; user settings and directories will be retained."
+                    )
+                } else {
+                    format!(
+                        "Managed Xemu removal is unavailable: {}",
+                        blocked_reason.unwrap_or_else(|| "no removable managed install".into())
+                    )
+                }));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                let summary = summarize_emulator_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed Xemu removal review found {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Conflict(message))
+            | Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not review managed Xemu removal: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery before managed Xemu review: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_managed_xemu_remove(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<XemuRemoveSuccess, EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let removed_emulator_id = success
+                    .removed_emulator
+                    .as_ref()
+                    .map(|emulator| emulator.id.clone());
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_configuration = Some(success.configuration);
+                    rust.discovered_emulators.clear();
+                    rust.emulator_bios_audit = None;
+                    rust.emulator_bios_emulator_id = None;
+                    rust.pcsx2_release_state = None;
+                    rust.pcsx2_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
+                    rust.xemu_release_state = None;
+                    rust.xemu_remove_state = None;
+                    rust.emulator_write_notifications =
+                        rust.emulator_write_notifications.saturating_add(1);
+                    rust.emulator_remove_notifications =
+                        rust.emulator_remove_notifications.saturating_add(1);
+                }
+                if removed_emulator_id
+                    .as_deref()
+                    .is_some_and(|id| self.as_ref().last_added_emulator_id().to_string() == id)
+                {
+                    self.as_mut().set_last_added_emulator_id(QString::default());
+                }
+                self.as_mut()
+                    .set_emulator_bios_audit_json(QString::default());
+                self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut().set_emulator_managed_json(QString::default());
+                self.as_mut().set_delete_blocker_count(0);
+                self.as_mut().set_delete_blocker_summary(QString::default());
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_pending_recovery_count(0);
+                let emulator_revision = self.as_ref().emulator_revision().saturating_add(1);
+                self.as_mut().set_emulator_revision(emulator_revision);
+                let discovery_revision = self
+                    .as_ref()
+                    .emulator_discovery_revision()
+                    .saturating_add(1);
+                self.as_mut()
+                    .set_emulator_discovery_revision(discovery_revision);
+                let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(bios_revision);
+                let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut()
+                    .set_emulator_install_revision(install_revision);
+                let xml_result = match success.emulator_backup.as_ref() {
+                    Some(backup) => format!(
+                        " Removed emulator definition and {} mapping(s) from {}; exact XML backup: {}.",
+                        success.removed_mapping_count,
+                        success.emulator_document.display(),
+                        backup.display()
+                    ),
+                    None => " No matching emulator definition remained to remove.".into(),
+                };
+                self.as_mut().set_status_message(qstring(format!(
+                    "Removed {} verified port-owned Xemu file(s) with {} exact recovery copy/copies. User settings, unrelated files, and directories were retained.{xml_result}",
+                    success.removed_file_count,
+                    success.recovery_files.len()
+                )));
+                eprintln!(
+                    "Xemu managed removal committed: files={} mappings={} emulator={}",
+                    success.removed_file_count,
+                    success.removed_mapping_count,
+                    removed_emulator_id.as_deref().unwrap_or("already absent")
+                );
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                let summary = summarize_emulator_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed Xemu removal blocked by {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed Xemu removal stopped on a write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted Xemu removal requires recovery: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not remove managed Xemu: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_xemu_release_check(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<XemuReleaseState, EmulatorLifecycleError>,
+    ) {
+        self.as_mut().set_emulator_release_checking(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(state) => {
+                let payload = match xemu_release_payload(&state) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.as_mut().set_status_message(qstring(format!(
+                            "Could not serialize the Xemu release review: {error}"
+                        )));
+                        return;
+                    }
+                };
+                let action = state.action;
+                let version = state.offer.version.clone();
+                let prerelease = state.offer.prerelease;
+                let blocked_reason = state.blocked_reason.clone();
+                self.as_mut().rust_mut().xemu_release_state = Some(state);
+                self.as_mut().set_emulator_release_json(qstring(payload));
+                let revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut().set_emulator_install_revision(revision);
+                let release_kind = if prerelease { "prerelease" } else { "stable" };
+                let message = match action {
+                    XemuInstallAction::Install => format!(
+                        "Official Xemu {release_kind} {version} is ready for a reviewed portable install."
+                    ),
+                    XemuInstallAction::Update => format!(
+                        "Official Xemu {release_kind} {version} is ready to update the managed portable install."
+                    ),
+                    XemuInstallAction::Repair => format!(
+                        "Official Xemu {release_kind} {version} is ready to repair the managed portable install."
+                    ),
+                    XemuInstallAction::Current => format!(
+                        "The managed portable Xemu install is current at {version}."
+                    ),
+                    XemuInstallAction::Blocked => format!(
+                        "Managed Xemu installation is blocked: {}",
+                        blocked_reason.unwrap_or_else(|| "unsafe existing install state".into())
+                    ),
+                };
+                self.as_mut().set_status_message(qstring(message));
+            }
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not check Xemu releases: {error}")));
+            }
+        }
+    }
+
+    fn finish_xemu_install(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<XemuInstallSuccess, EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_emulator_installing(false);
+        self.as_mut().rust_mut().emulator_install_cancel = None;
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let XemuInstallSuccess {
+                    emulator_write,
+                    manifest,
+                    executable,
+                    installed_file_count,
+                    created_file_count,
+                    replaced_file_count,
+                    recovery_files,
+                } = success;
+                let operation = emulator_write.operation;
+                let emulator_id = emulator_write.emulator.id.clone();
+                let emulator_title = emulator_write.emulator.title.clone();
+                let mapping_count = emulator_write.mapping_count;
+                let source = emulator_write.source.clone();
+                let backup = emulator_write.backup.clone();
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_configuration = Some(emulator_write.configuration);
+                    rust.discovered_emulators.clear();
+                    rust.emulator_bios_audit = None;
+                    rust.emulator_bios_emulator_id = None;
+                    rust.pcsx2_release_state = None;
+                    rust.pcsx2_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
+                    rust.xemu_release_state = None;
+                    rust.xemu_remove_state = None;
+                    rust.emulator_write_notifications =
+                        rust.emulator_write_notifications.saturating_add(1);
+                    rust.emulator_install_notifications =
+                        rust.emulator_install_notifications.saturating_add(1);
+                }
+                self.as_mut().set_emulator_install_progress(1.0);
+                self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut().set_emulator_managed_json(QString::default());
+                self.as_mut()
+                    .set_emulator_bios_audit_json(QString::default());
+                let emulator_revision = self.as_ref().emulator_revision().saturating_add(1);
+                self.as_mut().set_emulator_revision(emulator_revision);
+                let discovery_revision = self
+                    .as_ref()
+                    .emulator_discovery_revision()
+                    .saturating_add(1);
+                self.as_mut()
+                    .set_emulator_discovery_revision(discovery_revision);
+                let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(bios_revision);
+                let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut()
+                    .set_emulator_install_revision(install_revision);
+                if operation == EmulatorWriteOperation::Create {
+                    self.as_mut()
+                        .set_last_added_emulator_id(qstring(&emulator_id));
+                }
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_pending_recovery_count(0);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Installed verified Xemu {} at {} and {} platform mapping(s) in one transaction: {} managed file(s), {} created, {} replaced. Emulators.xml: {}; exact XML backup: {}; binary recovery copies: {}. Recheck releases to refresh status.",
+                    manifest.version,
+                    executable.display(),
+                    mapping_count,
+                    installed_file_count,
+                    created_file_count,
+                    replaced_file_count,
+                    source.display(),
+                    backup.display(),
+                    recovery_files.len()
+                )));
+                eprintln!(
+                    "Xemu managed install committed: emulator={emulator_title} id={emulator_id} version={} sha256={} files={installed_file_count}",
+                    manifest.version, manifest.asset_sha256
+                );
+            }
+            Err(EmulatorWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Xemu install stopped on a write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted Xemu transaction requires recovery: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Xemu install stopped on an unexpected reference result ({} records).",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Other(message))
+                if message == EmulatorLifecycleError::Cancelled.to_string() =>
+            {
+                self.as_mut().set_status_message(qstring(
+                    "Xemu installation cancelled; no library changes were committed.",
+                ));
+            }
+            Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not install Xemu: {message}")));
+            }
+        }
+    }
+
     fn finish_emulator_write(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -19235,6 +20925,8 @@ impl qobject::LibraryController {
                     rust.pcsx2_remove_state = None;
                     rust.bigpemu_release_state = None;
                     rust.bigpemu_remove_state = None;
+                    rust.xemu_release_state = None;
+                    rust.xemu_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                 }
@@ -20030,6 +21722,8 @@ impl qobject::LibraryController {
             rust.pcsx2_remove_state = None;
             rust.bigpemu_release_state = None;
             rust.bigpemu_remove_state = None;
+            rust.xemu_release_state = None;
+            rust.xemu_remove_state = None;
             if let Some(cancel) = rust.emulator_install_cancel.take() {
                 cancel.store(true, Ordering::Relaxed);
             }
@@ -21272,6 +22966,396 @@ mod tests {
             asset_byte_len: receipt.byte_len,
             asset_sha256: receipt.sha256,
         }
+    }
+
+    fn xemu_linux_test_offer(fixture: &Path, version: &str, bytes: &[u8]) -> XemuReleaseOffer {
+        let artifact_kind = XemuArtifactKind::LinuxAppImageX64;
+        let asset_name = artifact_kind.expected_asset_name(version);
+        let asset = fixture.join(&asset_name);
+        fs::write(&asset, bytes).expect("write Xemu release fixture asset");
+        let receipt = file_receipt(&asset).expect("hash Xemu release fixture asset");
+        XemuReleaseOffer {
+            version: version.into(),
+            tag: format!("v{version}"),
+            release_name: format!("Xemu v{version}"),
+            release_url: format!("https://github.com/xemu-project/xemu/releases/tag/v{version}"),
+            prerelease: false,
+            artifact_kind,
+            asset_name: asset_name.clone(),
+            asset_url: format!(
+                "https://github.com/xemu-project/xemu/releases/download/v{version}/{asset_name}"
+            ),
+            asset_byte_len: receipt.byte_len,
+            asset_sha256: receipt.sha256,
+        }
+    }
+
+    fn xemu_zip_test_offer(
+        fixture: &Path,
+        source: &Path,
+        version: &str,
+        artifact_kind: XemuArtifactKind,
+        members: &[&str],
+    ) -> XemuReleaseOffer {
+        let asset_name = artifact_kind.expected_asset_name(version);
+        let asset = fixture.join(&asset_name);
+        let mut command = Command::new("7z");
+        command
+            .current_dir(source)
+            .arg("a")
+            .arg("-tzip")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg(&asset)
+            .arg("--");
+        for member in members {
+            command.arg(member);
+        }
+        let output = command.output().expect("create Xemu ZIP fixture");
+        assert!(
+            output.status.success(),
+            "could not create Xemu ZIP fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let receipt = file_receipt(&asset).expect("hash Xemu ZIP fixture");
+        XemuReleaseOffer {
+            version: version.into(),
+            tag: format!("v{version}"),
+            release_name: format!("Xemu v{version}"),
+            release_url: format!("https://github.com/xemu-project/xemu/releases/tag/v{version}"),
+            prerelease: false,
+            artifact_kind,
+            asset_name: asset_name.clone(),
+            asset_url: format!(
+                "https://github.com/xemu-project/xemu/releases/download/v{version}/{asset_name}"
+            ),
+            asset_byte_len: receipt.byte_len,
+            asset_sha256: receipt.sha256,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn official_shaped_xemu_windows_and_macos_zips_keep_exact_native_layouts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let library = tempfile::tempdir().expect("temporary library");
+        let fixture = tempfile::tempdir().expect("release fixture");
+
+        let windows_source = fixture.path().join("windows-source");
+        fs::create_dir(&windows_source).unwrap();
+        fs::write(windows_source.join("LICENSE.txt"), b"Xemu license\n").unwrap();
+        fs::write(windows_source.join("xemu.exe"), b"Windows Xemu\n").unwrap();
+        let windows_offer = xemu_zip_test_offer(
+            fixture.path(),
+            &windows_source,
+            "0.8.136",
+            XemuArtifactKind::WindowsZipX64,
+            &["LICENSE.txt", "xemu.exe"],
+        );
+        let windows_staging = tempfile::tempdir_in(library.path()).unwrap();
+        let mut windows = prepare_xemu_artifact(
+            library.path(),
+            &windows_offer,
+            &fixture.path().join(&windows_offer.asset_name),
+            windows_staging.path(),
+        )
+        .expect("prepare official-shaped Windows Xemu ZIP");
+        windows.sort_by(|left, right| left.relative_target.cmp(&right.relative_target));
+        assert_eq!(
+            windows
+                .iter()
+                .map(|file| file.relative_target.as_path())
+                .collect::<Vec<_>>(),
+            [Path::new("LICENSE.txt"), Path::new("xemu.exe")]
+        );
+        let windows_executable = windows
+            .iter()
+            .find(|file| file.relative_target == Path::new("xemu.exe"))
+            .unwrap();
+        assert!(windows_executable.preserve_permissions);
+        assert_ne!(
+            fs::metadata(&windows_executable.source)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+
+        let macos_source = fixture.path().join("macos-source");
+        let macos_executable = macos_source.join("xemu.app/Contents/MacOS/xemu");
+        let macos_library = macos_source.join("xemu.app/Contents/Frameworks/libMoltenVK.dylib");
+        fs::create_dir_all(macos_executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(macos_library.parent().unwrap()).unwrap();
+        fs::write(macos_source.join("LICENSE.txt"), b"Xemu license\n").unwrap();
+        fs::write(
+            macos_source.join("xemu.app/Contents/Info.plist"),
+            b"<plist/>\n",
+        )
+        .unwrap();
+        fs::write(&macos_executable, b"universal macOS Xemu\n").unwrap();
+        fs::write(&macos_library, b"universal library\n").unwrap();
+        fs::set_permissions(&macos_executable, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&macos_library, fs::Permissions::from_mode(0o744)).unwrap();
+        let macos_offer = xemu_zip_test_offer(
+            fixture.path(),
+            &macos_source,
+            "0.8.136",
+            XemuArtifactKind::MacosUniversalZip,
+            &["LICENSE.txt", "xemu.app"],
+        );
+        let macos_staging = tempfile::tempdir_in(library.path()).unwrap();
+        let mut macos = prepare_xemu_artifact(
+            library.path(),
+            &macos_offer,
+            &fixture.path().join(&macos_offer.asset_name),
+            macos_staging.path(),
+        )
+        .expect("prepare official-shaped universal macOS Xemu ZIP");
+        macos.sort_by(|left, right| left.relative_target.cmp(&right.relative_target));
+        assert_eq!(
+            macos
+                .iter()
+                .map(|file| file.relative_target.as_path())
+                .collect::<Vec<_>>(),
+            [
+                Path::new("LICENSE.txt"),
+                Path::new("xemu.app/Contents/Frameworks/libMoltenVK.dylib"),
+                Path::new("xemu.app/Contents/Info.plist"),
+                Path::new("xemu.app/Contents/MacOS/xemu"),
+            ]
+        );
+        assert!(macos.iter().all(|file| file.preserve_permissions));
+        let prepared_executable = macos
+            .iter()
+            .find(|file| file.relative_target == Path::new("xemu.app/Contents/MacOS/xemu"))
+            .unwrap();
+        assert_ne!(
+            fs::metadata(&prepared_executable.source)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_xemu_install_update_repair_review_and_removal_are_native_and_exact() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temporary library");
+        let fixture = tempfile::tempdir().expect("release fixture");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data");
+        let emulator_document = data.join("Emulators.xml");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/launchbox/Data/Emulators.xml"),
+            &emulator_document,
+        )
+        .unwrap();
+        let platform_directory = data.join("Platforms");
+        fs::create_dir(&platform_directory).unwrap();
+        let platform_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/launchbox/Data/Platforms/Fixture Console.xml");
+        let platform_document = platform_directory.join("Fixture Console.xml");
+        fs::copy(&platform_fixture, &platform_document).unwrap();
+        let original_xml = fs::read(&emulator_document).unwrap();
+        let resolver = HostPathResolver::default();
+        let platforms = vec!["Microsoft Xbox".into()];
+        let first_offer =
+            xemu_linux_test_offer(fixture.path(), "0.8.135", b"first Xemu AppImage\n");
+        let first_state = inspect_xemu_release_state(
+            directory.path(),
+            Some(
+                &AuxiliaryDocument::load(&emulator_document)
+                    .unwrap()
+                    .emulator_configuration()
+                    .unwrap(),
+            ),
+            &resolver,
+            first_offer,
+        )
+        .expect("inspect initial Xemu install");
+        assert_eq!(first_state.action, XemuInstallAction::Install);
+
+        let first = install_managed_xemu(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            platforms.clone(),
+            first_state,
+            Box::new(FileReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("install managed Xemu");
+        assert_eq!(first.manifest.profile_id, "xemu");
+        assert_eq!(first.manifest.provider, XEMU_PROVIDER);
+        assert_eq!(first.manifest.version, "0.8.135");
+        assert_eq!(first.manifest.tag, "v0.8.135");
+        assert_eq!(
+            first.manifest.artifact_kind,
+            XemuArtifactKind::LinuxAppImageX64.id()
+        );
+        assert!(first.manifest.asset_fnv1a64.is_none());
+        assert_eq!(
+            fs::read(&first.emulator_write.backup).unwrap(),
+            original_xml
+        );
+        assert_eq!(
+            fs::read(&first.executable).unwrap(),
+            b"first Xemu AppImage\n"
+        );
+        assert_ne!(
+            fs::metadata(&first.executable)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+        assert_eq!(
+            first.emulator_write.emulator.application_path,
+            r"Emulators\Xemu\xemu.AppImage"
+        );
+        assert_eq!(
+            first.emulator_write.emulator.command_line.as_deref(),
+            Some("-full-screen -dvd_path")
+        );
+        assert_eq!(first.emulator_write.mapping_count, 1);
+        let xbox_mapping = first
+            .emulator_write
+            .configuration
+            .platforms
+            .iter()
+            .find(|mapping| {
+                mapping
+                    .emulator_id
+                    .eq_ignore_ascii_case(&first.emulator_write.emulator.id)
+            })
+            .expect("managed Xemu platform mapping");
+        assert_eq!(xbox_mapping.platform, "Microsoft Xbox");
+        assert!(xbox_mapping.default);
+
+        let install_directory = directory.path().join("Emulators/Xemu");
+        let user_configuration = install_directory.join("xemu.toml");
+        let user_bios = install_directory.join("bios/Complex_4627.bin");
+        fs::create_dir_all(user_bios.parent().unwrap()).unwrap();
+        fs::write(&user_configuration, b"[display]\nscale = 2\n").unwrap();
+        fs::write(&user_bios, b"user supplied firmware\n").unwrap();
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let before_update_xml = fs::read(&emulator_document).unwrap();
+        let second_offer =
+            xemu_linux_test_offer(fixture.path(), "0.8.136", b"second Xemu AppImage\n");
+        let second_state = inspect_xemu_release_state(
+            directory.path(),
+            Some(&configuration),
+            &resolver,
+            second_offer,
+        )
+        .expect("inspect managed Xemu update");
+        assert_eq!(second_state.action, XemuInstallAction::Update);
+        let second = install_managed_xemu(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            platforms,
+            second_state,
+            Box::new(FileReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("update managed Xemu");
+        assert_eq!(second.manifest.version, "0.8.136");
+        assert_eq!(
+            fs::read(&second.executable).unwrap(),
+            b"second Xemu AppImage\n"
+        );
+        assert_ne!(
+            fs::metadata(&second.executable)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+        assert_eq!(
+            fs::read(&second.emulator_write.backup).unwrap(),
+            before_update_xml
+        );
+        assert!(second
+            .recovery_files
+            .iter()
+            .any(|path| { fs::read(path).is_ok_and(|bytes| bytes == b"first Xemu AppImage\n") }));
+        assert_eq!(
+            fs::read(&user_configuration).unwrap(),
+            b"[display]\nscale = 2\n"
+        );
+        assert_eq!(fs::read(&user_bios).unwrap(), b"user supplied firmware\n");
+
+        fs::write(&second.executable, b"user modified managed AppImage\n").unwrap();
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let repair = inspect_xemu_release_state(
+            directory.path(),
+            Some(&configuration),
+            &resolver,
+            xemu_linux_test_offer(fixture.path(), "0.8.136", b"second Xemu AppImage\n"),
+        )
+        .expect("inspect Xemu repair");
+        assert_eq!(repair.action, XemuInstallAction::Repair);
+        let blocked =
+            inspect_managed_xemu_removal(directory.path(), Some(&configuration), &resolver)
+                .expect("review modified Xemu removal");
+        assert!(!blocked.can_remove);
+        assert!(blocked
+            .blocked_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("xemu.AppImage is modified")));
+        fs::write(&second.executable, b"second Xemu AppImage\n").unwrap();
+
+        let referenced_xml = fs::read_to_string(&platform_fixture)
+            .unwrap()
+            .replace("fixture-emulator", &second.emulator_write.emulator.id);
+        fs::write(&platform_document, referenced_xml).unwrap();
+        let referenced =
+            inspect_managed_xemu_removal(directory.path(), Some(&configuration), &resolver)
+                .expect("review referenced Xemu removal");
+        assert!(!referenced.can_remove);
+        assert!(referenced.reference_count > 0);
+        fs::copy(&platform_fixture, &platform_document).unwrap();
+
+        let removable =
+            inspect_managed_xemu_removal(directory.path(), Some(&configuration), &resolver)
+                .expect("review removable Xemu");
+        assert!(removable.can_remove);
+        assert_eq!(removable.audit.as_ref().unwrap().installed_files.len(), 1);
+        let removed = remove_managed_xemu(directory.path().to_path_buf(), resolver, removable)
+            .expect("remove managed Xemu");
+        assert_eq!(removed.removed_file_count, 2);
+        assert_eq!(removed.recovery_files.len(), 2);
+        assert!(removed.removed_emulator.is_some());
+        assert!(!second.executable.exists());
+        assert!(!install_directory
+            .join(MANAGED_INSTALL_MANIFEST_NAME)
+            .exists());
+        assert_eq!(
+            fs::read(&user_configuration).unwrap(),
+            b"[display]\nscale = 2\n"
+        );
+        assert_eq!(fs::read(&user_bios).unwrap(), b"user supplied firmware\n");
+        assert!(install_directory.join("bios").is_dir());
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
     }
 
     #[cfg(unix)]

@@ -245,6 +245,24 @@ registers/launches `%romfile% -localdata` without a command shell. Managed
 install, update, repair, stale-owned-file cleanup, and exact removal use the
 same recoverable transaction and reference gates as PCSX2.
 
+The official Xemu download page points Windows and macOS users to ZIP packages
+and Linux users to AppImages. The official GitHub latest release exposes five
+stable versioned targets: Windows x64 and ARM64 ZIPs, Linux x64 and ARM64
+AppImages, and one signed universal macOS ZIP. It also exposes debug, unsigned,
+and moving-alias artifacts that are not interchangeable release contracts. The
+port therefore matches only the exact versioned stable filename for the current
+host, requires the GitHub byte count and SHA-256 digest, and persists the exact
+tag/name/URL relationship in its ownership manifest. Real current artifacts
+establish the archive layouts: Windows has root `xemu.exe` and `LICENSE.txt`;
+macOS has root `LICENSE.txt` plus `xemu.app`, whose executable is
+`Contents/MacOS/xemu`. Linux installs the AppImage directly and routes launch
+through the existing direct-argument `appimage-run` adapter. The provider never
+starts Xemu during inspection or installation. Install, update, repair,
+reference-gated removal, exact recovery copies, and preservation of
+user-owned configuration/BIOS data share the same transaction boundary as the
+other managed providers. Native Windows and macOS runtime behavior still needs
+real-host verification.
+
 The recovered 13.27 PCSX2 plugin uses the exact
 `SERIAL (CRC).NN.p2s`/`.p2z` contract for ordinary state files, but treats each
 logical memory-card save as a named member inside a `.ps2` card. The port's
