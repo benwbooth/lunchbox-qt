@@ -176,6 +176,16 @@ ROM with the same filename stem and a different extension, matching the
 recovered LaunchBox option without interpreting descriptor-file contents.
 The preview reports those companion files, and a collision blocks the entire
 game instead of producing a partial set. Copy never overwrites a destination.
+An optional read-only local metadata search opens
+`Metadata/LaunchBox.Metadata.db`, canonicalizes platform aliases, applies the
+recovered title comparison and parenthetical qualifier preference, and
+auto-applies only a unique exact result. Zero or multiple candidates remain
+visible in the preview instead of being guessed. A unique match persists the
+database ID, overview, developer, genres, player/mode data, publisher, content
+rating, release date/type, URLs, and community rating as typed game fields.
+Copy/move can then place the whole game bundle in a cross-platform-safe
+`Title (Year)` subdirectory; edited final titles are re-sanitized and all
+destination collisions are rechecked during execution.
 Move commits every ROM, companion, and XML write first, then removes a source
 only after both files have matching SHA-256 revisions; a cleanup failure
 retains the source and reports a warning.
@@ -184,8 +194,9 @@ folder and extension collapse to one game. Disc 1 remains the main application
 and every disc, including Disc 1, is persisted as a priority-ordered additional
 application, matching the older real-install records and the existing M3U
 launch contract. Incomplete or colliding sets remain separate preview rows.
-Metadata/media lookup, database-driven version combining, MAME-specific
-options, and the remaining import families are still open.
+Fuzzy/interactive metadata selection, media acquisition, database-driven
+version combining, MAME-specific options, and the remaining import families
+are still open.
 
 Both front ends now expose a shared launch vertical. A launch plan selects
 an explicit or single default emulator mapping (or a direct executable), keeps

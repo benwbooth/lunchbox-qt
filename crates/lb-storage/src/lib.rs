@@ -119,7 +119,24 @@ pub struct AtomicSaveReport {
     pub backup: PathBuf,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NewGameMetadata {
+    pub database_id: Option<u32>,
+    pub notes: Option<String>,
+    pub developer: Option<String>,
+    pub genre: Option<String>,
+    pub max_players: Option<u32>,
+    pub play_mode: Option<String>,
+    pub publisher: Option<String>,
+    pub rating: Option<String>,
+    pub release_date: Option<String>,
+    pub release_type: Option<String>,
+    pub wikipedia_url: Option<String>,
+    pub video_url: Option<String>,
+    pub community_star_rating: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct NewGame {
     pub id: String,
     pub title: String,
@@ -129,6 +146,7 @@ pub struct NewGame {
     /// explicitly launches the game directly, while any other value pins a
     /// configured emulator.
     pub emulator_id: Option<String>,
+    pub metadata: NewGameMetadata,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1753,6 +1771,19 @@ impl PlatformDocument {
             platform: new_game.platform,
             application_path: new_game.application_path,
             emulator_id: new_game.emulator_id,
+            database_id: new_game.metadata.database_id,
+            notes: new_game.metadata.notes,
+            developer: new_game.metadata.developer,
+            genre: new_game.metadata.genre,
+            max_players: new_game.metadata.max_players,
+            play_mode: new_game.metadata.play_mode,
+            publisher: new_game.metadata.publisher,
+            rating: new_game.metadata.rating,
+            release_date: new_game.metadata.release_date,
+            release_type: new_game.metadata.release_type,
+            wikipedia_url: new_game.metadata.wikipedia_url,
+            video_url: new_game.metadata.video_url,
+            community_star_rating: new_game.metadata.community_star_rating.unwrap_or_default(),
             ..Game::default()
         };
         game.validate()?;
@@ -4656,6 +4687,33 @@ fn minimal_game_element(game: &Game) -> Element {
         set_child_text(&mut element, field, value);
     }
     set_optional_child_text(&mut element, "Emulator", game.emulator_id.as_deref());
+    set_optional_child_text(
+        &mut element,
+        "DatabaseID",
+        game.database_id.map(|value| value.to_string()).as_deref(),
+    );
+    set_optional_child_text(&mut element, "Notes", game.notes.as_deref());
+    set_optional_child_text(&mut element, "Developer", game.developer.as_deref());
+    set_optional_child_text(&mut element, "Genre", game.genre.as_deref());
+    set_optional_child_text(
+        &mut element,
+        "MaxPlayers",
+        game.max_players.map(|value| value.to_string()).as_deref(),
+    );
+    set_optional_child_text(&mut element, "PlayMode", game.play_mode.as_deref());
+    set_optional_child_text(&mut element, "Publisher", game.publisher.as_deref());
+    set_optional_child_text(&mut element, "Rating", game.rating.as_deref());
+    set_optional_child_text(&mut element, "ReleaseDate", game.release_date.as_deref());
+    set_optional_child_text(&mut element, "ReleaseType", game.release_type.as_deref());
+    set_optional_child_text(&mut element, "WikipediaURL", game.wikipedia_url.as_deref());
+    set_optional_child_text(&mut element, "VideoUrl", game.video_url.as_deref());
+    set_optional_child_text(
+        &mut element,
+        "CommunityStarRating",
+        (game.community_star_rating != 0.0)
+            .then(|| game.community_star_rating.to_string())
+            .as_deref(),
+    );
     element
 }
 
@@ -5225,6 +5283,21 @@ mod tests {
             platform: "Fixture Console".into(),
             application_path: r"Games\Fixture Added\added.rom".into(),
             emulator_id: None,
+            metadata: NewGameMetadata {
+                database_id: Some(4242),
+                notes: Some("Imported overview".into()),
+                developer: Some("Fixture Forge".into()),
+                genre: Some("Strategy".into()),
+                max_players: Some(2),
+                play_mode: Some("Cooperative; Multiplayer".into()),
+                publisher: Some("Fixture Press".into()),
+                rating: Some("E10+".into()),
+                release_date: Some("2002-03-04".into()),
+                release_type: Some("Released".into()),
+                wikipedia_url: Some("https://example.org/fixture".into()),
+                video_url: Some("https://video.example/fixture".into()),
+                community_star_rating: Some(4.75),
+            },
         };
         let game = document.add_game(added.clone()).expect("add game");
         assert_eq!(game.id, "fixture-added");
@@ -5237,15 +5310,38 @@ mod tests {
         let reparsed = PlatformDocument::from_reader("Fixture Console.xml", bytes.as_slice())
             .expect("reparse added game");
         assert_eq!(reparsed.library().games.len(), 4);
+        let reparsed_game = reparsed
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "fixture-added")
+            .expect("reparsed added game");
         assert_eq!(
-            reparsed
-                .library()
-                .games
-                .iter()
-                .find(|game| game.id == "fixture-added")
-                .map(|game| game.application_path.as_str()),
-            Some(r"Games\Fixture Added\added.rom")
+            reparsed_game.application_path,
+            r"Games\Fixture Added\added.rom"
         );
+        assert_eq!(reparsed_game.database_id, Some(4242));
+        assert_eq!(reparsed_game.notes.as_deref(), Some("Imported overview"));
+        assert_eq!(reparsed_game.developer.as_deref(), Some("Fixture Forge"));
+        assert_eq!(reparsed_game.genre.as_deref(), Some("Strategy"));
+        assert_eq!(reparsed_game.max_players, Some(2));
+        assert_eq!(
+            reparsed_game.play_mode.as_deref(),
+            Some("Cooperative; Multiplayer")
+        );
+        assert_eq!(reparsed_game.publisher.as_deref(), Some("Fixture Press"));
+        assert_eq!(reparsed_game.rating.as_deref(), Some("E10+"));
+        assert_eq!(reparsed_game.release_date.as_deref(), Some("2002-03-04"));
+        assert_eq!(reparsed_game.release_type.as_deref(), Some("Released"));
+        assert_eq!(
+            reparsed_game.wikipedia_url.as_deref(),
+            Some("https://example.org/fixture")
+        );
+        assert_eq!(
+            reparsed_game.video_url.as_deref(),
+            Some("https://video.example/fixture")
+        );
+        assert_eq!(reparsed_game.community_star_rating, 4.75);
 
         let removed = document.remove_game("fixture-added").expect("remove game");
         assert_eq!(removed.id, "fixture-added");

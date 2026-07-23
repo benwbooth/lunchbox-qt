@@ -2,13 +2,14 @@ use lb_domain::{
     is_unassigned_emulator_id, AdditionalApplication, EmulatorConfiguration, Game,
     UNASSIGNED_EMULATOR_ID,
 };
+use lb_metadata::{MetadataDatabase, MetadataError, MetadataGame};
 use lb_platform::{
     portable_storage_name, portable_stored_path, HostPathResolver, LaunchPathError,
     LaunchPathResolver, PlatformPathError,
 };
 use lb_storage::{
-    FileRevision, LaunchBoxDataIndex, LibraryTransaction, NewGame, PlatformDocument, StorageError,
-    TransactionError,
+    FileRevision, LaunchBoxDataIndex, LibraryTransaction, NewGame, NewGameMetadata,
+    PlatformDocument, StorageError, TransactionError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,11 +66,20 @@ pub struct ManualImportRequest {
     /// file extensions" option; it does not parse descriptor-file contents.
     #[serde(default)]
     pub copy_files_with_same_name: bool,
+    /// When copying or moving, create one portable directory named from the
+    /// final game title and, when known, its metadata release year.
+    #[serde(default)]
+    pub copy_to_subfolders: bool,
     /// Combine only complete, unambiguous filename-derived disc sets. The
     /// planner recognizes `(Disc N)` and `(Disc N of M)` within one folder and
     /// extension; incomplete or colliding sets remain separate games.
     #[serde(default)]
     pub combine_disc_sets: bool,
+    /// Search LaunchBox's local SQLite metadata database. Only a unique exact
+    /// platform/title match is applied automatically; missing or ambiguous
+    /// matches remain explicit in the preview.
+    #[serde(default)]
+    pub search_local_metadata: bool,
     /// `None` inherits the platform default. LaunchBox's all-zero sentinel
     /// explicitly selects direct launch; any other value selects a configured
     /// emulator by ID.
@@ -87,7 +97,7 @@ pub enum ImportRowState {
     InvalidTitle,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManualImportPreviewRow {
     pub source_path: PathBuf,
@@ -103,6 +113,46 @@ pub struct ManualImportPreviewRow {
     pub same_name_files: Vec<ManualImportCompanion>,
     #[serde(default)]
     pub additional_discs: Vec<ManualImportDisc>,
+    pub metadata: Option<ManualImportMetadata>,
+    pub metadata_candidate_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManualImportMetadata {
+    pub database_id: u32,
+    pub notes: Option<String>,
+    pub developer: Option<String>,
+    pub genre: Option<String>,
+    pub max_players: Option<u32>,
+    pub play_mode: Option<String>,
+    pub publisher: Option<String>,
+    pub rating: Option<String>,
+    pub release_date: Option<String>,
+    pub release_type: Option<String>,
+    pub wikipedia_url: Option<String>,
+    pub video_url: Option<String>,
+    pub community_star_rating: Option<f64>,
+}
+
+impl From<ManualImportMetadata> for NewGameMetadata {
+    fn from(metadata: ManualImportMetadata) -> Self {
+        Self {
+            database_id: Some(metadata.database_id),
+            notes: metadata.notes,
+            developer: metadata.developer,
+            genre: metadata.genre,
+            max_players: metadata.max_players,
+            play_mode: metadata.play_mode,
+            publisher: metadata.publisher,
+            rating: metadata.rating,
+            release_date: metadata.release_date,
+            release_type: metadata.release_type,
+            wikipedia_url: metadata.wikipedia_url,
+            video_url: metadata.video_url,
+            community_star_rating: metadata.community_star_rating,
+        }
+    }
 }
 
 impl ManualImportPreviewRow {
@@ -208,7 +258,7 @@ struct TransferFileRef<'a> {
     destination_path: Option<&'a Path>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManualImportPreview {
     pub request: ManualImportRequest,
@@ -351,46 +401,51 @@ pub fn preview_manual_import(
                         }
                     }
 
-                    let mut row_destinations = BTreeSet::new();
-                    for candidate in std::iter::once((file_name.as_str(), destination.as_path()))
-                        .chain(same_name_files.iter().map(|companion| {
-                            (
-                                companion
-                                    .destination_path
-                                    .as_deref()
-                                    .and_then(Path::file_name)
-                                    .and_then(|name| name.to_str())
-                                    .expect("planned companion destination has a Unicode filename"),
-                                companion
-                                    .destination_path
-                                    .as_ref()
-                                    .expect("copy/move companion has a destination")
-                                    .as_path(),
-                            )
-                        }))
-                    {
-                        let destination_key = candidate.0.to_lowercase();
-                        if candidate.1.exists()
-                            || case_insensitive_name_exists(&destination_directory, candidate.0)?
+                    if !request.copy_to_subfolders {
+                        let mut row_destinations = BTreeSet::new();
+                        let companion_destinations = same_name_files.iter().map(|companion| {
+                            let destination = companion
+                                .destination_path
+                                .as_ref()
+                                .expect("copy/move companion has a destination");
+                            let name = destination
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .expect("planned companion destination has a Unicode filename");
+                            (name, destination.as_path())
+                        });
+                        for candidate in
+                            std::iter::once((file_name.as_str(), destination.as_path()))
+                                .chain(companion_destinations)
                         {
-                            state = ImportRowState::DestinationExists;
-                            message =
-                                format!("Destination already exists: {}", candidate.1.display());
-                            break;
+                            let destination_key = candidate.0.to_lowercase();
+                            if candidate.1.exists()
+                                || case_insensitive_name_exists(
+                                    &destination_directory,
+                                    candidate.0,
+                                )?
+                            {
+                                state = ImportRowState::DestinationExists;
+                                message = format!(
+                                    "Destination already exists: {}",
+                                    candidate.1.display()
+                                );
+                                break;
+                            }
+                            if planned_destinations.contains(&destination_key)
+                                || !row_destinations.insert(destination_key)
+                            {
+                                state = ImportRowState::DestinationExists;
+                                message = format!(
+                                    "Another selected file would use destination: {}",
+                                    candidate.1.display()
+                                );
+                                break;
+                            }
                         }
-                        if planned_destinations.contains(&destination_key)
-                            || !row_destinations.insert(destination_key)
-                        {
-                            state = ImportRowState::DestinationExists;
-                            message = format!(
-                                "Another selected file would use destination: {}",
-                                candidate.1.display()
-                            );
-                            break;
+                        if state != ImportRowState::DestinationExists {
+                            planned_destinations.extend(row_destinations);
                         }
-                    }
-                    if state != ImportRowState::DestinationExists {
-                        planned_destinations.extend(row_destinations);
                     }
                 }
                 let relative = Path::new("Games")
@@ -422,10 +477,33 @@ pub fn preview_manual_import(
             disc: None,
             same_name_files,
             additional_discs: Vec::new(),
+            metadata: None,
+            metadata_candidate_count: 0,
         });
     }
     if request.combine_disc_sets {
         rows = combine_complete_disc_sets(rows, request.use_folder_names, request.duplicate_policy);
+    }
+    if request.search_local_metadata {
+        apply_local_metadata(
+            &launchbox_root,
+            &request.platform,
+            request.duplicate_policy,
+            &mut rows,
+        )?;
+    }
+    if request.copy_to_subfolders
+        && matches!(
+            request.file_policy,
+            ImportFilePolicy::Copy | ImportFilePolicy::Move
+        )
+    {
+        replan_subfolder_destinations(
+            &launchbox_root,
+            &request.platform,
+            request.duplicate_policy,
+            &mut rows,
+        )?;
     }
     let importable_count = rows.iter().filter(|row| row.included).count();
     Ok(ManualImportPreview {
@@ -460,7 +538,7 @@ fn execute_manual_import_with_ids<F>(
 where
     F: FnMut() -> String,
 {
-    let preview = preview_manual_import(launchbox_root, resolver, selection.request.clone())?;
+    let mut preview = preview_manual_import(launchbox_root, resolver, selection.request.clone())?;
     let selected = selection
         .rows
         .into_iter()
@@ -473,6 +551,27 @@ where
             .any(|row| !selected.contains_key(&row.source_path))
     {
         return Err(ImportError::PreviewChanged);
+    }
+    if preview.request.copy_to_subfolders
+        && matches!(
+            preview.request.file_policy,
+            ImportFilePolicy::Copy | ImportFilePolicy::Move
+        )
+    {
+        for row in &mut preview.rows {
+            if let Some(selection) = selected.get(&row.source_path) {
+                let title = selection.title.trim();
+                if !title.is_empty() {
+                    row.title = title.to_string();
+                }
+            }
+        }
+        replan_subfolder_destinations(
+            launchbox_root,
+            &preview.request.platform,
+            preview.request.duplicate_policy,
+            &mut preview.rows,
+        )?;
     }
 
     let mut imports = Vec::new();
@@ -511,6 +610,7 @@ where
             platform: preview.request.platform.clone(),
             application_path: row.application_path.clone(),
             emulator_id: preview.request.emulator_id.clone(),
+            metadata: row.metadata.clone().map(Into::into).unwrap_or_default(),
         })?);
         if row.disc.is_some() {
             let use_emulator = preview
@@ -779,6 +879,266 @@ fn combine_complete_disc_sets(
         .enumerate()
         .filter_map(|(index, row)| (!removed.contains(&index)).then_some(row))
         .collect()
+}
+
+fn apply_local_metadata(
+    launchbox_root: &Path,
+    platform: &str,
+    duplicate_policy: ImportDuplicatePolicy,
+    rows: &mut [ManualImportPreviewRow],
+) -> Result<(), ImportError> {
+    let database_path = launchbox_root
+        .join("Metadata")
+        .join("LaunchBox.Metadata.db");
+    let database = MetadataDatabase::open(database_path)?;
+    for row in rows.iter_mut() {
+        if !row.included || !row.is_importable(duplicate_policy) {
+            continue;
+        }
+        let matches = database.search_exact(platform, &row.title, Some(&row.source_path))?;
+        row.metadata_candidate_count = matches.len();
+        match matches.as_slice() {
+            [game] => {
+                row.title = game.name.clone();
+                row.metadata = Some(manual_import_metadata(game)?);
+                row.message.push_str("; unique exact local metadata match");
+            }
+            [] => row.message.push_str("; no exact local metadata match"),
+            candidates => row.message.push_str(&format!(
+                "; {} exact local metadata matches require review",
+                candidates.len()
+            )),
+        }
+    }
+    Ok(())
+}
+
+fn replan_subfolder_destinations(
+    launchbox_root: &Path,
+    platform: &str,
+    duplicate_policy: ImportDuplicatePolicy,
+    rows: &mut [ManualImportPreviewRow],
+) -> Result<(), ImportError> {
+    let platform_directory = launchbox_root
+        .join("Games")
+        .join(portable_storage_name(platform)?);
+    let mut planned_destinations = BTreeSet::new();
+    for row in rows {
+        if !row.included || !row.is_importable(duplicate_policy) {
+            continue;
+        }
+        let folder_name = portable_storage_name(&game_subfolder_name(row))?;
+        let destination_directory = platform_directory.join(&folder_name);
+        if (destination_directory.exists() && !destination_directory.is_dir())
+            || (!destination_directory.exists()
+                && case_insensitive_name_exists(&platform_directory, &folder_name)?)
+        {
+            row.state = ImportRowState::DestinationExists;
+            row.included = false;
+            row.message = format!(
+                "Portable subfolder name collides with an existing entry: {}",
+                destination_directory.display()
+            );
+            continue;
+        }
+        assign_subfolder_destination(
+            &row.source_path,
+            &destination_directory,
+            platform,
+            &folder_name,
+            &mut row.destination_path,
+            &mut row.application_path,
+        )?;
+        for companion in &mut row.same_name_files {
+            assign_companion_subfolder_destination(companion, &destination_directory)?;
+        }
+        for disc in &mut row.additional_discs {
+            assign_subfolder_destination(
+                &disc.source_path,
+                &destination_directory,
+                platform,
+                &folder_name,
+                &mut disc.destination_path,
+                &mut disc.application_path,
+            )?;
+            for companion in &mut disc.same_name_files {
+                assign_companion_subfolder_destination(companion, &destination_directory)?;
+            }
+        }
+
+        let mut row_destinations = BTreeSet::new();
+        let destinations = row
+            .transfer_files()
+            .into_iter()
+            .map(|file| {
+                file.destination_path
+                    .expect("copy/move subfolder transfer has a destination")
+                    .to_path_buf()
+            })
+            .collect::<Vec<_>>();
+        for destination in destinations {
+            let file_name = destination
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("planned import destination has a Unicode filename");
+            let parent = destination
+                .parent()
+                .expect("planned import destination has a parent");
+            let key = destination.to_string_lossy().to_lowercase();
+            if destination.exists() || case_insensitive_name_exists(parent, file_name)? {
+                row.state = ImportRowState::DestinationExists;
+                row.included = false;
+                row.message = format!("Destination already exists: {}", destination.display());
+                break;
+            }
+            if planned_destinations.contains(&key) || !row_destinations.insert(key) {
+                row.state = ImportRowState::DestinationExists;
+                row.included = false;
+                row.message = format!(
+                    "Another selected file would use destination: {}",
+                    destination.display()
+                );
+                break;
+            }
+        }
+        if row.state != ImportRowState::DestinationExists {
+            planned_destinations.extend(row_destinations);
+        }
+    }
+    Ok(())
+}
+
+fn assign_subfolder_destination(
+    source_path: &Path,
+    destination_directory: &Path,
+    platform: &str,
+    folder_name: &str,
+    destination_path: &mut Option<PathBuf>,
+    application_path: &mut String,
+) -> Result<(), ImportError> {
+    let file_name = portable_source_file_name(source_path)?;
+    *destination_path = Some(destination_directory.join(&file_name));
+    let relative = Path::new("Games")
+        .join(portable_storage_name(platform)?)
+        .join(folder_name)
+        .join(file_name);
+    *application_path = portable_stored_path(&relative).map_err(ImportError::Path)?;
+    Ok(())
+}
+
+fn assign_companion_subfolder_destination(
+    companion: &mut ManualImportCompanion,
+    destination_directory: &Path,
+) -> Result<(), ImportError> {
+    let file_name = portable_source_file_name(&companion.source_path)?;
+    companion.destination_path = Some(destination_directory.join(file_name));
+    Ok(())
+}
+
+fn game_subfolder_name(row: &ManualImportPreviewRow) -> String {
+    let year = row
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.release_date.as_deref())
+        .and_then(|date| date.get(..4))
+        .filter(|year| year.bytes().all(|byte| byte.is_ascii_digit()))
+        .filter(|year| *year != "0000");
+    match year {
+        Some(year) => format!("{} ({year})", row.title.trim()),
+        None => row.title.trim().to_string(),
+    }
+}
+
+fn manual_import_metadata(game: &MetadataGame) -> Result<ManualImportMetadata, ImportError> {
+    let database_id =
+        u32::try_from(game.database_id).map_err(|_| ImportError::MetadataValueOutOfRange {
+            database_id: game.database_id,
+            field: "DatabaseID",
+            value: game.database_id.to_string(),
+        })?;
+    let max_players = game
+        .max_players
+        .map(|value| {
+            u32::try_from(value).map_err(|_| ImportError::MetadataValueOutOfRange {
+                database_id: game.database_id,
+                field: "MaxPlayers",
+                value: value.to_string(),
+            })
+        })
+        .transpose()?;
+    let community_star_rating = game
+        .community_rating
+        .map(|value| {
+            if value.is_finite() && (0.0..=5.0).contains(&value) {
+                Ok(value)
+            } else {
+                Err(ImportError::MetadataValueOutOfRange {
+                    database_id: game.database_id,
+                    field: "CommunityRating",
+                    value: value.to_string(),
+                })
+            }
+        })
+        .transpose()?;
+    let play_mode = if game.cooperative {
+        Some("Cooperative; Multiplayer".to_string())
+    } else {
+        match max_players {
+            Some(1) => Some("Single Player".to_string()),
+            Some(value) if value > 1 => Some("Multiplayer".to_string()),
+            _ => None,
+        }
+    };
+    Ok(ManualImportMetadata {
+        database_id,
+        notes: non_empty_metadata_value(game.overview.as_deref()),
+        developer: non_empty_metadata_value(game.developer.as_deref()),
+        genre: non_empty_metadata_value(Some(&game.genres)),
+        max_players,
+        play_mode,
+        publisher: non_empty_metadata_value(game.publisher.as_deref()),
+        rating: non_empty_metadata_value(game.esrb.as_deref()),
+        release_date: metadata_release_date(game),
+        release_type: non_empty_metadata_value(game.release_type.as_deref()),
+        wikipedia_url: non_empty_metadata_value(game.wikipedia_url.as_deref()),
+        video_url: non_empty_metadata_value(game.video_url.as_deref()),
+        community_star_rating,
+    })
+}
+
+fn non_empty_metadata_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn metadata_release_date(game: &MetadataGame) -> Option<String> {
+    if let Some(value) = game
+        .release_date
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let prefix = value.get(..10);
+        if prefix.is_some_and(is_iso_date_prefix) {
+            return prefix.map(ToOwned::to_owned);
+        }
+        return Some(value.to_string());
+    }
+    game.release_year
+        .filter(|year| (1..=9999).contains(year))
+        .map(|year| format!("{year:04}-01-01"))
+}
+
+fn is_iso_date_prefix(value: &str) -> bool {
+    value.len() == 10
+        && value.as_bytes()[4] == b'-'
+        && value.as_bytes()[7] == b'-'
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
 }
 
 fn is_complete_disc_set(candidates: &[(usize, DiscDescriptor)]) -> bool {
@@ -1073,6 +1433,14 @@ pub enum ImportError {
     EmptySelection,
     #[error("the committed transaction did not report a platform XML backup")]
     MissingPlatformBackup,
+    #[error("metadata game {database_id} has an out-of-range {field} value: {value}")]
+    MetadataValueOutOfRange {
+        database_id: i64,
+        field: &'static str,
+        value: String,
+    },
+    #[error(transparent)]
+    Metadata(#[from] MetadataError),
     #[error(transparent)]
     Path(#[from] LaunchPathError),
     #[error(transparent)]
@@ -1112,6 +1480,18 @@ mod tests {
         .unwrap();
     }
 
+    fn configure_fixture_metadata(library: &Path) -> PathBuf {
+        let metadata_path = library.join("Metadata/LaunchBox.Metadata.db");
+        fs::create_dir_all(metadata_path.parent().unwrap()).unwrap();
+        let connection = rusqlite::Connection::open(&metadata_path).unwrap();
+        connection
+            .execute_batch(include_str!(
+                "../../../fixtures/launchbox/Metadata/fixture.sql"
+            ))
+            .unwrap();
+        metadata_path
+    }
+
     fn request(
         locations: Vec<ImportLocation>,
         file_policy: ImportFilePolicy,
@@ -1125,7 +1505,9 @@ mod tests {
             duplicate_policy: ImportDuplicatePolicy::Skip,
             extensions: vec!["rom".into(), ".zip".into()],
             copy_files_with_same_name: false,
+            copy_to_subfolders: false,
             combine_disc_sets: false,
+            search_local_metadata: false,
             emulator_id: None,
         }
     }
@@ -1226,6 +1608,262 @@ mod tests {
             additional_duplicate.rows[0].state,
             ImportRowState::Duplicate
         );
+    }
+
+    #[test]
+    fn unique_exact_local_metadata_match_is_previewed_and_persisted() {
+        let (library, platform) = library();
+        configure_fixture_metadata(library.path());
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("Fixture Saga (USA).rom");
+        fs::write(&source, b"metadata rom").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: source,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Copy,
+        );
+        import_request.search_local_metadata = true;
+        import_request.copy_to_subfolders = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows[0].title, "Fixture Saga (USA)");
+        assert_eq!(preview.rows[0].metadata_candidate_count, 1);
+        assert!(preview.rows[0]
+            .destination_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(
+                "Games/Fixture Console/Fixture Saga (USA) (2002)/Fixture Saga (USA).rom"
+            )));
+        assert_eq!(
+            preview.rows[0].application_path,
+            r"Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Saga (USA).rom"
+        );
+        assert!(preview.rows[0]
+            .message
+            .contains("unique exact local metadata match"));
+        assert_eq!(
+            preview.rows[0].metadata,
+            Some(ManualImportMetadata {
+                database_id: 4242,
+                notes: Some("Recovered local metadata overview.".into()),
+                developer: Some("Fixture Forge".into()),
+                genre: Some("Role-Playing; Strategy".into()),
+                max_players: Some(2),
+                play_mode: Some("Cooperative; Multiplayer".into()),
+                publisher: Some("Fixture Press".into()),
+                rating: Some("E10+".into()),
+                release_date: Some("2002-03-04".into()),
+                release_type: Some("Released".into()),
+                wikipedia_url: Some("https://example.org/wiki/Fixture_Saga".into()),
+                video_url: Some("https://video.example/fixture-saga".into()),
+                community_star_rating: Some(4.75),
+            })
+        );
+
+        let report = execute_manual_import_with_ids(
+            library.path(),
+            &platform,
+            &HostPathResolver::default(),
+            selection(&preview),
+            || "metadata-game".into(),
+        )
+        .unwrap();
+        let game = &report.games[0];
+        assert_eq!(game.database_id, Some(4242));
+        assert_eq!(game.release_date.as_deref(), Some("2002-03-04"));
+        assert_eq!(game.play_mode.as_deref(), Some("Cooperative; Multiplayer"));
+        assert_eq!(game.community_star_rating, 4.75);
+        assert_eq!(report.created_files.len(), 1);
+        assert_eq!(
+            fs::read(
+                library
+                    .path()
+                    .join("Games/Fixture Console/Fixture Saga (USA) (2002)/Fixture Saga (USA).rom")
+            )
+            .unwrap(),
+            b"metadata rom"
+        );
+
+        let xml = fs::read_to_string(platform).unwrap();
+        for value in [
+            "<DatabaseID>4242</DatabaseID>",
+            "<Notes>Recovered local metadata overview.</Notes>",
+            "<Developer>Fixture Forge</Developer>",
+            "<Genre>Role-Playing; Strategy</Genre>",
+            "<MaxPlayers>2</MaxPlayers>",
+            "<PlayMode>Cooperative; Multiplayer</PlayMode>",
+            "<Publisher>Fixture Press</Publisher>",
+            "<Rating>E10+</Rating>",
+            "<ReleaseDate>2002-03-04</ReleaseDate>",
+            "<ReleaseType>Released</ReleaseType>",
+            "<WikipediaURL>https://example.org/wiki/Fixture_Saga</WikipediaURL>",
+            "<VideoUrl>https://video.example/fixture-saga</VideoUrl>",
+            "<CommunityStarRating>4.75</CommunityStarRating>",
+        ] {
+            assert!(xml.contains(value), "missing persisted metadata: {value}");
+        }
+    }
+
+    #[test]
+    fn ambiguous_exact_local_metadata_matches_remain_unapplied() {
+        let (library, _) = library();
+        let database_path = configure_fixture_metadata(library.path());
+        let connection = rusqlite::Connection::open(database_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO Games VALUES (
+                    4343, 'Fixture Saga (Japan)', 'FIXTURE SAGA', NULL, 2003,
+                    'Japan overview', 1, 'Released', 0, NULL, 4.25, NULL,
+                    'Fixture Console', 'E', 'Role-Playing', 'Japan Forge',
+                    'Japan Press'
+                )",
+                [],
+            )
+            .unwrap();
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("Fixture Saga.rom");
+        fs::write(&source, b"ambiguous rom").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: source,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Leave,
+        );
+        import_request.search_local_metadata = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows[0].title, "Fixture Saga");
+        assert_eq!(preview.rows[0].metadata_candidate_count, 2);
+        assert_eq!(preview.rows[0].metadata, None);
+        assert!(preview.rows[0]
+            .message
+            .contains("2 exact local metadata matches require review"));
+    }
+
+    #[test]
+    fn portable_subfolder_planning_uses_distinct_final_titles() {
+        let (library, platform) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let alpha = source_directory.path().join("Alpha");
+        let beta = source_directory.path().join("Beta");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::create_dir_all(&beta).unwrap();
+        let alpha_rom = alpha.join("disc.rom");
+        let beta_rom = beta.join("disc.rom");
+        fs::write(&alpha_rom, b"alpha").unwrap();
+        fs::write(&beta_rom, b"beta").unwrap();
+        let mut import_request = request(
+            vec![
+                ImportLocation {
+                    path: alpha_rom,
+                    kind: ImportLocationKind::File,
+                },
+                ImportLocation {
+                    path: beta_rom,
+                    kind: ImportLocationKind::File,
+                },
+            ],
+            ImportFilePolicy::Copy,
+        );
+        import_request.use_folder_names = true;
+        import_request.copy_to_subfolders = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.importable_count, 2);
+        assert_eq!(
+            preview
+                .rows
+                .iter()
+                .map(|row| row.application_path.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                r"Games\Fixture Console\Alpha\disc.rom",
+                r"Games\Fixture Console\Beta\disc.rom",
+            ])
+        );
+
+        let mut import_selection = selection(&preview);
+        import_selection.rows[0].title = "Edited: Alpha/Title".into();
+        let mut ids = ["portable-alpha", "portable-beta"].into_iter();
+        let report = execute_manual_import_with_ids(
+            library.path(),
+            &platform,
+            &HostPathResolver::default(),
+            import_selection,
+            || ids.next().unwrap().into(),
+        )
+        .unwrap();
+        assert_eq!(report.games.len(), 2);
+        assert!(report.games.iter().any(|game| {
+            game.title == "Edited: Alpha/Title"
+                && game.application_path == r"Games\Fixture Console\Edited_ Alpha_Title\disc.rom"
+        }));
+        assert!(library
+            .path()
+            .join("Games/Fixture Console/Edited_ Alpha_Title/disc.rom")
+            .is_file());
+        assert!(library
+            .path()
+            .join("Games/Fixture Console/Beta/disc.rom")
+            .is_file());
+    }
+
+    #[test]
+    fn portable_subfolder_planning_rejects_existing_case_variant_directory() {
+        let (library, _) = library();
+        let existing = library.path().join("Games/Fixture Console/alpha");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("unrelated.txt"), b"keep").unwrap();
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("Alpha.rom");
+        fs::write(&source, b"rom").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: source,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Copy,
+        );
+        import_request.copy_to_subfolders = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows[0].state, ImportRowState::DestinationExists);
+        assert!(!preview.rows[0].included);
+        assert!(preview.rows[0]
+            .message
+            .contains("Portable subfolder name collides"));
+    }
+
+    #[test]
+    fn enabled_local_metadata_search_requires_a_readable_database() {
+        let (library, _) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("Missing Metadata.rom");
+        fs::write(&source, b"rom").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: source,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Leave,
+        );
+        import_request.search_local_metadata = true;
+
+        assert!(matches!(
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request),
+            Err(ImportError::Metadata(MetadataError::Open { .. }))
+        ));
     }
 
     #[test]

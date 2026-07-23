@@ -308,6 +308,9 @@ fi
 echo "LaunchBox reference-gated add/remove CRUD and targeted Qt row signals validated."
 
 cp -R fixtures/launchbox/Data "$import_root/Data"
+mkdir -p "$import_root/Metadata"
+sqlite3 "$import_root/Metadata/LaunchBox.Metadata.db" \
+  < fixtures/launchbox/Metadata/fixture.sql
 printf 'disc-one-import-bytes' > \
   "$import_source_root/Fixture Saga (USA) - (Disc 1 of 2).rom"
 printf 'disc-two-import-bytes' > \
@@ -335,8 +338,21 @@ if ! rg -q 'IMPORT_SMOKE_COMPLETE imported=1 created=4 moved=0 model_games=4' \
 fi
 for expected in \
   '<Title>Fixture Saga (USA)</Title>' \
-  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) - (Disc 1 of 2).rom</ApplicationPath>' \
-  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) - (Disc 2 of 2).rom</ApplicationPath>' \
+  '<DatabaseID>4242</DatabaseID>' \
+  '<Notes>Recovered local metadata overview.</Notes>' \
+  '<Developer>Fixture Forge</Developer>' \
+  '<Genre>Role-Playing; Strategy</Genre>' \
+  '<MaxPlayers>2</MaxPlayers>' \
+  '<PlayMode>Cooperative; Multiplayer</PlayMode>' \
+  '<Publisher>Fixture Press</Publisher>' \
+  '<Rating>E10+</Rating>' \
+  '<ReleaseDate>2002-03-04</ReleaseDate>' \
+  '<ReleaseType>Released</ReleaseType>' \
+  '<WikipediaURL>https://example.org/wiki/Fixture_Saga</WikipediaURL>' \
+  '<VideoUrl>https://video.example/fixture-saga</VideoUrl>' \
+  '<CommunityStarRating>4.75</CommunityStarRating>' \
+  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Saga (USA) - (Disc 1 of 2).rom</ApplicationPath>' \
+  '<ApplicationPath>Games\Fixture Console\Fixture Saga (USA) (2002)\Fixture Saga (USA) - (Disc 2 of 2).rom</ApplicationPath>' \
   '<Disc>1</Disc>' \
   '<Disc>2</Disc>' \
   '<Priority>1</Priority>' \
@@ -358,7 +374,7 @@ for file_name in \
   'Fixture Saga (USA) - (Disc 1 of 2).dat' \
   'Fixture Saga (USA) - (Disc 2 of 2).dat'; do
   if ! cmp -s "$import_source_root/$file_name" \
-    "$import_root/Games/Fixture Console/$file_name"; then
+    "$import_root/Games/Fixture Console/Fixture Saga (USA) (2002)/$file_name"; then
     echo "ROM import did not preserve exact bytes for $file_name." >&2
     exit 1
   fi
@@ -379,7 +395,7 @@ if find "$import_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox dialog-driven multi-disc ROM import, same-stem companion copying, validated emulator selection, editable grouped preview, portable copied paths, exact streamed bytes, additional-application persistence, shared transaction recovery, and source preservation validated."
+echo "LaunchBox dialog-driven multi-disc ROM import, unique exact local-metadata matching and typed persistence, portable title/year subfolder planning, same-stem companion copying, validated emulator selection, editable grouped preview, exact streamed bytes, additional-application persistence, shared transaction recovery, and source preservation validated."
 
 cp -R fixtures/launchbox/Data "$platform_crud_root/Data"
 platform_crud_catalog="$platform_crud_root/Data/Platforms.xml"

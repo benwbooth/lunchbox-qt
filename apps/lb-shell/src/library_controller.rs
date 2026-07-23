@@ -520,8 +520,8 @@ use lb_query::{filter_game_indices, GameFilter};
 use lb_storage::{
     find_game_references, find_platform_references, pending_transaction_manifests,
     recover_pending_transactions, AuxiliaryDocument, GameReference, IndexedPlatformRecordEdit,
-    LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame, PlatformDocument,
-    PlatformReference, StorageError, TransactionError,
+    LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame, NewGameMetadata,
+    PlatformDocument, PlatformReference, StorageError, TransactionError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -4317,6 +4317,7 @@ impl qobject::LibraryController {
             platform,
             application_path,
             emulator_id: None,
+            metadata: NewGameMetadata::default(),
         };
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_delete_blocker_count(0);
@@ -9006,6 +9007,7 @@ mod tests {
                 platform: "Dragon 32/64".into(),
                 application_path: "Games\\Dragon 32_64\\test.vdk".into(),
                 emulator_id: None,
+                metadata: NewGameMetadata::default(),
             },
         ) {
             Ok(added) => added,

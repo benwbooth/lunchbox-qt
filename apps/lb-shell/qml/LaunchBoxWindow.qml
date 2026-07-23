@@ -3367,7 +3367,9 @@ ApplicationWindow {
             folderTitles.checked = false
             duplicateFiles.checked = false
             copySameNameFiles.checked = true
+            copyToSubfolders.checked = false
             combineDiscSets.checked = true
+            searchLocalMetadata.checked = true
             importFilePolicy.currentIndex = 1
             extensionFilter.text = ""
             selectPlatform(window.selectedPlatform)
@@ -3383,6 +3385,7 @@ ApplicationWindow {
             selectPlatform(platformName)
             selectEmulator("fixture-emulator")
             importFilePolicy.currentIndex = 1
+            copyToSubfolders.checked = true
             page = 1
             requestPreview()
         }
@@ -3414,7 +3417,9 @@ ApplicationWindow {
                 "duplicate_policy": duplicateFiles.checked ? "import" : "skip",
                 "extensions": extensions,
                 "copy_files_with_same_name": copySameNameFiles.checked,
+                "copy_to_subfolders": copyToSubfolders.checked,
                 "combine_disc_sets": combineDiscSets.checked,
+                "search_local_metadata": searchLocalMetadata.checked,
                 "emulator_id": emulatorId.length === 0 ? null : emulatorId
             }
         }
@@ -3453,7 +3458,8 @@ ApplicationWindow {
                     "included": row.included,
                     "message": row.message,
                     "discFileCount": 1 + row.additional_discs.length,
-                    "companionFileCount": companionFileCount(row)
+                    "companionFileCount": companionFileCount(row),
+                    "metadataCandidateCount": row.metadata_candidate_count
                 })
             }
             awaitingPreview = false
@@ -3648,8 +3654,17 @@ ApplicationWindow {
                         visible: importFilePolicy.currentIndex !== 0
                     }
                     CheckBox {
+                        id: copyToSubfolders
+                        text: "Copy/move files into subfolders named with the game's title and year"
+                        visible: importFilePolicy.currentIndex !== 0
+                    }
+                    CheckBox {
                         id: combineDiscSets
                         text: "Combine complete (Disc N) sets into one game"
+                    }
+                    CheckBox {
+                        id: searchLocalMetadata
+                        text: "Search for game information in the local metadata database (recommended)"
                     }
                     Label { text: "File extensions (optional, comma-separated)" }
                     TextField {
@@ -3713,6 +3728,7 @@ ApplicationWindow {
                                 required property string message
                                 required property int discFileCount
                                 required property int companionFileCount
+                                required property int metadataCandidateCount
                                 width: ListView.view.width
                                 height: 92
                                 color: index % 2 === 0 ? "#171b22" : "#14181e"
@@ -3749,6 +3765,10 @@ ApplicationWindow {
                                                   + (importPreviewDelegate.companionFileCount > 0
                                                      ? "  (+" + importPreviewDelegate.companionFileCount
                                                        + " same-name file(s))"
+                                                     : "")
+                                                  + (importPreviewDelegate.metadataCandidateCount > 0
+                                                     ? "  (" + importPreviewDelegate.metadataCandidateCount
+                                                       + " exact metadata match(es))"
                                                      : "")
                                             elide: Text.ElideMiddle
                                             color: "#8b949e"

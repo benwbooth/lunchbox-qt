@@ -60,6 +60,7 @@
           p7zip
           ripgrep
           scummvm
+          sqlite
         ];
 
         buildInputs = qtModules ++ [ pkgs.libGL ];
