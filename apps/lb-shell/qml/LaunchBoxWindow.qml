@@ -374,7 +374,7 @@ ApplicationWindow {
             } else if (window.importSmokePhase === 2
                        && !controller.writing
                        && controller.last_import_count === 1) {
-                if (!controller.report_import_smoke_success(1, 2, 0)) {
+                if (!controller.report_import_smoke_success(1, 4, 0)) {
                     console.error("IMPORT_SMOKE_MODEL_CONTRACT_FAILED")
                     Qt.exit(12)
                     return
@@ -3366,6 +3366,7 @@ ApplicationWindow {
             recursiveFolders.checked = true
             folderTitles.checked = false
             duplicateFiles.checked = false
+            copySameNameFiles.checked = true
             combineDiscSets.checked = true
             importFilePolicy.currentIndex = 1
             extensionFilter.text = ""
@@ -3412,9 +3413,17 @@ ApplicationWindow {
                 "file_policy": filePolicy(),
                 "duplicate_policy": duplicateFiles.checked ? "import" : "skip",
                 "extensions": extensions,
+                "copy_files_with_same_name": copySameNameFiles.checked,
                 "combine_disc_sets": combineDiscSets.checked,
                 "emulator_id": emulatorId.length === 0 ? null : emulatorId
             }
+        }
+
+        function companionFileCount(row) {
+            let count = row.same_name_files.length
+            for (let index = 0; index < row.additional_discs.length; ++index)
+                count += row.additional_discs[index].same_name_files.length
+            return count
         }
 
         function requestPreview() {
@@ -3443,7 +3452,8 @@ ApplicationWindow {
                     "rowState": row.state,
                     "included": row.included,
                     "message": row.message,
-                    "fileCount": 1 + row.additional_discs.length
+                    "discFileCount": 1 + row.additional_discs.length,
+                    "companionFileCount": companionFileCount(row)
                 })
             }
             awaitingPreview = false
@@ -3633,6 +3643,11 @@ ApplicationWindow {
                         text: "Import files already referenced by another game"
                     }
                     CheckBox {
+                        id: copySameNameFiles
+                        text: "Also copy/move all files with the same name but different file extensions (recommended)"
+                        visible: importFilePolicy.currentIndex !== 0
+                    }
+                    CheckBox {
                         id: combineDiscSets
                         text: "Combine complete (Disc N) sets into one game"
                     }
@@ -3696,7 +3711,8 @@ ApplicationWindow {
                                 required property string rowState
                                 required property bool included
                                 required property string message
-                                required property int fileCount
+                                required property int discFileCount
+                                required property int companionFileCount
                                 width: ListView.view.width
                                 height: 92
                                 color: index % 2 === 0 ? "#171b22" : "#14181e"
@@ -3726,9 +3742,13 @@ ApplicationWindow {
                                         Label {
                                             Layout.fillWidth: true
                                             text: importPreviewDelegate.sourcePath
-                                                  + (importPreviewDelegate.fileCount > 1
-                                                     ? "  (+" + (importPreviewDelegate.fileCount - 1)
+                                                  + (importPreviewDelegate.discFileCount > 1
+                                                     ? "  (+" + (importPreviewDelegate.discFileCount - 1)
                                                        + " disc file(s))"
+                                                     : "")
+                                                  + (importPreviewDelegate.companionFileCount > 0
+                                                     ? "  (+" + importPreviewDelegate.companionFileCount
+                                                       + " same-name file(s))"
                                                      : "")
                                             elide: Text.ElideMiddle
                                             color: "#8b949e"

@@ -171,9 +171,14 @@ into the same durable transaction as the platform XML rather than being held
 in memory. The options page can inherit the platform default emulator, select
 LaunchBox's explicit direct-launch sentinel, or pin a configured emulator ID;
 preview and execution both revalidate named emulators against
-`Data/Emulators.xml`. Copy never overwrites a destination. Move commits the
-copy and XML first, then removes a source only after both files have matching
-SHA-256 revisions; a cleanup failure retains the source and reports a warning.
+`Data/Emulators.xml`. Copy/move can also include every regular file beside a
+ROM with the same filename stem and a different extension, matching the
+recovered LaunchBox option without interpreting descriptor-file contents.
+The preview reports those companion files, and a collision blocks the entire
+game instead of producing a partial set. Copy never overwrites a destination.
+Move commits every ROM, companion, and XML write first, then removes a source
+only after both files have matching SHA-256 revisions; a cleanup failure
+retains the source and reports a warning.
 When requested, complete unambiguous `(Disc N)` or `(Disc N of M)` sets in one
 folder and extension collapse to one game. Disc 1 remains the main application
 and every disc, including Disc 1, is persisted as a priority-ordered additional

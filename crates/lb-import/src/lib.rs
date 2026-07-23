@@ -59,6 +59,12 @@ pub struct ManualImportRequest {
     pub duplicate_policy: ImportDuplicatePolicy,
     #[serde(default)]
     pub extensions: Vec<String>,
+    /// When copying or moving, include regular files in the same directory
+    /// whose filename stem matches the selected ROM but whose extension
+    /// differs. This follows LaunchBox's recovered "same name but different
+    /// file extensions" option; it does not parse descriptor-file contents.
+    #[serde(default)]
+    pub copy_files_with_same_name: bool,
     /// Combine only complete, unambiguous filename-derived disc sets. The
     /// planner recognizes `(Disc N)` and `(Disc N of M)` within one folder and
     /// extension; incomplete or colliding sets remain separate games.
@@ -94,6 +100,8 @@ pub struct ManualImportPreviewRow {
     pub message: String,
     pub disc: Option<u32>,
     #[serde(default)]
+    pub same_name_files: Vec<ManualImportCompanion>,
+    #[serde(default)]
     pub additional_discs: Vec<ManualImportDisc>,
 }
 
@@ -108,19 +116,71 @@ impl ManualImportPreviewRow {
         1usize.saturating_add(self.additional_discs.len())
     }
 
+    pub fn companion_file_count(&self) -> usize {
+        self.same_name_files.len()
+            + self
+                .additional_discs
+                .iter()
+                .map(|disc| disc.same_name_files.len())
+                .sum::<usize>()
+    }
+
+    pub fn transfer_file_count(&self) -> usize {
+        self.file_count()
+            .saturating_add(self.companion_file_count())
+    }
+
     fn import_files(&self) -> impl Iterator<Item = ImportFileRef<'_>> {
         std::iter::once(ImportFileRef {
-            source_path: &self.source_path,
-            destination_path: self.destination_path.as_deref(),
             application_path: &self.application_path,
             disc: self.disc,
         })
         .chain(self.additional_discs.iter().map(|disc| ImportFileRef {
-            source_path: &disc.source_path,
-            destination_path: disc.destination_path.as_deref(),
             application_path: &disc.application_path,
             disc: Some(disc.disc),
         }))
+    }
+
+    fn transfer_files(&self) -> Vec<TransferFileRef<'_>> {
+        let mut files = Vec::with_capacity(self.transfer_file_count());
+        files.push(TransferFileRef {
+            source_path: &self.source_path,
+            destination_path: self.destination_path.as_deref(),
+        });
+        files.extend(
+            self.same_name_files
+                .iter()
+                .map(ManualImportCompanion::transfer_file),
+        );
+        for disc in &self.additional_discs {
+            files.push(TransferFileRef {
+                source_path: &disc.source_path,
+                destination_path: disc.destination_path.as_deref(),
+            });
+            files.extend(
+                disc.same_name_files
+                    .iter()
+                    .map(ManualImportCompanion::transfer_file),
+            );
+        }
+        files
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManualImportCompanion {
+    pub source_path: PathBuf,
+    pub extension: String,
+    pub destination_path: Option<PathBuf>,
+}
+
+impl ManualImportCompanion {
+    fn transfer_file(&self) -> TransferFileRef<'_> {
+        TransferFileRef {
+            source_path: &self.source_path,
+            destination_path: self.destination_path.as_deref(),
+        }
     }
 }
 
@@ -132,14 +192,20 @@ pub struct ManualImportDisc {
     pub destination_path: Option<PathBuf>,
     pub application_path: String,
     pub disc: u32,
+    #[serde(default)]
+    pub same_name_files: Vec<ManualImportCompanion>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ImportFileRef<'a> {
-    source_path: &'a Path,
-    destination_path: Option<&'a Path>,
     application_path: &'a str,
     disc: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TransferFileRef<'a> {
+    source_path: &'a Path,
+    destination_path: Option<&'a Path>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -210,6 +276,18 @@ pub fn preview_manual_import(
 
     let extensions = normalize_extensions(&request.extensions);
     let sources = collect_sources(&request.locations, request.recursive)?;
+    let independent_sources = sources
+        .iter()
+        .filter(|source| {
+            let extension = source
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            extensions.is_empty() || extensions.contains(&extension)
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let existing_paths = existing_library_paths(
         &launchbox_root,
         resolver,
@@ -246,40 +324,73 @@ pub fn preview_manual_import(
             message = "A library game already resolves to this file".to_string();
         }
 
+        let mut same_name_files = Vec::new();
         let (destination_path, application_path) = match request.file_policy {
             ImportFilePolicy::Leave => (
                 None,
                 resolver.stored_path_for_host_path(&launchbox_root, &source)?,
             ),
             ImportFilePolicy::Copy | ImportFilePolicy::Move => {
-                let file_name =
-                    source
-                        .file_name()
-                        .ok_or_else(|| ImportError::InvalidSourcePath {
-                            path: source.clone(),
-                        })?;
-                let file_name =
-                    file_name
-                        .to_str()
-                        .ok_or_else(|| LaunchPathError::NonUnicodeHostPath {
-                            path: source.clone(),
-                        })?;
-                let file_name = portable_storage_name(file_name)?;
+                let file_name = portable_source_file_name(&source)?;
                 let destination = destination_directory.join(&file_name);
-                let destination_key = file_name.to_lowercase();
                 let destination_eligible = state == ImportRowState::Ready
                     || (state == ImportRowState::Duplicate
                         && request.duplicate_policy == ImportDuplicatePolicy::Import);
                 if destination_eligible {
-                    if destination.exists()
-                        || case_insensitive_name_exists(&destination_directory, &file_name)?
+                    if request.copy_files_with_same_name {
+                        for companion in same_name_companions(&source)? {
+                            if independent_sources.contains(&companion) {
+                                continue;
+                            }
+                            let companion_name = portable_source_file_name(&companion)?;
+                            same_name_files.push(ManualImportCompanion {
+                                extension: normalized_extension(&companion),
+                                destination_path: Some(destination_directory.join(companion_name)),
+                                source_path: companion,
+                            });
+                        }
+                    }
+
+                    let mut row_destinations = BTreeSet::new();
+                    for candidate in std::iter::once((file_name.as_str(), destination.as_path()))
+                        .chain(same_name_files.iter().map(|companion| {
+                            (
+                                companion
+                                    .destination_path
+                                    .as_deref()
+                                    .and_then(Path::file_name)
+                                    .and_then(|name| name.to_str())
+                                    .expect("planned companion destination has a Unicode filename"),
+                                companion
+                                    .destination_path
+                                    .as_ref()
+                                    .expect("copy/move companion has a destination")
+                                    .as_path(),
+                            )
+                        }))
                     {
-                        state = ImportRowState::DestinationExists;
-                        message = format!("Destination already exists: {}", destination.display());
-                    } else if !planned_destinations.insert(destination_key) {
-                        state = ImportRowState::DestinationExists;
-                        message = "Another selected file has the same portable destination name"
-                            .to_string();
+                        let destination_key = candidate.0.to_lowercase();
+                        if candidate.1.exists()
+                            || case_insensitive_name_exists(&destination_directory, candidate.0)?
+                        {
+                            state = ImportRowState::DestinationExists;
+                            message =
+                                format!("Destination already exists: {}", candidate.1.display());
+                            break;
+                        }
+                        if planned_destinations.contains(&destination_key)
+                            || !row_destinations.insert(destination_key)
+                        {
+                            state = ImportRowState::DestinationExists;
+                            message = format!(
+                                "Another selected file would use destination: {}",
+                                candidate.1.display()
+                            );
+                            break;
+                        }
+                    }
+                    if state != ImportRowState::DestinationExists {
+                        planned_destinations.extend(row_destinations);
                     }
                 }
                 let relative = Path::new("Games")
@@ -309,6 +420,7 @@ pub fn preview_manual_import(
             included,
             message,
             disc: None,
+            same_name_files,
             additional_discs: Vec::new(),
         });
     }
@@ -433,7 +545,7 @@ where
     }
 
     for (row, _) in &imports {
-        for file in row.import_files() {
+        for file in row.transfer_files() {
             if let Some(destination) = file.destination_path {
                 let parent =
                     destination
@@ -461,7 +573,7 @@ where
     let mut transaction = LibraryTransaction::new(&launchbox_root)?;
     if preview.request.file_policy != ImportFilePolicy::Leave {
         for (row, _) in &imports {
-            for file in row.import_files() {
+            for file in row.transfer_files() {
                 transaction.stage_file_copy(
                     file.source_path,
                     file.destination_path
@@ -483,7 +595,7 @@ where
     let mut cleanup_warnings = Vec::new();
     if preview.request.file_policy == ImportFilePolicy::Move {
         for (row, _) in &imports {
-            for file in row.import_files() {
+            for file in row.transfer_files() {
                 let destination = file
                     .destination_path
                     .expect("move preview file has a destination");
@@ -638,6 +750,7 @@ fn combine_complete_disc_sets(
                     destination_path: row.destination_path.clone(),
                     application_path: row.application_path.clone(),
                     disc: descriptor.number,
+                    same_name_files: row.same_name_files.clone(),
                 }
             })
             .collect::<Vec<_>>();
@@ -735,6 +848,72 @@ fn disc_descriptor(path: &Path) -> Option<DiscDescriptor> {
         }
     }
     None
+}
+
+fn portable_source_file_name(path: &Path) -> Result<String, ImportError> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| ImportError::InvalidSourcePath {
+            path: path.to_path_buf(),
+        })?
+        .to_str()
+        .ok_or_else(|| LaunchPathError::NonUnicodeHostPath {
+            path: path.to_path_buf(),
+        })?;
+    portable_storage_name(file_name).map_err(ImportError::PlatformPath)
+}
+
+fn normalized_extension(path: &Path) -> String {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn same_name_companions(source: &Path) -> Result<Vec<PathBuf>, ImportError> {
+    let Some(parent) = source.parent() else {
+        return Ok(Vec::new());
+    };
+    let Some(source_stem) = source.file_stem().and_then(|stem| stem.to_str()) else {
+        return Ok(Vec::new());
+    };
+    let Some(source_extension) = source.extension().and_then(|extension| extension.to_str()) else {
+        return Ok(Vec::new());
+    };
+
+    let mut companions = BTreeSet::new();
+    let entries = fs::read_dir(parent)
+        .map_err(|source| ImportError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| ImportError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| ImportError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+            continue;
+        };
+        if stem.eq_ignore_ascii_case(source_stem)
+            && !extension.eq_ignore_ascii_case(source_extension)
+        {
+            companions.insert(canonical_regular_file(&path)?);
+        }
+    }
+    Ok(companions.into_iter().collect())
 }
 
 fn collect_sources(
@@ -945,6 +1124,7 @@ mod tests {
             file_policy,
             duplicate_policy: ImportDuplicatePolicy::Skip,
             extensions: vec!["rom".into(), ".zip".into()],
+            copy_files_with_same_name: false,
             combine_disc_sets: false,
             emulator_id: None,
         }
@@ -1105,6 +1285,104 @@ mod tests {
     }
 
     #[test]
+    fn same_stem_different_extension_companions_share_the_copy_transaction() {
+        let (library, platform) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let cue = source_directory.path().join("Companion Game.cue");
+        let bin = source_directory.path().join("Companion Game.bin");
+        let sub = source_directory.path().join("COMPANION GAME.sub");
+        let unrelated = source_directory.path().join("Other Game.txt");
+        fs::write(&cue, b"cue bytes").unwrap();
+        fs::write(&bin, b"bin bytes").unwrap();
+        fs::write(&sub, b"sub bytes").unwrap();
+        fs::write(&unrelated, b"unrelated bytes").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: cue.clone(),
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Copy,
+        );
+        import_request.extensions = vec!["cue".into()];
+        import_request.copy_files_with_same_name = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows.len(), 1);
+        assert_eq!(preview.rows[0].companion_file_count(), 2);
+        assert_eq!(preview.rows[0].transfer_file_count(), 3);
+        assert_eq!(
+            preview.rows[0]
+                .same_name_files
+                .iter()
+                .map(|file| file.extension.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["bin", "sub"])
+        );
+
+        let report = execute_manual_import_with_ids(
+            library.path(),
+            &platform,
+            &HostPathResolver::default(),
+            selection(&preview),
+            || "companion-game".into(),
+        )
+        .unwrap();
+        assert_eq!(report.created_files.len(), 3);
+        for (name, bytes) in [
+            ("Companion Game.cue", b"cue bytes".as_slice()),
+            ("Companion Game.bin", b"bin bytes".as_slice()),
+            ("COMPANION GAME.sub", b"sub bytes".as_slice()),
+        ] {
+            assert_eq!(
+                fs::read(library.path().join("Games/Fixture Console").join(name)).unwrap(),
+                bytes
+            );
+        }
+        assert!(!library
+            .path()
+            .join("Games/Fixture Console/Other Game.txt")
+            .exists());
+        assert_eq!(
+            report.games[0].application_path,
+            r"Games\Fixture Console\Companion Game.cue"
+        );
+    }
+
+    #[test]
+    fn companion_destination_collision_blocks_the_whole_game() {
+        let (library, _) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let rom = source_directory.path().join("Collision.rom");
+        let companion = source_directory.path().join("Collision.dat");
+        fs::write(&rom, b"rom").unwrap();
+        fs::write(&companion, b"companion").unwrap();
+        let destination = library.path().join("Games/Fixture Console/Collision.dat");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(&destination, b"keep").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: rom,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Copy,
+        );
+        import_request.copy_files_with_same_name = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows[0].state, ImportRowState::DestinationExists);
+        assert!(!preview.rows[0].included);
+        assert!(preview.rows[0].message.contains("Collision.dat"));
+        assert!(!library
+            .path()
+            .join("Games/Fixture Console/Collision.rom")
+            .exists());
+    }
+
+    #[test]
     fn complete_disc_set_is_one_game_with_all_discs_as_additional_applications() {
         let (library, platform) = library();
         configure_fixture_emulator(library.path());
@@ -1115,8 +1393,16 @@ mod tests {
         let second = source_directory
             .path()
             .join("Fixture Saga (USA) - (Disc 2 of 2).rom");
+        let first_companion = source_directory
+            .path()
+            .join("Fixture Saga (USA) - (Disc 1 of 2).dat");
+        let second_companion = source_directory
+            .path()
+            .join("Fixture Saga (USA) - (Disc 2 of 2).dat");
         fs::write(&first, b"disc one").unwrap();
         fs::write(&second, b"disc two").unwrap();
+        fs::write(&first_companion, b"disc one companion").unwrap();
+        fs::write(&second_companion, b"disc two companion").unwrap();
         let mut import_request = request(
             vec![
                 ImportLocation {
@@ -1130,6 +1416,7 @@ mod tests {
             ],
             ImportFilePolicy::Copy,
         );
+        import_request.copy_files_with_same_name = true;
         import_request.combine_disc_sets = true;
         import_request.emulator_id = Some("fixture-emulator".into());
 
@@ -1141,6 +1428,8 @@ mod tests {
         assert_eq!(preview.rows[0].title, "Fixture Saga (USA)");
         assert_eq!(preview.rows[0].disc, Some(1));
         assert_eq!(preview.rows[0].file_count(), 2);
+        assert_eq!(preview.rows[0].companion_file_count(), 2);
+        assert_eq!(preview.rows[0].transfer_file_count(), 4);
         assert_eq!(preview.rows[0].additional_discs[0].disc, 2);
 
         let mut ids = ["disc-game", "disc-app-one", "disc-app-two"].into_iter();
@@ -1154,7 +1443,7 @@ mod tests {
         .unwrap();
         assert_eq!(report.games.len(), 1);
         assert_eq!(report.additional_applications.len(), 2);
-        assert_eq!(report.created_files.len(), 2);
+        assert_eq!(report.created_files.len(), 4);
         assert_eq!(
             fs::read(
                 library
@@ -1172,6 +1461,24 @@ mod tests {
             )
             .unwrap(),
             b"disc two"
+        );
+        assert_eq!(
+            fs::read(
+                library
+                    .path()
+                    .join("Games/Fixture Console/Fixture Saga (USA) - (Disc 1 of 2).dat")
+            )
+            .unwrap(),
+            b"disc one companion"
+        );
+        assert_eq!(
+            fs::read(
+                library
+                    .path()
+                    .join("Games/Fixture Console/Fixture Saga (USA) - (Disc 2 of 2).dat")
+            )
+            .unwrap(),
+            b"disc two companion"
         );
 
         let persisted = PlatformDocument::load(&platform).unwrap();
@@ -1348,19 +1655,20 @@ mod tests {
         let (library, platform) = library();
         let source_directory = tempfile::tempdir().unwrap();
         let source = source_directory.path().join("Move Me.rom");
+        let companion = source_directory.path().join("Move Me.dat");
         fs::write(&source, b"move bytes").unwrap();
-        let preview = preview_manual_import(
-            library.path(),
-            &HostPathResolver::default(),
-            request(
-                vec![ImportLocation {
-                    path: source.clone(),
-                    kind: ImportLocationKind::File,
-                }],
-                ImportFilePolicy::Move,
-            ),
-        )
-        .unwrap();
+        fs::write(&companion, b"move companion bytes").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: source.clone(),
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Move,
+        );
+        import_request.copy_files_with_same_name = true;
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
         let report = execute_manual_import_with_ids(
             library.path(),
             &platform,
@@ -1370,15 +1678,19 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            report.moved_sources,
-            vec![fs::canonicalize(&source).unwrap_or(source.clone())]
-        );
+        assert_eq!(report.moved_sources.len(), 2);
+        assert!(report.moved_sources.contains(&source));
+        assert!(report.moved_sources.contains(&companion));
         assert!(report.cleanup_warnings.is_empty());
         assert!(!source.exists());
+        assert!(!companion.exists());
         assert_eq!(
             fs::read(library.path().join("Games/Fixture Console/Move Me.rom")).unwrap(),
             b"move bytes"
+        );
+        assert_eq!(
+            fs::read(library.path().join("Games/Fixture Console/Move Me.dat")).unwrap(),
+            b"move companion bytes"
         );
     }
 

@@ -58,8 +58,11 @@ and explicitly configured-emulator states and revalidates configured IDs on
 preview and execution. Complete unambiguous `(Disc N)` and `(Disc N of M)`
 filename sets can collapse to one game with every disc represented as an
 ordered additional application, including the primary Disc 1 record, matching
-the older real installation. Metadata and media downloads, database-driven
-version combining, emulator installation/BIOS handling, cancellation, and
+the older real installation. Copy/move also implements the recovered
+same-filename/different-extension option as an atomic companion-file bundle,
+including per-disc companions and collision refusal. Metadata and media
+downloads, database-driven version combining, emulator installation/BIOS
+handling, descriptor-content dependency copying, cancellation, and
 runtime-oracle edge-case parity remain open, so `IMP-001` is not complete.
 Playlist generation (`LIB-009`) and theme-specific playlist views remain open.
 Persisted Windows-style paths remain lexical until the cross-platform launch
