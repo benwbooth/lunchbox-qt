@@ -134,6 +134,16 @@ pub mod qobject {
         fn add_platform(self: Pin<&mut LibraryController>, name: QString, scrape_as: QString);
 
         #[qinvokable]
+        fn platform_edit_payload(self: &LibraryController, name: QString) -> QString;
+
+        #[qinvokable]
+        fn save_platform(
+            self: Pin<&mut LibraryController>,
+            original_name: QString,
+            edit_payload: QString,
+        );
+
+        #[qinvokable]
         fn delete_platform(self: Pin<&mut LibraryController>, name: QString);
 
         #[qinvokable]
@@ -362,7 +372,7 @@ use cxx_qt_lib::{
 use lb_domain::{
     AdditionalApplication, AlternateName, CustomField, EmulatorConfiguration, Game,
     GameLaunchConfiguration, GameMetadata, Mount, NavigationMetadata, PlatformDefinition,
-    UNASSIGNED_EMULATOR_ID,
+    PlatformFolder, UNASSIGNED_EMULATOR_ID,
 };
 use lb_platform::{
     default_host_path_mappings_path, default_platform_folders, execute_launch_sequence,
@@ -378,7 +388,7 @@ use lb_storage::{
     LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame, PlatformDocument,
     PlatformReference, StorageError, TransactionError,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -891,6 +901,12 @@ struct PlatformCreateSuccess {
     folder_count: usize,
 }
 
+struct PlatformEditSuccess {
+    name: String,
+    catalog_backup: PathBuf,
+    folder_count: usize,
+}
+
 struct PlatformDeleteSuccess {
     name: String,
     source: PathBuf,
@@ -968,6 +984,7 @@ enum GameWriteFailure {
     Other(String),
 }
 
+#[derive(Debug)]
 enum PlatformWriteFailure {
     Conflict(String),
     PendingRecovery { count: usize, message: String },
@@ -976,6 +993,7 @@ enum PlatformWriteFailure {
 }
 
 const GAME_EDIT_PAYLOAD_VERSION: u32 = 3;
+const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -1004,6 +1022,22 @@ struct GameEditPayload {
     favorite: bool,
     completed: bool,
     star_rating: u8,
+}
+
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PlatformFolderEditPayload {
+    source_index: Option<usize>,
+    media_type: String,
+    folder_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PlatformEditPayload {
+    version: u32,
+    platform: PlatformDefinition,
+    folders: Vec<PlatformFolderEditPayload>,
 }
 
 fn parse_game_edit_payload(payload: &str) -> Result<GameEditPayload, String> {
@@ -1062,6 +1096,85 @@ fn parse_game_edit_payload(payload: &str) -> Result<GameEditPayload, String> {
         }
     }
     Ok(payload)
+}
+
+fn parse_platform_edit_payload(
+    original_name: &str,
+    payload: &str,
+) -> Result<PlatformEditPayload, String> {
+    let mut payload: PlatformEditPayload = serde_json::from_str(payload)
+        .map_err(|error| format!("invalid platform editor payload: {error}"))?;
+    if payload.version != PLATFORM_EDIT_PAYLOAD_VERSION {
+        return Err(format!(
+            "unsupported platform editor payload version {}; expected {}",
+            payload.version, PLATFORM_EDIT_PAYLOAD_VERSION
+        ));
+    }
+    if payload.platform.metadata.name != original_name {
+        return Err(format!(
+            "platform identity cannot be changed from {original_name} to {} without verified rename semantics",
+            payload.platform.metadata.name
+        ));
+    }
+    canonicalize_platform_definition(&mut payload.platform);
+    payload
+        .platform
+        .validate()
+        .map_err(|error| error.to_string())?;
+    for folder in &payload.folders {
+        PlatformFolder {
+            platform: original_name.to_string(),
+            media_type: folder.media_type.clone(),
+            folder_path: folder.folder_path.clone(),
+        }
+        .validate()
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(payload)
+}
+
+fn canonicalize_platform_definition(platform: &mut PlatformDefinition) {
+    macro_rules! canonicalize {
+        ($($field:ident),+ $(,)?) => {
+            $(platform.metadata.$field =
+                canonical_optional_text(platform.metadata.$field.take());)+
+        };
+    }
+    canonicalize!(
+        nested_name,
+        sort_title,
+        notes,
+        folder,
+        category,
+        image_type,
+        scrape_as,
+        last_game_id,
+        last_selected_child,
+        cpu,
+        developer,
+        display,
+        graphics,
+        manufacturer,
+        max_controllers,
+        media,
+        memory,
+        sound,
+        android_theme_video_path,
+        back_images_folder,
+        banner_images_folder,
+        big_box_theme,
+        big_box_view,
+        clear_logo_images_folder,
+        fanart_images_folder,
+        front_images_folder,
+        manuals_folder,
+        music_folder,
+        screenshot_images_folder,
+        steam_banner_images_folder,
+        video_path,
+        videos_folder,
+    );
+    platform.release_date = canonical_optional_text(platform.release_date.take());
 }
 
 fn canonical_optional_text(value: Option<String>) -> Option<String> {
@@ -1160,6 +1273,20 @@ fn describe_game_write_failure(error: &GameWriteFailure) -> String {
             references.len()
         ),
         GameWriteFailure::Other(message) => message.clone(),
+    }
+}
+
+fn describe_platform_write_failure(error: &PlatformWriteFailure) -> String {
+    match error {
+        PlatformWriteFailure::Conflict(message) => format!("write conflict: {message}"),
+        PlatformWriteFailure::PendingRecovery { message, .. } => {
+            format!("interrupted transaction requires recovery: {message}")
+        }
+        PlatformWriteFailure::Referenced(references) => format!(
+            "{} unexpected dependent records prevented the update",
+            references.len()
+        ),
+        PlatformWriteFailure::Other(message) => message.clone(),
     }
 }
 
@@ -1278,6 +1405,100 @@ fn add_game_to_platform(
         game,
         source,
         backup,
+    })
+}
+
+fn platform_catalog_path(root: &Path) -> Result<PathBuf, PlatformWriteFailure> {
+    [root.join("Data/Platforms.xml"), root.join("Platforms.xml")]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(format!(
+                "could not find a writable Platforms.xml under {}",
+                root.display()
+            ))
+        })
+}
+
+fn load_platform_edit_payload(root: &Path, name: &str) -> Result<String, PlatformWriteFailure> {
+    let catalog_path = platform_catalog_path(root)?;
+    let document = AuxiliaryDocument::load(&catalog_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let catalog = document
+        .platform_catalog()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let platform = catalog
+        .platforms
+        .into_iter()
+        .find(|platform| platform.metadata.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| PlatformWriteFailure::Other(format!("platform was not found: {name}")))?;
+    let exact_name = platform.metadata.name.clone();
+    let folders = catalog
+        .folders
+        .into_iter()
+        .filter(|folder| folder.platform.eq_ignore_ascii_case(&exact_name))
+        .enumerate()
+        .map(|(source_index, folder)| PlatformFolderEditPayload {
+            source_index: Some(source_index),
+            media_type: folder.media_type,
+            folder_path: folder.folder_path,
+        })
+        .collect();
+    serde_json::to_string(&PlatformEditPayload {
+        version: PLATFORM_EDIT_PAYLOAD_VERSION,
+        platform,
+        folders,
+    })
+    .map_err(|error| PlatformWriteFailure::Other(error.to_string()))
+}
+
+fn write_platform_definition(
+    root: PathBuf,
+    original_name: String,
+    payload: PlatformEditPayload,
+) -> Result<PlatformEditSuccess, PlatformWriteFailure> {
+    let catalog_path = platform_catalog_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&catalog_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let folder_edits = payload
+        .folders
+        .into_iter()
+        .map(|folder| IndexedPlatformRecordEdit {
+            source_index: folder.source_index,
+            record: PlatformFolder {
+                platform: original_name.clone(),
+                media_type: folder.media_type,
+                folder_path: folder.folder_path,
+            },
+        })
+        .collect::<Vec<_>>();
+    let folder_count = folder_edits.len();
+    document
+        .set_platform_definition(&original_name, payload.platform, folder_edits)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&document)
+        .map_err(classify_platform_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_platform_transaction_error)?;
+    let catalog_backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == catalog_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(
+                "platform edit transaction reported no catalog write".into(),
+            )
+        })?;
+    Ok(PlatformEditSuccess {
+        name: original_name,
+        catalog_backup,
+        folder_count,
     })
 }
 
@@ -2096,6 +2317,64 @@ impl qobject::LibraryController {
             self.as_mut().set_status_message(qstring(format!(
                 "Could not start platform creation: {error}"
             )));
+        }
+    }
+
+    pub fn platform_edit_payload(&self, name: QString) -> QString {
+        let Some(root) = self.rust().launchbox_root.as_deref() else {
+            return QString::default();
+        };
+        match load_platform_edit_payload(root, name.to_string().trim()) {
+            Ok(payload) => qstring(payload),
+            Err(error) => {
+                eprintln!(
+                    "Could not prepare platform editor: {}",
+                    describe_platform_write_failure(&error)
+                );
+                QString::default()
+            }
+        }
+    }
+
+    pub fn save_platform(mut self: Pin<&mut Self>, original_name: QString, edit_payload: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let original_name = original_name.to_string().trim().to_string();
+        let payload = match parse_platform_edit_payload(&original_name, &edit_payload.to_string()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not save platform: {error}.")));
+                return;
+            }
+        };
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Platform editing requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Saving platform {original_name}...")));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-platform-edit".to_string())
+            .spawn(move || {
+                let result = write_platform_definition(root, original_name, payload);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_platform_edit(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not start platform writer: {error}")));
         }
     }
 
@@ -3582,6 +3861,52 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_platform_edit(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<PlatformEditSuccess, PlatformWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(edited) => {
+                self.as_mut().set_write_conflict(false);
+                let revision = self.as_ref().rust().platform_revision.wrapping_add(1);
+                self.as_mut().set_platform_revision(revision);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved {} and {} media-folder records. Exact catalog backup: {}",
+                    edited.name,
+                    edited.folder_count,
+                    edited.catalog_backup.display()
+                )));
+            }
+            Err(PlatformWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict while editing platform: {message}. Reload before retrying."
+                )));
+            }
+            Err(PlatformWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(PlatformWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not edit platform: unexpected reference result ({})",
+                    references.len()
+                )))
+            }
+            Err(PlatformWriteFailure::Other(message)) => self
+                .as_mut()
+                .set_status_message(qstring(format!("Could not edit platform: {message}"))),
+        }
+    }
+
     fn finish_platform_delete(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -4261,6 +4586,117 @@ mod tests {
         assert!(pending_transaction_manifests(directory.path())
             .expect("inspect pending transactions")
             .is_empty());
+    }
+
+    #[test]
+    fn platform_edit_payload_round_trips_every_typed_field_and_lexical_folder_path() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data_directory = directory.path().join("Data");
+        let platform_directory = data_directory.join("Platforms");
+        fs::create_dir_all(&platform_directory).unwrap();
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        let original_catalog = fs::read_to_string(fixture_root.join("Platforms.xml"))
+            .unwrap()
+            .replace(
+                "<Developer>Fixture Labs</Developer>",
+                "<Developer>Fixture Labs</Developer><FuturePlatformField>keep-platform</FuturePlatformField>",
+            )
+            .replace(
+                "<FolderPath>Videos/Fixture Console</FolderPath>",
+                "<FolderPath>Videos/Fixture Console</FolderPath><FutureFolderField>keep-folder</FutureFolderField>",
+            );
+        let catalog_path = data_directory.join("Platforms.xml");
+        fs::write(&catalog_path, original_catalog.as_bytes()).unwrap();
+        fs::copy(
+            fixture_root.join("Platforms/Fixture Console.xml"),
+            platform_directory.join("Fixture Console.xml"),
+        )
+        .unwrap();
+
+        let serialized = load_platform_edit_payload(directory.path(), "fixture console").unwrap();
+        let mut payload = parse_platform_edit_payload("Fixture Console", &serialized).unwrap();
+        assert_eq!(payload.folders[0].source_index, Some(0));
+        payload.platform.metadata.sort_title = Some("Console, Fixture".into());
+        payload.platform.metadata.notes = Some("   ".into());
+        payload.platform.metadata.manufacturer = Some("Portable Systems".into());
+        payload.platform.metadata.cpu = Some("Qt CPU".into());
+        payload.platform.metadata.hide_in_big_box = true;
+        payload.platform.release_date = Some("2001-02-03".into());
+        payload.platform.disable_auto_import = true;
+        payload.folders[0].folder_path = r"Videos\Fixture Console\Edited".into();
+        payload.folders.push(PlatformFolderEditPayload {
+            source_index: None,
+            media_type: "Manual".into(),
+            folder_path: r"Manuals\Fixture Console".into(),
+        });
+        let payload = parse_platform_edit_payload(
+            "Fixture Console",
+            &serde_json::to_string(&payload).unwrap(),
+        )
+        .unwrap();
+        let edited = write_platform_definition(
+            directory.path().to_path_buf(),
+            "Fixture Console".into(),
+            payload,
+        )
+        .unwrap();
+        assert_eq!(edited.folder_count, 2);
+        assert_eq!(
+            fs::read(&edited.catalog_backup).unwrap(),
+            original_catalog.as_bytes()
+        );
+
+        let bytes = fs::read(&catalog_path).unwrap();
+        let xml = String::from_utf8(bytes).unwrap();
+        assert!(xml.contains("<FuturePlatformField>keep-platform</FuturePlatformField>"));
+        assert!(xml.contains("<FutureFolderField>keep-folder</FutureFolderField>"));
+        assert!(xml.contains(r"<FolderPath>Videos\Fixture Console\Edited</FolderPath>"));
+        let catalog = AuxiliaryDocument::load(&catalog_path)
+            .unwrap()
+            .platform_catalog()
+            .unwrap();
+        let platform = &catalog.platforms[0];
+        assert_eq!(
+            platform.metadata.sort_title.as_deref(),
+            Some("Console, Fixture")
+        );
+        assert_eq!(platform.metadata.notes, None);
+        assert_eq!(platform.metadata.cpu.as_deref(), Some("Qt CPU"));
+        assert_eq!(platform.release_date.as_deref(), Some("2001-02-03"));
+        assert!(platform.metadata.hide_in_big_box);
+        assert!(platform.disable_auto_import);
+        assert_eq!(catalog.folders[1].media_type, "Manual");
+        assert_eq!(catalog.folders[1].folder_path, r"Manuals\Fixture Console");
+        assert!(!directory.path().join("Manuals").exists());
+    }
+
+    #[test]
+    fn platform_edit_payload_rejects_rename_unknown_fields_and_wrong_versions() {
+        let payload = PlatformEditPayload {
+            version: PLATFORM_EDIT_PAYLOAD_VERSION,
+            platform: PlatformDefinition {
+                metadata: NavigationMetadata {
+                    name: "Fixture Console".into(),
+                    ..NavigationMetadata::default()
+                },
+                ..PlatformDefinition::default()
+            },
+            folders: Vec::new(),
+        };
+        let valid = serde_json::to_string(&payload).unwrap();
+        assert!(parse_platform_edit_payload("Fixture Console", &valid).is_ok());
+        assert!(parse_platform_edit_payload("Different Console", &valid).is_err());
+        assert!(parse_platform_edit_payload(
+            "Fixture Console",
+            &valid.replace("\"version\":1", "\"version\":2")
+        )
+        .is_err());
+        assert!(parse_platform_edit_payload(
+            "Fixture Console",
+            &valid.replacen("\"folders\":", "\"future\":true,\"folders\":", 1)
+        )
+        .is_err());
     }
 
     #[test]

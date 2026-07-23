@@ -132,6 +132,15 @@ name, and value, while the concrete serializer maps `GameID`, `Name`, and
 `Value`. The port's synthetic fixture and lossless editor use that exact
 contract; live 13.27 creation/edit behavior remains an oracle task.
 
+Platform editing has a similarly explicit static boundary. The 13.27
+`IPlatform` contract makes `Name` getter-only while exposing the recovered
+metadata and folder APIs, and `AddEditPlatformViewModel` contains the expected
+metadata/folder/document edit surface. The port now edits those mutable fields
+and source-indexed folder rows losslessly, but deliberately keeps platform
+identity read-only because the protected save body and failing Wine runtime do
+not establish the required game/emulator/playlist/parent/controller/settings
+and filename rename behavior.
+
 The 13.27 installation also yielded a concrete DOSBox mount contract despite
 the protected method bodies. `IMount` exposes game ID, drive letter,
 filesystem, mount type, path, and media type. The installed strings identify

@@ -322,15 +322,28 @@ mapfile -t platform_catalog_backups < <(
   find "$platform_crud_root/Data" -maxdepth 1 -type f \
     -name 'Platforms.xml.lbport-transaction-backup-*' -print
 )
-if [[ ${#platform_catalog_backups[@]} -ne 2 ]]; then
-  echo "Platform create/delete did not retain exactly two catalog backups." >&2
+if [[ ${#platform_catalog_backups[@]} -ne 3 ]]; then
+  echo "Platform create/edit/delete did not retain exactly three catalog backups." >&2
   exit 1
 fi
 platform_original_catalog_backups=0
 platform_created_catalog_backups=0
+platform_edited_catalog_backups=0
 for backup in "${platform_catalog_backups[@]}"; do
   if cmp -s "$backup" fixtures/launchbox/Data/Platforms.xml; then
     ((platform_original_catalog_backups += 1))
+  elif rg -q -F '<Name>Dragon 32/64</Name>' "$backup" \
+    && rg -q -F '<SortTitle>Dragon, 32/64</SortTitle>' "$backup" \
+    && rg -q -F '<Developer>Qt Forge</Developer>' "$backup" \
+    && rg -q -F '<Cpu>6809</Cpu>' "$backup" \
+    && rg -q -F '<Notes>Edited through the real platform dialog.</Notes>' "$backup" \
+    && rg -q -F '<HideInBigBox>true</HideInBigBox>' "$backup" \
+    && rg -q -F '<DisableAutoImport>true</DisableAutoImport>' "$backup" \
+    && [[ $(rg -c -F '<Platform>Dragon 32/64</Platform>' "$backup") -eq 52 ]] \
+    && rg -q -F '<FolderPath>Images\Dragon 32_64\Edited</FolderPath>' "$backup" \
+    && rg -q -F '<MediaType>Test Media</MediaType>' "$backup" \
+    && rg -q -F '<FolderPath>Portable\Dragon 32_64</FolderPath>' "$backup"; then
+    ((platform_edited_catalog_backups += 1))
   elif rg -q -F '<Name>Dragon 32/64</Name>' "$backup" \
     && rg -q -F '<ScrapeAs>Dragon 32/64</ScrapeAs>' "$backup" \
     && [[ $(rg -c -F '<Platform>Dragon 32/64</Platform>' "$backup") -eq 51 ]] \
@@ -339,8 +352,9 @@ for backup in "${platform_catalog_backups[@]}"; do
   fi
 done
 if [[ $platform_original_catalog_backups -ne 1 \
-  || $platform_created_catalog_backups -ne 1 ]]; then
-  echo "Platform catalog backups do not prove the expected portable create/delete chain." >&2
+  || $platform_created_catalog_backups -ne 1 \
+  || $platform_edited_catalog_backups -ne 1 ]]; then
+  echo "Platform catalog backups do not prove the expected portable create/edit/delete chain." >&2
   exit 1
 fi
 
@@ -373,7 +387,7 @@ if find "$platform_crud_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox dialog-driven platform lifecycle, portable filenames, lexical Windows paths, reference gating, exact backups, and media isolation validated."
+echo "LaunchBox dialog-driven platform lifecycle and metadata/folder editing, portable filenames, lexical Windows paths, reference gating, exact backups, and media isolation validated."
 
 cp -R fixtures/launchbox/Data "$emulator_launch_root/Data"
 mkdir -p "$emulator_launch_root/Emulators"

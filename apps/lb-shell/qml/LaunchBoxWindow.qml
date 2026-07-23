@@ -392,16 +392,44 @@ ApplicationWindow {
                     return
                 }
                 window.platformCrudSmokePhase = 2
+                platformEditor.smokeSave(platformName)
+            } else if (window.platformCrudSmokePhase === 2 && !controller.writing) {
+                const saved = controller.platform_edit_payload(platformName)
+                if (saved.length === 0) {
+                    console.error("PLATFORM_CRUD_SMOKE_EDIT_PAYLOAD_MISSING")
+                    Qt.exit(9)
+                    return
+                }
+                const payload = JSON.parse(saved)
+                if (payload.platform.metadata.sort_title !== "Dragon, 32/64"
+                        || payload.platform.metadata.developer !== "Qt Forge"
+                        || payload.platform.metadata.cpu !== "6809"
+                        || payload.platform.metadata.notes
+                           !== "Edited through the real platform dialog."
+                        || !payload.platform.metadata.hide_in_big_box
+                        || !payload.platform.disable_auto_import
+                        || payload.folders.length !== 52
+                        || payload.folders[0].folder_path
+                           !== "Images\\Dragon 32_64\\Edited"
+                        || payload.folders[51].media_type !== "Test Media"
+                        || payload.folders[51].folder_path
+                           !== "Portable\\Dragon 32_64") {
+                    console.error("PLATFORM_CRUD_SMOKE_EDIT_NOT_PERSISTED payload="
+                                  + saved)
+                    Qt.exit(9)
+                    return
+                }
+                window.platformCrudSmokePhase = 3
                 addGameDialog.smokeAdd("Dragon Test",
                                        "Games\\Dragon 32_64\\test.vdk",
                                        platformName)
-            } else if (window.platformCrudSmokePhase === 2 && !controller.writing
+            } else if (window.platformCrudSmokePhase === 3 && !controller.writing
                        && controller.game_count === 4
                        && controller.last_added_game_id.length > 0) {
                 window.platformCrudAddedGameId = controller.last_added_game_id
-                window.platformCrudSmokePhase = 3
+                window.platformCrudSmokePhase = 4
                 deletePlatformConfirmation.smokeDelete(platformName)
-            } else if (window.platformCrudSmokePhase === 3 && !controller.writing
+            } else if (window.platformCrudSmokePhase === 4 && !controller.writing
                        && controller.delete_blocker_count > 0) {
                 window.platformCrudBlockedReferences = controller.delete_blocker_count
                 const row = controller.row_for_game_id(window.platformCrudAddedGameId)
@@ -410,14 +438,14 @@ ApplicationWindow {
                     Qt.exit(9)
                     return
                 }
-                window.platformCrudSmokePhase = 4
+                window.platformCrudSmokePhase = 5
                 deleteConfirmation.smokeDelete(
                     row, window.platformCrudAddedGameId, "Dragon Test")
-            } else if (window.platformCrudSmokePhase === 4 && !controller.writing
-                       && controller.game_count === 3) {
-                window.platformCrudSmokePhase = 5
-                deletePlatformConfirmation.smokeDelete(platformName)
             } else if (window.platformCrudSmokePhase === 5 && !controller.writing
+                       && controller.game_count === 3) {
+                window.platformCrudSmokePhase = 6
+                deletePlatformConfirmation.smokeDelete(platformName)
+            } else if (window.platformCrudSmokePhase === 6 && !controller.writing
                        && controller.platform_entry_count === 1) {
                 if (!controller.report_platform_crud_smoke_success(
                         platformName, window.platformCrudBlockedReferences)) {
@@ -635,6 +663,16 @@ ApplicationWindow {
                                  && !controller.write_conflict
                                  && controller.pending_recovery_count === 0
                         onClicked: addPlatformDialog.prepare()
+                    }
+                    ToolButton {
+                        text: "✎"
+                        Accessible.name: "Edit selected platform"
+                        enabled: window.selectedPlatform.length > 0
+                                 && !controller.loading && !controller.writing
+                                 && !controller.launching
+                                 && !controller.write_conflict
+                                 && controller.pending_recovery_count === 0
+                        onClicked: platformEditor.prepare(window.selectedPlatform)
                     }
                     ToolButton {
                         text: "−"
@@ -1659,6 +1697,298 @@ ApplicationWindow {
                         deleteConfirmation.prepare(gameEditor.modelRow, gameEditor.gameId,
                                                    gameEditor.gameTitle)
                     }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: platformEditor
+        anchors.centerIn: parent
+        modal: true
+        title: "Edit " + originalName
+        standardButtons: Dialog.Save | Dialog.Cancel
+        property string originalName: ""
+        property var draft: null
+
+        ListModel { id: platformFolderEditorModel }
+
+        function storedText(value) {
+            return value === null || value === undefined ? "" : value
+        }
+
+        function optionalText(value) {
+            return value.trim().length > 0 ? value : null
+        }
+
+        function prepare(name) {
+            const serialized = controller.platform_edit_payload(name)
+            if (serialized.length === 0)
+                return
+            originalName = name
+            draft = JSON.parse(serialized)
+            const metadata = draft.platform.metadata
+            platformNameField.text = metadata.name
+            platformNestedNameField.text = storedText(metadata.nested_name)
+            platformSortTitleField.text = storedText(metadata.sort_title)
+            platformScrapeAsField.text = storedText(metadata.scrape_as)
+            platformReleaseDateField.text = storedText(draft.platform.release_date)
+            platformCategoryField.text = storedText(metadata.category)
+            platformImageTypeField.text = storedText(metadata.image_type)
+            platformGameFolderField.text = storedText(metadata.folder)
+            platformDeveloperField.text = storedText(metadata.developer)
+            platformManufacturerField.text = storedText(metadata.manufacturer)
+            platformCpuField.text = storedText(metadata.cpu)
+            platformMemoryField.text = storedText(metadata.memory)
+            platformGraphicsField.text = storedText(metadata.graphics)
+            platformSoundField.text = storedText(metadata.sound)
+            platformDisplayField.text = storedText(metadata.display)
+            platformMediaField.text = storedText(metadata.media)
+            platformMaxControllersField.text = storedText(metadata.max_controllers)
+            platformBigBoxThemeField.text = storedText(metadata.big_box_theme)
+            platformBigBoxViewField.text = storedText(metadata.big_box_view)
+            platformVideoPathField.text = storedText(metadata.video_path)
+            platformVideosFolderField.text = storedText(metadata.videos_folder)
+            platformFrontImagesFolderField.text = storedText(metadata.front_images_folder)
+            platformBackImagesFolderField.text = storedText(metadata.back_images_folder)
+            platformClearLogoImagesFolderField.text = storedText(metadata.clear_logo_images_folder)
+            platformFanartImagesFolderField.text = storedText(metadata.fanart_images_folder)
+            platformScreenshotImagesFolderField.text = storedText(metadata.screenshot_images_folder)
+            platformBannerImagesFolderField.text = storedText(metadata.banner_images_folder)
+            platformSteamBannerImagesFolderField.text = storedText(metadata.steam_banner_images_folder)
+            platformManualsFolderField.text = storedText(metadata.manuals_folder)
+            platformMusicFolderField.text = storedText(metadata.music_folder)
+            platformAndroidThemeVideoPathField.text = storedText(metadata.android_theme_video_path)
+            platformNotesField.text = storedText(metadata.notes)
+            platformHideBigBoxCheck.checked = metadata.hide_in_big_box
+            platformDisableAutoImportCheck.checked = draft.platform.disable_auto_import
+            platformFolderEditorModel.clear()
+            for (let index = 0; index < draft.folders.length; ++index) {
+                const folder = draft.folders[index]
+                platformFolderEditorModel.append({
+                    sourceIndex: folder.source_index === null ? -1 : folder.source_index,
+                    mediaType: folder.media_type,
+                    folderPath: folder.folder_path
+                })
+            }
+            open()
+        }
+
+        function editPayload() {
+            const metadata = draft.platform.metadata
+            metadata.nested_name = optionalText(platformNestedNameField.text)
+            metadata.sort_title = optionalText(platformSortTitleField.text)
+            metadata.scrape_as = optionalText(platformScrapeAsField.text)
+            draft.platform.release_date = optionalText(platformReleaseDateField.text)
+            metadata.category = optionalText(platformCategoryField.text)
+            metadata.image_type = optionalText(platformImageTypeField.text)
+            metadata.folder = optionalText(platformGameFolderField.text)
+            metadata.developer = optionalText(platformDeveloperField.text)
+            metadata.manufacturer = optionalText(platformManufacturerField.text)
+            metadata.cpu = optionalText(platformCpuField.text)
+            metadata.memory = optionalText(platformMemoryField.text)
+            metadata.graphics = optionalText(platformGraphicsField.text)
+            metadata.sound = optionalText(platformSoundField.text)
+            metadata.display = optionalText(platformDisplayField.text)
+            metadata.media = optionalText(platformMediaField.text)
+            metadata.max_controllers = optionalText(platformMaxControllersField.text)
+            metadata.big_box_theme = optionalText(platformBigBoxThemeField.text)
+            metadata.big_box_view = optionalText(platformBigBoxViewField.text)
+            metadata.video_path = optionalText(platformVideoPathField.text)
+            metadata.videos_folder = optionalText(platformVideosFolderField.text)
+            metadata.front_images_folder = optionalText(platformFrontImagesFolderField.text)
+            metadata.back_images_folder = optionalText(platformBackImagesFolderField.text)
+            metadata.clear_logo_images_folder = optionalText(platformClearLogoImagesFolderField.text)
+            metadata.fanart_images_folder = optionalText(platformFanartImagesFolderField.text)
+            metadata.screenshot_images_folder = optionalText(platformScreenshotImagesFolderField.text)
+            metadata.banner_images_folder = optionalText(platformBannerImagesFolderField.text)
+            metadata.steam_banner_images_folder = optionalText(platformSteamBannerImagesFolderField.text)
+            metadata.manuals_folder = optionalText(platformManualsFolderField.text)
+            metadata.music_folder = optionalText(platformMusicFolderField.text)
+            metadata.android_theme_video_path = optionalText(platformAndroidThemeVideoPathField.text)
+            metadata.notes = optionalText(platformNotesField.text)
+            metadata.hide_in_big_box = platformHideBigBoxCheck.checked
+            draft.platform.disable_auto_import = platformDisableAutoImportCheck.checked
+            const folders = []
+            for (let index = 0; index < platformFolderEditorModel.count; ++index) {
+                const folder = platformFolderEditorModel.get(index)
+                folders.push({
+                    source_index: folder.sourceIndex < 0 ? null : folder.sourceIndex,
+                    media_type: folder.mediaType,
+                    folder_path: folder.folderPath
+                })
+            }
+            draft.folders = folders
+            return JSON.stringify(draft)
+        }
+
+        function smokeSave(name) {
+            prepare(name)
+            platformSortTitleField.text = "Dragon, 32/64"
+            platformDeveloperField.text = "Qt Forge"
+            platformCpuField.text = "6809"
+            platformNotesField.text = "Edited through the real platform dialog."
+            platformHideBigBoxCheck.checked = true
+            platformDisableAutoImportCheck.checked = true
+            if (platformFolderEditorModel.count > 0)
+                platformFolderEditorModel.setProperty(0, "folderPath",
+                                                      "Images\\Dragon 32_64\\Edited")
+            platformFolderEditorModel.append({
+                sourceIndex: -1,
+                mediaType: "Test Media",
+                folderPath: "Portable\\Dragon 32_64"
+            })
+            Qt.callLater(function() { platformEditor.accept() })
+        }
+
+        onAccepted: controller.save_platform(originalName, editPayload())
+
+        contentItem: ScrollView {
+            id: platformEditorScroll
+            implicitWidth: 760
+            implicitHeight: Math.min(680, window.height - 160)
+            contentWidth: availableWidth
+            clip: true
+
+            ColumnLayout {
+                width: platformEditorScroll.availableWidth
+                spacing: 12
+
+                Label {
+                    Layout.fillWidth: true
+                    text: "LaunchBox 13.27 exposes platform identity as getter-only. Name stays fixed until a runtime oracle establishes safe rename behavior across games, emulators, playlists, parents, controllers, settings, and the platform filename."
+                    wrapMode: Text.Wrap
+                    color: "#d29922"
+                }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+
+                    Label { text: "Name" }
+                    TextField { id: platformNameField; Layout.fillWidth: true; readOnly: true }
+                    Label { text: "Nested name" }
+                    TextField { id: platformNestedNameField; Layout.fillWidth: true }
+                    Label { text: "Sort title" }
+                    TextField { id: platformSortTitleField; Layout.fillWidth: true }
+                    Label { text: "Scrape as" }
+                    TextField { id: platformScrapeAsField; Layout.fillWidth: true }
+                    Label { text: "Release date" }
+                    TextField { id: platformReleaseDateField; Layout.fillWidth: true }
+                    Label { text: "Category" }
+                    TextField { id: platformCategoryField; Layout.fillWidth: true }
+                    Label { text: "Image type" }
+                    TextField { id: platformImageTypeField; Layout.fillWidth: true }
+                    Label { text: "Games folder" }
+                    TextField { id: platformGameFolderField; Layout.fillWidth: true }
+                    Label { text: "Developer" }
+                    TextField { id: platformDeveloperField; Layout.fillWidth: true }
+                    Label { text: "Manufacturer" }
+                    TextField { id: platformManufacturerField; Layout.fillWidth: true }
+                    Label { text: "CPU" }
+                    TextField { id: platformCpuField; Layout.fillWidth: true }
+                    Label { text: "Memory" }
+                    TextField { id: platformMemoryField; Layout.fillWidth: true }
+                    Label { text: "Graphics" }
+                    TextField { id: platformGraphicsField; Layout.fillWidth: true }
+                    Label { text: "Sound" }
+                    TextField { id: platformSoundField; Layout.fillWidth: true }
+                    Label { text: "Display" }
+                    TextField { id: platformDisplayField; Layout.fillWidth: true }
+                    Label { text: "Media" }
+                    TextField { id: platformMediaField; Layout.fillWidth: true }
+                    Label { text: "Maximum controllers" }
+                    TextField { id: platformMaxControllersField; Layout.fillWidth: true }
+                    Label { text: "BigBox theme" }
+                    TextField { id: platformBigBoxThemeField; Layout.fillWidth: true }
+                    Label { text: "BigBox view" }
+                    TextField { id: platformBigBoxViewField; Layout.fillWidth: true }
+                    Label { text: "Video path" }
+                    TextField { id: platformVideoPathField; Layout.fillWidth: true }
+                    Label { text: "Videos folder" }
+                    TextField { id: platformVideosFolderField; Layout.fillWidth: true }
+                    Label { text: "Front images folder" }
+                    TextField { id: platformFrontImagesFolderField; Layout.fillWidth: true }
+                    Label { text: "Back images folder" }
+                    TextField { id: platformBackImagesFolderField; Layout.fillWidth: true }
+                    Label { text: "Clear logos folder" }
+                    TextField { id: platformClearLogoImagesFolderField; Layout.fillWidth: true }
+                    Label { text: "Fanart folder" }
+                    TextField { id: platformFanartImagesFolderField; Layout.fillWidth: true }
+                    Label { text: "Screenshots folder" }
+                    TextField { id: platformScreenshotImagesFolderField; Layout.fillWidth: true }
+                    Label { text: "Banners folder" }
+                    TextField { id: platformBannerImagesFolderField; Layout.fillWidth: true }
+                    Label { text: "Steam banners folder" }
+                    TextField { id: platformSteamBannerImagesFolderField; Layout.fillWidth: true }
+                    Label { text: "Manuals folder" }
+                    TextField { id: platformManualsFolderField; Layout.fillWidth: true }
+                    Label { text: "Music folder" }
+                    TextField { id: platformMusicFolderField; Layout.fillWidth: true }
+                    Label { text: "Android theme video" }
+                    TextField { id: platformAndroidThemeVideoPathField; Layout.fillWidth: true }
+                }
+                Label { text: "Notes" }
+                TextArea {
+                    id: platformNotesField
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 110
+                    wrapMode: TextEdit.Wrap
+                }
+                RowLayout {
+                    CheckBox { id: platformHideBigBoxCheck; text: "Hide in BigBox" }
+                    CheckBox { id: platformDisableAutoImportCheck; text: "Disable auto-import" }
+                    Item { Layout.fillWidth: true }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: "#30363d"
+                }
+                Label { text: "Platform folders"; font.pixelSize: 18; font.bold: true }
+                Label {
+                    Layout.fillWidth: true
+                    text: "These are lexical LaunchBox paths. Editing them does not create, move, or delete directories on this host."
+                    wrapMode: Text.Wrap
+                    color: "#7d8590"
+                }
+                Repeater {
+                    model: platformFolderEditorModel
+                    delegate: RowLayout {
+                        required property int index
+                        required property int sourceIndex
+                        required property string mediaType
+                        required property string folderPath
+                        Layout.fillWidth: true
+                        spacing: 8
+                        TextField {
+                            Layout.preferredWidth: 210
+                            text: mediaType
+                            placeholderText: "Media type"
+                            onTextEdited: platformFolderEditorModel.setProperty(
+                                              index, "mediaType", text)
+                        }
+                        TextField {
+                            Layout.fillWidth: true
+                            text: folderPath
+                            placeholderText: "Stored LaunchBox folder path"
+                            onTextEdited: platformFolderEditorModel.setProperty(
+                                              index, "folderPath", text)
+                        }
+                        Button {
+                            text: "Remove"
+                            onClicked: platformFolderEditorModel.remove(index)
+                        }
+                    }
+                }
+                Button {
+                    text: "Add Platform Folder"
+                    onClicked: platformFolderEditorModel.append({
+                        sourceIndex: -1,
+                        mediaType: "",
+                        folderPath: ""
+                    })
                 }
             }
         }

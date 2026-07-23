@@ -712,6 +712,150 @@ impl AuxiliaryDocument {
         })
     }
 
+    /// Replaces the mutable fields of one platform and its ordered folder rows
+    /// without rebuilding retained XML elements. The public LaunchBox 13.27
+    /// contract exposes `IPlatform.Name` as getter-only, so identity changes
+    /// are deliberately rejected until a runtime oracle establishes the full
+    /// cross-document rename behavior.
+    pub fn set_platform_definition(
+        &mut self,
+        platform_name: &str,
+        platform: PlatformDefinition,
+        folder_edits: Vec<IndexedPlatformRecordEdit<PlatformFolder>>,
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind("edit platform", AuxiliaryDocumentKind::Platforms)?;
+        platform.validate()?;
+        let catalog = self.platform_catalog()?;
+        let original = catalog
+            .platforms
+            .iter()
+            .find(|candidate| candidate.metadata.name.eq_ignore_ascii_case(platform_name))
+            .cloned()
+            .ok_or_else(|| StorageError::PlatformNotFound {
+                name: platform_name.to_string(),
+            })?;
+        let exact_name = original.metadata.name.clone();
+        if platform.metadata.name != exact_name {
+            return Err(StorageError::ImmutablePlatformName {
+                expected: exact_name,
+                actual: platform.metadata.name,
+            });
+        }
+
+        let original_folders = catalog
+            .folders
+            .iter()
+            .filter(|folder| folder.platform.eq_ignore_ascii_case(&exact_name))
+            .cloned()
+            .collect::<Vec<_>>();
+        validate_indexed_platform_folder_edits(&exact_name, original_folders.len(), &folder_edits)?;
+        let mut media_types = std::collections::BTreeSet::new();
+        for edit in &folder_edits {
+            edit.record.validate()?;
+            if edit.record.platform != exact_name {
+                return Err(StorageError::PlatformFolderOwnerMismatch {
+                    expected: exact_name,
+                    actual: edit.record.platform.clone(),
+                });
+            }
+            if !media_types.insert(edit.record.media_type.to_lowercase()) {
+                return Err(StorageError::DuplicatePlatformFolderMediaType {
+                    platform: exact_name,
+                    media_type: edit.record.media_type.clone(),
+                });
+            }
+        }
+
+        self.mutate(move |root| {
+            let platform_indices = root
+                .children
+                .iter()
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    let element = node.as_element()?;
+                    (element.name == "Platform"
+                        && child_text(element, "Name")
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&exact_name)))
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let platform_index = match platform_indices.as_slice() {
+                [index] => *index,
+                [] => {
+                    return Err(StorageError::PlatformNotFound {
+                        name: exact_name.clone(),
+                    })
+                }
+                _ => {
+                    return Err(StorageError::DuplicatePlatformName {
+                        name: exact_name.clone(),
+                    })
+                }
+            };
+            let element = root.children[platform_index]
+                .as_mut_element()
+                .expect("platform index must identify an element");
+            update_platform_definition_element(element, &original, &platform);
+
+            let root_indices = root
+                .children
+                .iter()
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    let element = node.as_element()?;
+                    (element.name == "PlatformFolder"
+                        && child_text(element, "Platform")
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&exact_name)))
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            if root_indices.len() != original_folders.len() {
+                return Err(StorageError::InvalidPlatformFolderEdit {
+                    platform: exact_name.clone(),
+                    reason: format!(
+                        "typed/XML source count mismatch ({} versus {})",
+                        original_folders.len(),
+                        root_indices.len()
+                    ),
+                });
+            }
+
+            let mut retained = vec![false; original_folders.len()];
+            for edit in &folder_edits {
+                let Some(source_index) = edit.source_index else {
+                    continue;
+                };
+                retained[source_index] = true;
+                let original_folder = &original_folders[source_index];
+                let element = root.children[root_indices[source_index]]
+                    .as_mut_element()
+                    .expect("platform folder index must identify an element");
+                if original_folder.media_type != edit.record.media_type {
+                    set_child_text(element, "MediaType", &edit.record.media_type);
+                }
+                if original_folder.folder_path != edit.record.folder_path {
+                    set_child_text(element, "FolderPath", &edit.record.folder_path);
+                }
+            }
+            for source_index in (0..root_indices.len()).rev() {
+                if !retained[source_index] {
+                    root.children.remove(root_indices[source_index]);
+                }
+            }
+            for edit in folder_edits
+                .iter()
+                .filter(|edit| edit.source_index.is_none())
+            {
+                let insertion = catalog_record_insertion_index(root, "PlatformFolder");
+                root.children.insert(
+                    insertion,
+                    XMLNode::Element(platform_folder_element(&edit.record)),
+                );
+            }
+            Ok(())
+        })
+    }
+
     /// Removes one platform definition and every folder record it owns while
     /// preserving unrelated and unknown XML nodes byte-semantically in the DOM.
     pub fn remove_platform_definition(
@@ -1780,6 +1924,41 @@ fn validate_indexed_record_edits<T>(
                         game_id,
                         "source indices must be unique and remain in source order",
                     ));
+                }
+                previous = Some(index);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_indexed_platform_folder_edits(
+    platform: &str,
+    original_count: usize,
+    edits: &[IndexedPlatformRecordEdit<PlatformFolder>],
+) -> Result<(), StorageError> {
+    let mut previous = None;
+    let mut saw_new = false;
+    for edit in edits {
+        match edit.source_index {
+            None => saw_new = true,
+            Some(index) => {
+                let reason = if saw_new {
+                    Some("new rows must follow retained source rows".to_string())
+                } else if index >= original_count {
+                    Some(format!(
+                        "source index {index} is outside 0..{original_count}"
+                    ))
+                } else if previous.is_some_and(|previous| previous >= index) {
+                    Some("source indices must be unique and remain in source order".to_string())
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    return Err(StorageError::InvalidPlatformFolderEdit {
+                        platform: platform.to_string(),
+                        reason,
+                    });
                 }
                 previous = Some(index);
             }
@@ -3098,6 +3277,78 @@ fn set_optional_child_text(element: &mut Element, name: &str, value: Option<&str
     }
 }
 
+fn update_platform_definition_element(
+    element: &mut Element,
+    original: &PlatformDefinition,
+    updated: &PlatformDefinition,
+) {
+    let original_metadata = &original.metadata;
+    let updated_metadata = &updated.metadata;
+    macro_rules! update_optional_text {
+        ($field:ident, $element_name:literal) => {
+            if original_metadata.$field != updated_metadata.$field {
+                set_optional_child_text(element, $element_name, updated_metadata.$field.as_deref());
+            }
+        };
+    }
+    update_optional_text!(nested_name, "NestedName");
+    update_optional_text!(sort_title, "SortTitle");
+    update_optional_text!(notes, "Notes");
+    update_optional_text!(folder, "Folder");
+    update_optional_text!(category, "Category");
+    update_optional_text!(image_type, "ImageType");
+    update_optional_text!(scrape_as, "ScrapeAs");
+    if original.release_date != updated.release_date {
+        set_optional_child_text(element, "ReleaseDate", updated.release_date.as_deref());
+    }
+    if original_metadata.hide_in_big_box != updated_metadata.hide_in_big_box {
+        set_child_text(
+            element,
+            "HideInBigBox",
+            &updated_metadata.hide_in_big_box.to_string(),
+        );
+    }
+    if original_metadata.local_db_parsed != updated_metadata.local_db_parsed {
+        set_child_text(
+            element,
+            "LocalDbParsed",
+            &updated_metadata.local_db_parsed.to_string(),
+        );
+    }
+    update_optional_text!(last_game_id, "LastGameId");
+    update_optional_text!(last_selected_child, "LastSelectedChild");
+    update_optional_text!(cpu, "Cpu");
+    update_optional_text!(developer, "Developer");
+    update_optional_text!(display, "Display");
+    update_optional_text!(graphics, "Graphics");
+    update_optional_text!(manufacturer, "Manufacturer");
+    update_optional_text!(max_controllers, "MaxControllers");
+    update_optional_text!(media, "Media");
+    update_optional_text!(memory, "Memory");
+    update_optional_text!(sound, "Sound");
+    update_optional_text!(android_theme_video_path, "AndroidThemeVideoPath");
+    update_optional_text!(back_images_folder, "BackImagesFolder");
+    update_optional_text!(banner_images_folder, "BannerImagesFolder");
+    update_optional_text!(big_box_theme, "BigBoxTheme");
+    update_optional_text!(big_box_view, "BigBoxView");
+    update_optional_text!(clear_logo_images_folder, "ClearLogoImagesFolder");
+    update_optional_text!(fanart_images_folder, "FanartImagesFolder");
+    update_optional_text!(front_images_folder, "FrontImagesFolder");
+    update_optional_text!(manuals_folder, "ManualsFolder");
+    update_optional_text!(music_folder, "MusicFolder");
+    update_optional_text!(screenshot_images_folder, "ScreenshotImagesFolder");
+    update_optional_text!(steam_banner_images_folder, "SteamBannerImagesFolder");
+    update_optional_text!(video_path, "VideoPath");
+    update_optional_text!(videos_folder, "VideosFolder");
+    if original.disable_auto_import != updated.disable_auto_import {
+        set_child_text(
+            element,
+            "DisableAutoImport",
+            &updated.disable_auto_import.to_string(),
+        );
+    }
+}
+
 fn platform_definition_element(platform: &PlatformDefinition) -> Element {
     let metadata = &platform.metadata;
     let mut element = Element::new("Platform");
@@ -3255,6 +3506,8 @@ pub enum StorageError {
     DuplicatePlatformName { name: String },
     #[error("platform was not found: {name}")]
     PlatformNotFound { name: String },
+    #[error("platform name is immutable in the recovered 13.27 contract; expected {expected}, got {actual}")]
+    ImmutablePlatformName { expected: String, actual: String },
     #[error("platform folder owner {actual} does not match platform {expected}")]
     PlatformFolderOwnerMismatch { expected: String, actual: String },
     #[error("platform {platform} has more than one folder for media type {media_type}")]
@@ -3262,6 +3515,8 @@ pub enum StorageError {
         platform: String,
         media_type: String,
     },
+    #[error("invalid platform folder edit for {platform}: {reason}")]
+    InvalidPlatformFolderEdit { platform: String, reason: String },
     #[error("{path} has no {record} record")]
     MissingDocumentRecord { path: PathBuf, record: &'static str },
     #[error("{path} has more than one {record} record")]
@@ -4772,6 +5027,105 @@ mod tests {
         assert!(matches!(
             document.add_platform_definition(platform, Vec::new()),
             Err(StorageError::DuplicatePlatformName { name }) if name == "fixture console"
+        ));
+        assert_eq!(document.to_xml_bytes().unwrap(), before);
+    }
+
+    #[test]
+    fn platform_edit_is_typed_source_indexed_and_preserves_unknown_xml() {
+        let fixture = include_str!("../../../fixtures/launchbox/Data/Platforms.xml")
+            .replace(
+                "<Developer>Fixture Labs</Developer>",
+                "<Developer>Fixture Labs</Developer><FuturePlatformField>keep-platform</FuturePlatformField>",
+            )
+            .replace(
+                "<FolderPath>Videos/Fixture Console</FolderPath>",
+                "<FolderPath>Videos/Fixture Console</FolderPath><FutureFolderField>keep-folder</FutureFolderField>",
+            );
+        let mut document = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Platforms,
+            "Platforms.xml",
+            fixture.as_bytes(),
+        )
+        .unwrap();
+        let catalog = document.platform_catalog().unwrap();
+        let mut platform = catalog.platforms[0].clone();
+        platform.metadata.sort_title = Some("Console, Fixture".into());
+        platform.metadata.notes = None;
+        platform.metadata.developer = Some("Qt Forge".into());
+        platform.metadata.manufacturer = Some("Portable Systems".into());
+        platform.metadata.hide_in_big_box = true;
+        platform.release_date = Some("2001-02-03".into());
+        platform.disable_auto_import = true;
+        document
+            .set_platform_definition(
+                "fixture console",
+                platform.clone(),
+                vec![
+                    IndexedPlatformRecordEdit {
+                        source_index: Some(0),
+                        record: PlatformFolder {
+                            platform: "Fixture Console".into(),
+                            media_type: "Video".into(),
+                            folder_path: r"Videos\Fixture Console\Edited".into(),
+                        },
+                    },
+                    IndexedPlatformRecordEdit {
+                        source_index: None,
+                        record: PlatformFolder {
+                            platform: "Fixture Console".into(),
+                            media_type: "Manual".into(),
+                            folder_path: r"Manuals\Fixture Console".into(),
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+
+        let updated = document.platform_catalog().unwrap();
+        assert_eq!(updated.platforms, [platform]);
+        assert_eq!(updated.folders.len(), 2);
+        assert_eq!(
+            updated.folders[0].folder_path,
+            r"Videos\Fixture Console\Edited"
+        );
+        let bytes = document.to_xml_bytes().unwrap();
+        let xml = String::from_utf8(bytes).unwrap();
+        assert!(xml.contains("<FuturePlatformField>keep-platform</FuturePlatformField>"));
+        assert!(xml.contains("<FutureFolderField>keep-folder</FutureFolderField>"));
+        assert!(!xml.contains("A platform catalog fixture."));
+    }
+
+    #[test]
+    fn platform_edit_rejects_identity_changes_and_invalid_folder_indices_atomically() {
+        let fixture = include_str!("../../../fixtures/launchbox/Data/Platforms.xml");
+        let mut document = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Platforms,
+            "Platforms.xml",
+            fixture.as_bytes(),
+        )
+        .unwrap();
+        let catalog = document.platform_catalog().unwrap();
+        let mut renamed = catalog.platforms[0].clone();
+        renamed.metadata.name = "Renamed Console".into();
+        let before = document.to_xml_bytes().unwrap();
+        assert!(matches!(
+            document.set_platform_definition("Fixture Console", renamed, Vec::new()),
+            Err(StorageError::ImmutablePlatformName { .. })
+        ));
+        assert_eq!(document.to_xml_bytes().unwrap(), before);
+
+        let invalid = IndexedPlatformRecordEdit {
+            source_index: Some(1),
+            record: catalog.folders[0].clone(),
+        };
+        assert!(matches!(
+            document.set_platform_definition(
+                "Fixture Console",
+                catalog.platforms[0].clone(),
+                vec![invalid]
+            ),
+            Err(StorageError::InvalidPlatformFolderEdit { .. })
         ));
         assert_eq!(document.to_xml_bytes().unwrap(), before);
     }

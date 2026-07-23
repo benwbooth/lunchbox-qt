@@ -239,7 +239,12 @@ backup-chain runtime scenario. Catalog-backed platform creation/deletion now
 uses recoverable two-document create/delete transactions, portable host
 filenames, 51 lexical LaunchBox folder mappings, a ten-family dependency scan,
 and real-dialog runtime coverage that proves empty-platform game insertion,
-blocked deletion, exact backups, and media isolation. The first shell-free direct/default-emulator
+blocked deletion, exact backups, and media isolation. Existing-platform editing
+now covers the recovered metadata surface and source-indexed folder rows in the
+real dialog; retained records keep unknown XML, and the create/edit/delete
+backup chain is verified without creating media directories. Identity remains
+read-only until a Windows runtime oracle resolves the getter-only 13.27 name
+contract and cross-document rename behavior. The first shell-free direct/default-emulator
 launch plan now also runs through both Qt front ends on Linux; checked-in
 argument recorders prove its exact `argv`, command-line variable expansion,
 explicit unassigned-emulator semantics, mapped Windows-drive handling, and
@@ -267,7 +272,7 @@ Phase 0/1 evidence and product-safety gates:
 2. Capture first-run and edit/import/launch diffs for the fixture.
 3. Convert the first ten critical runtime scenarios into structured fixtures
    and map them to feature-matrix IDs.
-4. Expand desktop editing beyond the now-working new-platform CRUD into
+4. Expand desktop editing beyond the now-working platform create/edit/delete into
    category/playlist CRUD and reviewed cascade/remediation choices for
    dependencies. Alternate names and custom fields now pass typed storage and real-dialog runtime gates. The
    launch-configuration subset now edits direct/emulator/DOSBox/ScummVM fields

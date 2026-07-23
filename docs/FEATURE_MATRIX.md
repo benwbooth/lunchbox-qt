@@ -27,9 +27,11 @@ subset of `LIB-002`, transactional direct/emulator/DOSBox/ScummVM launch-field
 editing subsets of `LIB-001` and `RUN-002`, and a descriptive-metadata search
 subset of `LIB-013`. A source-indexed transactional editor also implements the
 three-field alternate-name and name/value custom-field subset of `LIB-003`.
-The dialog-driven portable platform create/delete and default-folder subset of
-`LIB-006` is also implemented with conservative dependency refusal and media
-isolation.
+The dialog-driven portable platform create/edit/delete, recovered platform
+metadata, and source-indexed folder subset of `LIB-006` is also implemented
+with unknown-XML retention, conservative dependency refusal, and media
+isolation. Platform rename remains gated on runtime evidence because the
+installed 13.27 `IPlatform.Name` contract is getter-only.
 Persisted Windows-style paths remain lexical until the cross-platform launch
 service resolves them. None of those complete their family: bulk editing, all
 filter/sort modes, reset commands, rating downloads, and full Windows behavior
