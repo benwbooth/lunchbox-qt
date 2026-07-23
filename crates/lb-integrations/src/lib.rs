@@ -5,6 +5,7 @@
 //! writing XML or mutating emulator data; the application/storage layers own
 //! those transactions.
 
+pub mod dolphin;
 pub mod retroarch;
 
 use std::path::PathBuf;
@@ -26,6 +27,7 @@ pub struct DiscoveredEmulatorSave {
     pub companion_paths: Vec<PathBuf>,
     pub save_group_id: Option<String>,
     pub save_group_name: String,
+    pub display_chip_text: Option<String>,
 }
 
 impl DiscoveredEmulatorSave {

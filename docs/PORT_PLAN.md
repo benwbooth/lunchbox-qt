@@ -281,12 +281,17 @@ the edit/default backup chain, direct-launch sentinel, model refresh, lexical
 Windows path, and game-only/unknown-data retention. The first save-management
 subset now models the full persisted 13.27 save record and provides lossless
 group/version inventory plus rename, combine, and split metadata operations. A
-new platform-neutral `lb-integrations` boundary owns the first explicit
-emulator adapter. RetroArch discovery reads the native host-resolved
-configuration, follows content/core sort settings, reuses launch emulator
-selection, covers main and emulator-owned additional applications, and appends
-regular saves, numbered/auto states, or one grouped Saturn companion set
-without deleting history. Manual backup now covers one resolved regular active
+new platform-neutral `lb-integrations` boundary owns explicit RetroArch and
+Dolphin save adapters. Both reuse configured launch-emulator selection for main
+and emulator-owned additional applications and append only new rows without
+deleting history. RetroArch discovery reads the native host-resolved
+configuration, follows content/core sort settings, and finds regular saves,
+numbered/auto states, or one grouped Saturn companion set. Dolphin derives
+disc IDs from raw ISO/GCM headers, WAD title IDs, or a sibling DolphinTool for
+compressed images, searches portable and OS-native user roots, and records
+region-aware GameCube folder/card files plus exact two-digit state slots with
+stable group IDs. Wii directory saves stay outside this ordinary-file adapter.
+Manual backup now covers one resolved regular active
 file or all present `.bcr`/`.bkr`/`.smpc` members with collision-free portable
 vault naming, aggregate size/time and 13.27-compatible MD5 metadata,
 source-revision checking, and one recoverable file-set-plus-XML transaction; it
@@ -299,14 +304,14 @@ atomically replaces the active file from the selected vault version while
 retaining an exact sibling recovery copy. RetroArch Saturn restore first
 commits and verifies the complete current companion set, then revision-checks
 and atomically replaces or creates all selected companions while retaining
-active members absent from the selected version like 13.27. Non-RetroArch
+active members absent from the selected version like 13.27. Other-emulator
 scanning and directory/container backup remain open. Active deletion now first
 atomically replaces one regular or Saturn active row with its verified portable
 vault set, then revision-checks and deletes even host-mapped external live files
 with exact sibling recovery copies and all-or-rollback behavior.
-Recovered Dolphin 13.27 regular-file semantics now allow the same path for
-GameCube files and state rows; only `dolphin:wii:` directory saves remain
-adapter-gated. Dolphin Wii/PCSX2 container restore/deletion, stale-row
+Recovered Dolphin 13.27 regular-file semantics allow the same path for the
+discovered GameCube files and state rows; only `dolphin:wii:` directory saves
+remain adapter-gated. Dolphin Wii/PCSX2 container restore/deletion, stale-row
 reconciliation, automatic policy, repair, and the remaining adapters remain
 open, as do the manual combine/expand actions in `LIB-010`.
 The next milestone is

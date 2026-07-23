@@ -250,12 +250,19 @@ onto the owning game while preserving game identity and game-only data. Save
 records now use the full persisted 13.27 contract in both readers. A per-game
 Saves manager displays grouped version history and provides transactional
 Rename Version, Rename Group, Combine, and Make New Save metadata operations.
-Its first native emulator adapter reads RetroArch's host-resolved
-`retroarch.cfg`, applies content/core sorting, discovers regular saves and
-numbered/auto states for main and emulator-owned additional applications, and
-appends only new active rows without deleting history. Saturn `.bcr`, `.bkr`,
-and `.smpc` files are one explicit companion set with the 13.27 group-ID and
-composite-signature rules. Manual backup derives collision-free portable
+Its native emulator adapters inspect configured RetroArch and Dolphin launch
+targets for the main game and emulator-owned additional applications and
+append only new active rows without deleting history. RetroArch discovery
+reads the host-resolved `retroarch.cfg`, applies content/core sorting, and
+finds regular saves and numbered/auto states. Saturn `.bcr`, `.bkr`, and
+`.smpc` files are one explicit companion set with the 13.27 group-ID and
+composite-signature rules. Dolphin discovery reads raw ISO/GCM disc headers,
+WAD title IDs, or a sibling DolphinTool for compressed RVZ/GCZ/WIA/WBFS
+content, then searches portable and native user roots for GameCube folder/card
+files and two-digit save-state slots. Stable Dolphin group IDs preserve
+idempotency even if a persisted GameCube path moves. Wii directory saves are
+not claimed by the ordinary-file adapter. Manual backup derives collision-free
+portable
 `Saves\<Platform>\<ROM name>[-NN].<ext>` targets through the host-path service,
 records exact aggregate size, seven-digit UTC modified time, and MD5, and
 commits either one regular file or the complete Saturn set with the full new
@@ -286,7 +293,7 @@ attempted deletion if a peer fails.
 Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
 Unresolved. Metadata operations never move or delete save files, and backup
-never changes active files. Non-RetroArch scanning, directory/container backup,
+never changes active files. Other-emulator scanning, directory/container backup,
 Dolphin Wii directory and PCSX2 container restore/deletion, stale-row
 reconciliation, automatic-backup policy, repair, and the remaining emulator
 adapters remain open, as does manual game combine/expand.

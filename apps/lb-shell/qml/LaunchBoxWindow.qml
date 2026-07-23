@@ -90,6 +90,11 @@ ApplicationWindow {
             "--retroarch-save-scan-smoke-test") >= 0
     property int retroarchSaveScanSmokePhase: 0
     property bool retroarchSaveScanSmokeFinished: false
+    property bool dolphinSaveScanSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--dolphin-save-scan-smoke-test") >= 0
+    property int dolphinSaveScanSmokePhase: 0
+    property bool dolphinSaveScanSmokeFinished: false
     property int platformCrudSmokePhase: 0
     property int platformCrudBlockedReferences: 0
     property string platformCrudAddedGameId: ""
@@ -1055,6 +1060,54 @@ ApplicationWindow {
                           + window.retroarchSaveScanSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(20)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.dolphinSaveScanSmokeTest
+                 && !window.dolphinSaveScanSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-racer"
+            if (window.dolphinSaveScanSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 0) {
+                    console.error("DOLPHIN_SAVE_SCAN_SMOKE_BAD_FIXTURE")
+                    Qt.exit(23)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Racer")
+                window.dolphinSaveScanSmokePhase = 1
+                gameSaveManager.smokeScan()
+            } else if (window.dolphinSaveScanSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_save_revision === 1) {
+                if (!controller.report_dolphin_save_scan_smoke_success(
+                        gameId)) {
+                    console.error(
+                        "DOLPHIN_SAVE_SCAN_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(23)
+                    return
+                }
+                window.dolphinSaveScanSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.dolphinSaveScanSmokeTest
+                 && !window.dolphinSaveScanSmokeFinished
+        onTriggered: {
+            console.error("DOLPHIN_SAVE_SCAN_SMOKE_TIMEOUT phase="
+                          + window.dolphinSaveScanSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(23)
         }
     }
 
@@ -2349,7 +2402,7 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.preferredWidth: 820
-                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads RetroArch's native configuration and records newly discovered regular saves, states, and grouped Saturn companion sets without deleting existing history. Manual backup copies a regular active save or complete RetroArch Saturn companion set into the vault and records it atomically. Restore first backs up the current active file or RetroArch Saturn companion set, then atomically replaces it from a compatible vault version. Deletion supports regular files and complete RetroArch Saturn sets. Active deletion always archives the exact current bytes in the vault before removing live files. Dolphin/PCSX2 container operations remain gated."
+                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads configured RetroArch and Dolphin launch targets and records newly discovered saves without deleting existing history. RetroArch discovery covers regular saves, states, and grouped Saturn companion sets. Dolphin discovery covers regular GameCube memory-card files and save states; Wii directory saves remain gated. Manual backup, restore, and deletion support regular files and complete RetroArch Saturn companion sets. Active deletion always archives the exact current bytes in the vault before removing live files. Dolphin Wii and PCSX2 container operations remain gated."
                 wrapMode: Text.Wrap
                 color: "#aeb8c5"
             }
@@ -2471,7 +2524,7 @@ ApplicationWindow {
                             id: gameSaveScanButton
                             text: "Find Active Saves"
                             enabled: !controller.writing
-                            onClicked: controller.scan_retroarch_game_saves(
+                            onClicked: controller.scan_game_saves(
                                            gameSaveManager.modelRow,
                                            gameSaveManager.gameId)
                         }

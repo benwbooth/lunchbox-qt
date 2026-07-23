@@ -149,6 +149,7 @@ pub fn discover_retroarch_saves(
                             companion_paths: companions,
                             save_group_id: Some(saturn_group_id(&stem)),
                             save_group_name: "My Save File".to_string(),
+                            display_chip_text: None,
                         },
                     );
                 }
@@ -171,6 +172,7 @@ pub fn discover_retroarch_saves(
                         companion_paths: Vec::new(),
                         save_group_id: None,
                         save_group_name: "My Save File".to_string(),
+                        display_chip_text: None,
                     },
                 );
             }
@@ -204,6 +206,7 @@ pub fn discover_retroarch_saves(
                         companion_paths: Vec::new(),
                         save_group_id: None,
                         save_group_name: "My Save State".to_string(),
+                        display_chip_text: None,
                     },
                 );
             }
@@ -902,6 +905,7 @@ mod tests {
             companion_paths: paths[1..].to_vec(),
             save_group_id: Some("saturn-game".into()),
             save_group_name: "Game".into(),
+            display_chip_text: None,
         })
         .unwrap();
         assert_eq!(signature, "CADCB510A38A6691B4F15362B17F12EE");

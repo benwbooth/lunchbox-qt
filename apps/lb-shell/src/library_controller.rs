@@ -363,7 +363,7 @@ pub mod qobject {
         );
 
         #[qinvokable]
-        fn scan_retroarch_game_saves(self: Pin<&mut LibraryController>, row: i32, game_id: QString);
+        fn scan_game_saves(self: Pin<&mut LibraryController>, row: i32, game_id: QString);
 
         #[qinvokable]
         fn delete_game_save_backup(
@@ -515,6 +515,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn report_retroarch_save_scan_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_dolphin_save_scan_smoke_success(
             self: &LibraryController,
             game_id: QString,
         ) -> bool;
@@ -696,6 +702,9 @@ use lb_domain::{
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
     ManualImportRequest, ManualImportSelection,
+};
+use lb_integrations::dolphin::{
+    default_dolphin_user_directories, discover_dolphin_saves, is_dolphin_emulator, DolphinContent,
 };
 use lb_integrations::retroarch::{
     discover_retroarch_saves, inspect_saturn_save_set, is_retroarch_emulator,
@@ -3350,6 +3359,7 @@ fn inspect_game_save_set(
                 .collect(),
             save_group_id: save.save_group_id.clone(),
             save_group_name: save.save_group_name.clone().unwrap_or_default(),
+            display_chip_text: save.display_chip_text.clone(),
         })
         .map_err(|error| GameWriteFailure::Other(error.to_string()))?
     } else {
@@ -3363,14 +3373,25 @@ fn inspect_game_save_set(
     })
 }
 
-fn retroarch_scan_target(
+enum ConfiguredSaveScanTarget {
+    RetroArch {
+        emulator_path: PathBuf,
+        content: RetroArchContent,
+    },
+    Dolphin {
+        emulator_path: PathBuf,
+        content: DolphinContent,
+    },
+}
+
+fn configured_save_scan_target(
     root: &Path,
     target: &Game,
     additional_application_id: Option<String>,
     configuration: &EmulatorConfiguration,
     resolver: &HostPathResolver,
     scrape_as: Option<String>,
-) -> Result<Option<(PathBuf, RetroArchContent)>, GameWriteFailure> {
+) -> Result<Option<ConfiguredSaveScanTarget>, GameWriteFailure> {
     if target.use_dos_box || target.use_scumm_vm {
         return Ok(None);
     }
@@ -3387,16 +3408,31 @@ fn retroarch_scan_target(
                 emulator.title
             ))
         })?;
-    if !is_retroarch_emulator(&emulator.title, &emulator_path) {
+    let retroarch = is_retroarch_emulator(&emulator.title, &emulator_path);
+    let dolphin = is_dolphin_emulator(&emulator.title, &emulator_path);
+    if !retroarch && !dolphin {
         return Ok(None);
     }
     let content_path = resolver
         .resolve(root, &target.application_path)
         .map_err(|error| {
             GameWriteFailure::Other(format!(
-                "could not resolve content for RetroArch save discovery: {error}"
+                "could not resolve content for {} save discovery: {error}",
+                emulator.title
             ))
         })?;
+    if dolphin {
+        return Ok(Some(ConfiguredSaveScanTarget::Dolphin {
+            emulator_path,
+            content: DolphinContent {
+                game_id: target.id.clone(),
+                additional_application_id,
+                content_path,
+                platform: target.platform.clone(),
+            },
+        }));
+    }
+
     let inherited = mapping
         .and_then(|mapping| mapping.command_line.as_deref())
         .or(emulator.command_line.as_deref())
@@ -3407,9 +3443,9 @@ fn retroarch_scan_target(
         .filter(|value| !value.trim().is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    Ok(Some((
+    Ok(Some(ConfiguredSaveScanTarget::RetroArch {
         emulator_path,
-        RetroArchContent {
+        content: RetroArchContent {
             game_id: target.id.clone(),
             additional_application_id,
             content_path,
@@ -3417,10 +3453,10 @@ fn retroarch_scan_target(
             platform: target.platform.clone(),
             scrape_as,
         },
-    )))
+    }))
 }
 
-fn discover_retroarch_game_saves(
+fn discover_configured_game_saves(
     root: &Path,
     document: &PlatformDocument,
     configuration: &EmulatorConfiguration,
@@ -3441,54 +3477,73 @@ fn discover_retroarch_game_saves(
         .iter()
         .filter(|application| application.game_id == game_id)
         .collect::<Vec<_>>();
-    let mut targets_by_emulator = BTreeMap::<PathBuf, Vec<RetroArchContent>>::new();
-    for application in &applications {
-        if !application.use_emulator || application.use_dos_box {
-            continue;
-        }
-        let mut target = game.clone();
-        target.application_path = application.application_path.clone();
-        target.command_line = application.command_line.clone();
-        target.emulator_id = application.emulator_id.clone();
-        target.use_dos_box = false;
-        target.use_scumm_vm = false;
-        if let Some((emulator_path, target)) = retroarch_scan_target(
-            root,
-            &target,
-            Some(application.id.clone()),
-            configuration,
-            resolver,
-            scrape_as.clone(),
-        )? {
-            targets_by_emulator
-                .entry(emulator_path)
-                .or_default()
-                .push(target);
-        }
-    }
-    if !applications
-        .iter()
-        .any(|application| application.application_path == game.application_path)
+    let mut retroarch_targets = BTreeMap::<PathBuf, Vec<RetroArchContent>>::new();
+    let mut dolphin_targets = BTreeMap::<PathBuf, Vec<DolphinContent>>::new();
     {
-        if let Some((emulator_path, target)) =
-            retroarch_scan_target(root, &game, None, configuration, resolver, scrape_as)?
-        {
-            targets_by_emulator
+        let mut collect_target = |target| match target {
+            ConfiguredSaveScanTarget::RetroArch {
+                emulator_path,
+                content,
+            } => retroarch_targets
                 .entry(emulator_path)
                 .or_default()
-                .push(target);
+                .push(content),
+            ConfiguredSaveScanTarget::Dolphin {
+                emulator_path,
+                content,
+            } => dolphin_targets
+                .entry(emulator_path)
+                .or_default()
+                .push(content),
+        };
+        for application in &applications {
+            if !application.use_emulator || application.use_dos_box {
+                continue;
+            }
+            let mut target = game.clone();
+            target.application_path = application.application_path.clone();
+            target.command_line = application.command_line.clone();
+            target.emulator_id = application.emulator_id.clone();
+            target.use_dos_box = false;
+            target.use_scumm_vm = false;
+            if let Some(target) = configured_save_scan_target(
+                root,
+                &target,
+                Some(application.id.clone()),
+                configuration,
+                resolver,
+                scrape_as.clone(),
+            )? {
+                collect_target(target);
+            }
+        }
+        if !applications
+            .iter()
+            .any(|application| application.application_path == game.application_path)
+        {
+            if let Some(target) =
+                configured_save_scan_target(root, &game, None, configuration, resolver, scrape_as)?
+            {
+                collect_target(target);
+            }
         }
     }
-    if targets_by_emulator.is_empty() {
+    if retroarch_targets.is_empty() && dolphin_targets.is_empty() {
         return Err(GameWriteFailure::Other(
-            "the selected game has no launch target owned by a configured RetroArch emulator"
+            "the selected game has no launch target owned by a configured RetroArch or Dolphin emulator"
                 .into(),
         ));
     }
 
     let mut discovered = Vec::new();
-    for (emulator_path, targets) in targets_by_emulator {
+    for (emulator_path, targets) in retroarch_targets {
         let mut saves = discover_retroarch_saves(&emulator_path, &targets, resolver)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        discovered.append(&mut saves);
+    }
+    for (emulator_path, targets) in dolphin_targets {
+        let user_directories = default_dolphin_user_directories(&emulator_path);
+        let mut saves = discover_dolphin_saves(&emulator_path, &targets, &user_directories)
             .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
         discovered.append(&mut saves);
     }
@@ -3510,12 +3565,12 @@ fn game_save_from_discovery(
         inspected.push(inspect_save_file(path)?);
     }
     let primary = inspected.first().ok_or_else(|| {
-        GameWriteFailure::Other("RetroArch adapter returned an empty save set".into())
+        GameWriteFailure::Other("emulator adapter returned an empty save set".into())
     })?;
     let reported_file_size_bytes = inspected.iter().try_fold(0_i64, |total, file| {
         total.checked_add(file.byte_len).ok_or_else(|| {
             GameWriteFailure::Other(format!(
-                "RetroArch save set is too large for LaunchBox metadata: {}",
+                "emulator save set is too large for LaunchBox metadata: {}",
                 discovered.primary_path.display()
             ))
         })
@@ -3524,8 +3579,13 @@ fn game_save_from_discovery(
     let stored_path = resolver
         .stored_path_for_host_path(root, &primary.source)
         .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
-    let md5 = retroarch_save_signature(discovered)
-        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let md5 = if discovered.companion_paths.is_empty() && !is_saturn_companion_path(&primary.source)
+    {
+        primary.md5.clone()
+    } else {
+        retroarch_save_signature(discovered)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?
+    };
     Ok(GameSave {
         game_id: discovered.game_id.clone(),
         additional_application_id: discovered.additional_application_id.clone(),
@@ -3533,7 +3593,7 @@ fn game_save_from_discovery(
         emulator_file_name: discovered.emulator_file_name.clone(),
         title: None,
         save_group_name: Some(discovered.save_group_name.clone()),
-        display_chip_text: None,
+        display_chip_text: discovered.display_chip_text.clone(),
         save_group_id: discovered.save_group_id.clone(),
         match_lineage_id: None,
         migration_family_id: None,
@@ -3574,7 +3634,7 @@ fn persisted_save_matches_discovery(
         return false;
     }
     if candidate.save_group_id.as_deref().is_some_and(|group| {
-        group.starts_with("saturn-")
+        (group.starts_with("saturn-") || group.starts_with("dolphin:gc:"))
             && current
                 .save_group_id
                 .as_deref()
@@ -3594,7 +3654,7 @@ fn persisted_save_matches_discovery(
         .is_some_and(|path| path == discovered.primary_path)
 }
 
-fn write_retroarch_game_save_scan(
+fn write_game_save_scan(
     root: PathBuf,
     source: PathBuf,
     game_id: String,
@@ -3637,7 +3697,7 @@ fn write_retroarch_game_save_scan(
         )));
     }
 
-    let discovered = discover_retroarch_game_saves(
+    let discovered = discover_configured_game_saves(
         &root,
         &document,
         configuration,
@@ -7029,7 +7089,7 @@ impl qobject::LibraryController {
         }
     }
 
-    pub fn scan_retroarch_game_saves(mut self: Pin<&mut Self>, row: i32, game_id: QString) {
+    pub fn scan_game_saves(mut self: Pin<&mut Self>, row: i32, game_id: QString) {
         if !self.as_mut().begin_library_mutation() {
             return;
         }
@@ -7054,26 +7114,26 @@ impl qobject::LibraryController {
         let resolver = self.as_ref().rust().path_resolver.clone();
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_writing(true);
-        self.as_mut()
-            .set_status_message(qstring("Scanning RetroArch saves in the background..."));
+        self.as_mut().set_status_message(qstring(
+            "Scanning supported emulator saves in the background...",
+        ));
         let qt_thread = self.as_ref().qt_thread();
         let spawn_result = std::thread::Builder::new()
-            .name("launchbox-retroarch-save-scan".to_string())
+            .name("launchbox-emulator-save-scan".to_string())
             .spawn(move || {
-                let result =
-                    write_retroarch_game_save_scan(root, source, game_id, expected_game, resolver);
+                let result = write_game_save_scan(root, source, game_id, expected_game, resolver);
                 qt_thread
                     .queue(move |mut controller| {
                         controller
                             .as_mut()
-                            .finish_retroarch_game_save_scan(generation, result);
+                            .finish_game_save_scan(generation, result);
                     })
                     .ok();
             });
         if let Err(error) = spawn_result {
             self.as_mut().set_writing(false);
             self.as_mut().set_status_message(qstring(format!(
-                "Could not start RetroArch save scan: {error}"
+                "Could not start emulator save scan: {error}"
             )));
         }
     }
@@ -8844,6 +8904,55 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_dolphin_save_scan_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let saves = rust.game_saves_by_game.get(&game_id);
+        let success = saves.is_some_and(|saves| {
+            saves.len() == 3
+                && saves.iter().all(|save| {
+                    save.emulator_file_name == "Dolphin.exe"
+                        && save.emulator_core.is_empty()
+                        && save.original_file_name.is_some()
+                        && save.reported_file_size_bytes.is_some()
+                        && save.reported_last_modified_utc.is_some()
+                        && save.md5.as_deref().is_some_and(|md5| md5.len() == 32)
+                })
+                && saves.iter().any(|save| {
+                    save.file_path == r"Emulators\Dolphin\User\GC\USA\GALE01\01-GALE-adventure.gci"
+                        && save.slot.is_none()
+                        && save.display_chip_text.is_none()
+                        && save.save_group_id.as_deref()
+                            == Some("dolphin:gc:fixture-racer:GALE01:Folder:01-GALE-adventure.gci")
+                })
+                && saves.iter().any(|save| {
+                    save.file_path == r"Emulators\Dolphin\User\GC\USA\Card A\01-GALE-card.gci"
+                        && save.slot.is_none()
+                        && save.display_chip_text.as_deref() == Some("Card A")
+                        && save.save_group_id.as_deref()
+                            == Some("dolphin:gc:fixture-racer:GALE01:CardA:01-GALE-card.gci")
+                })
+                && saves.iter().any(|save| {
+                    save.file_path == r"Emulators\Dolphin\User\StateSaves\GALE01.s07"
+                        && save.slot == Some(7)
+                        && save.save_group_id.as_deref() == Some("fixture-racer-GALE01-State-7")
+                })
+        }) && rust.game_save_write_notifications == 1
+            && *self.game_save_revision() == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "DOLPHIN_SAVE_SCAN_SMOKE_COMPLETE saves=3 writes={} revision={} data_changes={}",
+                rust.game_save_write_notifications,
+                self.game_save_revision(),
+                rust.data_change_notifications,
+            );
+        }
+        success
+    }
+
     pub fn report_platform_crud_smoke_success(
         &self,
         platform_name: QString,
@@ -10188,7 +10297,7 @@ impl qobject::LibraryController {
         }
     }
 
-    fn finish_retroarch_game_save_scan(
+    fn finish_game_save_scan(
         mut self: Pin<&mut Self>,
         generation: u64,
         result: Result<GameSaveScanSuccess, GameWriteFailure>,
@@ -10257,11 +10366,11 @@ impl qobject::LibraryController {
                 self.as_mut().set_write_conflict(false);
                 let status = match backup {
                     Some(backup) => format!(
-                        "RetroArch found {discovered_count} active save set(s) and added {added_count}. Exact XML backup: {}",
+                        "Emulator adapters found {discovered_count} active save set(s) and added {added_count}. Exact XML backup: {}",
                         backup.display()
                     ),
                     None => format!(
-                        "RetroArch found {discovered_count} active save set(s); all were already recorded."
+                        "Emulator adapters found {discovered_count} active save set(s); all were already recorded."
                     ),
                 };
                 self.as_mut().set_status_message(qstring(status));
@@ -10269,7 +10378,7 @@ impl qobject::LibraryController {
             Err(GameWriteFailure::Conflict(message)) => {
                 self.as_mut().set_write_conflict(true);
                 self.as_mut().set_status_message(qstring(format!(
-                    "Write conflict while recording RetroArch saves: {message}. Reload before retrying."
+                    "Write conflict while recording emulator saves: {message}. Reload before retrying."
                 )));
             }
             Err(GameWriteFailure::PendingRecovery { count, message }) => {
@@ -10281,12 +10390,12 @@ impl qobject::LibraryController {
             }
             Err(GameWriteFailure::Referenced(references)) => {
                 self.as_mut().set_status_message(qstring(format!(
-                    "Could not record RetroArch saves: {} unexpected dependent records were reported.",
+                    "Could not record emulator saves: {} unexpected dependent records were reported.",
                     references.len()
                 )));
             }
             Err(GameWriteFailure::Other(message)) => self.as_mut().set_status_message(qstring(
-                format!("Could not scan RetroArch saves: {message}"),
+                format!("Could not scan configured emulator saves: {message}"),
             )),
         }
     }
@@ -13430,7 +13539,7 @@ mod tests {
             .unwrap()
             .clone();
         let original = fs::read(&platform_path).unwrap();
-        let result = write_retroarch_game_save_scan(
+        let result = write_game_save_scan(
             directory.path().to_path_buf(),
             platform_path.clone(),
             "fixture-racer".into(),
@@ -13472,7 +13581,7 @@ mod tests {
                 && save.md5.as_ref().is_some_and(|md5| md5.len() == 32)));
 
         let after_first_scan = fs::read(&platform_path).unwrap();
-        let second = write_retroarch_game_save_scan(
+        let second = write_game_save_scan(
             directory.path().to_path_buf(),
             platform_path.clone(),
             "fixture-racer".into(),
@@ -13492,6 +13601,128 @@ mod tests {
         let xml = fs::read_to_string(platform_path).unwrap();
         assert_eq!(xml.matches("<GameSave>").count(), 4);
         assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+    }
+
+    #[test]
+    fn dolphin_scan_persists_portable_gamecube_card_and_state_files_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        fs::create_dir_all(&platform_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE.replace(
+            r"Games\Fixture Racer\racer.rom",
+            r"Games\Fixture Racer\racer.iso",
+        );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let emulator_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/launchbox/Data/Emulators.xml");
+        let emulators = fs::read_to_string(emulator_fixture)
+            .unwrap()
+            .replace("<Title>Fixture Emulator</Title>", "<Title>Dolphin</Title>")
+            .replace(
+                "<ApplicationPath>Emulators/fixture-emulator</ApplicationPath>",
+                r"<ApplicationPath>Emulators\Dolphin\Dolphin.exe</ApplicationPath>",
+            );
+        fs::write(directory.path().join("Data/Emulators.xml"), emulators).unwrap();
+
+        let executable = directory.path().join("Emulators/Dolphin/Dolphin.exe");
+        let content = directory.path().join("Games/Fixture Racer/racer.iso");
+        let folder = directory
+            .path()
+            .join("Emulators/Dolphin/User/GC/USA/GALE01/01-GALE-adventure.gci");
+        let card_a = directory
+            .path()
+            .join("Emulators/Dolphin/User/GC/USA/Card A/01-GALE-card.gci");
+        let state = directory
+            .path()
+            .join("Emulators/Dolphin/User/StateSaves/GALE01.s07");
+        for path in [&executable, &content, &folder, &card_a, &state] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(&executable, b"dolphin").unwrap();
+        fs::write(&content, b"GALE01 fixture disc bytes").unwrap();
+        fs::write(&folder, b"folder save").unwrap();
+        fs::write(&card_a, b"card a save").unwrap();
+        fs::write(&state, b"state seven").unwrap();
+
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let game = document
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "fixture-racer")
+            .unwrap()
+            .clone();
+        let original = fs::read(&platform_path).unwrap();
+        let result = write_game_save_scan(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-racer".into(),
+            game.clone(),
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "Dolphin scan failed: {}",
+                describe_game_write_failure(&error)
+            )
+        });
+
+        assert_eq!(result.discovered_count, 3);
+        assert_eq!(result.added_count, 3);
+        assert_eq!(result.saves.len(), 3);
+        assert_eq!(fs::read(result.backup.as_ref().unwrap()).unwrap(), original);
+        assert!(result.saves.iter().all(|save| {
+            save.emulator_file_name == "Dolphin.exe"
+                && save.emulator_core.is_empty()
+                && save.reported_file_size_bytes.is_some()
+                && save.reported_last_modified_utc.is_some()
+                && save.md5.as_ref().is_some_and(|md5| md5.len() == 32)
+        }));
+        assert!(result.saves.iter().any(|save| {
+            save.file_path == r"Emulators\Dolphin\User\GC\USA\GALE01\01-GALE-adventure.gci"
+                && save.save_group_id.as_deref()
+                    == Some("dolphin:gc:fixture-racer:GALE01:Folder:01-GALE-adventure.gci")
+                && save.display_chip_text.is_none()
+        }));
+        assert!(result.saves.iter().any(|save| {
+            save.file_path == r"Emulators\Dolphin\User\GC\USA\Card A\01-GALE-card.gci"
+                && save.save_group_id.as_deref()
+                    == Some("dolphin:gc:fixture-racer:GALE01:CardA:01-GALE-card.gci")
+                && save.display_chip_text.as_deref() == Some("Card A")
+        }));
+        assert!(result.saves.iter().any(|save| {
+            save.file_path == r"Emulators\Dolphin\User\StateSaves\GALE01.s07"
+                && save.save_group_id.as_deref() == Some("fixture-racer-GALE01-State-7")
+                && save.slot == Some(7)
+        }));
+
+        let after_first_scan = fs::read_to_string(&platform_path).unwrap();
+        let moved_card = after_first_scan.replace(
+            r"Emulators\Dolphin\User\GC\USA\Card A\01-GALE-card.gci",
+            r"External\Dolphin\01-GALE-card.gci",
+        );
+        assert_ne!(after_first_scan, moved_card);
+        fs::write(&platform_path, moved_card.as_bytes()).unwrap();
+        let second = write_game_save_scan(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-racer".into(),
+            game,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "second Dolphin scan failed: {}",
+                describe_game_write_failure(&error)
+            )
+        });
+        assert_eq!(second.discovered_count, 3);
+        assert_eq!(second.added_count, 0);
+        assert!(second.backup.is_none());
+        assert_eq!(fs::read(&platform_path).unwrap(), moved_card.as_bytes());
+        assert_eq!(moved_card.matches("<GameSave>").count(), 4);
+        assert!(moved_card.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
     }
 
     #[test]

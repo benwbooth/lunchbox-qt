@@ -130,7 +130,7 @@ indexed XML transaction. File ownership and emulator operations remain outside
 that metadata transaction. Static 13.27 RetroArch code recovers the exact
 configuration keys, `fileName*.*` and `.state*` scans, `.srm`/`.mcr`
 preference, state-slot parsing, Saturn extension ranking/group ID, companion
-copy, and CRLF-manifest signature rules. A new platform-neutral adapter now
+copy, and CRLF-manifest signature rules. A platform-neutral RetroArch adapter
 implements those semantics against native or mapped host paths and persists
 only newly discovered active rows. The first filesystem-backed operation backs
 up a resolved regular active file or complete present Saturn
@@ -148,7 +148,7 @@ atomically replaces the active path from the selected vault file while
 retaining an exact sibling recovery copy. RetroArch Saturn restore first
 commits and verifies the complete current companion set, then revision-checks
 and atomically replaces or creates all selected companions while retaining
-active members absent from the selected version like 13.27. Non-RetroArch
+active members absent from the selected version like 13.27. Other-emulator
 scanning and directory/container backup remain open. Active deletion now first
 atomically replaces one regular or Saturn active row with its verified portable
 vault set, then revision-checks and deletes even host-mapped external live files
@@ -156,10 +156,19 @@ with exact sibling recovery copies and all-or-rollback behavior.
 The 13.27 Dolphin plugin restores state and GameCube rows with ordinary
 overwrite-copy and removes ordinary paths with `File.Delete`; it uses recursive
 directory replacement/deletion only for Wii save folders. The port therefore
-allows regular Dolphin state/GameCube rows through its revision-checked
-backup-first restore and active-delete paths, recognizes `dolphin:wii:` as the
-explicit directory boundary, and keeps unrecognized directories rejected by
-regular-file inspection.
+implements its second native save adapter for regular Dolphin rows. It derives
+disc IDs from raw ISO/GCM headers, the recovered WAD ticket/title offset, or a
+sibling DolphinTool for RVZ/GCZ/WIA/WBFS images; checks portable and
+platform-native user roots; applies the recovered disc-region mapping; and
+discovers preferred GameCube folder files, matching Card A/Card B GCI files,
+and exact two-digit `StateSaves` slots. The adapter emits recovered group IDs,
+names, and card chips, and its stable GameCube identity prevents duplicates
+after a stored path moves. Separate controller and real-button Qt scenarios
+prove append-only persistence, full owner/hash/time/size metadata, exact XML
+recovery copies, and cleanup. Those regular rows then use the existing
+revision-checked backup-first restore and active-delete paths. The adapter
+recognizes `dolphin:wii:` as the explicit directory boundary and never claims
+Wii directories or other unrecognized directories as ordinary files.
 The 13.27 RetroArch plugin does not override `EmulatorPlugin.RemoveSave`, so
 the Windows implementation calls the base `File.Delete` on only the persisted
 primary path. The port deliberately deletes the already-established Saturn

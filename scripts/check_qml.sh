@@ -98,6 +98,7 @@ additional_application_crud_root=$(mktemp -d)
 additional_application_default_root=$(mktemp -d)
 game_save_metadata_root=$(mktemp -d)
 retroarch_save_scan_root=$(mktemp -d)
+dolphin_save_scan_root=$(mktemp -d)
 game_save_backup_root=$(mktemp -d)
 game_save_delete_root=$(mktemp -d)
 game_save_active_delete_root=$(mktemp -d)
@@ -115,7 +116,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -699,6 +700,97 @@ if find "$retroarch_save_scan_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox manager-driven RetroArch config discovery, regular saves, state slots, portable paths, full metadata, exact XML rollback backup, and cleanup validated."
+
+cp -R fixtures/launchbox/Data "$dolphin_save_scan_root/Data"
+dolphin_save_scan_platform="$dolphin_save_scan_root/Data/Platforms/Fixture Console.xml"
+dolphin_save_scan_emulators="$dolphin_save_scan_root/Data/Emulators.xml"
+sed -i \
+  -e 's|racer\.rom|racer.iso|' \
+  "$dolphin_save_scan_platform"
+sed -i \
+  -e 's|<Title>Fixture Emulator</Title>|<Title>Dolphin</Title>|' \
+  -e 's|<ApplicationPath>Emulators/fixture-emulator</ApplicationPath>|<ApplicationPath>Emulators/Dolphin/Dolphin.exe</ApplicationPath>|' \
+  "$dolphin_save_scan_emulators"
+mkdir -p \
+  "$dolphin_save_scan_root/Emulators/Dolphin/User/GC/USA/GALE01" \
+  "$dolphin_save_scan_root/Emulators/Dolphin/User/GC/USA/Card A" \
+  "$dolphin_save_scan_root/Emulators/Dolphin/User/StateSaves" \
+  "$dolphin_save_scan_root/Games/Fixture Racer"
+printf %s 'dolphin runtime fixture' \
+  > "$dolphin_save_scan_root/Emulators/Dolphin/Dolphin.exe"
+printf %s 'GALE01 fixture racer disc bytes' \
+  > "$dolphin_save_scan_root/Games/Fixture Racer/racer.iso"
+printf %s 'runtime folder save bytes' \
+  > "$dolphin_save_scan_root/Emulators/Dolphin/User/GC/USA/GALE01/01-GALE-adventure.gci"
+printf %s 'runtime card a save bytes' \
+  > "$dolphin_save_scan_root/Emulators/Dolphin/User/GC/USA/Card A/01-GALE-card.gci"
+printf %s 'runtime state seven bytes' \
+  > "$dolphin_save_scan_root/Emulators/Dolphin/User/StateSaves/GALE01.s07"
+cp "$dolphin_save_scan_platform" \
+  "$dolphin_save_scan_root/original-platform.xml"
+dolphin_save_scan_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$dolphin_save_scan_root" \
+    --dolphin-save-scan-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$dolphin_save_scan_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'DOLPHIN_SAVE_SCAN_SMOKE_COMPLETE saves=3 writes=1 revision=1 data_changes=1' \
+  <<< "$dolphin_save_scan_output"; then
+  printf '%s\n' "$dolphin_save_scan_output" >&2
+  echo "LaunchBox did not validate manager-driven Dolphin save discovery." >&2
+  exit 1
+fi
+if [[ $(rg -c '<GameSave>' "$dolphin_save_scan_platform") -ne 4 ]] \
+  || [[ $(rg -c -F '<EmulatorFileName>Dolphin.exe</EmulatorFileName>' \
+    "$dolphin_save_scan_platform") -ne 3 ]] \
+  || [[ $(rg -c '<ReportedFileSizeBytes>' \
+    "$dolphin_save_scan_platform") -ne 3 ]] \
+  || [[ $(rg -c '<ReportedLastModifiedUtc>.*\.[0-9]{7}Z' \
+    "$dolphin_save_scan_platform") -ne 3 ]] \
+  || [[ $(rg -c '<Md5>[0-9A-F]{32}</Md5>' \
+    "$dolphin_save_scan_platform") -ne 3 ]]; then
+  echo "Dolphin save discovery wrote incomplete owner or file metadata." >&2
+  exit 1
+fi
+for expected in \
+  '<FilePath>Emulators\Dolphin\User\GC\USA\GALE01\01-GALE-adventure.gci</FilePath>' \
+  '<FilePath>Emulators\Dolphin\User\GC\USA\Card A\01-GALE-card.gci</FilePath>' \
+  '<FilePath>Emulators\Dolphin\User\StateSaves\GALE01.s07</FilePath>' \
+  '<SaveGroupId>dolphin:gc:fixture-racer:GALE01:Folder:01-GALE-adventure.gci</SaveGroupId>' \
+  '<SaveGroupId>dolphin:gc:fixture-racer:GALE01:CardA:01-GALE-card.gci</SaveGroupId>' \
+  '<SaveGroupId>fixture-racer-GALE01-State-7</SaveGroupId>' \
+  '<DisplayChipText>Card A</DisplayChipText>' \
+  '<OriginalFileName>01-GALE-adventure.gci</OriginalFileName>' \
+  '<OriginalFileName>01-GALE-card.gci</OriginalFileName>' \
+  '<OriginalFileName>GALE01.s07</OriginalFileName>' \
+  '<Slot>7</Slot>' \
+  '<FutureRootElement>preserve-me</FutureRootElement>'; do
+  if ! rg -q -F "$expected" "$dolphin_save_scan_platform"; then
+    echo "Dolphin save discovery did not persist: $expected" >&2
+    exit 1
+  fi
+done
+mapfile -t dolphin_save_scan_backups < <(
+  find "$dolphin_save_scan_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#dolphin_save_scan_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${dolphin_save_scan_backups[0]}" \
+    "$dolphin_save_scan_root/original-platform.xml"; then
+  echo "Dolphin save discovery did not retain one exact XML recovery copy." >&2
+  exit 1
+fi
+if find "$dolphin_save_scan_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful Dolphin save discovery left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox manager-driven Dolphin disc-ID discovery, portable GameCube folder/card saves, state slots, full metadata, exact XML rollback backup, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$game_save_backup_root/Data"
 game_save_backup_platform="$game_save_backup_root/Data/Platforms/Fixture Console.xml"
