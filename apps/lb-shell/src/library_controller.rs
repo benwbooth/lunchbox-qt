@@ -494,6 +494,12 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_game_save_saturn_restore_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_retroarch_save_scan_smoke_success(
             self: &LibraryController,
             game_id: QString,
@@ -3959,19 +3965,156 @@ fn write_game_save_backup(
     })
 }
 
-fn save_requires_emulator_restore_adapter(save: &GameSave, path: &Path) -> bool {
+fn save_requires_container_restore_adapter(save: &GameSave) -> bool {
     let emulator = save.emulator_file_name.to_ascii_lowercase();
     let group = save
         .save_group_id
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    is_retroarch_saturn_set(save, path)
-        || save.emulator_core.to_ascii_lowercase().contains("saturn")
-        || emulator.contains("dolphin")
+    emulator.contains("dolphin")
         || emulator.contains("pcsx2")
         || group.starts_with("pcsx2:")
         || group.starts_with("pcsx2-state:")
+}
+
+fn inspected_save_sets_match(left: &InspectedSaveSet, right: &InspectedSaveSet) -> bool {
+    left.files.len() == right.files.len()
+        && left.files.iter().zip(&right.files).all(|(left, right)| {
+            (match (
+                left.source
+                    .extension()
+                    .and_then(|extension| extension.to_str()),
+                right
+                    .source
+                    .extension()
+                    .and_then(|extension| extension.to_str()),
+            ) {
+                (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+                (None, None) => true,
+                _ => false,
+            }) && left.revision == right.revision
+        })
+}
+
+struct SaturnRestoreReport {
+    replaced_count: usize,
+    created_count: usize,
+    retained_count: usize,
+    first_recovery_copy: Option<PathBuf>,
+}
+
+fn saturn_file_extension(file: &InspectedSaveFile) -> Result<String, GameWriteFailure> {
+    file.source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| extension.to_ascii_lowercase())
+        .ok_or_else(|| {
+            GameWriteFailure::Other(format!(
+                "Saturn save member has no portable extension: {}",
+                file.source.display()
+            ))
+        })
+}
+
+fn write_retroarch_saturn_set_restore(
+    root: &Path,
+    selected: &InspectedSaveSet,
+    active: &InspectedSaveSet,
+    active_row_path: &Path,
+) -> Result<SaturnRestoreReport, GameWriteFailure> {
+    let active_primary = active
+        .files
+        .first()
+        .ok_or_else(|| GameWriteFailure::Other("active Saturn save set is empty".into()))?;
+    let active_parent = active_primary.source.parent().ok_or_else(|| {
+        GameWriteFailure::Other(format!(
+            "active Saturn save has no parent directory: {}",
+            active_primary.source.display()
+        ))
+    })?;
+    let active_stem = active_primary
+        .source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .ok_or_else(|| {
+            GameWriteFailure::Other(format!(
+                "active Saturn save has no portable stem: {}",
+                active_primary.source.display()
+            ))
+        })?;
+    let active_row_extension = active_row_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .ok_or_else(|| {
+            GameWriteFailure::Other(format!(
+                "active Saturn row has no portable extension: {}",
+                active_row_path.display()
+            ))
+        })?;
+
+    let mut active_by_extension = BTreeMap::new();
+    for file in &active.files {
+        let extension = saturn_file_extension(file)?;
+        if active_by_extension
+            .insert(extension.clone(), file)
+            .is_some()
+        {
+            return Err(GameWriteFailure::Other(format!(
+                "active Saturn set contains duplicate .{extension} members"
+            )));
+        }
+    }
+    let mut selected_by_extension = BTreeMap::new();
+    for file in &selected.files {
+        let extension = saturn_file_extension(file)?;
+        if selected_by_extension
+            .insert(extension.clone(), file)
+            .is_some()
+        {
+            return Err(GameWriteFailure::Other(format!(
+                "selected Saturn set contains duplicate .{extension} members"
+            )));
+        }
+    }
+    if !selected_by_extension.contains_key(&active_row_extension) {
+        return Err(GameWriteFailure::Other(format!(
+            "selected Saturn backup has no .{active_row_extension} member for the persisted active row"
+        )));
+    }
+
+    let retained_count = active_by_extension
+        .keys()
+        .filter(|extension| !selected_by_extension.contains_key(*extension))
+        .count();
+    let mut transaction = LibraryTransaction::new(root).map_err(classify_transaction_error)?;
+    for (extension, source) in selected_by_extension {
+        if let Some(target) = active_by_extension.get(&extension) {
+            transaction
+                .stage_file_replace_with_revisions(
+                    &source.source,
+                    &target.source,
+                    source.revision.clone(),
+                    target.revision.clone(),
+                )
+                .map_err(classify_transaction_error)?;
+        } else {
+            let target = active_parent.join(format!("{active_stem}.{extension}"));
+            transaction
+                .stage_file_copy_with_revision(&source.source, target, source.revision.clone())
+                .map_err(classify_transaction_error)?;
+        }
+    }
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    Ok(SaturnRestoreReport {
+        replaced_count: report.writes.len(),
+        created_count: report.created_targets.len(),
+        retained_count,
+        first_recovery_copy: report.writes.first().map(|write| write.backup.clone()),
+    })
 }
 
 fn write_game_save_backup_delete(
@@ -4137,10 +4280,15 @@ fn write_game_save_restore(
         .map_err(|error| {
             GameWriteFailure::Other(format!("could not resolve selected vault backup: {error}"))
         })?;
-    let selected = inspect_save_file(&selected_path)?;
-    if !selected.source.starts_with(&vault_root) {
+    let selected_is_saturn = is_retroarch_saturn_set(&expected, &selected_path);
+    let selected = inspect_game_save_set(&expected, &selected_path)?;
+    if selected
+        .files
+        .iter()
+        .any(|file| !file.source.starts_with(&vault_root))
+    {
         return Err(GameWriteFailure::Other(
-            "select a resolved regular-file version inside the LaunchBox save vault".into(),
+            "select a resolved save set entirely inside the LaunchBox save vault".into(),
         ));
     }
 
@@ -4152,14 +4300,18 @@ fn write_game_save_restore(
         let Ok(path) = resolver.resolve(&root, &save.file_path) else {
             continue;
         };
-        let Ok(inspected) = inspect_save_file(&path) else {
+        let Ok(inspected) = inspect_game_save_set(save, &path) else {
             continue;
         };
-        if !inspected.source.starts_with(&vault_root) {
+        if inspected
+            .files
+            .iter()
+            .all(|file| !file.source.starts_with(&vault_root))
+        {
             active_candidates.push((index, save.clone(), inspected));
         }
     }
-    let [(active_index, active_save, active)] = active_candidates.as_slice() else {
+    let [(active_index, active_save, _active)] = active_candidates.as_slice() else {
         return Err(GameWriteFailure::Other(format!(
             "restore requires exactly one resolved regular active save in group {group_id}; found {}",
             active_candidates.len()
@@ -4179,11 +4331,23 @@ fn write_game_save_restore(
                 .into(),
         ));
     }
-    if save_requires_emulator_restore_adapter(&expected, &selected.source)
-        || save_requires_emulator_restore_adapter(active_save, &active.source)
+    let active_path = resolver
+        .resolve(&root, &active_save.file_path)
+        .map_err(|error| {
+            GameWriteFailure::Other(format!("could not resolve active save row: {error}"))
+        })?;
+    let active_is_saturn = is_retroarch_saturn_set(active_save, &active_path);
+    if selected_is_saturn != active_is_saturn {
+        return Err(GameWriteFailure::Other(
+            "the selected vault version and active save do not share the same regular-file or RetroArch Saturn-set shape"
+                .into(),
+        ));
+    }
+    if save_requires_container_restore_adapter(&expected)
+        || save_requires_container_restore_adapter(active_save)
     {
         return Err(GameWriteFailure::Other(
-            "this save requires its RetroArch companion, Dolphin, or PCSX2 adapter before it can be restored"
+            "this save requires its Dolphin or PCSX2 container adapter before it can be restored"
                 .into(),
         ));
     }
@@ -4211,7 +4375,7 @@ fn write_game_save_restore(
             return Ok(result);
         }
     };
-    let new_backup = match inspect_save_file(&new_backup_path) {
+    let new_backup = match inspect_game_save_set(new_backup, &new_backup_path) {
         Ok(inspected) => inspected,
         Err(error) => {
             result.operation = format!(
@@ -4221,7 +4385,7 @@ fn write_game_save_restore(
             return Ok(result);
         }
     };
-    let active_now = match inspect_save_file(&active.source) {
+    let active_now = match inspect_game_save_set(active_save, &active_path) {
         Ok(inspected) => inspected,
         Err(error) => {
             result.operation = format!(
@@ -4231,14 +4395,49 @@ fn write_game_save_restore(
             return Ok(result);
         }
     };
-    if new_backup.revision != active_now.revision {
+    if !inspected_save_sets_match(&new_backup, &active_now) {
         result.operation = format!(
             "Restore stopped safely after backing up the active save because {} changed before replacement",
-            active.source.display()
+            active_path.display()
         );
         return Ok(result);
     }
 
+    if selected_is_saturn {
+        match write_retroarch_saturn_set_restore(&root, &selected, &active_now, &active_path) {
+            Ok(report) => {
+                let recovery = report
+                    .first_recovery_copy
+                    .as_deref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "none required for newly created members".into());
+                result.operation = format!(
+                    "Restored RetroArch Saturn vault set ({} replaced, {} created, {} existing companions retained) to {}. First active recovery copy: {recovery}",
+                    report.replaced_count,
+                    report.created_count,
+                    report.retained_count,
+                    active_path.display(),
+                );
+            }
+            Err(error @ GameWriteFailure::PendingRecovery { .. }) => return Err(error),
+            Err(error) => {
+                result.operation = format!(
+                    "Restore stopped after backing up the active Saturn set because its recoverable set replacement did not complete: {}",
+                    describe_game_write_failure(&error)
+                );
+            }
+        }
+        return Ok(result);
+    }
+
+    let selected = selected
+        .files
+        .first()
+        .expect("regular selected save set has one inspected file");
+    let active_now = active_now
+        .files
+        .first()
+        .expect("regular active save set has one inspected file");
     match replace_regular_file_from_source_if_revisions(
         &selected.source,
         &selected.revision,
@@ -8213,6 +8412,36 @@ impl qobject::LibraryController {
         if success {
             eprintln!(
                 "GAME_SAVE_RESTORE_SMOKE_COMPLETE saves=3 writes={} revision={} data_changes={}",
+                rust.game_save_write_notifications,
+                self.game_save_revision(),
+                rust.data_change_notifications,
+            );
+        }
+        success
+    }
+
+    pub fn report_game_save_saturn_restore_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let saves = rust.game_saves_by_game.get(&game_id);
+        let success = saves.is_some_and(|saves| {
+            saves.len() == 3
+                && saves[0].file_path == r"Emulator\Saves\adventure.bcr"
+                && saves[1].file_path == r"Saves\Fixture Console\adventure.bcr"
+                && saves[2].file_path == r"Saves\Fixture Console\adventure-01.bcr"
+                && saves.iter().all(|save| {
+                    save.save_group_id.as_deref() == Some("saturn-adventure")
+                        && save.emulator_file_name == "retroarch"
+                        && save.emulator_core == "mednafen_saturn_libretro"
+                })
+        }) && rust.game_save_write_notifications == 1
+            && *self.game_save_revision() == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "GAME_SAVE_SATURN_RESTORE_SMOKE_COMPLETE saves=3 writes={} revision={} data_changes={}",
                 rust.game_save_write_notifications,
                 self.game_save_revision(),
                 rust.data_change_notifications,
@@ -13302,6 +13531,184 @@ mod tests {
     }
 
     #[test]
+    fn saturn_set_restore_replaces_creates_and_retains_members_like_1327() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected_directory = directory.path().join("Saves/Fixture Console");
+        let active_directory = directory.path().join("Emulator/Saves");
+        fs::create_dir_all(&selected_directory).unwrap();
+        fs::create_dir_all(&active_directory).unwrap();
+        fs::write(
+            selected_directory.join("adventure.bcr"),
+            b"selected cartridge",
+        )
+        .unwrap();
+        fs::write(
+            selected_directory.join("adventure.bkr"),
+            b"selected backup ram",
+        )
+        .unwrap();
+        fs::write(active_directory.join("adventure.bcr"), b"active cartridge").unwrap();
+        fs::write(active_directory.join("adventure.smpc"), b"active clock").unwrap();
+        let save = GameSave {
+            game_id: "fixture-adventure".into(),
+            emulator_file_name: "retroarch".into(),
+            emulator_core: "mednafen_saturn_libretro".into(),
+            save_group_id: Some("saturn-adventure".into()),
+            ..GameSave::default()
+        };
+        let selected_path = selected_directory.join("adventure.bcr");
+        let active_path = active_directory.join("adventure.bcr");
+        let selected = inspect_game_save_set(&save, &selected_path)
+            .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        let active = inspect_game_save_set(&save, &active_path)
+            .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        let report =
+            write_retroarch_saturn_set_restore(directory.path(), &selected, &active, &active_path)
+                .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        assert_eq!(report.replaced_count, 1);
+        assert_eq!(report.created_count, 1);
+        assert_eq!(report.retained_count, 1);
+        assert_eq!(
+            fs::read(active_directory.join("adventure.bcr")).unwrap(),
+            b"selected cartridge"
+        );
+        assert_eq!(
+            fs::read(active_directory.join("adventure.bkr")).unwrap(),
+            b"selected backup ram"
+        );
+        assert_eq!(
+            fs::read(active_directory.join("adventure.smpc")).unwrap(),
+            b"active clock"
+        );
+        assert_eq!(
+            fs::read(report.first_recovery_copy.unwrap()).unwrap(),
+            b"active cartridge"
+        );
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn retroarch_saturn_restore_backs_up_then_replaces_the_complete_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        let vault_directory = directory.path().join("Saves/Fixture Console");
+        let active_directory = directory.path().join("Emulator/Saves");
+        fs::create_dir_all(&platform_directory).unwrap();
+        fs::create_dir_all(&vault_directory).unwrap();
+        fs::create_dir_all(&active_directory).unwrap();
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE
+            .replace(
+                "<EmulatorCore>fixture-core</EmulatorCore>",
+                "<EmulatorCore>mednafen_saturn_libretro</EmulatorCore>",
+            )
+            .replace(
+                "<EmulatorFileName>fixture-emulator</EmulatorFileName>",
+                "<EmulatorFileName>retroarch</EmulatorFileName>",
+            )
+            .replace(
+                r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+                r"<FilePath>Emulator\Saves\adventure.bcr</FilePath>",
+            )
+            .replace("    <Slot>1</Slot>\n", "")
+            .replace(
+                "    <Title>Before the Final Puzzle</Title>",
+                "    <Title>Current Saturn Set</Title>\n    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>saturn-adventure</SaveGroupId>",
+            )
+            .replace(
+                "  <FutureRootElement>preserve-me</FutureRootElement>",
+                "  <GameSave>\n    <EmulatorCore>mednafen_saturn_libretro</EmulatorCore>\n    <EmulatorFileName>retroarch</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.bcr</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Selected Saturn Backup</Title>\n    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>saturn-adventure</SaveGroupId>\n    <OriginalFileName>adventure.bcr</OriginalFileName>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
+            );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let members = [
+            (
+                "bcr",
+                b"current active cartridge".as_slice(),
+                b"selected vault cartridge".as_slice(),
+            ),
+            (
+                "bkr",
+                b"current active backup ram".as_slice(),
+                b"selected vault backup ram".as_slice(),
+            ),
+            (
+                "smpc",
+                b"current active clock".as_slice(),
+                b"selected vault clock".as_slice(),
+            ),
+        ];
+        for (extension, active_bytes, selected_bytes) in members {
+            fs::write(
+                active_directory.join(format!("adventure.{extension}")),
+                active_bytes,
+            )
+            .unwrap();
+            fs::write(
+                vault_directory.join(format!("adventure.{extension}")),
+                selected_bytes,
+            )
+            .unwrap();
+        }
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let expected = document.library().game_saves[1].clone();
+
+        let result = write_game_save_restore(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-adventure".into(),
+            1,
+            expected,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        assert_eq!(result.saves.len(), 3);
+        assert_eq!(
+            result.saves[2].file_path,
+            r"Saves\Fixture Console\adventure-01.bcr"
+        );
+        assert_eq!(fs::read(&result.backup).unwrap(), platform_xml.as_bytes());
+        assert!(result
+            .operation
+            .starts_with("Restored RetroArch Saturn vault set (3 replaced, 0 created"));
+        for (extension, active_bytes, selected_bytes) in members {
+            let active = active_directory.join(format!("adventure.{extension}"));
+            let selected = vault_directory.join(format!("adventure.{extension}"));
+            let pre_restore = vault_directory.join(format!("adventure-01.{extension}"));
+            assert_eq!(fs::read(&active).unwrap(), selected_bytes);
+            assert_eq!(fs::read(&selected).unwrap(), selected_bytes);
+            assert_eq!(fs::read(&pre_restore).unwrap(), active_bytes);
+            let prefix = format!("adventure.{extension}.lbport-transaction-backup-");
+            let recovery = fs::read_dir(&active_directory)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(&prefix))
+                })
+                .unwrap();
+            assert_eq!(fs::read(recovery).unwrap(), active_bytes);
+        }
+        let xml = fs::read_to_string(platform_path).unwrap();
+        assert_eq!(xml.matches("<GameSave>").count(), 3);
+        assert_eq!(
+            xml.matches("<SaveGroupId>saturn-adventure</SaveGroupId>")
+                .count(),
+            3
+        );
+        assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn regular_file_restore_refuses_an_emulator_owned_adapter() {
         let directory = tempfile::tempdir().unwrap();
         let platform_directory = directory.path().join("Data/Platforms");
@@ -13344,7 +13751,7 @@ mod tests {
                 expected,
                 HostPathResolver::default(),
             ),
-            Err(GameWriteFailure::Other(message)) if message.contains("PCSX2 adapter")
+            Err(GameWriteFailure::Other(message)) if message.contains("PCSX2 container adapter")
         ));
         assert_eq!(fs::read(&active).unwrap(), b"memory card bytes");
         assert_eq!(fs::read(&selected).unwrap(), b"container backup bytes");

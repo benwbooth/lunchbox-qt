@@ -264,19 +264,23 @@ receives an explicit group ID in that same transaction. The manager can also
 permanently remove one resolved regular-file vault backup or complete Saturn
 set and its exact source-indexed history row in one revision-checked
 transaction. The active files are excluded, and every vault member plus the
-XML receives an exact recovery copy. Restore requires one compatible regular
-active row in the same stable group. It first commits the current active bytes
-as a new vault version, verifies that copy, then revision-checks and atomically
-replaces the active file from the selected vault version while retaining a
-second exact sibling recovery copy. Dolphin, PCSX2, RetroArch Saturn restore,
-directory, and ambiguous-active cases remain adapter-gated.
+XML receives an exact recovery copy. Restore requires one compatible active
+row in the same stable group. It first commits the current regular file or
+complete RetroArch Saturn companion set as a new vault version and verifies
+that copy. A regular file is then revision-checked and atomically replaced
+from the selected vault version with a second exact sibling recovery copy.
+RetroArch Saturn restore revision-checks all source and target members and
+replaces or creates the selected `.bcr`, `.bkr`, and `.smpc` companions under
+one recovery manifest; active companions absent from the selected version are
+retained to match 13.27. Dolphin, PCSX2, directory, and ambiguous-active cases
+remain adapter-gated.
 Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
 Unresolved. Metadata operations never move or delete save files, and backup
 never changes active files. Non-RetroArch scanning, directory/container backup,
-emulator-specific restore, active/container deletion, stale-row reconciliation,
-automatic-backup policy, repair, and the remaining emulator adapters remain
-open, as does manual game combine/expand.
+Dolphin/PCSX2 container restore, active/container deletion, stale-row
+reconciliation, automatic-backup policy, repair, and the remaining emulator
+adapters remain open, as does manual game combine/expand.
 
 Emulator
 auto-extraction invokes 7-Zip without a shell for ZIP, 7z, and RAR inputs,

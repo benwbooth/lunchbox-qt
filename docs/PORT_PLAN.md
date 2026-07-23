@@ -296,10 +296,14 @@ while retaining exact file/XML recovery copies. Regular-file restore requires
 one compatible resolved active row in the same stable group, commits and
 verifies a new vault version of its current bytes, then revision-checks and
 atomically replaces the active file from the selected vault version while
-retaining an exact sibling recovery copy. Non-RetroArch scanning,
-directory/container backup, emulator-specific set restore, active/container
-deletion, stale-row reconciliation, automatic policy, repair, and the remaining
-adapters remain open, as do the manual combine/expand actions in `LIB-010`.
+retaining an exact sibling recovery copy. RetroArch Saturn restore first
+commits and verifies the complete current companion set, then revision-checks
+and atomically replaces or creates all selected companions while retaining
+active members absent from the selected version like 13.27. Non-RetroArch
+scanning, directory/container backup, Dolphin/PCSX2 container restore,
+active/container deletion, stale-row reconciliation, automatic policy, repair,
+and the remaining adapters remain open, as do the manual combine/expand actions
+in `LIB-010`.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:

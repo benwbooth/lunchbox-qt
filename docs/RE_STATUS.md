@@ -144,10 +144,13 @@ transaction with exact file and XML recovery copies. Plain regular-file restore
 requires one compatible active row in the same stable group, first commits and
 verifies a new vault version of the active bytes, then revision-checks and
 atomically replaces the active path from the selected vault file while
-retaining an exact sibling recovery copy. Non-RetroArch scanning,
-directory/container backup, emulator-specific set restore, active/container
-deletion, stale-row reconciliation, automatic policy, repair, and
-Dolphin/PCSX2/remaining adapters remain open.
+retaining an exact sibling recovery copy. RetroArch Saturn restore first
+commits and verifies the complete current companion set, then revision-checks
+and atomically replaces or creates all selected companions while retaining
+active members absent from the selected version like 13.27. Non-RetroArch
+scanning, directory/container backup, Dolphin/PCSX2 container restore,
+active/container deletion, stale-row reconciliation, automatic policy, repair,
+and the remaining adapters remain open.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

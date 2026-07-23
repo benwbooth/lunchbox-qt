@@ -330,6 +330,50 @@ impl LibraryTransaction {
         })
     }
 
+    /// Stages a streamed replacement from one exact regular-file snapshot to
+    /// another exact regular-file snapshot under the library root.
+    ///
+    /// Both revisions are checked before preparation, the source is checked
+    /// again while it is streamed into the durable staging file, and the
+    /// target is checked again immediately before commit. This is the
+    /// multi-file counterpart to the narrow single-file replacement helper.
+    pub fn stage_file_replace_with_revisions(
+        &mut self,
+        source: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+        source_expected: FileRevision,
+        target_expected: FileRevision,
+    ) -> Result<(), TransactionError> {
+        let supplied_source = source.as_ref();
+        let metadata =
+            fs::symlink_metadata(supplied_source).map_err(|source| TransactionError::Io {
+                path: supplied_source.to_path_buf(),
+                source,
+            })?;
+        if !metadata.file_type().is_file() {
+            return Err(TransactionError::SourceNotFile {
+                path: supplied_source.to_path_buf(),
+            });
+        }
+        let source = fs::canonicalize(supplied_source).map_err(|source| TransactionError::Io {
+            path: supplied_source.to_path_buf(),
+            source,
+        })?;
+        let target = self.checked_target(target.as_ref())?;
+        if source == target {
+            return Err(TransactionError::SourceEqualsTarget { path: target });
+        }
+        self.push_change(PendingChange {
+            target,
+            operation: TransactionOperation::Replace,
+            candidate: Some(PendingCandidate::SourceFile {
+                path: source,
+                expected: Some(source_expected),
+            }),
+            expected: Some(target_expected),
+        })
+    }
+
     /// Stages deletion of one exact regular file under the library root.
     /// Callers supply the already-inspected revision so a replaced vault file
     /// is refused before any deletion is committed.
@@ -1202,6 +1246,8 @@ pub enum TransactionError {
     TargetNotFile { path: PathBuf },
     #[error("transaction copy source is not a regular file: {path}")]
     SourceNotFile { path: PathBuf },
+    #[error("transaction source and target are the same file: {path}")]
+    SourceEqualsTarget { path: PathBuf },
     #[error("transaction target {path} is outside root {root}")]
     TargetOutsideRoot { root: PathBuf, path: PathBuf },
     #[error("document {path} was not loaded from a file and has no source revision")]
@@ -1879,6 +1925,103 @@ mod tests {
             }) if path == fs::canonicalize(&source).unwrap() && actual_expected == expected
         ));
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn revision_checked_source_replacements_commit_or_roll_back_as_one_set() {
+        let (directory, _, _) = fixture_tree();
+        let selected_directory = directory.path().join("Saves/Fixture Console");
+        let active_directory = directory.path().join("Emulator/Saves");
+        fs::create_dir_all(&selected_directory).unwrap();
+        fs::create_dir_all(&active_directory).unwrap();
+        let selected = [
+            selected_directory.join("adventure.bcr"),
+            selected_directory.join("adventure.bkr"),
+        ];
+        let active = [
+            active_directory.join("adventure.bcr"),
+            active_directory.join("adventure.bkr"),
+        ];
+        fs::write(&selected[0], b"selected cartridge").unwrap();
+        fs::write(&selected[1], b"selected backup ram").unwrap();
+        fs::write(&active[0], b"active cartridge").unwrap();
+        fs::write(&active[1], b"active backup ram").unwrap();
+
+        let mut aliased = LibraryTransaction::new(directory.path()).unwrap();
+        let aliased_revision = FileRevision::read(&selected[0]).unwrap();
+        assert!(matches!(
+            aliased.stage_file_replace_with_revisions(
+                &selected[0],
+                &selected[0],
+                aliased_revision.clone(),
+                aliased_revision,
+            ),
+            Err(TransactionError::SourceEqualsTarget { .. })
+        ));
+
+        let stage_set = || {
+            let mut transaction = LibraryTransaction::new(directory.path()).unwrap();
+            for (source, target) in selected.iter().zip(&active) {
+                transaction
+                    .stage_file_replace_with_revisions(
+                        source,
+                        target,
+                        FileRevision::read(source).unwrap(),
+                        FileRevision::read(target).unwrap(),
+                    )
+                    .unwrap();
+            }
+            transaction
+        };
+        assert!(matches!(
+            stage_set().commit_with_apply(
+                |index, entry| {
+                    if index == 1 {
+                        Err(std::io::Error::other("injected companion failure"))
+                    } else {
+                        apply_prepared_change(entry)
+                    }
+                },
+                true,
+            ),
+            Err(TransactionError::CommitRolledBack { .. })
+        ));
+        assert_eq!(fs::read(&active[0]).unwrap(), b"active cartridge");
+        assert_eq!(fs::read(&active[1]).unwrap(), b"active backup ram");
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+
+        let report = stage_set().commit().unwrap();
+        assert_eq!(report.writes.len(), 2);
+        assert_eq!(fs::read(&active[0]).unwrap(), b"selected cartridge");
+        assert_eq!(fs::read(&active[1]).unwrap(), b"selected backup ram");
+        assert_eq!(
+            fs::read(
+                report
+                    .writes
+                    .iter()
+                    .find(|write| write.target == active[0])
+                    .unwrap()
+                    .backup
+                    .clone()
+            )
+            .unwrap(),
+            b"active cartridge"
+        );
+        assert_eq!(
+            fs::read(
+                report
+                    .writes
+                    .iter()
+                    .find(|write| write.target == active[1])
+                    .unwrap()
+                    .backup
+                    .clone()
+            )
+            .unwrap(),
+            b"active backup ram"
+        );
     }
 
     #[test]

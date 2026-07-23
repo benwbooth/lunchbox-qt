@@ -101,6 +101,7 @@ retroarch_save_scan_root=$(mktemp -d)
 game_save_backup_root=$(mktemp -d)
 game_save_delete_root=$(mktemp -d)
 game_save_restore_root=$(mktemp -d)
+game_save_saturn_restore_root=$(mktemp -d)
 import_root=$(mktemp -d)
 import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
@@ -113,7 +114,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$game_save_backup_root" "$game_save_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -936,6 +937,115 @@ if find "$game_save_restore_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox dialog-confirmed regular-file restore, mandatory active backup, atomic replacement, exact recovery copies, targeted refresh, and cleanup validated."
+
+cp -R fixtures/launchbox/Data "$game_save_saturn_restore_root/Data"
+game_save_saturn_restore_platform="$game_save_saturn_restore_root/Data/Platforms/Fixture Console.xml"
+sed -i \
+  -e 's|<EmulatorCore>fixture-core</EmulatorCore>|<EmulatorCore>mednafen_saturn_libretro</EmulatorCore>|' \
+  -e 's|<EmulatorFileName>fixture-emulator</EmulatorFileName>|<EmulatorFileName>retroarch</EmulatorFileName>|' \
+  -e 's|<FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>|<FilePath>Emulator\\Saves\\adventure.bcr</FilePath>|' \
+  -e '/    <Slot>1<\/Slot>/d' \
+  -e '/<Title>Before the Final Puzzle<\/Title>/a\    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>saturn-adventure</SaveGroupId>' \
+  -e '/<FutureRootElement>preserve-me<\/FutureRootElement>/i\  <GameSave>\n    <EmulatorCore>mednafen_saturn_libretro</EmulatorCore>\n    <EmulatorFileName>retroarch</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.bcr</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Selected Saturn Backup</Title>\n    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>saturn-adventure</SaveGroupId>\n    <OriginalFileName>adventure.bcr</OriginalFileName>\n  </GameSave>' \
+  "$game_save_saturn_restore_platform"
+mkdir -p \
+  "$game_save_saturn_restore_root/Emulator/Saves" \
+  "$game_save_saturn_restore_root/Saves/Fixture Console"
+declare -A game_save_saturn_restore_active_bytes=(
+  [bcr]='saturn restore current cartridge bytes'
+  [bkr]='saturn restore current backup ram bytes'
+  [smpc]='saturn restore current clock bytes'
+)
+declare -A game_save_saturn_restore_selected_bytes=(
+  [bcr]='saturn restore selected cartridge bytes'
+  [bkr]='saturn restore selected backup ram bytes'
+  [smpc]='saturn restore selected clock bytes'
+)
+for extension in bcr bkr smpc; do
+  printf %s "${game_save_saturn_restore_active_bytes[$extension]}" \
+    > "$game_save_saturn_restore_root/Emulator/Saves/adventure.$extension"
+  printf %s "${game_save_saturn_restore_selected_bytes[$extension]}" \
+    > "$game_save_saturn_restore_root/Saves/Fixture Console/adventure.$extension"
+done
+cp "$game_save_saturn_restore_platform" \
+  "$game_save_saturn_restore_root/original-platform.xml"
+game_save_saturn_restore_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$game_save_saturn_restore_root" \
+    --game-save-saturn-restore-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_save_saturn_restore_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_SAVE_SATURN_RESTORE_SMOKE_COMPLETE saves=3 writes=1 revision=1 data_changes=1' \
+  <<< "$game_save_saturn_restore_output"; then
+  printf '%s\n' "$game_save_saturn_restore_output" >&2
+  echo "LaunchBox did not validate dialog-confirmed RetroArch Saturn set restore." >&2
+  exit 1
+fi
+for extension in bcr bkr smpc; do
+  active="$game_save_saturn_restore_root/Emulator/Saves/adventure.$extension"
+  selected="$game_save_saturn_restore_root/Saves/Fixture Console/adventure.$extension"
+  pre_restore="$game_save_saturn_restore_root/Saves/Fixture Console/adventure-01.$extension"
+  if [[ $(<"$active") != "${game_save_saturn_restore_selected_bytes[$extension]}" ]] \
+    || [[ $(<"$selected") != "${game_save_saturn_restore_selected_bytes[$extension]}" ]] \
+    || [[ $(<"$pre_restore") != "${game_save_saturn_restore_active_bytes[$extension]}" ]]; then
+    echo "Saturn restore did not preserve selected/current $extension bytes in the expected destinations." >&2
+    exit 1
+  fi
+  mapfile -t active_backups < <(
+    find "$game_save_saturn_restore_root/Emulator/Saves" -maxdepth 1 -type f \
+      -name "adventure.$extension.lbport-transaction-backup-*" -print
+  )
+  if [[ ${#active_backups[@]} -ne 1 ]] \
+    || [[ $(<"${active_backups[0]}") \
+      != "${game_save_saturn_restore_active_bytes[$extension]}" ]]; then
+    echo "Saturn restore did not retain one exact $extension recovery copy." >&2
+    exit 1
+  fi
+done
+game_save_saturn_restore_size=0
+for extension in bcr bkr smpc; do
+  ((game_save_saturn_restore_size += \
+    ${#game_save_saturn_restore_active_bytes[$extension]}))
+done
+if [[ $(rg -c '<GameSave>' "$game_save_saturn_restore_platform") -ne 3 ]] \
+  || [[ $(rg -c -F '<SaveGroupId>saturn-adventure</SaveGroupId>' \
+    "$game_save_saturn_restore_platform") -ne 3 ]] \
+  || ! rg -q -F \
+    '<FilePath>Saves\Fixture Console\adventure-01.bcr</FilePath>' \
+    "$game_save_saturn_restore_platform" \
+  || ! rg -q -F \
+    "<ReportedFileSizeBytes>$game_save_saturn_restore_size</ReportedFileSizeBytes>" \
+    "$game_save_saturn_restore_platform" \
+  || ! rg -q '<ReportedLastModifiedUtc>.*\.[0-9]{7}Z' \
+    "$game_save_saturn_restore_platform" \
+  || ! rg -q '<Md5>[0-9A-F]{32}</Md5>' \
+    "$game_save_saturn_restore_platform" \
+  || ! rg -q -F '<FutureRootElement>preserve-me</FutureRootElement>' \
+    "$game_save_saturn_restore_platform"; then
+  echo "Saturn restore did not persist the exact pre-restore set metadata losslessly." >&2
+  exit 1
+fi
+mapfile -t game_save_saturn_restore_xml_backups < <(
+  find "$game_save_saturn_restore_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#game_save_saturn_restore_xml_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${game_save_saturn_restore_xml_backups[0]}" \
+    "$game_save_saturn_restore_root/original-platform.xml"; then
+  echo "Saturn restore did not retain one exact pre-restore XML recovery copy." >&2
+  exit 1
+fi
+if find "$game_save_saturn_restore_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful Saturn restore left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-confirmed RetroArch Saturn set restore, mandatory full-set backup, atomic companion replacement, exact recovery copies, targeted refresh, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$import_root/Data"
 mkdir -p "$import_root/Metadata"

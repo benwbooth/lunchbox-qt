@@ -75,6 +75,11 @@ ApplicationWindow {
             "--game-save-restore-smoke-test") >= 0
     property int gameSaveRestoreSmokePhase: 0
     property bool gameSaveRestoreSmokeFinished: false
+    property bool gameSaveSaturnRestoreSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--game-save-saturn-restore-smoke-test") >= 0
+    property int gameSaveSaturnRestoreSmokePhase: 0
+    property bool gameSaveSaturnRestoreSmokeFinished: false
     property bool retroarchSaveScanSmokeTest:
         Qt.application.arguments.indexOf(
             "--retroarch-save-scan-smoke-test") >= 0
@@ -884,6 +889,63 @@ ApplicationWindow {
                           + window.gameSaveRestoreSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(19)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameSaveSaturnRestoreSmokeTest
+                 && !window.gameSaveSaturnRestoreSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-adventure"
+            if (window.gameSaveSaturnRestoreSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 2) {
+                    console.error(
+                        "GAME_SAVE_SATURN_RESTORE_SMOKE_MISSING_FIXTURE")
+                    Qt.exit(21)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Adventure")
+                gameSaveManager.selectedVersionIndex = 1
+                const version = gameSaveManager.selectedVersion()
+                if (version === null || version.location_kind !== "vault") {
+                    console.error(
+                        "GAME_SAVE_SATURN_RESTORE_SMOKE_VAULT_NOT_RESOLVED")
+                    Qt.exit(21)
+                    return
+                }
+                window.gameSaveSaturnRestoreSmokePhase = 1
+                gameSaveRestoreDialog.smoke()
+            } else if (window.gameSaveSaturnRestoreSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_save_revision === 1) {
+                if (!controller.report_game_save_saturn_restore_smoke_success(
+                        gameId)) {
+                    console.error(
+                        "GAME_SAVE_SATURN_RESTORE_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(21)
+                    return
+                }
+                window.gameSaveSaturnRestoreSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.gameSaveSaturnRestoreSmokeTest
+                 && !window.gameSaveSaturnRestoreSmokeFinished
+        onTriggered: {
+            console.error("GAME_SAVE_SATURN_RESTORE_SMOKE_TIMEOUT phase="
+                          + window.gameSaveSaturnRestoreSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(21)
         }
     }
 
@@ -2226,7 +2288,7 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.preferredWidth: 820
-                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads RetroArch's native configuration and records newly discovered regular saves, states, and grouped Saturn companion sets without deleting existing history. Manual backup copies a regular active save or complete RetroArch Saturn companion set into the vault and records it atomically. Restore first backs up the current active regular file, then atomically replaces it from a compatible vault version. Vault deletion removes a regular backup or complete RetroArch Saturn set with its history row in one recoverable transaction. Active deletion and emulator-owned set restore remain gated."
+                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads RetroArch's native configuration and records newly discovered regular saves, states, and grouped Saturn companion sets without deleting existing history. Manual backup copies a regular active save or complete RetroArch Saturn companion set into the vault and records it atomically. Restore first backs up the current active file or RetroArch Saturn companion set, then atomically replaces it from a compatible vault version. Vault deletion removes a regular backup or complete RetroArch Saturn set with its history row in one recoverable transaction. Active deletion and Dolphin/PCSX2 container restore remain gated."
                 wrapMode: Text.Wrap
                 color: "#aeb8c5"
             }
@@ -2584,7 +2646,7 @@ ApplicationWindow {
                 const version = gameSaveManager.selectedVersion()
                 return "Restore “"
                        + (version !== null ? version.title : "")
-                       + "” over the active regular-file save? The current active bytes are first committed as a new vault version. Dolphin, PCSX2, and RetroArch companion saves remain disabled until their adapters are available."
+                       + "” over the active save? The current active file or RetroArch Saturn companion set is first committed as a new vault version. Dolphin and PCSX2 container restores remain disabled until their adapters are available."
             }
             wrapMode: Text.Wrap
         }
