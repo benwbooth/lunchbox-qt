@@ -311,6 +311,13 @@ cp -R fixtures/launchbox/Data "$import_root/Data"
 mkdir -p "$import_root/Metadata"
 sqlite3 "$import_root/Metadata/LaunchBox.Metadata.db" \
   < fixtures/launchbox/Metadata/fixture.sql
+sqlite3 "$import_root/Metadata/LaunchBox.Metadata.db" \
+  "INSERT INTO Games VALUES (
+    4343, 'Fixture Saga Collector (USA)', 'FIXTURE SAGA', NULL, 2004,
+    'Collector overview', 4, 'Released', 0, NULL, 4.0, NULL,
+    'Fixture Console', 'E10+', 'Role-Playing', 'Collector Forge',
+    'Collector Press'
+  );"
 printf 'disc-one-import-bytes' > \
   "$import_source_root/Fixture Saga (USA) - (Disc 1 of 2).rom"
 printf 'disc-two-import-bytes' > \
@@ -399,7 +406,7 @@ if find "$import_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox dialog-driven multi-disc ROM import, unique exact local-metadata matching and typed persistence, PDF-manual discovery and portable ManualPath persistence, title/year subfolder planning, same-stem companion copying, validated emulator selection, editable grouped preview, exact streamed bytes, additional-application persistence, shared transaction recovery, and source preservation validated."
+echo "LaunchBox dialog-driven multi-disc ROM import, ambiguous exact local-metadata review by stable database ID and typed persistence, PDF-manual discovery and re-planned portable ManualPath persistence, title/year subfolder planning, same-stem companion copying, validated emulator selection, editable grouped preview, exact streamed bytes, additional-application persistence, shared transaction recovery, and source preservation validated."
 
 cp -R fixtures/launchbox/Data "$platform_crud_root/Data"
 platform_crud_catalog="$platform_crud_root/Data/Platforms.xml"

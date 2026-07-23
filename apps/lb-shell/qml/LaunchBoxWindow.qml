@@ -371,10 +371,13 @@ ApplicationWindow {
                        && controller.import_preview_json.length > 0) {
                 const preview = JSON.parse(controller.import_preview_json)
                 if (preview.rows.length !== 1
+                        || preview.rows[0].metadata_candidate_count !== 2
+                        || preview.rows[0].metadata_candidates.length !== 2
+                        || preview.rows[0].metadata_candidates[0].database_id !== 4242
                         || preview.rows[0].manual_candidate_count !== 1
                         || preview.rows[0].manual === null
                         || preview.rows[0].manual.stored_path
-                           !== "Games\\Fixture Console\\Fixture Saga (USA) (2002)\\Fixture Saga (USA) - (Disc 1 of 2).pdf") {
+                           !== "Games\\Fixture Console\\Fixture Saga (USA)\\Fixture Saga (USA) - (Disc 1 of 2).pdf") {
                     console.error("IMPORT_SMOKE_MANUAL_PREVIEW_CONTRACT_FAILED")
                     Qt.exit(12)
                     return
@@ -3443,6 +3446,49 @@ ApplicationWindow {
             return count
         }
 
+        function metadataChoiceCount(candidates) {
+            return candidates.count === undefined ? candidates.length : candidates.count
+        }
+
+        function metadataChoiceAt(candidates, index) {
+            return candidates.get === undefined ? candidates[index] : candidates.get(index)
+        }
+
+        function metadataChoiceLabels(candidates) {
+            const labels = ["Do not apply metadata"]
+            for (let index = 0; index < metadataChoiceCount(candidates); ++index) {
+                const candidate = metadataChoiceAt(candidates, index)
+                let details = "Database ID " + candidate.database_id
+                if (candidate.release_year !== null)
+                    details += ", " + candidate.release_year
+                if (candidate.developer !== null)
+                    details += ", " + candidate.developer
+                labels.push(candidate.title + " — " + details)
+            }
+            return labels
+        }
+
+        function metadataChoiceIndex(candidates, databaseId) {
+            for (let index = 0; index < metadataChoiceCount(candidates); ++index) {
+                if (metadataChoiceAt(candidates, index).database_id === databaseId)
+                    return index + 1
+            }
+            return 0
+        }
+
+        function selectMetadataChoice(rowIndex, candidates, choiceIndex) {
+            if (choiceIndex === 0) {
+                importPreviewRows.setProperty(rowIndex,
+                                              "selectedMetadataDatabaseId", 0)
+                return
+            }
+            const candidate = metadataChoiceAt(candidates, choiceIndex - 1)
+            importPreviewRows.setProperty(rowIndex,
+                                          "selectedMetadataDatabaseId",
+                                          candidate.database_id)
+            importPreviewRows.setProperty(rowIndex, "title", candidate.title)
+        }
+
         function requestPreview() {
             if (importLocations.count === 0 || importPlatform.currentIndex < 0)
                 return
@@ -3472,6 +3518,9 @@ ApplicationWindow {
                     "discFileCount": 1 + row.additional_discs.length,
                     "companionFileCount": companionFileCount(row),
                     "metadataCandidateCount": row.metadata_candidate_count,
+                    "metadataCandidates": row.metadata_candidates,
+                    "selectedMetadataDatabaseId": row.metadata === null
+                                                  ? 0 : row.metadata.database_id,
                     "manualCandidateCount": row.manual_candidate_count,
                     "manualSourcePath": row.manual === null
                                         ? "" : row.manual.source_path,
@@ -3493,7 +3542,10 @@ ApplicationWindow {
                 rows.push({
                     "source_path": row.sourcePath,
                     "title": row.title,
-                    "included": row.included
+                    "included": row.included,
+                    "metadata_database_id": row.selectedMetadataDatabaseId === 0
+                                            ? null
+                                            : row.selectedMetadataDatabaseId
                 })
             }
             controller.import_roms(JSON.stringify({
@@ -3506,6 +3558,29 @@ ApplicationWindow {
         function smokeSubmitPreview() {
             if (previewRequest === null && !loadPreview())
                 return
+            let selectedRecoveredCandidate = false
+            for (let rowIndex = 0; rowIndex < importPreviewRows.count; ++rowIndex) {
+                const row = importPreviewRows.get(rowIndex)
+                if (metadataChoiceCount(row.metadataCandidates) < 2)
+                    continue
+                for (let candidateIndex = 0;
+                     candidateIndex < metadataChoiceCount(row.metadataCandidates);
+                     ++candidateIndex) {
+                    const candidate = metadataChoiceAt(row.metadataCandidates,
+                                                       candidateIndex)
+                    if (candidate.database_id !== 4242)
+                        continue
+                    selectMetadataChoice(rowIndex, row.metadataCandidates,
+                                         candidateIndex + 1)
+                    selectedRecoveredCandidate = true
+                    break
+                }
+            }
+            if (!selectedRecoveredCandidate) {
+                console.error("Import smoke did not expose the expected ambiguous metadata choices")
+                Qt.exit(1)
+                return
+            }
             submitPreview()
         }
 
@@ -3750,11 +3825,15 @@ ApplicationWindow {
                                 required property int discFileCount
                                 required property int companionFileCount
                                 required property int metadataCandidateCount
+                                required property var metadataCandidates
+                                required property double selectedMetadataDatabaseId
                                 required property int manualCandidateCount
                                 required property string manualSourcePath
                                 required property string manualStoredPath
                                 width: ListView.view.width
-                                height: manualSourcePath.length > 0 ? 110 : 92
+                                height: 92
+                                        + (manualSourcePath.length > 0 ? 18 : 0)
+                                        + (metadataCandidateCount > 1 ? 44 : 0)
                                 color: index % 2 === 0 ? "#171b22" : "#14181e"
                                 RowLayout {
                                     anchors.fill: parent
@@ -3778,6 +3857,23 @@ ApplicationWindow {
                                             onEditingFinished: importPreviewRows.setProperty(
                                                                    importPreviewDelegate.index,
                                                                    "title", text)
+                                        }
+                                        ComboBox {
+                                            Layout.fillWidth: true
+                                            visible: importPreviewDelegate.metadataCandidateCount > 1
+                                            model: romImportDialog.metadataChoiceLabels(
+                                                       importPreviewDelegate.metadataCandidates)
+                                            currentIndex: romImportDialog.metadataChoiceIndex(
+                                                              importPreviewDelegate.metadataCandidates,
+                                                              importPreviewDelegate.selectedMetadataDatabaseId)
+                                            Accessible.name: "Metadata match for "
+                                                             + importPreviewDelegate.title
+                                            onActivated: function(choiceIndex) {
+                                                romImportDialog.selectMetadataChoice(
+                                                    importPreviewDelegate.index,
+                                                    importPreviewDelegate.metadataCandidates,
+                                                    choiceIndex)
+                                            }
                                         }
                                         Label {
                                             Layout.fillWidth: true

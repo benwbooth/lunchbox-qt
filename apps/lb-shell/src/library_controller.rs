@@ -5617,6 +5617,7 @@ impl qobject::LibraryController {
             rust.games.iter().any(|game| {
                 game.id == *id
                     && game.platform == "Fixture Console"
+                    && game.database_id == Some(4242)
                     && game.emulator_id.as_deref() == Some("fixture-emulator")
                     && game.manual_path.as_deref()
                         == Some(

@@ -120,8 +120,21 @@ pub struct ManualImportPreviewRow {
     pub additional_discs: Vec<ManualImportDisc>,
     pub metadata: Option<ManualImportMetadata>,
     pub metadata_candidate_count: usize,
+    #[serde(default)]
+    pub metadata_candidates: Vec<ManualImportMetadataCandidate>,
     pub manual: Option<ManualImportManual>,
     pub manual_candidate_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManualImportMetadataCandidate {
+    pub database_id: u32,
+    pub title: String,
+    pub platform: String,
+    pub release_year: Option<i32>,
+    pub developer: Option<String>,
+    pub publisher: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -287,6 +300,8 @@ pub struct ManualImportRowSelection {
     pub source_path: PathBuf,
     pub title: String,
     pub included: bool,
+    #[serde(default)]
+    pub metadata_database_id: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -494,6 +509,7 @@ pub fn preview_manual_import(
             additional_discs: Vec::new(),
             metadata: None,
             metadata_candidate_count: 0,
+            metadata_candidates: Vec::new(),
             manual: None,
             manual_candidate_count: 0,
         });
@@ -577,6 +593,13 @@ where
     {
         return Err(ImportError::PreviewChanged);
     }
+    apply_selected_local_metadata(
+        launchbox_root,
+        &preview.request.platform,
+        preview.request.search_local_metadata,
+        &selected,
+        &mut preview.rows,
+    )?;
     if preview.request.copy_to_subfolders
         && matches!(
             preview.request.file_policy,
@@ -597,6 +620,14 @@ where
             preview.request.duplicate_policy,
             &mut preview.rows,
         )?;
+        if preview.request.look_for_pdf_manuals {
+            apply_pdf_manuals(
+                launchbox_root,
+                resolver,
+                preview.request.duplicate_policy,
+                &mut preview.rows,
+            )?;
+        }
     }
 
     let mut imports = Vec::new();
@@ -925,6 +956,10 @@ fn apply_local_metadata(
         }
         let matches = database.search_exact(platform, &row.title, Some(&row.source_path))?;
         row.metadata_candidate_count = matches.len();
+        row.metadata_candidates = matches
+            .iter()
+            .map(manual_import_metadata_candidate)
+            .collect::<Result<_, _>>()?;
         match matches.as_slice() {
             [game] => {
                 row.title = game.name.clone();
@@ -936,6 +971,61 @@ fn apply_local_metadata(
                 "; {} exact local metadata matches require review",
                 candidates.len()
             )),
+        }
+    }
+    Ok(())
+}
+
+fn apply_selected_local_metadata(
+    launchbox_root: &Path,
+    platform: &str,
+    search_local_metadata: bool,
+    selections: &BTreeMap<PathBuf, ManualImportRowSelection>,
+    rows: &mut [ManualImportPreviewRow],
+) -> Result<(), ImportError> {
+    let selected_count = selections
+        .values()
+        .filter(|selection| selection.metadata_database_id.is_some())
+        .count();
+    if selected_count == 0 {
+        return Ok(());
+    }
+    if !search_local_metadata {
+        let selection = selections
+            .values()
+            .find(|selection| selection.metadata_database_id.is_some())
+            .expect("selected_count proves a metadata selection exists");
+        return Err(ImportError::InvalidMetadataSelection {
+            path: selection.source_path.clone(),
+            database_id: selection
+                .metadata_database_id
+                .expect("selection was filtered for a database ID"),
+        });
+    }
+
+    let database_path = launchbox_root
+        .join("Metadata")
+        .join("LaunchBox.Metadata.db");
+    let database = MetadataDatabase::open(database_path)?;
+    for row in rows {
+        let selection = &selections[&row.source_path];
+        let Some(database_id) = selection.metadata_database_id else {
+            continue;
+        };
+        let matches = database.search_exact(platform, &row.title, Some(&row.source_path))?;
+        let Some(game) = matches
+            .iter()
+            .find(|game| u32::try_from(game.database_id) == Ok(database_id))
+        else {
+            return Err(ImportError::InvalidMetadataSelection {
+                path: row.source_path.clone(),
+                database_id,
+            });
+        };
+        row.metadata = Some(manual_import_metadata(game)?);
+        if row.metadata_candidate_count > 1 {
+            row.message
+                .push_str(&format!("; selected local metadata game {database_id}"));
         }
     }
     Ok(())
@@ -1184,12 +1274,7 @@ fn game_subfolder_name(row: &ManualImportPreviewRow) -> String {
 }
 
 fn manual_import_metadata(game: &MetadataGame) -> Result<ManualImportMetadata, ImportError> {
-    let database_id =
-        u32::try_from(game.database_id).map_err(|_| ImportError::MetadataValueOutOfRange {
-            database_id: game.database_id,
-            field: "DatabaseID",
-            value: game.database_id.to_string(),
-        })?;
+    let database_id = metadata_database_id(game)?;
     let max_players = game
         .max_players
         .map(|value| {
@@ -1237,6 +1322,27 @@ fn manual_import_metadata(game: &MetadataGame) -> Result<ManualImportMetadata, I
         wikipedia_url: non_empty_metadata_value(game.wikipedia_url.as_deref()),
         video_url: non_empty_metadata_value(game.video_url.as_deref()),
         community_star_rating,
+    })
+}
+
+fn manual_import_metadata_candidate(
+    game: &MetadataGame,
+) -> Result<ManualImportMetadataCandidate, ImportError> {
+    Ok(ManualImportMetadataCandidate {
+        database_id: metadata_database_id(game)?,
+        title: game.name.clone(),
+        platform: game.platform.clone(),
+        release_year: game.release_year,
+        developer: non_empty_metadata_value(game.developer.as_deref()),
+        publisher: non_empty_metadata_value(game.publisher.as_deref()),
+    })
+}
+
+fn metadata_database_id(game: &MetadataGame) -> Result<u32, ImportError> {
+    u32::try_from(game.database_id).map_err(|_| ImportError::MetadataValueOutOfRange {
+        database_id: game.database_id,
+        field: "DatabaseID",
+        value: game.database_id.to_string(),
     })
 }
 
@@ -1563,6 +1669,8 @@ pub enum ImportError {
     },
     #[error("selected import title is empty: {path}")]
     EmptyTitle { path: PathBuf },
+    #[error("metadata game {database_id} is no longer an exact candidate for {path}")]
+    InvalidMetadataSelection { path: PathBuf, database_id: u32 },
     #[error("at least one importable row must be selected")]
     EmptySelection,
     #[error("the committed transaction did not report a platform XML backup")]
@@ -1657,6 +1765,10 @@ mod tests {
                     source_path: row.source_path.clone(),
                     title: row.title.clone(),
                     included: row.included,
+                    metadata_database_id: row
+                        .metadata
+                        .as_ref()
+                        .map(|metadata| metadata.database_id),
                 })
                 .collect(),
         }
@@ -1844,8 +1956,8 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_exact_local_metadata_matches_remain_unapplied() {
-        let (library, _) = library();
+    fn ambiguous_exact_local_metadata_match_can_be_selected_and_persisted() {
+        let (library, platform) = library();
         let database_path = configure_fixture_metadata(library.path());
         let connection = rusqlite::Connection::open(database_path).unwrap();
         connection
@@ -1862,24 +1974,149 @@ mod tests {
         let source_directory = tempfile::tempdir().unwrap();
         let source = source_directory.path().join("Fixture Saga.rom");
         fs::write(&source, b"ambiguous rom").unwrap();
+        fs::write(
+            source_directory.path().join("Fixture Saga.pdf"),
+            b"selected metadata manual",
+        )
+        .unwrap();
         let mut import_request = request(
             vec![ImportLocation {
                 path: source,
                 kind: ImportLocationKind::File,
             }],
-            ImportFilePolicy::Leave,
+            ImportFilePolicy::Copy,
         );
         import_request.search_local_metadata = true;
+        import_request.copy_to_subfolders = true;
+        import_request.copy_files_with_same_name = true;
+        import_request.look_for_pdf_manuals = true;
 
         let preview =
             preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
                 .unwrap();
         assert_eq!(preview.rows[0].title, "Fixture Saga");
         assert_eq!(preview.rows[0].metadata_candidate_count, 2);
+        assert_eq!(
+            preview.rows[0].metadata_candidates,
+            vec![
+                ManualImportMetadataCandidate {
+                    database_id: 4242,
+                    title: "Fixture Saga (USA)".into(),
+                    platform: "Fixture Console".into(),
+                    release_year: Some(2002),
+                    developer: Some("Fixture Forge".into()),
+                    publisher: Some("Fixture Press".into()),
+                },
+                ManualImportMetadataCandidate {
+                    database_id: 4343,
+                    title: "Fixture Saga (Japan)".into(),
+                    platform: "Fixture Console".into(),
+                    release_year: Some(2003),
+                    developer: Some("Japan Forge".into()),
+                    publisher: Some("Japan Press".into()),
+                },
+            ]
+        );
         assert_eq!(preview.rows[0].metadata, None);
         assert!(preview.rows[0]
             .message
             .contains("2 exact local metadata matches require review"));
+
+        let mut selected = selection(&preview);
+        selected.rows[0].title = "Fixture Saga (Japan)".into();
+        selected.rows[0].metadata_database_id = Some(4343);
+        let report = execute_manual_import_with_ids(
+            library.path(),
+            &platform,
+            &HostPathResolver::default(),
+            selected,
+            || "selected-metadata-game".into(),
+        )
+        .unwrap();
+        assert_eq!(report.games[0].title, "Fixture Saga (Japan)");
+        assert_eq!(report.games[0].database_id, Some(4343));
+        assert_eq!(report.games[0].release_date.as_deref(), Some("2003-01-01"));
+        assert_eq!(report.games[0].developer.as_deref(), Some("Japan Forge"));
+        assert_eq!(
+            report.games[0].manual_path,
+            Some(r"Games\Fixture Console\Fixture Saga (Japan) (2003)\Fixture Saga.pdf".into())
+        );
+        assert_eq!(report.created_files.len(), 2);
+        assert_eq!(
+            report.games[0].application_path,
+            r"Games\Fixture Console\Fixture Saga (Japan) (2003)\Fixture Saga.rom"
+        );
+        assert_eq!(
+            fs::read(
+                library
+                    .path()
+                    .join("Games/Fixture Console/Fixture Saga (Japan) (2003)/Fixture Saga.rom")
+            )
+            .unwrap(),
+            b"ambiguous rom"
+        );
+        assert_eq!(
+            fs::read(
+                library
+                    .path()
+                    .join("Games/Fixture Console/Fixture Saga (Japan) (2003)/Fixture Saga.pdf")
+            )
+            .unwrap(),
+            b"selected metadata manual"
+        );
+    }
+
+    #[test]
+    fn removed_metadata_candidate_is_rejected_before_writing() {
+        let (library, platform) = library();
+        let database_path = configure_fixture_metadata(library.path());
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO Games VALUES (
+                    4343, 'Fixture Saga (Japan)', 'FIXTURE SAGA', NULL, 2003,
+                    'Japan overview', 1, 'Released', 0, NULL, 4.25, NULL,
+                    'Fixture Console', 'E', 'Role-Playing', 'Japan Forge',
+                    'Japan Press'
+                )",
+                [],
+            )
+            .unwrap();
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = source_directory.path().join("Fixture Saga.rom");
+        fs::write(&source, b"stale metadata rom").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: source.clone(),
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Leave,
+        );
+        import_request.search_local_metadata = true;
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        let mut selected = selection(&preview);
+        selected.rows[0].metadata_database_id = Some(4343);
+        connection
+            .execute("DELETE FROM Games WHERE DatabaseID = 4343", [])
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            execute_manual_import_with_ids(
+                library.path(),
+                &platform,
+                &HostPathResolver::default(),
+                selected,
+                || "must-not-be-used".into(),
+            ),
+            Err(ImportError::InvalidMetadataSelection {
+                path,
+                database_id: 4343
+            }) if path == source
+        ));
+        assert_eq!(fs::read_to_string(platform).unwrap(), PLATFORM);
     }
 
     #[test]
