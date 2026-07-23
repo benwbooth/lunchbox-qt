@@ -2523,6 +2523,83 @@ fn replace_directory_from_source_if_revisions_with(
     Ok(AtomicDirectorySaveReport { target, backup })
 }
 
+/// Deletes one exact directory tree while retaining the complete tree in a
+/// unique sibling recovery directory.
+///
+/// The target and every nested entry must be a real directory or regular file.
+/// Its recursive revision is checked before and immediately before the rename,
+/// so callers cannot accidentally delete a save tree that changed after it was
+/// presented to the user.
+pub fn delete_directory_if_revision(
+    target: impl AsRef<Path>,
+    expected: &DirectoryRevision,
+) -> Result<AtomicDirectorySaveReport, StorageError> {
+    let supplied_target = target.as_ref();
+    let target_metadata =
+        fs::symlink_metadata(supplied_target).map_err(|source| StorageError::Read {
+            path: supplied_target.to_path_buf(),
+            source,
+        })?;
+    if !target_metadata.file_type().is_dir() || target_metadata.file_type().is_symlink() {
+        return Err(StorageError::AtomicTargetNotDirectory {
+            path: supplied_target.to_path_buf(),
+        });
+    }
+    let target = fs::canonicalize(supplied_target).map_err(|source| StorageError::Read {
+        path: supplied_target.to_path_buf(),
+        source,
+    })?;
+    let actual = DirectoryRevision::read(&target)?;
+    if actual != *expected {
+        return Err(StorageError::AtomicDirectoryTargetConflict {
+            path: target,
+            expected: Box::new(expected.clone()),
+            actual: Box::new(actual),
+        });
+    }
+
+    let backup_root = create_unique_sibling_directory(&target, "directory-delete-backup", false)?;
+    let backup = backup_root.join(
+        target
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("directory")),
+    );
+    let actual = match DirectoryRevision::read(&target) {
+        Ok(actual) => actual,
+        Err(error) => {
+            let _ = fs::remove_dir(&backup_root);
+            return Err(error);
+        }
+    };
+    if actual != *expected {
+        let _ = fs::remove_dir(&backup_root);
+        return Err(StorageError::AtomicDirectoryTargetConflict {
+            path: target,
+            expected: Box::new(expected.clone()),
+            actual: Box::new(actual),
+        });
+    }
+
+    if let Err(source) = fs::rename(&target, &backup) {
+        let _ = fs::remove_dir(&backup_root);
+        return Err(StorageError::Write {
+            path: target,
+            source,
+        });
+    }
+    if let Err(source) =
+        sync_parent_directory(&target).and_then(|()| sync_parent_directory(&backup))
+    {
+        return Err(StorageError::AtomicDirectorySync {
+            path: target,
+            backup,
+            source,
+        });
+    }
+
+    Ok(AtomicDirectorySaveReport { target, backup })
+}
+
 /// Deletes an exact set of regular files, including files outside a LaunchBox
 /// library root, while retaining one exact sibling recovery copy per file.
 ///
@@ -9812,6 +9889,50 @@ mod tests {
                 })
                 .count(),
             0
+        );
+    }
+
+    #[test]
+    fn revision_checked_directory_delete_retains_the_exact_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("data");
+        fs::create_dir_all(target.join("nested/empty")).unwrap();
+        fs::write(target.join("banner.bin"), b"banner").unwrap();
+        fs::write(target.join("nested/progress.dat"), b"progress").unwrap();
+        let revision = DirectoryRevision::read(&target).unwrap();
+
+        let report = delete_directory_if_revision(&target, &revision).unwrap();
+
+        assert_eq!(report.target, target);
+        assert!(!target.exists());
+        assert_eq!(DirectoryRevision::read(&report.backup).unwrap(), revision);
+        assert_eq!(
+            fs::read(report.backup.join("nested/progress.dat")).unwrap(),
+            b"progress"
+        );
+        assert!(report.backup.join("nested/empty").is_dir());
+    }
+
+    #[test]
+    fn revision_checked_directory_delete_refuses_a_changed_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("data");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("progress.dat"), b"before").unwrap();
+        let revision = DirectoryRevision::read(&target).unwrap();
+        fs::write(target.join("progress.dat"), b"after").unwrap();
+
+        assert!(matches!(
+            delete_directory_if_revision(&target, &revision),
+            Err(StorageError::AtomicDirectoryTargetConflict { .. })
+        ));
+        assert_eq!(fs::read(target.join("progress.dat")).unwrap(), b"after");
+        assert_eq!(
+            fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .count(),
+            1
         );
     }
 

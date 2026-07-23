@@ -130,6 +130,7 @@ pcsx2_save_scan_root=$(mktemp -d)
 game_save_backup_root=$(mktemp -d)
 pcsx2_save_backup_root=$(mktemp -d)
 pcsx2_save_lifecycle_root=$(mktemp -d)
+dolphin_wii_save_lifecycle_root=$(mktemp -d)
 game_save_delete_root=$(mktemp -d)
 game_save_active_delete_root=$(mktemp -d)
 game_save_restore_root=$(mktemp -d)
@@ -154,7 +155,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -1246,6 +1247,167 @@ if find "$pcsx2_save_lifecycle_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox dialog-confirmed PCSX2 folder-card restore/deletion, three exact vault versions, two complete-card recovery trees, unrelated-member retention, targeted refresh, and cleanup validated."
+
+cp -R fixtures/launchbox/Data "$dolphin_wii_save_lifecycle_root/Data"
+dolphin_wii_save_lifecycle_platform="$dolphin_wii_save_lifecycle_root/Data/Platforms/Fixture Console.xml"
+sed -i \
+  -e 's|<EmulatorFileName>fixture-emulator</EmulatorFileName>|<EmulatorFileName>Dolphin.exe</EmulatorFileName>|' \
+  -e 's|<FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>|<FilePath>Emulators\\Dolphin\\User\\Wii\\title\\00010000\\47414d45\\data</FilePath>|' \
+  -e '/    <Slot>1<\/Slot>/d' \
+  -e '/    <Title>Before the Final Puzzle<\/Title>/a\    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>dolphin:wii:fixture-adventure:00010000:47414d45</SaveGroupId>\n    <OriginalFileName>data</OriginalFileName>' \
+  "$dolphin_wii_save_lifecycle_platform"
+sed -i \
+  '/<\/GameSave>/a\  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>Dolphin.exe</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.7z</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Selected Wii Backup</Title>\n    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>dolphin:wii:fixture-adventure:00010000:47414d45</SaveGroupId>\n    <OriginalFileName>data</OriginalFileName>\n  </GameSave>' \
+  "$dolphin_wii_save_lifecycle_platform"
+dolphin_wii_save_lifecycle_active="$dolphin_wii_save_lifecycle_root/Emulators/Dolphin/User/Wii/title/00010000/47414d45/data"
+dolphin_wii_save_lifecycle_parent="$dolphin_wii_save_lifecycle_root/Emulators/Dolphin/User/Wii/title/00010000/47414d45"
+dolphin_wii_save_lifecycle_selected_source="$dolphin_wii_save_lifecycle_root/selected-data"
+dolphin_wii_save_lifecycle_vault="$dolphin_wii_save_lifecycle_root/Saves/Fixture Console"
+mkdir -p \
+  "$dolphin_wii_save_lifecycle_active/nested/empty" \
+  "$dolphin_wii_save_lifecycle_selected_source/course/empty" \
+  "$dolphin_wii_save_lifecycle_vault" \
+  "$dolphin_wii_save_lifecycle_root/Games/Fixture Adventure"
+dolphin_wii_save_lifecycle_active_bytes='lifecycle current Wii progress'
+dolphin_wii_save_lifecycle_selected_bytes='lifecycle selected Wii progress'
+printf %s 'fixture rom' \
+  > "$dolphin_wii_save_lifecycle_root/Games/Fixture Adventure/adventure.rom"
+printf %s 'current banner' \
+  > "$dolphin_wii_save_lifecycle_active/banner.bin"
+printf %s "$dolphin_wii_save_lifecycle_active_bytes" \
+  > "$dolphin_wii_save_lifecycle_active/nested/progress.dat"
+printf %s 'selected banner' \
+  > "$dolphin_wii_save_lifecycle_selected_source/banner.bin"
+printf %s "$dolphin_wii_save_lifecycle_selected_bytes" \
+  > "$dolphin_wii_save_lifecycle_selected_source/course/progress.dat"
+(
+  cd "$dolphin_wii_save_lifecycle_selected_source"
+  7z a -t7z -mx=9 \
+    "$dolphin_wii_save_lifecycle_vault/adventure.7z" \
+    . >/dev/null
+)
+cp "$dolphin_wii_save_lifecycle_platform" \
+  "$dolphin_wii_save_lifecycle_root/original-platform.xml"
+dolphin_wii_save_lifecycle_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$dolphin_wii_save_lifecycle_root" \
+    --dolphin-wii-save-lifecycle-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$dolphin_wii_save_lifecycle_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'DOLPHIN_WII_SAVE_LIFECYCLE_SMOKE_COMPLETE saves=3 writes=2 revision=2 data_changes=2' \
+  <<< "$dolphin_wii_save_lifecycle_output"; then
+  printf '%s\n' "$dolphin_wii_save_lifecycle_output" >&2
+  echo "LaunchBox did not validate dialog-confirmed Dolphin Wii restore and active deletion." >&2
+  exit 1
+fi
+if [[ -e "$dolphin_wii_save_lifecycle_active" ]]; then
+  echo "Dolphin Wii lifecycle did not delete the active title directory." >&2
+  exit 1
+fi
+dolphin_wii_save_lifecycle_expected=(
+  "$dolphin_wii_save_lifecycle_selected_bytes"
+  "$dolphin_wii_save_lifecycle_active_bytes"
+  "$dolphin_wii_save_lifecycle_selected_bytes"
+)
+dolphin_wii_save_lifecycle_members=(
+  'course/progress.dat'
+  'nested/progress.dat'
+  'course/progress.dat'
+)
+dolphin_wii_save_lifecycle_empty=(
+  'course/empty'
+  'nested/empty'
+  'course/empty'
+)
+dolphin_wii_save_lifecycle_archives=(
+  "$dolphin_wii_save_lifecycle_vault/adventure.7z"
+  "$dolphin_wii_save_lifecycle_vault/adventure-01.7z"
+  "$dolphin_wii_save_lifecycle_vault/adventure-02.7z"
+)
+for index in 0 1 2; do
+  archive="${dolphin_wii_save_lifecycle_archives[$index]}"
+  extracted="$dolphin_wii_save_lifecycle_root/archive-check-$index"
+  mkdir "$extracted"
+  7z x -y -bd -bb0 "-o$extracted" -- "$archive" >/dev/null
+  member="${dolphin_wii_save_lifecycle_members[$index]}"
+  empty="${dolphin_wii_save_lifecycle_empty[$index]}"
+  if [[ $(<"$extracted/$member") \
+      != "${dolphin_wii_save_lifecycle_expected[$index]}" ]] \
+    || [[ ! -d "$extracted/$empty" ]]; then
+    echo "Dolphin Wii lifecycle archive $archive has the wrong nested tree." >&2
+    exit 1
+  fi
+done
+mapfile -t dolphin_wii_save_lifecycle_recoveries < <(
+  find "$dolphin_wii_save_lifecycle_parent" -maxdepth 1 -type d \
+    \( -name 'data.lbport-directory-backup-*' \
+       -o -name 'data.lbport-directory-delete-backup-*' \) -print
+)
+if [[ ${#dolphin_wii_save_lifecycle_recoveries[@]} -ne 2 ]]; then
+  echo "Dolphin Wii lifecycle did not retain exactly two complete recovery trees." >&2
+  exit 1
+fi
+dolphin_wii_save_lifecycle_recovery_active=false
+dolphin_wii_save_lifecycle_recovery_selected=false
+for recovery_root in "${dolphin_wii_save_lifecycle_recoveries[@]}"; do
+  recovered="$recovery_root/data"
+  if [[ -f "$recovered/nested/progress.dat" ]] \
+    && [[ $(<"$recovered/nested/progress.dat") \
+      == "$dolphin_wii_save_lifecycle_active_bytes" ]] \
+    && [[ -d "$recovered/nested/empty" ]]; then
+    dolphin_wii_save_lifecycle_recovery_active=true
+  fi
+  if [[ -f "$recovered/course/progress.dat" ]] \
+    && [[ $(<"$recovered/course/progress.dat") \
+      == "$dolphin_wii_save_lifecycle_selected_bytes" ]] \
+    && [[ -d "$recovered/course/empty" ]]; then
+    dolphin_wii_save_lifecycle_recovery_selected=true
+  fi
+done
+if [[ "$dolphin_wii_save_lifecycle_recovery_active" != true ]] \
+  || [[ "$dolphin_wii_save_lifecycle_recovery_selected" != true ]]; then
+  echo "Dolphin Wii recovery trees do not contain both pre-mutation states." >&2
+  exit 1
+fi
+if [[ $(rg -c '<GameSave>' "$dolphin_wii_save_lifecycle_platform") -ne 3 ]] \
+  || [[ $(rg -c -F \
+    '<SaveGroupId>dolphin:wii:fixture-adventure:00010000:47414d45</SaveGroupId>' \
+    "$dolphin_wii_save_lifecycle_platform") -ne 3 ]] \
+  || rg -q -F \
+    '<FilePath>Emulators\Dolphin\User\Wii\title\00010000\47414d45\data</FilePath>' \
+    "$dolphin_wii_save_lifecycle_platform" \
+  || ! rg -q -F '<FutureRootElement>preserve-me</FutureRootElement>' \
+    "$dolphin_wii_save_lifecycle_platform"; then
+  echo "Dolphin Wii lifecycle did not retain exact vault history and unknown XML." >&2
+  exit 1
+fi
+mapfile -t dolphin_wii_save_lifecycle_xml_backups < <(
+  find "$dolphin_wii_save_lifecycle_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+dolphin_wii_save_lifecycle_original_found=false
+for backup in "${dolphin_wii_save_lifecycle_xml_backups[@]}"; do
+  if cmp -s "$backup" \
+      "$dolphin_wii_save_lifecycle_root/original-platform.xml"; then
+    dolphin_wii_save_lifecycle_original_found=true
+  fi
+done
+if [[ ${#dolphin_wii_save_lifecycle_xml_backups[@]} -ne 3 ]] \
+  || [[ "$dolphin_wii_save_lifecycle_original_found" != true ]]; then
+  echo "Dolphin Wii lifecycle did not retain all three XML recovery boundaries." >&2
+  exit 1
+fi
+if find "$dolphin_wii_save_lifecycle_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful Dolphin Wii lifecycle left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-confirmed Dolphin Wii directory restore/deletion, three verified nested vault archives, two complete recovery trees, targeted refresh, and cleanup validated."
 
 cp -R fixtures/launchbox/Data "$game_save_delete_root/Data"
 game_save_delete_platform="$game_save_delete_root/Data/Platforms/Fixture Console.xml"

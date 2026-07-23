@@ -184,20 +184,25 @@ vault set, then revision-checks and deletes even host-mapped external live files
 with exact sibling recovery copies and all-or-rollback behavior.
 The 13.27 Dolphin plugin restores state and GameCube rows with ordinary
 overwrite-copy and removes ordinary paths with `File.Delete`; it uses recursive
-directory replacement/deletion only for Wii save folders. The port therefore
-implements its second native save adapter for regular Dolphin rows. It derives
+directory replacement/deletion only for Wii save folders. The port implements
+both shapes in its second native save adapter. It derives
 disc IDs from raw ISO/GCM headers, the recovered WAD ticket/title offset, or a
 sibling DolphinTool for RVZ/GCZ/WIA/WBFS images; checks portable and
 platform-native user roots; applies the recovered disc-region mapping; and
 discovers preferred GameCube folder files, matching Card A/Card B GCI files,
-and exact two-digit `StateSaves` slots. The adapter emits recovered group IDs,
-names, and card chips, and its stable GameCube identity prevents duplicates
-after a stored path moves. Separate controller and real-button Qt scenarios
-prove append-only persistence, full owner/hash/time/size metadata, exact XML
-recovery copies, and cleanup. Those regular rows then use the existing
-revision-checked backup-first restore and active-delete paths. The adapter
-recognizes `dolphin:wii:` as the explicit directory boundary and never claims
-Wii directories or other unrecognized directories as ordinary files.
+exact two-digit `StateSaves` slots, and Wii `data` directories. Disc saves
+search recovered high IDs `00010000` and `00010004` with the first four disc-ID
+bytes encoded as lowercase hex; WAD saves use the exact eight-byte title ID.
+The adapter emits recovered group IDs, names, and chips, and its stable identity
+prevents duplicates after a stored path moves. Regular rows use the existing
+revision-checked backup-first restore and active-delete paths. Wii rows use
+shell-free nested 7z creation, safe re-extraction, exact recursive revision
+comparison, mandatory verified pre-mutation vault copies, rollback-capable
+whole-directory replacement, and rename-based deletion with retained complete
+recovery trees. Controller and real-button Qt scenarios prove discovery plus
+dialog-confirmed restore/deletion, three vault versions, nested and empty
+directories, both pre-mutation recovery trees, exact XML backups, and cleanup.
+Other unrecognized directories are never claimed by this adapter.
 
 The recovered 13.27 PCSX2 installer implements `GetCurrentVersion`,
 `GetInstallableVersions`, `InstallEmulator`, and update checking through the
@@ -266,8 +271,8 @@ the Windows implementation calls the base `File.Delete` on only the persisted
 primary path. The port deliberately deletes the already-established Saturn
 ownership set instead of orphaning `.bkr`/`.smpc` companions; the mandatory
 vault copy and per-member recovery copies make that safety extension explicit.
-Dolphin Wii directory handling, PCSX2 filesystem repair/capacity recovery, full
-PCSX2 disc-image serial extraction, stale-row reconciliation, automatic policy,
+PCSX2 filesystem repair/capacity recovery, full PCSX2 disc-image serial
+extraction, stale-row reconciliation, automatic policy,
 repair, and the remaining adapters remain open.
 
 Historical logs from the same read-only installation supply a narrow runtime

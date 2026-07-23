@@ -1,4 +1,4 @@
-use crate::{DiscoveredEmulatorSave, EmulatorSaveKind};
+use crate::{DiscoveredContainerSave, DiscoveredEmulatorSave, EmulatorSaveKind};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -68,10 +68,8 @@ pub fn default_dolphin_user_directories(emulator_application_path: &Path) -> Vec
     existing_unique_directories(candidates)
 }
 
-/// Discovers the ordinary-file subset of LaunchBox 13.27's Dolphin adapter:
-/// GameCube GCI/SAV/RAW files and `.sNN` save states. Wii `data` directories
-/// are deliberately not returned until the caller has a directory archive and
-/// restore transaction.
+/// Discovers LaunchBox 13.27's Dolphin save locations: GameCube GCI/SAV/RAW
+/// files, Wii title `data` directories, and `.sNN` save states.
 pub fn discover_dolphin_saves(
     emulator_application_path: &Path,
     targets: &[DolphinContent],
@@ -100,6 +98,17 @@ pub fn discover_dolphin_saves(
                 &user_directories,
             )?;
         }
+        if is_wii_context(&target.platform, &content_path) {
+            discover_wii_directories(
+                &mut discovered,
+                &mut identities,
+                &emulator_file_name,
+                target,
+                &content_path,
+                &disc_id,
+                &user_directories,
+            )?;
+        }
         discover_save_states(
             &mut discovered,
             &mut identities,
@@ -122,6 +131,192 @@ pub fn discover_dolphin_saves(
             })
     });
     Ok(discovered)
+}
+
+/// Extracts the high and low title IDs from the stable group used for a
+/// discovered Dolphin Wii directory.
+pub fn dolphin_wii_group_ids(group: &str) -> Option<(&str, &str)> {
+    let parts = group.split(':').collect::<Vec<_>>();
+    if parts.len() != 5
+        || parts[0] != "dolphin"
+        || parts[1] != "wii"
+        || parts[2].is_empty()
+        || !is_hex_title_component(parts[3])
+        || !is_hex_title_component(parts[4])
+    {
+        return None;
+    }
+    Some((parts[3], parts[4]))
+}
+
+fn is_hex_title_component(value: &str) -> bool {
+    value.len() == 8 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn discover_wii_directories(
+    discovered: &mut Vec<DiscoveredEmulatorSave>,
+    identities: &mut BTreeSet<PathBuf>,
+    emulator_file_name: &str,
+    target: &DolphinContent,
+    content_path: &Path,
+    disc_id: &str,
+    user_directories: &[PathBuf],
+) -> Result<(), DolphinError> {
+    let title_ids = if content_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("wad"))
+    {
+        let Some(title_id) = wad_title_id(content_path)? else {
+            return Ok(());
+        };
+        vec![(
+            hex_title_component(&title_id[..4]),
+            hex_title_component(&title_id[4..]),
+        )]
+    } else {
+        let Some(low_bytes) = disc_id.as_bytes().get(..4) else {
+            return Ok(());
+        };
+        let low = hex_title_component(low_bytes);
+        vec![
+            ("00010000".to_string(), low.clone()),
+            ("00010004".to_string(), low),
+        ]
+    };
+
+    for user_directory in user_directories {
+        for (high, low) in &title_ids {
+            let data = user_directory
+                .join("Wii")
+                .join("title")
+                .join(high)
+                .join(low)
+                .join("data");
+            let Some(metadata) = inspect_wii_save_directory(&data)? else {
+                continue;
+            };
+            if !identities.insert(metadata.canonical.clone()) {
+                continue;
+            }
+            discovered.push(DiscoveredEmulatorSave {
+                game_id: target.game_id.clone(),
+                additional_application_id: target.additional_application_id.clone(),
+                emulator_file_name: emulator_file_name.to_string(),
+                emulator_core: String::new(),
+                kind: EmulatorSaveKind::Game,
+                primary_path: metadata.canonical,
+                companion_paths: Vec::new(),
+                save_group_id: Some(format!(
+                    "dolphin:wii:{}:{}:{}",
+                    target.game_id,
+                    high.to_ascii_lowercase(),
+                    low.to_ascii_lowercase()
+                )),
+                save_group_name: "My Save File".to_string(),
+                display_chip_text: match high.as_str() {
+                    "00010000" => Some("Disc Save".to_string()),
+                    "00010004" => Some("Channel Save".to_string()),
+                    _ => None,
+                },
+                container_save: Some(DiscoveredContainerSave {
+                    original_file_name: "data".to_string(),
+                    reported_file_size_bytes: Some(
+                        i64::try_from(metadata.byte_len).unwrap_or(i64::MAX),
+                    ),
+                    reported_last_modified: metadata.last_modified,
+                }),
+            });
+        }
+    }
+    Ok(())
+}
+
+struct WiiDirectoryMetadata {
+    canonical: PathBuf,
+    byte_len: u64,
+    last_modified: Option<std::time::SystemTime>,
+}
+
+fn inspect_wii_save_directory(path: &Path) -> Result<Option<WiiDirectoryMetadata>, DolphinError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(DolphinError::Read {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(DolphinError::UnsafeDirectoryEntry {
+            path: path.to_path_buf(),
+        });
+    }
+    let canonical = fs::canonicalize(path).map_err(|source| DolphinError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut byte_len = 0_u64;
+    let mut last_modified = metadata.modified().ok();
+    inspect_wii_save_directory_contents(&canonical, &mut byte_len, &mut last_modified)?;
+    Ok(Some(WiiDirectoryMetadata {
+        canonical,
+        byte_len,
+        last_modified,
+    }))
+}
+
+fn inspect_wii_save_directory_contents(
+    directory: &Path,
+    byte_len: &mut u64,
+    last_modified: &mut Option<std::time::SystemTime>,
+) -> Result<(), DolphinError> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|source| DolphinError::Read {
+            path: directory.to_path_buf(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| DolphinError::Read {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if entry.file_name().to_str().is_none() {
+            return Err(DolphinError::NonUnicodePath { path: entry.path() });
+        }
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|source| DolphinError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        if let Ok(modified) = metadata.modified() {
+            if last_modified.is_none_or(|current| modified > current) {
+                *last_modified = Some(modified);
+            }
+        }
+        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            inspect_wii_save_directory_contents(&path, byte_len, last_modified)?;
+        } else if metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+            *byte_len = byte_len.saturating_add(metadata.len());
+        } else {
+            return Err(DolphinError::UnsafeDirectoryEntry { path });
+        }
+    }
+    Ok(())
+}
+
+fn hex_title_component(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    output
 }
 
 fn discover_gamecube_files(
@@ -450,6 +645,14 @@ fn is_gamecube_context(platform: &str, path: &Path) -> bool {
         })
 }
 
+fn is_wii_context(platform: &str, path: &Path) -> bool {
+    platform.to_ascii_lowercase().contains("wii")
+        || path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("wad"))
+}
+
 fn gamecube_region_candidates(disc_id: &str) -> Vec<&'static str> {
     let preferred: &[&str] = match disc_id.as_bytes().get(3).map(u8::to_ascii_uppercase) {
         Some(b'E') => &["USA"],
@@ -571,6 +774,8 @@ pub enum DolphinError {
     NotRegularFile { kind: &'static str, path: PathBuf },
     #[error("path is not valid Unicode: {path}")]
     NonUnicodePath { path: PathBuf },
+    #[error("Dolphin Wii save contains a symlink or special entry: {path}")]
+    UnsafeDirectoryEntry { path: PathBuf },
     #[error("could not run Dolphin tool {path}: {source}")]
     Tool {
         path: PathBuf,
@@ -583,6 +788,20 @@ pub enum DolphinError {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn write_fixture_wad(path: &Path, title_id: [u8; 8]) {
+        let mut file = fs::File::create(path).unwrap();
+        let certificate_len = 32_u32;
+        let ticket_len = 64_u32;
+        file.write_all(&[0; 8]).unwrap();
+        file.write_all(&certificate_len.to_be_bytes()).unwrap();
+        file.write_all(&ticket_len.to_be_bytes()).unwrap();
+        let offset =
+            align_64(align_64(64 + u64::from(certificate_len)) + u64::from(ticket_len)) + 476;
+        file.seek(SeekFrom::Start(offset)).unwrap();
+        file.write_all(&title_id).unwrap();
+        file.sync_all().unwrap();
+    }
 
     #[test]
     fn discovers_gamecube_folder_card_and_state_files_without_windows_paths() {
@@ -648,18 +867,7 @@ mod tests {
     fn parses_wad_title_ids_and_dolphin_tool_output_like_1327() {
         let directory = tempfile::tempdir().unwrap();
         let wad = directory.path().join("channel.wad");
-        let mut file = fs::File::create(&wad).unwrap();
-        let certificate_len = 32_u32;
-        let ticket_len = 64_u32;
-        file.write_all(&[0; 8]).unwrap();
-        file.write_all(&certificate_len.to_be_bytes()).unwrap();
-        file.write_all(&ticket_len.to_be_bytes()).unwrap();
-        let offset =
-            align_64(align_64(64 + u64::from(certificate_len)) + u64::from(ticket_len)) + 476;
-        file.seek(SeekFrom::Start(offset)).unwrap();
-        file.write_all(&[0x00, 0x01, 0x00, 0x01, b'G', b'A', b'M', b'E'])
-            .unwrap();
-        file.sync_all().unwrap();
+        write_fixture_wad(&wad, [0x00, 0x01, 0x00, 0x01, b'G', b'A', b'M', b'E']);
 
         assert_eq!(
             wad_title_id(&wad).unwrap(),
@@ -678,5 +886,140 @@ mod tests {
             Some("GAME".into())
         );
         assert_eq!(parse_dolphin_tool_disc_id("Game ID: ../bad"), None);
+    }
+
+    #[test]
+    fn discovers_both_recovered_wii_disc_title_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let emulator_root = directory.path().join("Dolphin");
+        let user = emulator_root.join("User");
+        let disc_data = user.join("Wii/title/00010000/47414d45/data");
+        let channel_data = user.join("Wii/title/00010004/47414d45/data");
+        fs::create_dir_all(disc_data.join("nested/empty")).unwrap();
+        fs::create_dir_all(&channel_data).unwrap();
+        fs::write(disc_data.join("banner.bin"), b"banner").unwrap();
+        fs::write(disc_data.join("nested/progress.dat"), b"progress").unwrap();
+        fs::write(channel_data.join("channel.dat"), b"channel").unwrap();
+        let emulator = emulator_root.join("Dolphin.exe");
+        fs::write(&emulator, b"dolphin").unwrap();
+        let content = directory.path().join("adventure.iso");
+        fs::write(&content, b"GAME01 fixture disc bytes").unwrap();
+
+        let saves = discover_dolphin_saves(
+            &emulator,
+            &[DolphinContent {
+                game_id: "game".into(),
+                additional_application_id: None,
+                content_path: content,
+                platform: "Nintendo Wii".into(),
+            }],
+            &[user],
+        )
+        .unwrap();
+
+        assert_eq!(saves.len(), 2);
+        let disc = saves
+            .iter()
+            .find(|save| {
+                save.save_group_id.as_deref() == Some("dolphin:wii:game:00010000:47414d45")
+            })
+            .unwrap();
+        assert_eq!(disc.display_chip_text.as_deref(), Some("Disc Save"));
+        assert!(disc.primary_path.ends_with("00010000/47414d45/data"));
+        assert_eq!(
+            disc.container_save
+                .as_ref()
+                .and_then(|save| save.reported_file_size_bytes),
+            Some(14)
+        );
+        assert_eq!(
+            disc.container_save
+                .as_ref()
+                .map(|save| save.original_file_name.as_str()),
+            Some("data")
+        );
+        assert!(disc
+            .container_save
+            .as_ref()
+            .and_then(|save| save.reported_last_modified)
+            .is_some());
+
+        let channel = saves
+            .iter()
+            .find(|save| {
+                save.save_group_id.as_deref() == Some("dolphin:wii:game:00010004:47414d45")
+            })
+            .unwrap();
+        assert_eq!(channel.display_chip_text.as_deref(), Some("Channel Save"));
+        assert_eq!(
+            dolphin_wii_group_ids(channel.save_group_id.as_deref().unwrap()),
+            Some(("00010004", "47414d45"))
+        );
+    }
+
+    #[test]
+    fn discovers_the_exact_high_and_low_wad_title_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let emulator_root = directory.path().join("Dolphin");
+        let user = emulator_root.join("User");
+        let data = user.join("Wii/title/00010002/41424344/data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("progress.dat"), b"wad progress").unwrap();
+        let emulator = emulator_root.join("Dolphin.exe");
+        fs::write(&emulator, b"dolphin").unwrap();
+        let wad = directory.path().join("channel.wad");
+        write_fixture_wad(&wad, [0x00, 0x01, 0x00, 0x02, b'A', b'B', b'C', b'D']);
+
+        let saves = discover_dolphin_saves(
+            &emulator,
+            &[DolphinContent {
+                game_id: "channel".into(),
+                additional_application_id: None,
+                content_path: wad,
+                platform: "Nintendo Wii".into(),
+            }],
+            &[user],
+        )
+        .unwrap();
+
+        assert_eq!(saves.len(), 1);
+        assert_eq!(
+            saves[0].save_group_id.as_deref(),
+            Some("dolphin:wii:channel:00010002:41424344")
+        );
+        assert!(saves[0].display_chip_text.is_none());
+        assert!(saves[0].primary_path.ends_with("00010002/41424344/data"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinks_inside_wii_save_directories() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let emulator_root = directory.path().join("Dolphin");
+        let user = emulator_root.join("User");
+        let data = user.join("Wii/title/00010000/47414d45/data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("progress.dat"), b"progress").unwrap();
+        symlink(data.join("progress.dat"), data.join("linked.dat")).unwrap();
+        let emulator = emulator_root.join("Dolphin.exe");
+        fs::write(&emulator, b"dolphin").unwrap();
+        let content = directory.path().join("adventure.iso");
+        fs::write(&content, b"GAME01 fixture disc bytes").unwrap();
+
+        assert!(matches!(
+            discover_dolphin_saves(
+                &emulator,
+                &[DolphinContent {
+                    game_id: "game".into(),
+                    additional_application_id: None,
+                    content_path: content,
+                    platform: "Nintendo Wii".into(),
+                }],
+                &[user],
+            ),
+            Err(DolphinError::UnsafeDirectoryEntry { .. })
+        ));
     }
 }

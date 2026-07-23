@@ -637,6 +637,12 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_dolphin_wii_save_lifecycle_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_game_save_delete_smoke_success(
             self: &LibraryController,
             game_id: QString,
@@ -913,7 +919,8 @@ use lb_import::{
     ManualImportRequest, ManualImportSelection,
 };
 use lb_integrations::dolphin::{
-    default_dolphin_user_directories, discover_dolphin_saves, is_dolphin_emulator, DolphinContent,
+    default_dolphin_user_directories, discover_dolphin_saves, dolphin_wii_group_ids,
+    is_dolphin_emulator, DolphinContent,
 };
 use lb_integrations::emulator_discovery::{
     discover_emulator_executables, DiscoveredEmulatorExecutable, EmulatorDiscoveryProfile,
@@ -951,13 +958,13 @@ use lb_platform::{
 };
 use lb_query::{filter_game_indices, GameFilter};
 use lb_storage::{
-    delete_regular_files_if_revisions, find_emulator_references, find_game_references,
-    find_platform_references, pending_transaction_manifests, recover_pending_transactions,
-    replace_directory_from_source_if_revisions, replace_regular_file_from_source_if_revisions,
-    AuxiliaryDocument, DirectoryRevision, EmulatorReference, FileRevision, GameReference,
-    IndexedGameSaveMetadataEdit, IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex,
-    LibraryTransaction, NewGame, NewGameMetadata, PlatformDocument, PlatformReference,
-    StorageError, TransactionError,
+    delete_directory_if_revision, delete_regular_files_if_revisions, find_emulator_references,
+    find_game_references, find_platform_references, pending_transaction_manifests,
+    recover_pending_transactions, replace_directory_from_source_if_revisions,
+    replace_regular_file_from_source_if_revisions, AuxiliaryDocument, DirectoryRevision,
+    EmulatorReference, FileRevision, GameReference, IndexedGameSaveMetadataEdit,
+    IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame,
+    NewGameMetadata, PlatformDocument, PlatformReference, StorageError, TransactionError,
 };
 use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
@@ -4363,6 +4370,7 @@ fn persisted_save_matches_discovery(
     if candidate.save_group_id.as_deref().is_some_and(|group| {
         (group.starts_with("saturn-")
             || group.starts_with("dolphin:gc:")
+            || group.starts_with("dolphin:wii:")
             || group.starts_with("pcsx2:"))
             && current
                 .save_group_id
@@ -4674,6 +4682,19 @@ fn write_game_save_backup(
                 "could not resolve the game path used for backup naming: {error}"
             ))
         })?;
+    if is_dolphin_wii_directory_save(&expected) {
+        return write_dolphin_wii_directory_backup(
+            root,
+            source,
+            game_id,
+            expected,
+            resolver,
+            document,
+            game,
+            rom_path,
+            active_path,
+        );
+    }
     if is_pcsx2_card_member(&expected) {
         return write_pcsx2_card_member_backup(
             root,
@@ -4793,6 +4814,199 @@ fn is_pcsx2_card_member(save: &GameSave) -> bool {
     save.save_group_id.as_deref().is_some_and(|group| {
         let group = group.to_ascii_lowercase();
         group.starts_with("pcsx2:") && !group.starts_with("pcsx2-state:")
+    })
+}
+
+fn is_dolphin_wii_directory_save(save: &GameSave) -> bool {
+    save.save_group_id
+        .as_deref()
+        .and_then(dolphin_wii_group_ids)
+        .is_some()
+}
+
+struct InspectedDolphinWiiDirectory {
+    path: PathBuf,
+    revision: DirectoryRevision,
+}
+
+impl InspectedDolphinWiiDirectory {
+    fn read(path: &Path) -> Result<Self, GameWriteFailure> {
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not inspect Dolphin Wii save directory {}: {error}",
+                path.display()
+            ))
+        })?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err(GameWriteFailure::Other(format!(
+                "Dolphin Wii save is not a real directory: {}",
+                path.display()
+            )));
+        }
+        let path = fs::canonicalize(path).map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not resolve Dolphin Wii save directory {}: {error}",
+                path.display()
+            ))
+        })?;
+        let revision = DirectoryRevision::read(&path)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        Ok(Self { path, revision })
+    }
+}
+
+fn extract_dolphin_wii_archive(
+    root: &Path,
+    archive: &Path,
+    destination: &Path,
+) -> Result<InspectedDolphinWiiDirectory, GameWriteFailure> {
+    if !archive
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
+    {
+        return Err(GameWriteFailure::Other(format!(
+            "Dolphin Wii backups must be .7z archives: {}",
+            archive.display()
+        )));
+    }
+    fs::create_dir(destination).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not create Dolphin Wii restore staging directory {}: {error}",
+            destination.display()
+        ))
+    })?;
+    let destination = fs::canonicalize(destination).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve Dolphin Wii restore staging directory {}: {error}",
+            destination.display()
+        ))
+    })?;
+    ArchiveExtractor::for_launchbox_root(root)
+        .extract_to_directory(archive, &destination)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    InspectedDolphinWiiDirectory::read(&destination)
+}
+
+fn ensure_dolphin_wii_pair_compatible(
+    selected: &GameSave,
+    active: &GameSave,
+) -> Result<(), GameWriteFailure> {
+    if selected.additional_application_id != active.additional_application_id
+        || selected.slot != active.slot
+        || !selected
+            .emulator_file_name
+            .eq_ignore_ascii_case(&active.emulator_file_name)
+        || !selected
+            .emulator_core
+            .eq_ignore_ascii_case(&active.emulator_core)
+        || selected.save_group_id.as_deref() != active.save_group_id.as_deref()
+    {
+        return Err(GameWriteFailure::Other(
+            "the selected Dolphin Wii vault version and active directory do not share the same owner, title ID, slot, emulator, and core"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_dolphin_wii_directory_backup(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    expected: GameSave,
+    resolver: HostPathResolver,
+    mut document: PlatformDocument,
+    game: Game,
+    rom_path: PathBuf,
+    active_path: PathBuf,
+) -> Result<GameSaveWriteSuccess, GameWriteFailure> {
+    let active = InspectedDolphinWiiDirectory::read(&active_path)?;
+    if active.path.starts_with(root.join("Saves")) {
+        return Err(GameWriteFailure::Other(
+            "select the resolved Active Dolphin Wii directory; vault archives cannot be backed up again"
+                .into(),
+        ));
+    }
+    let staging = tempfile::Builder::new()
+        .prefix("launchbox-dolphin-wii-backup-")
+        .tempdir()
+        .map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not create private Dolphin Wii backup staging: {error}"
+            ))
+        })?;
+    let archive = staging.path().join("data.7z");
+    let archive_tool = ArchiveExtractor::for_launchbox_root(&root);
+    archive_tool
+        .create_7z_from_tree(&active.path, &archive)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let verified = extract_dolphin_wii_archive(&root, &archive, &staging.path().join("verified"))?;
+    if verified.revision != active.revision {
+        return Err(GameWriteFailure::Conflict(format!(
+            "Dolphin Wii archive verification changed {}; the active directory was not modified",
+            active.path.display()
+        )));
+    }
+    let active_recheck = DirectoryRevision::read(&active.path)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    if active_recheck != active.revision {
+        return Err(GameWriteFailure::Conflict(format!(
+            "Dolphin Wii save directory {} changed while it was being backed up",
+            active.path.display()
+        )));
+    }
+
+    let archive_file = inspect_save_file(&archive)?;
+    let targets = next_save_backup_targets(
+        &root,
+        &game.platform,
+        &rom_path,
+        std::slice::from_ref(&archive),
+    )?;
+    let target = targets
+        .first()
+        .cloned()
+        .ok_or_else(|| GameWriteFailure::Other("backup allocator returned no target".into()))?;
+    let stored_target = resolver
+        .stored_path_for_host_path(&root, &target)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+
+    let mut backup = expected;
+    backup.file_path = stored_target;
+    backup.original_file_name = Some("data".into());
+    backup.reported_file_size_bytes =
+        Some(i64::try_from(active.revision.byte_len).unwrap_or(i64::MAX));
+    backup.md5 = Some(active.revision.sha256.to_ascii_uppercase());
+    let saves = document
+        .add_game_save(backup)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_file_copy_with_revision(&archive_file.source, &target, archive_file.revision)
+        .map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&document)
+        .map_err(classify_transaction_error)?;
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .next()
+        .map(|write| write.backup)
+        .ok_or_else(|| GameWriteFailure::Other("transaction reported no platform write".into()))?;
+    Ok(GameSaveWriteSuccess {
+        game_id,
+        saves,
+        source,
+        backup,
+        operation: format!(
+            "Backed up Dolphin Wii title directory {} to {}",
+            active.path.display(),
+            target.display()
+        ),
     })
 }
 
@@ -5865,6 +6079,407 @@ fn write_pcsx2_card_member_active_delete(
     Ok(result)
 }
 
+fn persisted_dolphin_directory_signature_matches(
+    save: &GameSave,
+    revision: &DirectoryRevision,
+) -> bool {
+    let Some(signature) = save.md5.as_deref().map(str::trim) else {
+        return true;
+    };
+    if signature.is_empty() {
+        return true;
+    }
+    if !signature.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    match signature.len() {
+        32 => true,
+        64 => signature.eq_ignore_ascii_case(&revision.sha256),
+        _ => false,
+    }
+}
+
+fn write_dolphin_wii_directory_restore(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    source_index: usize,
+    expected: GameSave,
+    resolver: HostPathResolver,
+) -> Result<GameSaveWriteSuccess, GameWriteFailure> {
+    let document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let saves = document
+        .library()
+        .game_saves
+        .iter()
+        .filter(|save| save.game_id == game_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let current = saves.get(source_index).ok_or_else(|| {
+        GameWriteFailure::Conflict(format!(
+            "game-save row {source_index} disappeared after the manager was opened"
+        ))
+    })?;
+    if current != &expected {
+        return Err(GameWriteFailure::Conflict(format!(
+            "game-save row {source_index} changed after the manager was opened"
+        )));
+    }
+    let group_id = expected
+        .save_group_id
+        .as_deref()
+        .filter(|group| dolphin_wii_group_ids(group).is_some())
+        .ok_or_else(|| {
+            GameWriteFailure::Other(
+                "the selected Dolphin Wii backup has no valid stable title-directory group".into(),
+            )
+        })?;
+    let supplied_vault_root = root.join("Saves");
+    let vault_root = fs::canonicalize(&supplied_vault_root).map_err(|error| {
+        GameWriteFailure::Other(format!(
+            "could not resolve save vault {}: {error}",
+            supplied_vault_root.display()
+        ))
+    })?;
+    if !vault_root.starts_with(&root) {
+        return Err(GameWriteFailure::Other(format!(
+            "save vault resolves outside the LaunchBox root: {}",
+            vault_root.display()
+        )));
+    }
+    let selected_path = resolver
+        .resolve(&root, &expected.file_path)
+        .map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not resolve selected Dolphin Wii vault backup: {error}"
+            ))
+        })?;
+    let selected_archive = inspect_save_file(&selected_path)?;
+    if !selected_archive.source.starts_with(&vault_root) {
+        return Err(GameWriteFailure::Other(
+            "select a resolved Dolphin Wii archive inside the LaunchBox save vault".into(),
+        ));
+    }
+
+    let mut active_candidates = Vec::new();
+    for (index, save) in saves.iter().enumerate() {
+        if index == source_index
+            || save.save_group_id.as_deref() != Some(group_id)
+            || !is_dolphin_wii_directory_save(save)
+        {
+            continue;
+        }
+        let Ok(path) = resolver.resolve(&root, &save.file_path) else {
+            continue;
+        };
+        let Ok(directory) = InspectedDolphinWiiDirectory::read(&path) else {
+            continue;
+        };
+        if !directory.path.starts_with(&vault_root) {
+            active_candidates.push((index, save.clone(), directory.path));
+        }
+    }
+    let [(active_index, active_save, active_path)] = active_candidates.as_slice() else {
+        return Err(GameWriteFailure::Other(format!(
+            "Dolphin Wii restore requires exactly one resolved active title directory in group {group_id}; found {}",
+            active_candidates.len()
+        )));
+    };
+    ensure_dolphin_wii_pair_compatible(&expected, active_save)?;
+
+    let staging = tempfile::Builder::new()
+        .prefix("launchbox-dolphin-wii-restore-")
+        .tempdir()
+        .map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not create private Dolphin Wii restore staging: {error}"
+            ))
+        })?;
+    let selected = extract_dolphin_wii_archive(
+        &root,
+        &selected_archive.source,
+        &staging.path().join("selected"),
+    )?;
+    if !persisted_dolphin_directory_signature_matches(&expected, &selected.revision) {
+        return Err(GameWriteFailure::Conflict(format!(
+            "selected Dolphin Wii backup {} no longer matches its persisted directory signature",
+            selected_archive.source.display()
+        )));
+    }
+
+    let mut result = write_game_save_backup(
+        root.clone(),
+        source,
+        game_id,
+        *active_index,
+        active_save.clone(),
+        resolver.clone(),
+    )?;
+    let Some(committed_backup) = result.saves.last() else {
+        result.operation =
+            "Dolphin Wii restore stopped safely: the active directory backup committed but no vault row was returned"
+                .into();
+        return Ok(result);
+    };
+    let committed_backup_path = match resolver.resolve(&root, &committed_backup.file_path) {
+        Ok(path) => path,
+        Err(error) => {
+            result.operation = format!(
+                "Dolphin Wii restore stopped safely after backing up the active directory because its vault path could not be resolved: {error}"
+            );
+            return Ok(result);
+        }
+    };
+    let committed_archive = match inspect_save_file(&committed_backup_path) {
+        Ok(archive) if archive.source.starts_with(&vault_root) => archive,
+        Ok(archive) => {
+            result.operation = format!(
+                "Dolphin Wii restore stopped safely because the committed backup resolved outside the vault: {}",
+                archive.source.display()
+            );
+            return Ok(result);
+        }
+        Err(error) => {
+            result.operation = format!(
+                "Dolphin Wii restore stopped safely because the committed active backup could not be inspected: {}",
+                describe_game_write_failure(&error)
+            );
+            return Ok(result);
+        }
+    };
+    let committed = match extract_dolphin_wii_archive(
+        &root,
+        &committed_archive.source,
+        &staging.path().join("committed"),
+    ) {
+        Ok(directory) => directory,
+        Err(error) => {
+            result.operation = format!(
+                "Dolphin Wii restore stopped safely because the committed active backup could not be verified: {}",
+                describe_game_write_failure(&error)
+            );
+            return Ok(result);
+        }
+    };
+    let active_now = match InspectedDolphinWiiDirectory::read(active_path) {
+        Ok(directory) => directory,
+        Err(error) => {
+            result.operation = format!(
+                "Dolphin Wii restore stopped safely after backing up the active directory because it could not be rechecked: {}",
+                describe_game_write_failure(&error)
+            );
+            return Ok(result);
+        }
+    };
+    if committed.revision != active_now.revision {
+        result.operation = format!(
+            "Dolphin Wii restore stopped safely after backing up the active directory because {} changed before replacement",
+            active_path.display()
+        );
+        return Ok(result);
+    }
+    match FileRevision::read(&selected_archive.source) {
+        Ok(actual) if actual == selected_archive.revision => {}
+        Ok(_) => {
+            result.operation = format!(
+                "Dolphin Wii restore stopped after backing up the active directory because selected archive {} changed during validation",
+                selected_archive.source.display()
+            );
+            return Ok(result);
+        }
+        Err(error) => {
+            result.operation = format!(
+                "Dolphin Wii restore stopped after backing up the active directory because selected archive {} could not be rechecked: {error}",
+                selected_archive.source.display()
+            );
+            return Ok(result);
+        }
+    }
+
+    match replace_directory_from_source_if_revisions(
+        &selected.path,
+        &selected.revision,
+        &active_now.path,
+        &active_now.revision,
+    ) {
+        Ok(report) => {
+            result.operation = format!(
+                "Restored Dolphin Wii vault archive {} to {}. Complete active-directory recovery copy: {}",
+                selected_archive.source.display(),
+                active_now.path.display(),
+                report.backup.display()
+            );
+        }
+        Err(StorageError::AtomicDirectorySync {
+            backup,
+            source: error,
+            ..
+        }) => {
+            result.operation = format!(
+                "Restored Dolphin Wii archive to {}, but directory durability could not be confirmed: {error}. Complete active-directory recovery copy: {}",
+                active_now.path.display(),
+                backup.display()
+            );
+        }
+        Err(error) => {
+            result.operation = format!(
+                "Dolphin Wii restore stopped after backing up the active directory because replacement did not finish cleanly: {error}"
+            );
+        }
+    }
+    Ok(result)
+}
+
+fn write_dolphin_wii_directory_active_delete(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    source_index: usize,
+    expected: GameSave,
+    resolver: HostPathResolver,
+) -> Result<GameSaveWriteSuccess, GameWriteFailure> {
+    let active_path = resolver
+        .resolve(&root, &expected.file_path)
+        .map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not resolve active Dolphin Wii directory: {error}"
+            ))
+        })?;
+    let initial = InspectedDolphinWiiDirectory::read(&active_path)?;
+    if initial.path.starts_with(root.join("Saves")) {
+        return Err(GameWriteFailure::Other(
+            "select the resolved Active Dolphin Wii directory; vault archives use Delete Backup instead"
+                .into(),
+        ));
+    }
+
+    let mut result = write_game_save_backup(
+        root.clone(),
+        source.clone(),
+        game_id.clone(),
+        source_index,
+        expected.clone(),
+        resolver.clone(),
+    )?;
+    let Some(committed_backup) = result.saves.last().cloned() else {
+        result.operation =
+            "Dolphin Wii deletion stopped safely: the active directory backup committed but no vault row was returned"
+                .into();
+        return Ok(result);
+    };
+    let committed_backup_path = match resolver.resolve(&root, &committed_backup.file_path) {
+        Ok(path) => path,
+        Err(error) => {
+            result.operation = format!(
+                "Archived the Dolphin Wii directory, but retained it because the committed vault path could not be resolved: {error}"
+            );
+            return Ok(result);
+        }
+    };
+    let committed_archive = match inspect_save_file(&committed_backup_path) {
+        Ok(archive) if archive.source.starts_with(root.join("Saves")) => archive,
+        Ok(archive) => {
+            result.operation = format!(
+                "Archived the Dolphin Wii directory, but retained it because the committed backup resolved outside the vault: {}",
+                archive.source.display()
+            );
+            return Ok(result);
+        }
+        Err(error) => {
+            result.operation = format!(
+                "Archived the Dolphin Wii directory, but retained it because the committed backup could not be inspected: {}",
+                describe_game_write_failure(&error)
+            );
+            return Ok(result);
+        }
+    };
+    let staging = tempfile::Builder::new()
+        .prefix("launchbox-dolphin-wii-delete-")
+        .tempdir()
+        .map_err(|error| {
+            GameWriteFailure::Other(format!(
+                "could not create private Dolphin Wii deletion staging: {error}"
+            ))
+        })?;
+    let committed = match extract_dolphin_wii_archive(
+        &root,
+        &committed_archive.source,
+        &staging.path().join("committed"),
+    ) {
+        Ok(directory) => directory,
+        Err(error) => {
+            result.operation = format!(
+                "Archived the Dolphin Wii directory, but retained it because the committed backup could not be verified: {}",
+                describe_game_write_failure(&error)
+            );
+            return Ok(result);
+        }
+    };
+    let active_now = match InspectedDolphinWiiDirectory::read(&initial.path) {
+        Ok(directory) => directory,
+        Err(error) => {
+            result.operation = format!(
+                "Archived the Dolphin Wii directory, but retained it because the live directory could not be rechecked: {}",
+                describe_game_write_failure(&error)
+            );
+            return Ok(result);
+        }
+    };
+    if committed.revision != active_now.revision {
+        result.operation =
+            "Archived the Dolphin Wii directory, but retained it because it changed after the backup committed"
+                .into();
+        return Ok(result);
+    }
+
+    let (saves, xml_backup) = match remove_exact_game_save_row(
+        &root,
+        &source,
+        &game_id,
+        source_index,
+        &expected,
+    ) {
+        Ok(detached) => detached,
+        Err(error @ GameWriteFailure::PendingRecovery { .. }) => return Err(error),
+        Err(error) => {
+            result.operation = format!(
+                "Archived the Dolphin Wii directory, but retained it because its active metadata row could not be removed: {}",
+                describe_game_write_failure(&error)
+            );
+            return Ok(result);
+        }
+    };
+    result.saves = saves;
+    result.backup = xml_backup;
+    match delete_directory_if_revision(&active_now.path, &active_now.revision) {
+        Ok(report) => {
+            result.operation = format!(
+                "Archived and deleted Dolphin Wii title directory. Vault archive: {}. Complete active-directory recovery copy: {}",
+                committed_archive.source.display(),
+                report.backup.display()
+            );
+        }
+        Err(StorageError::AtomicDirectorySync {
+            backup,
+            source: error,
+            ..
+        }) => {
+            result.operation = format!(
+                "Deleted the Dolphin Wii title directory, but directory durability could not be confirmed: {error}. Vault archive: {}. Complete active-directory recovery copy: {}",
+                committed_archive.source.display(),
+                backup.display()
+            );
+        }
+        Err(error) => {
+            result.operation = format!(
+                "Archived the Dolphin Wii title directory and detached its active row, but directory deletion stopped safely: {error}. Use Find Active Saves to reattach the retained live directory"
+            );
+        }
+    }
+    Ok(result)
+}
+
 fn write_game_save_active_delete(
     root: PathBuf,
     source: PathBuf,
@@ -5879,6 +6494,16 @@ fn write_game_save_active_delete(
             root.display()
         ))
     })?;
+    if is_dolphin_wii_directory_save(&expected) {
+        return write_dolphin_wii_directory_active_delete(
+            root,
+            source,
+            game_id,
+            source_index,
+            expected,
+            resolver,
+        );
+    }
     if is_pcsx2_card_member(&expected) {
         return write_pcsx2_card_member_active_delete(
             root,
@@ -6124,6 +6749,16 @@ fn write_game_save_restore(
             root.display()
         ))
     })?;
+    if is_dolphin_wii_directory_save(&expected) {
+        return write_dolphin_wii_directory_restore(
+            root,
+            source,
+            game_id,
+            source_index,
+            expected,
+            resolver,
+        );
+    }
     if is_pcsx2_card_member(&expected) {
         return write_pcsx2_card_member_restore(
             root,
@@ -12709,6 +13344,47 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_dolphin_wii_save_lifecycle_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let saves = rust.game_saves_by_game.get(&game_id);
+        let expected_paths = [
+            r"Saves\Fixture Console\adventure.7z",
+            r"Saves\Fixture Console\adventure-01.7z",
+            r"Saves\Fixture Console\adventure-02.7z",
+        ];
+        let success = saves.is_some_and(|saves| {
+            saves.len() == expected_paths.len()
+                && saves.iter().zip(expected_paths).all(|(save, path)| {
+                    save.file_path == path
+                        && save.save_group_id.as_deref()
+                            == Some("dolphin:wii:fixture-adventure:00010000:47414d45")
+                        && save.original_file_name.as_deref() == Some("data")
+                        && save.emulator_file_name == "Dolphin.exe"
+                        && save.md5.as_ref().is_none_or(|signature| {
+                            signature.len() == 64
+                                && signature.bytes().all(|byte| {
+                                    byte.is_ascii_hexdigit() && !byte.is_ascii_lowercase()
+                                })
+                        })
+                })
+                && saves.iter().filter(|save| save.md5.is_some()).count() >= 2
+        }) && rust.game_save_write_notifications == 2
+            && *self.game_save_revision() == 2
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "DOLPHIN_WII_SAVE_LIFECYCLE_SMOKE_COMPLETE saves=3 writes={} revision={} data_changes={}",
+                rust.game_save_write_notifications,
+                self.game_save_revision(),
+                rust.data_change_notifications,
+            );
+        }
+        success
+    }
+
     pub fn report_game_save_delete_smoke_success(&self, game_id: QString) -> bool {
         let game_id = game_id.to_string();
         let rust = self.rust();
@@ -18099,6 +18775,39 @@ mod tests {
     }
 
     #[test]
+    fn dolphin_directory_signatures_accept_legacy_md5_but_reject_malformed_or_changed_sha256() {
+        let revision = DirectoryRevision {
+            file_count: 1,
+            directory_count: 0,
+            byte_len: 4,
+            sha256: "ab".repeat(32),
+        };
+        let mut save = GameSave::default();
+        assert!(persisted_dolphin_directory_signature_matches(
+            &save, &revision
+        ));
+
+        save.md5 = Some("12".repeat(16));
+        assert!(persisted_dolphin_directory_signature_matches(
+            &save, &revision
+        ));
+
+        save.md5 = Some(revision.sha256.to_ascii_uppercase());
+        assert!(persisted_dolphin_directory_signature_matches(
+            &save, &revision
+        ));
+
+        save.md5 = Some("cd".repeat(32));
+        assert!(!persisted_dolphin_directory_signature_matches(
+            &save, &revision
+        ));
+        save.md5 = Some("not-a-signature".into());
+        assert!(!persisted_dolphin_directory_signature_matches(
+            &save, &revision
+        ));
+    }
+
+    #[test]
     fn discovered_emulator_payload_uses_portable_paths_and_reviewed_defaults() {
         let directory = tempfile::tempdir().expect("temporary library");
         let executable = directory.path().join("Emulators/PCSX2/pcsx2-qt");
@@ -21358,6 +22067,171 @@ mod tests {
             b"current active save bytes"
         );
         assert!(result.operation.starts_with("Restored vault backup "));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn dolphin_wii_directory_restore_and_delete_keep_verified_vault_and_recovery_trees() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform_directory = directory.path().join("Data/Platforms");
+        let vault_directory = directory.path().join("Saves/Fixture Console");
+        let active = directory
+            .path()
+            .join("Emulators/Dolphin/User/Wii/title/00010000/47414d45/data");
+        let selected_source = directory.path().join("selected-wii-data");
+        fs::create_dir_all(&platform_directory).unwrap();
+        fs::create_dir_all(&vault_directory).unwrap();
+        fs::create_dir_all(active.join("nested/empty")).unwrap();
+        fs::create_dir_all(selected_source.join("course/empty")).unwrap();
+        fs::write(active.join("banner.bin"), b"current banner").unwrap();
+        fs::write(active.join("nested/progress.dat"), b"current progress").unwrap();
+        fs::write(selected_source.join("banner.bin"), b"selected banner").unwrap();
+        fs::write(
+            selected_source.join("course/progress.dat"),
+            b"selected progress",
+        )
+        .unwrap();
+        let active_revision = DirectoryRevision::read(&active).unwrap();
+        let selected_revision = DirectoryRevision::read(&selected_source).unwrap();
+        let selected_archive = vault_directory.join("adventure.7z");
+        ArchiveExtractor::for_launchbox_root(directory.path())
+            .create_7z_from_tree(&selected_source, &selected_archive)
+            .unwrap();
+        let rom = directory
+            .path()
+            .join("Games/Fixture Adventure/adventure.rom");
+        fs::create_dir_all(rom.parent().unwrap()).unwrap();
+        fs::write(&rom, b"fixture rom").unwrap();
+
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_xml = FIXTURE
+            .replace(
+                "<EmulatorFileName>fixture-emulator</EmulatorFileName>",
+                "<EmulatorFileName>Dolphin.exe</EmulatorFileName>",
+            )
+            .replace(
+                r"<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>",
+                r"<FilePath>Emulators\Dolphin\User\Wii\title\00010000\47414d45\data</FilePath>",
+            )
+            .replace("    <Slot>1</Slot>\n", "")
+            .replace(
+                "    <Title>Before the Final Puzzle</Title>",
+                "    <Title>Current Wii Directory</Title>\n    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>dolphin:wii:fixture-adventure:00010000:47414d45</SaveGroupId>\n    <OriginalFileName>data</OriginalFileName>",
+            )
+            .replace(
+                "  <FutureRootElement>preserve-me</FutureRootElement>",
+                &format!(
+                    "  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>Dolphin.exe</EmulatorFileName>\n    <FilePath>Saves\\Fixture Console\\adventure.7z</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <Title>Older Wii Vault Version</Title>\n    <SaveGroupName>My Save File</SaveGroupName>\n    <SaveGroupId>dolphin:wii:fixture-adventure:00010000:47414d45</SaveGroupId>\n    <OriginalFileName>data</OriginalFileName>\n    <ReportedFileSizeBytes>{}</ReportedFileSizeBytes>\n    <Md5>{}</Md5>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
+                    selected_revision.byte_len,
+                    selected_revision.sha256.to_ascii_uppercase()
+                ),
+            );
+        fs::write(&platform_path, platform_xml.as_bytes()).unwrap();
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let selected = document.library().game_saves[1].clone();
+
+        let restored = write_game_save_restore(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-adventure".into(),
+            1,
+            selected,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        assert_eq!(DirectoryRevision::read(&active).unwrap(), selected_revision);
+        assert_eq!(
+            fs::read(active.join("course/progress.dat")).unwrap(),
+            b"selected progress"
+        );
+        assert!(active.join("course/empty").is_dir());
+        assert_eq!(restored.saves.len(), 3);
+        assert_eq!(
+            restored.saves[2].file_path,
+            r"Saves\Fixture Console\adventure-01.7z"
+        );
+        assert_eq!(
+            restored.saves[2].md5.as_deref(),
+            Some(active_revision.sha256.to_ascii_uppercase().as_str())
+        );
+        let committed_active_backup = extract_dolphin_wii_archive(
+            directory.path(),
+            &vault_directory.join("adventure-01.7z"),
+            &directory.path().join("committed-active-check"),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        assert_eq!(committed_active_backup.revision, active_revision);
+        let restore_recovery = fs::read_dir(active.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with("data.lbport-directory-backup-")
+                })
+            })
+            .unwrap()
+            .join("data");
+        assert_eq!(
+            DirectoryRevision::read(&restore_recovery).unwrap(),
+            active_revision
+        );
+        assert!(restored.operation.starts_with("Restored Dolphin Wii"));
+
+        let document = PlatformDocument::load(&platform_path).unwrap();
+        let current_active = document.library().game_saves[0].clone();
+        let deleted = write_game_save_active_delete(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            "fixture-adventure".into(),
+            0,
+            current_active,
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+
+        assert!(!active.exists());
+        assert_eq!(deleted.saves.len(), 3);
+        assert!(deleted
+            .saves
+            .iter()
+            .all(|save| { save.file_path.to_ascii_lowercase().ends_with(".7z") }));
+        let deletion_archive = extract_dolphin_wii_archive(
+            directory.path(),
+            &vault_directory.join("adventure-02.7z"),
+            &directory.path().join("deletion-archive-check"),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        assert_eq!(deletion_archive.revision, selected_revision);
+        let delete_recovery = fs::read_dir(active.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with("data.lbport-directory-delete-backup-")
+                })
+            })
+            .unwrap()
+            .join("data");
+        assert_eq!(
+            DirectoryRevision::read(&delete_recovery).unwrap(),
+            selected_revision
+        );
+        assert!(deleted
+            .operation
+            .starts_with("Archived and deleted Dolphin Wii"));
+        let xml = fs::read_to_string(&platform_path).unwrap();
+        assert_eq!(xml.matches("<GameSave>").count(), 3);
+        assert!(!xml.contains(
+            r"<FilePath>Emulators\Dolphin\User\Wii\title\00010000\47414d45\data</FilePath>"
+        ));
+        assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
         assert!(pending_transaction_manifests(directory.path())
             .unwrap()
             .is_empty());

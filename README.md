@@ -328,9 +328,10 @@ finds regular saves and numbered/auto states. Saturn `.bcr`, `.bkr`, and
 composite-signature rules. Dolphin discovery reads raw ISO/GCM disc headers,
 WAD title IDs, or a sibling DolphinTool for compressed RVZ/GCZ/WIA/WBFS
 content, then searches portable and native user roots for GameCube folder/card
-files and two-digit save-state slots. Stable Dolphin group IDs preserve
-idempotency even if a persisted GameCube path moves. Wii directory saves are
-not claimed by the ordinary-file adapter. PCSX2 discovery checks the recovered
+files, Wii title `data` directories, and two-digit save-state slots. Disc Wii
+saves check both recovered high title IDs; WAD saves use their exact high/low
+title ID. Stable Dolphin group IDs preserve idempotency even if a persisted
+path moves. PCSX2 discovery checks the recovered
 portable/legacy roots and the platform-native data root (`~/.config/PCSX2` by
 default on Linux), parses exact `.p2s`/`.p2z` state names, and matches serials
 from `SYSTEM.CNF` prefixes, content names, or game titles. It also enumerates
@@ -349,15 +350,18 @@ only the named logical save, creates and re-extracts a flat verified 7z,
 records the recovered uppercase SHA-256 folder-manifest signature in the
 `<Md5>` field, rechecks the live member for a racing change, and commits the
 archive plus XML without writing to the card. A legacy ungrouped source receives
-an explicit group ID in that same transaction. The manager can also
-permanently remove one resolved regular-file vault backup or complete Saturn
-set and its exact source-indexed history row in one revision-checked
-transaction. The active files are excluded, and every vault member plus the
-XML receives an exact recovery copy. Restore requires one compatible active
-row in the same stable group. It first commits the current regular file or
-complete RetroArch Saturn companion set as a new vault version and verifies
-that copy. A regular file is then revision-checked and atomically replaced
-from the selected vault version with a second exact sibling recovery copy.
+an explicit group ID in that same transaction. Dolphin Wii backup creates a
+nested 7z through direct process arguments, re-extracts it through the
+traversal/link-safe boundary, compares the complete recursive directory
+revision, and commits the verified archive and XML row together. The manager
+can also permanently remove one resolved regular-file vault backup or complete
+Saturn set and its exact source-indexed history row in one revision-checked
+transaction. The active files are excluded, and every vault member plus the XML
+receives an exact recovery copy. Restore requires one compatible active row in
+the same stable group. It first commits the current regular file or complete
+RetroArch Saturn companion set as a new vault version and verifies that copy. A
+regular file is then revision-checked and atomically replaced from the selected
+vault version with a second exact sibling recovery copy.
 RetroArch Saturn restore revision-checks all source and target members and
 replaces or creates the selected `.bcr`, `.bkr`, and `.smpc` companions under
 one recovery manifest; active companions absent from the selected version are
@@ -372,21 +376,26 @@ replacement and regenerate physical-page spare/ECC bytes with the recovered
 13.27 algorithm. Raw restore deliberately requires an ECC-bearing physical
 card, matching the recovered Windows gate. Both forms retain the complete
 pre-restore card as a sibling recovery copy and preserve unrelated members.
-Dolphin Wii directories, other directories, and ambiguous-active cases remain
+Dolphin Wii restore commits and verifies the current directory first, rechecks
+both the selected archive and live tree, then swaps the complete extracted tree
+through the rollback-capable directory boundary while retaining the previous
+tree. Other unrecognized directories and ambiguous-active cases remain
 adapter-gated.
 Confirmed active deletion supports a resolved regular file or complete
 RetroArch Saturn companion set, including host-mapped files outside the
-library root, regular Dolphin GameCube/state files, and a PCSX2 folder/raw card
-member. It first atomically
+library root, regular Dolphin GameCube/state files, a Dolphin Wii title
+directory, and a PCSX2 folder/raw card member. It first atomically
 replaces the active history row with an exact portable vault copy. Only after
 that copy is committed and verified does it revision-check and remove the live
 file set or swap a validated complete card working copy, retaining exact sibling
-recovery copies and rolling back every attempted deletion if a peer fails.
+recovery copies and rolling back every attempted deletion if a peer fails. Wii
+directory deletion uses an exact recursive revision and one rename into a
+retained sibling recovery directory after its vault archive commits.
 Stored paths remain lexical; only paths resolved by the host-path service are
 classified Active or Vault, while unmapped Windows paths are shown as
 Unresolved. Metadata operations never move or delete save files, and backup
 never changes active files. Other-emulator scanning, other directory/container
-backup, Dolphin Wii directory handling, PCSX2 filesystem repair/capacity
+backup, PCSX2 filesystem repair/capacity
 recovery, full disc-image serial extraction, stale-row reconciliation,
 automatic-backup policy, repair, and the remaining emulator adapters remain
 open. Manual game combine/expand is now a separate transactional library

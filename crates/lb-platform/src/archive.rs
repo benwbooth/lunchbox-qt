@@ -238,6 +238,174 @@ impl ArchiveExtractor {
             })
     }
 
+    /// Creates one recursively verified `.7z` archive from a real directory.
+    ///
+    /// Every source entry is walked before 7-Zip starts. Symlinks, special
+    /// files, non-Unicode names, unsafe portable components, and
+    /// case-insensitive path collisions are rejected. The archive is created
+    /// from explicit top-level arguments without a command shell, then its
+    /// complete technical listing is compared with the preflight tree.
+    pub fn create_7z_from_tree(
+        &self,
+        source_directory: &Path,
+        archive: &Path,
+    ) -> Result<(), ArchiveCreationError> {
+        let source_metadata =
+            fs::symlink_metadata(source_directory).map_err(|source| ArchiveCreationError::Io {
+                path: source_directory.to_path_buf(),
+                source,
+            })?;
+        if !source_metadata.file_type().is_dir() || source_metadata.file_type().is_symlink() {
+            return Err(ArchiveCreationError::SourceNotDirectory {
+                path: source_directory.to_path_buf(),
+            });
+        }
+        let source_directory =
+            fs::canonicalize(source_directory).map_err(|source| ArchiveCreationError::Io {
+                path: source_directory.to_path_buf(),
+                source,
+            })?;
+        let archive_name = archive
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| ArchiveCreationError::InvalidTarget {
+                path: archive.to_path_buf(),
+            })?;
+        if !archive
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
+        {
+            return Err(ArchiveCreationError::InvalidTarget {
+                path: archive.to_path_buf(),
+            });
+        }
+        let archive_parent =
+            archive
+                .parent()
+                .ok_or_else(|| ArchiveCreationError::InvalidTarget {
+                    path: archive.to_path_buf(),
+                })?;
+        let archive_parent =
+            fs::canonicalize(archive_parent).map_err(|source| ArchiveCreationError::Io {
+                path: archive_parent.to_path_buf(),
+                source,
+            })?;
+        if archive_parent.starts_with(&source_directory) {
+            return Err(ArchiveCreationError::InvalidTarget {
+                path: archive.to_path_buf(),
+            });
+        }
+        let archive = archive_parent.join(archive_name);
+        match fs::symlink_metadata(&archive) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => return Err(ArchiveCreationError::TargetExists { path: archive }),
+            Err(source) => {
+                return Err(ArchiveCreationError::Io {
+                    path: archive,
+                    source,
+                });
+            }
+        }
+
+        let mut top_level = Vec::<(String, OsString)>::new();
+        let mut expected = BTreeSet::new();
+        collect_archive_tree(
+            &source_directory,
+            &source_directory,
+            &mut top_level,
+            &mut expected,
+        )?;
+        top_level.sort_by(|left, right| {
+            left.0
+                .to_ascii_lowercase()
+                .cmp(&right.0.to_ascii_lowercase())
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        if expected.is_empty() {
+            return Err(ArchiveCreationError::EmptySource {
+                path: source_directory,
+            });
+        }
+
+        let output = Command::new(&self.executable)
+            .current_dir(&source_directory)
+            .arg("a")
+            .arg("-t7z")
+            .arg("-mx=9")
+            .arg("-bd")
+            .arg("-bb0")
+            .arg("-y")
+            .arg("-sccUTF-8")
+            .arg(&archive)
+            .arg("--")
+            .args(top_level.iter().map(|(_, name)| name))
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| ArchiveCreationError::ToolStart {
+                executable: self.executable.clone(),
+                archive: archive.clone(),
+                message: error.to_string(),
+            })?;
+        if !output.status.success() {
+            let _ = fs::remove_file(&archive);
+            return Err(ArchiveCreationError::ToolFailed {
+                executable: self.executable.clone(),
+                archive,
+                message: tool_output_message(&output.stdout, &output.stderr),
+            });
+        }
+        let archive_metadata =
+            fs::symlink_metadata(&archive).map_err(|source| ArchiveCreationError::Io {
+                path: archive.clone(),
+                source,
+            })?;
+        if !archive_metadata.file_type().is_file() || archive_metadata.file_type().is_symlink() {
+            let _ = fs::remove_file(&archive);
+            return Err(ArchiveCreationError::InvalidCreatedArchive { path: archive });
+        }
+        let listed = match self.list_entries(&archive).and_then(|entries| {
+            validate_entries(&archive, &entries)?;
+            Ok(entries)
+        }) {
+            Ok(entries) => entries,
+            Err(source) => {
+                let _ = fs::remove_file(&archive);
+                return Err(ArchiveCreationError::Verification {
+                    archive,
+                    source: Box::new(source),
+                });
+            }
+        };
+        let listed = listed
+            .into_iter()
+            .map(|entry| entry.path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        if listed != expected {
+            let _ = fs::remove_file(&archive);
+            return Err(ArchiveCreationError::MemberMismatch {
+                archive,
+                expected: expected.into_iter().collect(),
+                actual: listed.into_iter().collect(),
+            });
+        }
+        let mut archive_file =
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&archive)
+                .map_err(|source| ArchiveCreationError::Io {
+                    path: archive.clone(),
+                    source,
+                })?;
+        archive_file
+            .flush()
+            .and_then(|()| archive_file.sync_all())
+            .map_err(|source| ArchiveCreationError::Io {
+                path: archive,
+                source,
+            })
+    }
+
     /// Safely extracts every member into an existing empty real directory.
     ///
     /// Unlike launch preparation, this does not choose a runnable file and
@@ -719,6 +887,64 @@ fn parse_technical_listing(listing: &str) -> Vec<ArchiveEntry> {
     entries
 }
 
+fn collect_archive_tree(
+    root: &Path,
+    directory: &Path,
+    top_level: &mut Vec<(String, OsString)>,
+    expected: &mut BTreeSet<String>,
+) -> Result<(), ArchiveCreationError> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|source| ArchiveCreationError::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| ArchiveCreationError::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_text = name
+            .to_str()
+            .filter(|name| is_portable_archive_component(name))
+            .ok_or_else(|| ArchiveCreationError::UnsafeSourceName { path: path.clone() })?
+            .to_string();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| ArchiveCreationError::UnsafeSourceName { path: path.clone() })?;
+        if relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(ArchiveCreationError::UnsafeSourceName { path });
+        }
+        let portable = relative
+            .to_str()
+            .ok_or_else(|| ArchiveCreationError::UnsafeSourceName { path: path.clone() })?
+            .replace('\\', "/");
+        let identity = portable.to_ascii_lowercase();
+        if !expected.insert(identity) {
+            return Err(ArchiveCreationError::DuplicateSourceName { name: portable });
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|source| ArchiveCreationError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if directory == root {
+            top_level.push((name_text, name));
+        }
+        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            collect_archive_tree(root, &path, top_level, expected)?;
+        } else if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(ArchiveCreationError::UnsupportedSourceEntry { path });
+        }
+    }
+    Ok(())
+}
+
 fn empty_real_directory(
     archive: &Path,
     directory: &Path,
@@ -793,6 +1019,27 @@ fn is_safe_archive_member(path: &str) -> bool {
 
     path.split(['/', '\\'])
         .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+fn is_portable_archive_component(component: &str) -> bool {
+    if component.is_empty()
+        || component.len() > 255
+        || matches!(component, "." | "..")
+        || component.ends_with(['.', ' '])
+        || component
+            .chars()
+            .any(|character| character.is_control() || r#"<>:"|?*\/"#.contains(character))
+    {
+        return false;
+    }
+    let stem = component
+        .split_once('.')
+        .map_or(component, |(stem, _extension)| stem)
+        .to_ascii_lowercase();
+    !matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        && !(stem.len() == 4
+            && (stem.starts_with("com") || stem.starts_with("lpt"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
 }
 
 fn audit_extracted_tree(
@@ -1184,6 +1431,62 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(fs::read(extracted.join("icon.sys")).unwrap(), b"icon bytes");
         assert_eq!(fs::read(extracted.join("save.bin")).unwrap(), b"save bytes");
+    }
+
+    #[test]
+    fn creates_and_verifies_nested_7z_trees_without_a_shell() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("data");
+        fs::create_dir_all(source.join("slot/nested")).unwrap();
+        fs::create_dir(source.join("empty")).unwrap();
+        fs::write(source.join("settings.dat"), b"root settings").unwrap();
+        fs::write(source.join("slot/nested/progress.bin"), b"nested progress").unwrap();
+        let archive = directory.path().join("wii-save.7z");
+        let tool = ArchiveExtractor::new("7z");
+        tool.create_7z_from_tree(&source, &archive).unwrap();
+
+        let entries = tool
+            .list_entries(&archive)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            entries,
+            BTreeSet::from([
+                "empty".into(),
+                "settings.dat".into(),
+                "slot".into(),
+                "slot/nested".into(),
+                "slot/nested/progress.bin".into(),
+            ])
+        );
+        let extracted = directory.path().join("extracted-tree");
+        fs::create_dir(&extracted).unwrap();
+        let files = tool.extract_to_directory(&archive, &extracted).unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(extracted.join("empty").is_dir());
+        assert_eq!(
+            fs::read(extracted.join("slot/nested/progress.bin")).unwrap(),
+            b"nested progress"
+        );
+
+        fs::write(source.join("CON.txt"), b"not portable to Windows").unwrap();
+        assert!(matches!(
+            tool.create_7z_from_tree(&source, &directory.path().join("reserved.7z")),
+            Err(ArchiveCreationError::UnsafeSourceName { .. })
+        ));
+        fs::remove_file(source.join("CON.txt")).unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(source.join("settings.dat"), source.join("unsafe-link"))
+                .unwrap();
+            assert!(matches!(
+                tool.create_7z_from_tree(&source, &directory.path().join("unsafe.7z")),
+                Err(ArchiveCreationError::UnsupportedSourceEntry { .. })
+            ));
+        }
     }
 
     #[test]

@@ -83,6 +83,11 @@ ApplicationWindow {
             "--pcsx2-save-lifecycle-smoke-test") >= 0
     property int pcsx2SaveLifecycleSmokePhase: 0
     property bool pcsx2SaveLifecycleSmokeFinished: false
+    property bool dolphinWiiSaveLifecycleSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--dolphin-wii-save-lifecycle-smoke-test") >= 0
+    property int dolphinWiiSaveLifecycleSmokePhase: 0
+    property bool dolphinWiiSaveLifecycleSmokeFinished: false
     property bool gameSaveDeleteSmokeTest:
         Qt.application.arguments.indexOf(
             "--game-save-delete-smoke-test") >= 0
@@ -1243,6 +1248,84 @@ ApplicationWindow {
                           + window.pcsx2SaveLifecycleSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(27)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.dolphinWiiSaveLifecycleSmokeTest
+                 && !window.dolphinWiiSaveLifecycleSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-adventure"
+            if (window.dolphinWiiSaveLifecycleSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 2) {
+                    console.error(
+                        "DOLPHIN_WII_SAVE_LIFECYCLE_SMOKE_MISSING_FIXTURE")
+                    Qt.exit(42)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Adventure")
+                gameSaveManager.selectedVersionIndex = 1
+                const version = gameSaveManager.selectedVersion()
+                if (version === null || version.location_kind !== "vault") {
+                    console.error(
+                        "DOLPHIN_WII_SAVE_LIFECYCLE_SMOKE_VAULT_NOT_RESOLVED")
+                    Qt.exit(42)
+                    return
+                }
+                window.dolphinWiiSaveLifecycleSmokePhase = 1
+                gameSaveRestoreDialog.smoke()
+            } else if (window.dolphinWiiSaveLifecycleSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_save_revision === 1) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 3) {
+                    console.error(
+                        "DOLPHIN_WII_SAVE_LIFECYCLE_SMOKE_RESTORE_MODEL_FAILED")
+                    Qt.exit(42)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Adventure")
+                gameSaveManager.selectedVersionIndex = 0
+                const version = gameSaveManager.selectedVersion()
+                if (version === null || version.location_kind !== "active") {
+                    console.error(
+                        "DOLPHIN_WII_SAVE_LIFECYCLE_SMOKE_ACTIVE_NOT_RESOLVED")
+                    Qt.exit(42)
+                    return
+                }
+                window.dolphinWiiSaveLifecycleSmokePhase = 2
+                gameSaveActiveDeleteDialog.smoke()
+            } else if (window.dolphinWiiSaveLifecycleSmokePhase === 2
+                       && !controller.writing
+                       && controller.game_save_revision === 2) {
+                if (!controller.report_dolphin_wii_save_lifecycle_smoke_success(
+                        gameId)) {
+                    console.error(
+                        "DOLPHIN_WII_SAVE_LIFECYCLE_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(42)
+                    return
+                }
+                window.dolphinWiiSaveLifecycleSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 30000
+        running: window.dolphinWiiSaveLifecycleSmokeTest
+                 && !window.dolphinWiiSaveLifecycleSmokeFinished
+        onTriggered: {
+            console.error("DOLPHIN_WII_SAVE_LIFECYCLE_SMOKE_TIMEOUT phase="
+                          + window.dolphinWiiSaveLifecycleSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(42)
         }
     }
 
@@ -3411,7 +3494,7 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.preferredWidth: 820
-                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads configured RetroArch, Dolphin, and PCSX2 launch targets and records newly discovered saves without deleting existing history. RetroArch discovery covers regular saves, states, and grouped Saturn companion sets. Dolphin discovery covers regular GameCube memory-card files and save states; Wii directory saves remain gated. PCSX2 discovery, backup, restore, and deletion cover ordinary save states plus folder-format and raw memory-card members. Card-member changes use a validated complete-card working copy and retain the previous card as a sibling recovery copy. Active deletion always archives the exact current save in the vault before removing it."
+                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. Find Active Saves reads configured RetroArch, Dolphin, and PCSX2 launch targets and records newly discovered saves without deleting existing history. RetroArch discovery covers regular saves, states, and grouped Saturn companion sets. Dolphin discovery covers GameCube memory-card files, Wii title data directories, and save states. Wii directory changes use verified nested 7z archives and retain the previous complete tree as a sibling recovery copy. PCSX2 discovery, backup, restore, and deletion cover ordinary save states plus folder-format and raw memory-card members. Card-member changes use a validated complete-card working copy and retain the previous card as a sibling recovery copy. Active deletion always archives the exact current save in the vault before removing it."
                 wrapMode: Text.Wrap
                 color: "#aeb8c5"
             }
@@ -3777,7 +3860,7 @@ ApplicationWindow {
                 const version = gameSaveManager.selectedVersion()
                 return "Restore “"
                        + (version !== null ? version.title : "")
-                       + "” over the active save? The current active file, RetroArch Saturn companion set, or PCSX2 memory-card member is first committed as a new vault version. PCSX2 restoration validates and swaps a complete card working copy. Dolphin Wii directory restores remain disabled until their container adapter is available."
+                       + "” over the active save? The current active file, RetroArch Saturn companion set, Dolphin Wii title directory, or PCSX2 memory-card member is first committed as a new vault version. Dolphin Wii restoration verifies a nested archive and swaps the complete directory; PCSX2 restoration validates and swaps a complete card working copy."
             }
             wrapMode: Text.Wrap
         }
@@ -3817,7 +3900,7 @@ ApplicationWindow {
                 const version = gameSaveManager.selectedVersion()
                 return "Archive “"
                        + (version !== null ? version.title : "")
-                       + "” in the portable vault, then delete its active emulator file, complete RetroArch Saturn companion set, or PCSX2 memory-card member? Exact sibling recovery copies are retained; PCSX2 deletion swaps a validated complete card working copy. Dolphin Wii directories remain disabled."
+                       + "” in the portable vault, then delete its active emulator file, complete RetroArch Saturn companion set, Dolphin Wii title directory, or PCSX2 memory-card member? Exact sibling recovery copies are retained; Dolphin Wii deletion retains the complete directory tree and PCSX2 deletion swaps a validated complete card working copy."
             }
             wrapMode: Text.Wrap
         }
