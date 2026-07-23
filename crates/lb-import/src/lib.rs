@@ -80,6 +80,11 @@ pub struct ManualImportRequest {
     /// matches remain explicit in the preview.
     #[serde(default)]
     pub search_local_metadata: bool,
+    /// Look in each imported game's source directory for a PDF that can be
+    /// linked as its manual. An exact ROM-stem match wins; otherwise a sole
+    /// PDF is accepted. Ambiguous folders remain explicit in the preview.
+    #[serde(default)]
+    pub look_for_pdf_manuals: bool,
     /// `None` inherits the platform default. LaunchBox's all-zero sentinel
     /// explicitly selects direct launch; any other value selects a configured
     /// emulator by ID.
@@ -115,6 +120,15 @@ pub struct ManualImportPreviewRow {
     pub additional_discs: Vec<ManualImportDisc>,
     pub metadata: Option<ManualImportMetadata>,
     pub metadata_candidate_count: usize,
+    pub manual: Option<ManualImportManual>,
+    pub manual_candidate_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManualImportManual {
+    pub source_path: PathBuf,
+    pub stored_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -139,6 +153,7 @@ impl From<ManualImportMetadata> for NewGameMetadata {
     fn from(metadata: ManualImportMetadata) -> Self {
         Self {
             database_id: Some(metadata.database_id),
+            manual_path: None,
             notes: metadata.notes,
             developer: metadata.developer,
             genre: metadata.genre,
@@ -479,6 +494,8 @@ pub fn preview_manual_import(
             additional_discs: Vec::new(),
             metadata: None,
             metadata_candidate_count: 0,
+            manual: None,
+            manual_candidate_count: 0,
         });
     }
     if request.combine_disc_sets {
@@ -501,6 +518,14 @@ pub fn preview_manual_import(
         replan_subfolder_destinations(
             &launchbox_root,
             &request.platform,
+            request.duplicate_policy,
+            &mut rows,
+        )?;
+    }
+    if request.look_for_pdf_manuals {
+        apply_pdf_manuals(
+            &launchbox_root,
+            resolver,
             request.duplicate_policy,
             &mut rows,
         )?;
@@ -604,13 +629,16 @@ where
     let mut additional_applications = Vec::new();
     for (row, title) in &imports {
         let game_id = next_id();
+        let mut metadata: NewGameMetadata =
+            row.metadata.clone().map(Into::into).unwrap_or_default();
+        metadata.manual_path = row.manual.as_ref().map(|manual| manual.stored_path.clone());
         games.push(document.add_game(NewGame {
             id: game_id.clone(),
             title: title.clone(),
             platform: preview.request.platform.clone(),
             application_path: row.application_path.clone(),
             emulator_id: preview.request.emulator_id.clone(),
-            metadata: row.metadata.clone().map(Into::into).unwrap_or_default(),
+            metadata,
         })?);
         if row.disc.is_some() {
             let use_emulator = preview
@@ -911,6 +939,112 @@ fn apply_local_metadata(
         }
     }
     Ok(())
+}
+
+fn apply_pdf_manuals(
+    launchbox_root: &Path,
+    resolver: &HostPathResolver,
+    duplicate_policy: ImportDuplicatePolicy,
+    rows: &mut [ManualImportPreviewRow],
+) -> Result<(), ImportError> {
+    for row in rows {
+        if !row.included || !row.is_importable(duplicate_policy) {
+            continue;
+        }
+        let candidates = pdf_manual_candidates(row)?;
+        row.manual_candidate_count = candidates.len();
+        let matching_stems = std::iter::once(row.source_path.as_path())
+            .chain(
+                row.additional_discs
+                    .iter()
+                    .map(|disc| disc.source_path.as_path()),
+            )
+            .filter_map(|path| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(str::to_ascii_lowercase)
+            })
+            .collect::<BTreeSet<_>>();
+        let exact = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| matching_stems.contains(&stem.to_ascii_lowercase()))
+            })
+            .collect::<Vec<_>>();
+        let (manual_source, exact_match) = match (exact.as_slice(), candidates.as_slice()) {
+            ([candidate], _) => ((*candidate).clone(), true),
+            ([], [candidate]) => (candidate.clone(), false),
+            _ => {
+                if candidates.is_empty() {
+                    row.message
+                        .push_str("; no PDF manual found in the game folder");
+                } else {
+                    row.message.push_str(&format!(
+                        "; {} PDF manual candidates require review",
+                        candidates.len()
+                    ));
+                }
+                continue;
+            }
+        };
+        let linked_host_path = row
+            .transfer_files()
+            .into_iter()
+            .find(|file| file.source_path == manual_source)
+            .and_then(|file| file.destination_path)
+            .unwrap_or(&manual_source);
+        let stored_path = resolver.stored_path_for_host_path(launchbox_root, linked_host_path)?;
+        row.manual = Some(ManualImportManual {
+            source_path: manual_source,
+            stored_path,
+        });
+        if exact_match {
+            row.message.push_str("; linked same-name PDF manual");
+        } else {
+            row.message
+                .push_str("; linked the game folder's sole PDF manual");
+        }
+    }
+    Ok(())
+}
+
+fn pdf_manual_candidates(row: &ManualImportPreviewRow) -> Result<Vec<PathBuf>, ImportError> {
+    let Some(parent) = row.source_path.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut candidates = BTreeSet::new();
+    let entries = fs::read_dir(parent)
+        .map_err(|source| ImportError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| ImportError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| ImportError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+        {
+            let candidate = canonical_regular_file(&path)?;
+            if candidate != row.source_path {
+                candidates.insert(candidate);
+            }
+        }
+    }
+    Ok(candidates.into_iter().collect())
 }
 
 fn replan_subfolder_destinations(
@@ -1508,6 +1642,7 @@ mod tests {
             copy_to_subfolders: false,
             combine_disc_sets: false,
             search_local_metadata: false,
+            look_for_pdf_manuals: false,
             emulator_id: None,
         }
     }
@@ -2018,6 +2153,179 @@ mod tests {
             .path()
             .join("Games/Fixture Console/Collision.rom")
             .exists());
+    }
+
+    #[test]
+    fn same_name_pdf_manual_wins_and_is_persisted_with_multiple_pdfs() {
+        let (library, platform) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let rom = source_directory.path().join("Manual Game.rom");
+        let manual = source_directory.path().join("MANUAL GAME.PDF");
+        let unrelated = source_directory.path().join("Reference.pdf");
+        fs::write(&rom, b"rom").unwrap();
+        fs::write(&manual, b"manual").unwrap();
+        fs::write(&unrelated, b"reference").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: rom,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Leave,
+        );
+        import_request.look_for_pdf_manuals = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows[0].manual_candidate_count, 2);
+        let planned_manual = preview.rows[0].manual.as_ref().unwrap();
+        assert_eq!(
+            planned_manual.source_path,
+            fs::canonicalize(&manual).unwrap()
+        );
+        assert_eq!(planned_manual.stored_path, manual.to_string_lossy());
+        assert!(preview.rows[0].message.contains("same-name PDF manual"));
+        let manual_stored = manual.to_string_lossy().to_string();
+
+        let report = execute_manual_import_with_ids(
+            library.path(),
+            &platform,
+            &HostPathResolver::default(),
+            selection(&preview),
+            || "manual-game".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            report.games[0].manual_path.as_deref(),
+            Some(manual_stored.as_str())
+        );
+        let persisted = PlatformDocument::load(&platform).unwrap();
+        assert_eq!(
+            persisted
+                .library()
+                .games
+                .iter()
+                .find(|game| game.id == "manual-game")
+                .and_then(|game| game.manual_path.as_deref()),
+            Some(manual_stored.as_str())
+        );
+    }
+
+    #[test]
+    fn copied_same_name_pdf_manual_uses_its_portable_committed_path() {
+        let (library, platform) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let rom = source_directory.path().join("Portable Manual.rom");
+        let manual = source_directory.path().join("Portable Manual.pdf");
+        fs::write(&rom, b"rom").unwrap();
+        fs::write(&manual, b"pdf").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: rom,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Copy,
+        );
+        import_request.copy_files_with_same_name = true;
+        import_request.look_for_pdf_manuals = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(
+            preview.rows[0]
+                .manual
+                .as_ref()
+                .map(|manual| manual.stored_path.as_str()),
+            Some(r"Games\Fixture Console\Portable Manual.pdf")
+        );
+        assert_eq!(preview.rows[0].transfer_file_count(), 2);
+
+        let report = execute_manual_import_with_ids(
+            library.path(),
+            &platform,
+            &HostPathResolver::default(),
+            selection(&preview),
+            || "portable-manual-game".into(),
+        )
+        .unwrap();
+        assert_eq!(report.created_files.len(), 2);
+        assert_eq!(
+            fs::read(
+                library
+                    .path()
+                    .join("Games/Fixture Console/Portable Manual.pdf")
+            )
+            .unwrap(),
+            b"pdf"
+        );
+        assert_eq!(
+            report.games[0].manual_path.as_deref(),
+            Some(r"Games\Fixture Console\Portable Manual.pdf")
+        );
+        assert!(manual.is_file(), "copy keeps the original manual");
+    }
+
+    #[test]
+    fn ambiguous_pdf_manuals_are_reported_without_guessing() {
+        let (library, _) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let rom = source_directory.path().join("Ambiguous.rom");
+        fs::write(&rom, b"rom").unwrap();
+        fs::write(source_directory.path().join("Manual.pdf"), b"one").unwrap();
+        fs::write(source_directory.path().join("Reference.PDF"), b"two").unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: rom,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Leave,
+        );
+        import_request.look_for_pdf_manuals = true;
+
+        let preview =
+            preview_manual_import(library.path(), &HostPathResolver::default(), import_request)
+                .unwrap();
+        assert_eq!(preview.rows[0].manual_candidate_count, 2);
+        assert!(preview.rows[0].manual.is_none());
+        assert!(preview.rows[0]
+            .message
+            .contains("2 PDF manual candidates require review"));
+    }
+
+    #[test]
+    fn sole_pdf_manual_uses_reversible_windows_mapping() {
+        let (library, _) = library();
+        let source_directory = tempfile::tempdir().unwrap();
+        let game_directory = source_directory.path().join("Games/Manual Test");
+        fs::create_dir_all(&game_directory).unwrap();
+        let rom = game_directory.join("game.rom");
+        let manual = game_directory.join("instructions.pdf");
+        fs::write(&rom, b"rom").unwrap();
+        fs::write(&manual, b"manual").unwrap();
+        let resolver = HostPathResolver::default()
+            .with_windows_drive_mapping('D', source_directory.path())
+            .unwrap();
+        let mut import_request = request(
+            vec![ImportLocation {
+                path: rom,
+                kind: ImportLocationKind::File,
+            }],
+            ImportFilePolicy::Leave,
+        );
+        import_request.look_for_pdf_manuals = true;
+
+        let preview = preview_manual_import(library.path(), &resolver, import_request).unwrap();
+        assert_eq!(
+            preview.rows[0]
+                .manual
+                .as_ref()
+                .map(|manual| manual.stored_path.as_str()),
+            Some(r"D:\Games\Manual Test\instructions.pdf")
+        );
+        assert!(preview.rows[0]
+            .message
+            .contains("game folder's sole PDF manual"));
     }
 
     #[test]

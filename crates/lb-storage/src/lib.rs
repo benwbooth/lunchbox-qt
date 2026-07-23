@@ -122,6 +122,7 @@ pub struct AtomicSaveReport {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NewGameMetadata {
     pub database_id: Option<u32>,
+    pub manual_path: Option<String>,
     pub notes: Option<String>,
     pub developer: Option<String>,
     pub genre: Option<String>,
@@ -1772,6 +1773,7 @@ impl PlatformDocument {
             application_path: new_game.application_path,
             emulator_id: new_game.emulator_id,
             database_id: new_game.metadata.database_id,
+            manual_path: new_game.metadata.manual_path,
             notes: new_game.metadata.notes,
             developer: new_game.metadata.developer,
             genre: new_game.metadata.genre,
@@ -4692,6 +4694,7 @@ fn minimal_game_element(game: &Game) -> Element {
         "DatabaseID",
         game.database_id.map(|value| value.to_string()).as_deref(),
     );
+    set_optional_child_text(&mut element, "ManualPath", game.manual_path.as_deref());
     set_optional_child_text(&mut element, "Notes", game.notes.as_deref());
     set_optional_child_text(&mut element, "Developer", game.developer.as_deref());
     set_optional_child_text(&mut element, "Genre", game.genre.as_deref());
@@ -5285,6 +5288,7 @@ mod tests {
             emulator_id: None,
             metadata: NewGameMetadata {
                 database_id: Some(4242),
+                manual_path: Some(r"Manuals\Fixture Console\Fixture Added.pdf".into()),
                 notes: Some("Imported overview".into()),
                 developer: Some("Fixture Forge".into()),
                 genre: Some("Strategy".into()),
@@ -5321,6 +5325,10 @@ mod tests {
             r"Games\Fixture Added\added.rom"
         );
         assert_eq!(reparsed_game.database_id, Some(4242));
+        assert_eq!(
+            reparsed_game.manual_path.as_deref(),
+            Some(r"Manuals\Fixture Console\Fixture Added.pdf")
+        );
         assert_eq!(reparsed_game.notes.as_deref(), Some("Imported overview"));
         assert_eq!(reparsed_game.developer.as_deref(), Some("Fixture Forge"));
         assert_eq!(reparsed_game.genre.as_deref(), Some("Strategy"));

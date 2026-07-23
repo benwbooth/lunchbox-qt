@@ -186,6 +186,12 @@ rating, release date/type, URLs, and community rating as typed game fields.
 Copy/move can then place the whole game bundle in a cross-platform-safe
 `Title (Year)` subdirectory; edited final titles are re-sanitized and all
 destination collisions are rechecked during execution.
+The recovered PDF-manual option scans each game source folder without
+recursing. A case-insensitive ROM-stem match wins; otherwise a sole PDF is
+linked, while multiple non-matching candidates remain visible and unselected.
+`ManualPath` uses the same reverse host-path mapping as game paths. If a
+same-name PDF is part of a copy/move bundle, the game instead points at its
+portable committed destination so move cleanup cannot break the link.
 Move commits every ROM, companion, and XML write first, then removes a source
 only after both files have matching SHA-256 revisions; a cleanup failure
 retains the source and reports a warning.
@@ -194,7 +200,7 @@ folder and extension collapse to one game. Disc 1 remains the main application
 and every disc, including Disc 1, is persisted as a priority-ordered additional
 application, matching the older real-install records and the existing M3U
 launch contract. Incomplete or colliding sets remain separate preview rows.
-Fuzzy/interactive metadata selection, media acquisition, database-driven
+Fuzzy/interactive metadata selection, online media acquisition, database-driven
 version combining, MAME-specific options, and the remaining import families
 are still open.
 

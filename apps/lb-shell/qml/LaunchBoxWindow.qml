@@ -369,12 +369,22 @@ ApplicationWindow {
             } else if (window.importSmokePhase === 1
                        && !controller.import_scanning
                        && controller.import_preview_json.length > 0) {
+                const preview = JSON.parse(controller.import_preview_json)
+                if (preview.rows.length !== 1
+                        || preview.rows[0].manual_candidate_count !== 1
+                        || preview.rows[0].manual === null
+                        || preview.rows[0].manual.stored_path
+                           !== "Games\\Fixture Console\\Fixture Saga (USA) (2002)\\Fixture Saga (USA) - (Disc 1 of 2).pdf") {
+                    console.error("IMPORT_SMOKE_MANUAL_PREVIEW_CONTRACT_FAILED")
+                    Qt.exit(12)
+                    return
+                }
                 window.importSmokePhase = 2
                 romImportDialog.smokeSubmitPreview()
             } else if (window.importSmokePhase === 2
                        && !controller.writing
                        && controller.last_import_count === 1) {
-                if (!controller.report_import_smoke_success(1, 4, 0)) {
+                if (!controller.report_import_smoke_success(1, 5, 0)) {
                     console.error("IMPORT_SMOKE_MODEL_CONTRACT_FAILED")
                     Qt.exit(12)
                     return
@@ -3370,6 +3380,7 @@ ApplicationWindow {
             copyToSubfolders.checked = false
             combineDiscSets.checked = true
             searchLocalMetadata.checked = true
+            lookForPdfManuals.checked = true
             importFilePolicy.currentIndex = 1
             extensionFilter.text = ""
             selectPlatform(window.selectedPlatform)
@@ -3420,6 +3431,7 @@ ApplicationWindow {
                 "copy_to_subfolders": copyToSubfolders.checked,
                 "combine_disc_sets": combineDiscSets.checked,
                 "search_local_metadata": searchLocalMetadata.checked,
+                "look_for_pdf_manuals": lookForPdfManuals.checked,
                 "emulator_id": emulatorId.length === 0 ? null : emulatorId
             }
         }
@@ -3459,7 +3471,12 @@ ApplicationWindow {
                     "message": row.message,
                     "discFileCount": 1 + row.additional_discs.length,
                     "companionFileCount": companionFileCount(row),
-                    "metadataCandidateCount": row.metadata_candidate_count
+                    "metadataCandidateCount": row.metadata_candidate_count,
+                    "manualCandidateCount": row.manual_candidate_count,
+                    "manualSourcePath": row.manual === null
+                                        ? "" : row.manual.source_path,
+                    "manualStoredPath": row.manual === null
+                                        ? "" : row.manual.stored_path
                 })
             }
             awaitingPreview = false
@@ -3666,6 +3683,10 @@ ApplicationWindow {
                         id: searchLocalMetadata
                         text: "Search for game information in the local metadata database (recommended)"
                     }
+                    CheckBox {
+                        id: lookForPdfManuals
+                        text: "Look for PDF files for use as the game manual"
+                    }
                     Label { text: "File extensions (optional, comma-separated)" }
                     TextField {
                         id: extensionFilter
@@ -3729,8 +3750,11 @@ ApplicationWindow {
                                 required property int discFileCount
                                 required property int companionFileCount
                                 required property int metadataCandidateCount
+                                required property int manualCandidateCount
+                                required property string manualSourcePath
+                                required property string manualStoredPath
                                 width: ListView.view.width
-                                height: 92
+                                height: manualSourcePath.length > 0 ? 110 : 92
                                 color: index % 2 === 0 ? "#171b22" : "#14181e"
                                 RowLayout {
                                     anchors.fill: parent
@@ -3770,8 +3794,21 @@ ApplicationWindow {
                                                      ? "  (" + importPreviewDelegate.metadataCandidateCount
                                                        + " exact metadata match(es))"
                                                      : "")
+                                                  + (importPreviewDelegate.manualCandidateCount > 0
+                                                     ? "  (" + importPreviewDelegate.manualCandidateCount
+                                                       + " PDF manual candidate(s))"
+                                                     : "")
                                             elide: Text.ElideMiddle
                                             color: "#8b949e"
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            visible: importPreviewDelegate.manualSourcePath.length > 0
+                                            text: "Manual: " + importPreviewDelegate.manualSourcePath
+                                                  + " — stored as "
+                                                  + importPreviewDelegate.manualStoredPath
+                                            elide: Text.ElideMiddle
+                                            color: "#79c0ff"
                                         }
                                         Label {
                                             Layout.fillWidth: true
