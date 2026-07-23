@@ -18,10 +18,20 @@ ApplicationWindow {
     property bool navigationSmokeTest:
         Qt.application.arguments.indexOf("--navigation-smoke-test") >= 0
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
+    property bool launchLifecycleSmokeTest:
+        Qt.application.arguments.indexOf("--launch-lifecycle-smoke-test") >= 0
     property int smokePhase: 0
     property int navigationSmokePhase: 0
     property int launchSmokePhase: 0
     property bool launchSmokeFinished: false
+    property int launchLifecycleSmokePhase: 0
+    property bool launchLifecycleSmokeFinished: false
+    property bool launchLifecycleStartupVisibleSeen: false
+    property bool launchLifecyclePrimaryStartedSeen: false
+    property bool launchLifecycleDismissedBeforeExit: false
+    property bool launchLifecycleScreenshotRequested: false
+    property string launchLifecycleScreenshotPath:
+        argumentValue("--launch-lifecycle-screenshot")
     property string activeNavigationName: "All Games"
     property string launchSmokeGameId: {
         const requested = argumentValue("--launch-game-id")
@@ -143,6 +153,38 @@ ApplicationWindow {
 
     LibraryController {
         id: controller
+    }
+
+    Connections {
+        target: controller
+
+        function onStartup_screen_activeChanged() {
+            if (window.launchLifecycleSmokeTest
+                    && controller.startup_screen_active
+                    && !controller.startup_screen_primary_started) {
+                window.launchLifecycleStartupVisibleSeen = true
+                if (window.launchLifecycleScreenshotPath.length > 0
+                        && !window.launchLifecycleScreenshotRequested) {
+                    window.launchLifecycleScreenshotRequested = true
+                    Qt.callLater(function() {
+                        launchStartupOverlay.grabToImage(function(result) {
+                            if (!result.saveToFile(
+                                    window.launchLifecycleScreenshotPath))
+                                console.error(
+                                    "LAUNCH_LIFECYCLE_SCREENSHOT_SAVE_FAILED path="
+                                    + window.launchLifecycleScreenshotPath)
+                        })
+                    })
+                }
+            }
+        }
+
+        function onStartup_screen_primary_startedChanged() {
+            if (window.launchLifecycleSmokeTest
+                    && controller.startup_screen_active
+                    && controller.startup_screen_primary_started)
+                window.launchLifecyclePrimaryStartedSeen = true
+        }
     }
 
     Component.onCompleted: {
@@ -309,6 +351,78 @@ ApplicationWindow {
         running: window.launchSmokeTest && !window.launchSmokeFinished
         onTriggered: {
             console.error("LAUNCH_SMOKE_TIMEOUT phase=" + window.launchSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(7)
+        }
+    }
+
+    Timer {
+        interval: 10
+        repeat: true
+        running: window.launchLifecycleSmokeTest
+                 && !window.launchLifecycleSmokeFinished
+        onTriggered: {
+            if (window.launchLifecycleSmokePhase === 0 && !controller.loading
+                    && controller.library_path.length > 0
+                    && controller.game_count > 0) {
+                const row = controller.row_for_game_id("fixture-racer")
+                if (row < 0) {
+                    console.error("LAUNCH_LIFECYCLE_SMOKE_MISSING_GAME")
+                    Qt.exit(7)
+                    return
+                }
+                window.launchLifecycleSmokePhase = 1
+                controller.launch_game(row, "fixture-racer")
+            } else if (window.launchLifecycleSmokePhase >= 1) {
+                if (controller.startup_screen_active
+                        && !controller.startup_screen_primary_started)
+                    window.launchLifecycleStartupVisibleSeen = true
+                if (controller.startup_screen_active
+                        && controller.startup_screen_primary_started)
+                    window.launchLifecyclePrimaryStartedSeen = true
+                if (window.launchLifecyclePrimaryStartedSeen
+                        && !controller.startup_screen_active
+                        && controller.launch_session_active) {
+                    window.launchLifecycleDismissedBeforeExit = true
+                    window.launchLifecycleSmokePhase = 2
+                }
+                if (!controller.launching && !controller.launch_session_active) {
+                    const contractOk =
+                        controller.report_launch_lifecycle_smoke_success(
+                            "fixture-racer",
+                            window.launchLifecycleStartupVisibleSeen,
+                            window.launchLifecyclePrimaryStartedSeen,
+                            window.launchLifecycleDismissedBeforeExit)
+                    if (!contractOk) {
+                        console.error(
+                            "LAUNCH_LIFECYCLE_SMOKE_FAILED visible="
+                            + window.launchLifecycleStartupVisibleSeen
+                            + " primary="
+                            + window.launchLifecyclePrimaryStartedSeen
+                            + " dismissed="
+                            + window.launchLifecycleDismissedBeforeExit
+                            + " status=" + controller.status_message)
+                        Qt.exit(7)
+                        return
+                    }
+                    window.launchLifecycleSmokeFinished = true
+                    Qt.quit()
+                }
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.launchLifecycleSmokeTest
+                 && !window.launchLifecycleSmokeFinished
+        onTriggered: {
+            console.error("LAUNCH_LIFECYCLE_SMOKE_TIMEOUT phase="
+                          + window.launchLifecycleSmokePhase
+                          + " startup=" + controller.startup_screen_active
+                          + " primary="
+                          + controller.startup_screen_primary_started
+                          + " session=" + controller.launch_session_active
                           + " status=" + controller.status_message)
             Qt.exit(7)
         }
@@ -595,6 +709,12 @@ ApplicationWindow {
                 font.pixelSize: 18
             }
         }
+    }
+
+    LaunchStartupOverlay {
+        id: launchStartupOverlay
+        anchors.fill: parent
+        controller: controller
     }
 
     Dialog {

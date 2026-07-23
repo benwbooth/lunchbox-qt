@@ -22,7 +22,8 @@ done
 diagnostics=$(
   qmllint "${import_args[@]}" \
     apps/lb-shell/qml/LaunchBoxWindow.qml \
-    apps/lb-shell/qml/BigBoxWindow.qml 2>&1
+    apps/lb-shell/qml/BigBoxWindow.qml \
+    apps/lb-shell/qml/LaunchStartupOverlay.qml 2>&1
 ) || {
   printf '%s\n' "$diagnostics" >&2
   exit 1
@@ -2611,6 +2612,58 @@ run_launch_smoke bigbox "$emulator_launch_root" fixture-racer "$emulator_log" \
   --platform fixture \
   "$emulator_launch_root/Games/Fixture Racer/racer.rom"
 
+run_launch_lifecycle_smoke() {
+  local shell_name=$1
+  local lifecycle_log="$emulator_launch_root/$shell_name-lifecycle-arguments.txt"
+  local lifecycle_screenshot="$emulator_launch_root/$shell_name-startup-overlay.png"
+  local -a arguments=(
+    --library "$emulator_launch_root"
+    --launch-lifecycle-smoke-test
+    --launch-lifecycle-screenshot "$lifecycle_screenshot"
+    --path-mappings-file "$empty_path_mappings"
+  )
+  if [[ "$shell_name" == bigbox ]]; then
+    arguments+=(--windowed)
+  fi
+  rm -f "$lifecycle_log" "$lifecycle_screenshot"
+  local output
+  output=$(
+    LBPORT_LAUNCH_SMOKE_LOG="$lifecycle_log" \
+      QT_QPA_PLATFORM=offscreen \
+      "$binary_dir/$shell_name" "${arguments[@]}" 2>&1
+  ) || {
+    printf '%s\n' "$output" >&2
+    exit 1
+  }
+  if ! rg -q \
+    'LAUNCH_LIFECYCLE_SMOKE_COMPLETE id=fixture-racer startup_presentations=1 timer_dismissals=1 delay_ms=250 source="emulator default"' \
+    <<< "$output"; then
+    printf '%s\n' "$output" >&2
+    echo "$shell_name did not validate the inherited startup-screen lifecycle." >&2
+    exit 1
+  fi
+  if ! cmp -s "$lifecycle_log" \
+    <(printf '%s\n' \
+      --platform fixture \
+      "$emulator_launch_root/Games/Fixture Racer/racer.rom"); then
+    printf 'Startup lifecycle arguments for %s were:\n' "$shell_name" >&2
+    sed 's/^/  /' "$lifecycle_log" >&2 || true
+    exit 1
+  fi
+  if [[ ! -s "$lifecycle_screenshot" ]] \
+    || [[ $(wc -c < "$lifecycle_screenshot") -lt 1024 ]] \
+    || [[ $(od -An -tx1 -N8 "$lifecycle_screenshot" | tr -d ' \n') \
+      != 89504e470d0a1a0a ]]; then
+    printf '%s\n' "$output" >&2
+    echo "$shell_name did not render a valid startup-overlay PNG." >&2
+    exit 1
+  fi
+}
+
+run_launch_lifecycle_smoke launchbox
+run_launch_lifecycle_smoke bigbox
+echo "LaunchBox and BigBox inherited startup-screen policy, pre-start/primary phases, timed dismissal before child exit, exact argv, and supervised session statistics validated."
+
 direct_log="$direct_launch_root/direct-arguments.txt"
 run_launch_smoke launchbox "$direct_launch_root" fixture-direct "$direct_log" \
   --direct "two words"
@@ -3134,7 +3187,7 @@ assert_play_stats() {
 
 assert_play_stats \
   "$emulator_launch_root/Data/Platforms/Fixture Console.xml" \
-  Game ID fixture-racer 10 14402 LastPlayedDate
+  Game ID fixture-racer 12 14404 LastPlayedDate
 assert_play_stats \
   "$direct_launch_root/Data/Platforms/Direct Fixture.xml" \
   Game ID fixture-direct 2 2 LastPlayedDate

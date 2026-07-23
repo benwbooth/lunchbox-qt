@@ -74,7 +74,7 @@ Qt-thread bridge. QML consumes the controller as a real `QAbstractListModel`
 with 37 named identity, state, descriptive-metadata, launch-configuration, and
 additional-application, and game-save roles; it does not receive a whole-library
 JSON snapshot. `check_qml.sh` validates generated type metadata, then runs both
-binaries offscreen and proves all 36 roles survive a model-resetting filter
+binaries offscreen and proves all 37 roles survive a model-resetting filter
 operation. It also edits a
 temporary fixture library through the Qt shell and checks the targeted model
 notification for a state-only edit, descriptive-metadata search refresh, exact
@@ -85,6 +85,19 @@ the application path, command line, emulator selection, and DOSBox/ScummVM
 settings in one transaction. A fresh Linux process then
 reloads that edit and executes the stored Windows-separated relative path with
 the exact expanded argument vector.
+
+Validated launch sequences also carry an effective startup-screen policy.
+An explicit per-game override wins over the selected emulator's defaults;
+direct, DOSBox, and legacy ScummVM targets use the game's own settings. One
+compiled Qt Quick overlay is shared by LaunchBox and BigBox, enters its
+pre-start state before the primary-start notification, and dismisses after the
+stored millisecond delay or child exit. The offscreen runtime suite keeps a
+real child alive past that delay in both frontends, captures each rendered
+overlay to a validated PNG, and proves both visible phases, exact argument
+vector, continued process supervision, and
+LaunchBox-compatible play-statistics writes. Startup theme/media selection,
+window/focus handling, delegated process trees, shutdown screens, and pause
+screens remain open.
 
 The complete read index covers all 107 `Game` fields observed in the 13.24
 installation plus every other platform record, playlist, emulator mapping,

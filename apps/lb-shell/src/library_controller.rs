@@ -37,6 +37,11 @@ pub mod qobject {
         #[qproperty(bool, writing)]
         #[qproperty(bool, launching)]
         #[qproperty(bool, launch_session_active)]
+        #[qproperty(bool, startup_screen_active)]
+        #[qproperty(bool, startup_screen_primary_started)]
+        #[qproperty(i32, startup_screen_delay_ms)]
+        #[qproperty(QString, startup_screen_game_title)]
+        #[qproperty(QString, startup_screen_settings_source)]
         #[qproperty(bool, last_launch_succeeded)]
         #[qproperty(bool, write_conflict)]
         #[qproperty(i32, game_count)]
@@ -193,6 +198,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn cancel_emulator_install(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn dismiss_startup_screen(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
         fn add_emulator(self: Pin<&mut LibraryController>, edit_payload: QString);
@@ -697,6 +705,15 @@ pub mod qobject {
         fn report_launch_smoke_success(self: &LibraryController, game_id: QString) -> bool;
 
         #[qinvokable]
+        fn report_launch_lifecycle_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            startup_visible_seen: bool,
+            primary_started_seen: bool,
+            dismissed_before_exit: bool,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_additional_application_launch_smoke_success(
             self: &LibraryController,
             game_id: QString,
@@ -877,7 +894,7 @@ use lb_platform::{
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     select_emulator_for_game, ArchiveExtractor, HostPathMappings, HostPathResolver, LaunchContext,
     LaunchKind, LaunchPathResolver, LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport,
-    LaunchTarget,
+    LaunchStartupPolicy, LaunchTarget,
 };
 use lb_query::{filter_game_indices, GameFilter};
 use lb_storage::{
@@ -1054,6 +1071,11 @@ pub struct LibraryControllerRust {
     writing: bool,
     launching: bool,
     launch_session_active: bool,
+    startup_screen_active: bool,
+    startup_screen_primary_started: bool,
+    startup_screen_delay_ms: i32,
+    startup_screen_game_title: QString,
+    startup_screen_settings_source: QString,
     last_launch_succeeded: bool,
     write_conflict: bool,
     game_count: i32,
@@ -1129,6 +1151,8 @@ pub struct LibraryControllerRust {
     row_insert_notifications: u64,
     row_remove_notifications: u64,
     launch_notifications: u64,
+    startup_screen_presentations: u64,
+    startup_screen_timer_dismissals: u64,
     session_stats_writes: u64,
     session_stats_error: Option<String>,
     pending_post_reload_message: Option<String>,
@@ -10963,11 +10987,23 @@ impl qobject::LibraryController {
         let title = game.title.clone();
         self.as_mut().set_launching(true);
         self.as_mut().set_launch_session_active(true);
+        self.as_mut().set_startup_screen_active(false);
+        self.as_mut().set_startup_screen_primary_started(false);
+        self.as_mut().set_startup_screen_delay_ms(0);
+        self.as_mut()
+            .set_startup_screen_game_title(QString::default());
+        self.as_mut()
+            .set_startup_screen_settings_source(QString::default());
         self.as_mut().set_last_launch_succeeded(false);
         self.as_mut().set_last_launch_game_id(QString::default());
         self.as_mut().set_last_launch_target_id(QString::default());
-        self.as_mut().rust_mut().session_stats_writes = 0;
-        self.as_mut().rust_mut().session_stats_error = None;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.session_stats_writes = 0;
+            rust.session_stats_error = None;
+            rust.startup_screen_presentations = 0;
+            rust.startup_screen_timer_dismissals = 0;
+        }
         self.as_mut()
             .set_status_message(qstring(format!("Launching {title} in the background...")));
 
@@ -11019,6 +11055,19 @@ impl qobject::LibraryController {
                 let mut primary_started = false;
                 let mut session_stats_errors = Vec::new();
                 let result = sequence.and_then(|sequence| {
+                    let startup = sequence.startup;
+                    let startup_title = sequence.game_title.clone();
+                    event_thread
+                        .queue(move |mut controller| {
+                            controller.as_mut().begin_startup_screen(
+                                generation,
+                                startup_title,
+                                startup,
+                            );
+                        })
+                        .map_err(|error| {
+                            format!("could not present the startup screen: {error}")
+                        })?;
                     let template = primary_launch_template(&sequence)?;
                     let report = execute_launch_sequence(&sequence, |event| match event {
                         LaunchSequenceEvent::StepStarted {
@@ -11102,9 +11151,52 @@ impl qobject::LibraryController {
         if let Err(error) = spawn_result {
             self.as_mut().set_launching(false);
             self.as_mut().set_launch_session_active(false);
+            self.as_mut().set_startup_screen_active(false);
+            self.as_mut().set_startup_screen_primary_started(false);
             self.as_mut()
                 .set_status_message(qstring(format!("Could not start game launcher: {error}")));
         }
+    }
+
+    fn begin_startup_screen(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        game_title: String,
+        startup: LaunchStartupPolicy,
+    ) {
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        self.as_mut().set_startup_screen_primary_started(false);
+        self.as_mut().set_startup_screen_delay_ms(
+            i32::try_from(startup.load_delay.as_millis()).unwrap_or(i32::MAX),
+        );
+        self.as_mut()
+            .set_startup_screen_game_title(qstring(game_title));
+        self.as_mut()
+            .set_startup_screen_settings_source(qstring(startup.source.label()));
+        self.as_mut().set_startup_screen_active(startup.enabled);
+        if startup.enabled {
+            self.as_mut().rust_mut().startup_screen_presentations = self
+                .as_ref()
+                .rust()
+                .startup_screen_presentations
+                .saturating_add(1);
+        }
+    }
+
+    pub fn dismiss_startup_screen(mut self: Pin<&mut Self>) {
+        if !*self.as_ref().startup_screen_active()
+            || !*self.as_ref().startup_screen_primary_started()
+        {
+            return;
+        }
+        self.as_mut().set_startup_screen_active(false);
+        self.as_mut().rust_mut().startup_screen_timer_dismissals = self
+            .as_ref()
+            .rust()
+            .startup_screen_timer_dismissals
+            .saturating_add(1);
     }
 
     pub fn dismiss_delete_blocker(mut self: Pin<&mut Self>) {
@@ -12293,6 +12385,45 @@ impl qobject::LibraryController {
             eprintln!(
                 "LAUNCH_SMOKE_COMPLETE id={game_id} launches={} stats_writes={}",
                 rust.launch_notifications, rust.session_stats_writes,
+            );
+        }
+        success
+    }
+
+    pub fn report_launch_lifecycle_smoke_success(
+        &self,
+        game_id: QString,
+        startup_visible_seen: bool,
+        primary_started_seen: bool,
+        dismissed_before_exit: bool,
+    ) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let success = rust.launch_notifications == 1
+            && rust.session_stats_writes >= 1
+            && rust.session_stats_error.is_none()
+            && rust.startup_screen_presentations == 1
+            && rust.startup_screen_timer_dismissals == 1
+            && startup_visible_seen
+            && primary_started_seen
+            && dismissed_before_exit
+            && *self.startup_screen_delay_ms() == 250
+            && self.startup_screen_game_title().to_string() == "Fixture Racer"
+            && self.startup_screen_settings_source().to_string() == "emulator default"
+            && self.last_launch_game_id().to_string() == game_id
+            && self.last_launch_target_id().to_string() == game_id
+            && *self.last_launch_succeeded()
+            && !*self.launching()
+            && !*self.launch_session_active()
+            && !*self.startup_screen_active()
+            && !*self.startup_screen_primary_started();
+        if success {
+            eprintln!(
+                "LAUNCH_LIFECYCLE_SMOKE_COMPLETE id={game_id} startup_presentations={} timer_dismissals={} delay_ms={} source=\"{}\"",
+                rust.startup_screen_presentations,
+                rust.startup_screen_timer_dismissals,
+                self.startup_screen_delay_ms(),
+                self.startup_screen_settings_source(),
             );
         }
         success
@@ -14144,6 +14275,9 @@ impl qobject::LibraryController {
             Ok(launched) => {
                 self.as_mut().rust_mut().launch_notifications =
                     self.as_ref().rust().launch_notifications.saturating_add(1);
+                if *self.as_ref().startup_screen_active() {
+                    self.as_mut().set_startup_screen_primary_started(true);
+                }
                 self.as_mut().set_last_launch_succeeded(true);
                 self.as_mut()
                     .set_last_launch_game_id(qstring(&launched.game_id));
@@ -14158,6 +14292,8 @@ impl qobject::LibraryController {
                 )));
             }
             Err(error) => {
+                self.as_mut().set_startup_screen_active(false);
+                self.as_mut().set_startup_screen_primary_started(false);
                 self.as_mut().set_last_launch_succeeded(false);
                 self.as_mut().set_last_launch_game_id(QString::default());
                 self.as_mut().set_last_launch_target_id(QString::default());
@@ -14289,6 +14425,8 @@ impl qobject::LibraryController {
             return;
         }
         self.as_mut().set_launch_session_active(false);
+        self.as_mut().set_startup_screen_active(false);
+        self.as_mut().set_startup_screen_primary_started(false);
         if !primary_started {
             self.as_mut().set_launching(false);
         }
@@ -15539,6 +15677,8 @@ impl qobject::LibraryController {
             rust.row_insert_notifications = 0;
             rust.row_remove_notifications = 0;
             rust.launch_notifications = 0;
+            rust.startup_screen_presentations = 0;
+            rust.startup_screen_timer_dismissals = 0;
             rust.emulator_write_notifications = 0;
             rust.emulator_bios_scan_notifications = 0;
             rust.emulator_install_notifications = 0;
@@ -15558,6 +15698,13 @@ impl qobject::LibraryController {
         self.as_mut().set_emulator_release_checking(false);
         self.as_mut().set_emulator_installing(false);
         self.as_mut().set_emulator_install_progress(0.0);
+        self.as_mut().set_startup_screen_active(false);
+        self.as_mut().set_startup_screen_primary_started(false);
+        self.as_mut().set_startup_screen_delay_ms(0);
+        self.as_mut()
+            .set_startup_screen_game_title(QString::default());
+        self.as_mut()
+            .set_startup_screen_settings_source(QString::default());
         self.as_mut()
             .set_emulator_bios_audit_json(QString::default());
         self.as_mut().set_emulator_release_json(QString::default());

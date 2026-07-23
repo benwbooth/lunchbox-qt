@@ -36,6 +36,46 @@ use thiserror::Error;
 /// rule rather than a UI timer.
 pub const AUTO_RUN_BEFORE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaunchStartupSettingsSource {
+    GameOverride,
+    EmulatorDefault,
+    DirectGame,
+}
+
+impl LaunchStartupSettingsSource {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::GameOverride => "game override",
+            Self::EmulatorDefault => "emulator default",
+            Self::DirectGame => "game settings",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LaunchStartupPolicy {
+    pub enabled: bool,
+    pub load_delay: Duration,
+    pub source: LaunchStartupSettingsSource,
+}
+
+impl LaunchStartupPolicy {
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            load_delay: Duration::ZERO,
+            source: LaunchStartupSettingsSource::DirectGame,
+        }
+    }
+}
+
+impl Default for LaunchStartupPolicy {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchRequest {
     pub executable: PathBuf,
@@ -115,6 +155,7 @@ pub struct LaunchStep {
 pub struct LaunchSequence {
     pub game_id: String,
     pub game_title: String,
+    pub startup: LaunchStartupPolicy,
     pub steps: Vec<LaunchStep>,
 }
 
@@ -833,32 +874,34 @@ fn build_game_launch_sequence_internal<'a>(
         });
     }
 
+    let main_plan = if let Some(archive_extractor) = archive_extractor {
+        prepare_main_game_plan_for_sequence(
+            launchbox_root,
+            game,
+            &applications,
+            mounts,
+            configuration,
+            context,
+            path_resolver,
+            archive_extractor,
+        )?
+    } else {
+        build_launch_plan_with_mounts_context_and_resolver(
+            launchbox_root,
+            game,
+            mounts,
+            configuration,
+            context,
+            path_resolver,
+        )?
+    };
+    let startup = launch_startup_policy(game, &main_plan, configuration)?;
     steps.push(LaunchStep {
         role: LaunchStepRole::MainGame,
         wait_for_exit: applications
             .iter()
             .any(|application| application.auto_run_after),
-        plan: if let Some(archive_extractor) = archive_extractor {
-            prepare_main_game_plan_for_sequence(
-                launchbox_root,
-                game,
-                &applications,
-                mounts,
-                configuration,
-                context,
-                path_resolver,
-                archive_extractor,
-            )?
-        } else {
-            build_launch_plan_with_mounts_context_and_resolver(
-                launchbox_root,
-                game,
-                mounts,
-                configuration,
-                context,
-                path_resolver,
-            )?
-        },
+        plan: main_plan,
     });
 
     for application in applications
@@ -897,6 +940,7 @@ fn build_game_launch_sequence_internal<'a>(
     Ok(LaunchSequence {
         game_id: game.id.clone(),
         game_title: game.title.clone(),
+        startup,
         steps,
     })
 }
@@ -929,21 +973,24 @@ pub fn build_selected_additional_application_sequence_with_mounts_context_and_re
     context: &LaunchContext,
     path_resolver: &dyn LaunchPathResolver,
 ) -> Result<LaunchSequence, LaunchPlanError> {
+    let plan = build_additional_application_plan_with_mounts_context_and_resolver(
+        launchbox_root,
+        game,
+        application,
+        mounts,
+        configuration,
+        context,
+        path_resolver,
+    )?;
+    let startup = launch_startup_policy(game, &plan, configuration)?;
     Ok(LaunchSequence {
         game_id: game.id.clone(),
         game_title: game.title.clone(),
+        startup,
         steps: vec![LaunchStep {
             role: LaunchStepRole::SelectedAdditionalApplication,
             wait_for_exit: false,
-            plan: build_additional_application_plan_with_mounts_context_and_resolver(
-                launchbox_root,
-                game,
-                application,
-                mounts,
-                configuration,
-                context,
-                path_resolver,
-            )?,
+            plan,
         }],
     })
 }
@@ -980,23 +1027,65 @@ pub fn prepare_selected_additional_application_sequence_with_mounts_context_and_
     path_resolver: &dyn LaunchPathResolver,
     archive_extractor: &ArchiveExtractor,
 ) -> Result<LaunchSequence, LaunchPlanError> {
+    let plan = prepare_additional_application_plan_with_mounts_context_and_resolver(
+        launchbox_root,
+        game,
+        application,
+        mounts,
+        configuration,
+        context,
+        path_resolver,
+        archive_extractor,
+    )?;
+    let startup = launch_startup_policy(game, &plan, configuration)?;
     Ok(LaunchSequence {
         game_id: game.id.clone(),
         game_title: game.title.clone(),
+        startup,
         steps: vec![LaunchStep {
             role: LaunchStepRole::SelectedAdditionalApplication,
             wait_for_exit: false,
-            plan: prepare_additional_application_plan_with_mounts_context_and_resolver(
-                launchbox_root,
-                game,
-                application,
-                mounts,
-                configuration,
-                context,
-                path_resolver,
-                archive_extractor,
-            )?,
+            plan,
         }],
+    })
+}
+
+fn launch_startup_policy(
+    game: &Game,
+    primary_plan: &LaunchPlan,
+    configuration: Option<&EmulatorConfiguration>,
+) -> Result<LaunchStartupPolicy, LaunchPlanError> {
+    if game.override_default_startup_screen_settings {
+        return Ok(LaunchStartupPolicy {
+            enabled: game.use_startup_screen,
+            load_delay: Duration::from_millis(u64::from(game.startup_load_delay)),
+            source: LaunchStartupSettingsSource::GameOverride,
+        });
+    }
+
+    if let LaunchKind::Emulator { id, .. } = &primary_plan.kind {
+        let emulator = configuration
+            .and_then(|configuration| {
+                configuration
+                    .emulators
+                    .iter()
+                    .find(|emulator| emulator.id.eq_ignore_ascii_case(id))
+            })
+            .ok_or_else(|| LaunchPlanError::EmulatorNotFound {
+                game_id: game.id.clone(),
+                emulator_id: id.clone(),
+            })?;
+        return Ok(LaunchStartupPolicy {
+            enabled: emulator.use_startup_screen,
+            load_delay: Duration::from_millis(emulator.startup_load_delay),
+            source: LaunchStartupSettingsSource::EmulatorDefault,
+        });
+    }
+
+    Ok(LaunchStartupPolicy {
+        enabled: game.use_startup_screen,
+        load_delay: Duration::from_millis(u64::from(game.startup_load_delay)),
+        source: LaunchStartupSettingsSource::DirectGame,
     })
 }
 
@@ -1792,6 +1881,106 @@ mod tests {
     }
 
     #[test]
+    fn startup_policy_uses_game_override_emulator_default_or_direct_game_settings() {
+        let mut configuration = configuration();
+        configuration.emulators[0].use_startup_screen = true;
+        configuration.emulators[0].startup_load_delay = 1_250;
+
+        let mut emulated_game = game();
+        emulated_game.use_startup_screen = false;
+        emulated_game.startup_load_delay = 25;
+        let sequence = build_game_launch_sequence_with_context_and_resolver(
+            Path::new("/launchbox"),
+            &emulated_game,
+            [],
+            Some(&configuration),
+            &LaunchContext::default(),
+            &HostPathResolver::default(),
+        )
+        .expect("build emulator-default startup sequence");
+        assert_eq!(
+            sequence.startup,
+            LaunchStartupPolicy {
+                enabled: true,
+                load_delay: Duration::from_millis(1_250),
+                source: LaunchStartupSettingsSource::EmulatorDefault,
+            }
+        );
+
+        emulated_game.override_default_startup_screen_settings = true;
+        emulated_game.use_startup_screen = true;
+        emulated_game.startup_load_delay = 375;
+        let sequence = build_game_launch_sequence_with_context_and_resolver(
+            Path::new("/launchbox"),
+            &emulated_game,
+            [],
+            Some(&configuration),
+            &LaunchContext::default(),
+            &HostPathResolver::default(),
+        )
+        .expect("build game-override startup sequence");
+        assert_eq!(
+            sequence.startup,
+            LaunchStartupPolicy {
+                enabled: true,
+                load_delay: Duration::from_millis(375),
+                source: LaunchStartupSettingsSource::GameOverride,
+            }
+        );
+
+        let mut direct_game = emulated_game;
+        direct_game.override_default_startup_screen_settings = false;
+        direct_game.emulator_id = Some(UNASSIGNED_EMULATOR_ID.into());
+        direct_game.startup_load_delay = 90;
+        let sequence = build_game_launch_sequence_with_context_and_resolver(
+            Path::new("/launchbox"),
+            &direct_game,
+            [],
+            Some(&configuration),
+            &LaunchContext::default(),
+            &HostPathResolver::default(),
+        )
+        .expect("build direct-game startup sequence");
+        assert_eq!(
+            sequence.startup,
+            LaunchStartupPolicy {
+                enabled: true,
+                load_delay: Duration::from_millis(90),
+                source: LaunchStartupSettingsSource::DirectGame,
+            }
+        );
+    }
+
+    #[test]
+    fn selected_additional_application_uses_its_effective_emulator_startup_defaults() {
+        let mut configuration = configuration();
+        configuration.emulators[0].use_startup_screen = true;
+        configuration.emulators[0].startup_load_delay = 640;
+        let mut application = additional_application("version", 0);
+        application.use_emulator = true;
+        application.emulator_id = Some("emulator-id".into());
+
+        let sequence = build_selected_additional_application_sequence_with_context_and_resolver(
+            Path::new("/launchbox"),
+            &game(),
+            &application,
+            Some(&configuration),
+            &LaunchContext::default(),
+            &HostPathResolver::default(),
+        )
+        .expect("build selected application sequence");
+
+        assert_eq!(
+            sequence.startup,
+            LaunchStartupPolicy {
+                enabled: true,
+                load_delay: Duration::from_millis(640),
+                source: LaunchStartupSettingsSource::EmulatorDefault,
+            }
+        );
+    }
+
+    #[test]
     fn additional_application_keeps_parent_context_but_uses_its_own_target() {
         let application = additional_application("manual", 0);
         let plan = build_additional_application_plan_with_context_and_resolver(
@@ -2042,6 +2231,7 @@ mod tests {
         let sequence = LaunchSequence {
             game_id: "game-id".into(),
             game_title: "Game Title".into(),
+            startup: LaunchStartupPolicy::disabled(),
             steps: vec![
                 step(LaunchStepRole::AutomaticBefore, true, "before"),
                 step(LaunchStepRole::MainGame, true, "main"),
@@ -2119,6 +2309,7 @@ mod tests {
         let sequence = LaunchSequence {
             game_id: "game-id".into(),
             game_title: "Game Title".into(),
+            startup: LaunchStartupPolicy::disabled(),
             steps: vec![before, main],
         };
         let mut timed_out = false;
@@ -2144,6 +2335,7 @@ mod tests {
         let sequence = LaunchSequence {
             game_id: "game-id".into(),
             game_title: "Game Title".into(),
+            startup: LaunchStartupPolicy::disabled(),
             steps: vec![LaunchStep {
                 role: LaunchStepRole::MainGame,
                 wait_for_exit: false,
