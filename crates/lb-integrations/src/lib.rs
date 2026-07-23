@@ -5,6 +5,7 @@
 //! writing XML or mutating emulator data; the application/storage layers own
 //! those transactions.
 
+pub mod bigpemu;
 pub mod dolphin;
 pub mod emulator_discovery;
 pub mod emulator_lifecycle;

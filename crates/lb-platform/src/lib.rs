@@ -3328,6 +3328,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bigpemu_template_passes_the_native_rom_path_once_and_enables_local_data() {
+        let mut configuration = configuration();
+        configuration.emulators[0].title = "BigPEmu".into();
+        configuration.emulators[0].application_path = r"Emulators\BigPEmu\bigpemu".into();
+        configuration.emulators[0].command_line = Some("%romfile% -localdata".into());
+        configuration.platforms[0].command_line = None;
+        let mut game = game();
+        game.platform = "Atari Jaguar".into();
+        game.application_path = r"Games\Atari Jaguar\Tempest 2000.j64".into();
+        game.command_line = None;
+
+        let plan = build_launch_plan(Path::new("/launchbox"), &game, Some(&configuration))
+            .expect("build BigPEmu plan");
+
+        assert_eq!(
+            plan.request.executable,
+            PathBuf::from("/launchbox/Emulators/BigPEmu/bigpemu")
+        );
+        assert_eq!(
+            plan.request.arguments,
+            [
+                "/launchbox/Games/Atari Jaguar/Tempest 2000.j64",
+                "-localdata",
+            ]
+            .map(OsString::from)
+        );
+        assert_eq!(
+            plan.request.working_directory,
+            Some(PathBuf::from("/launchbox/Emulators/BigPEmu"))
+        );
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn rom_location_uses_the_same_explicit_windows_drive_mapping_as_the_rom() {

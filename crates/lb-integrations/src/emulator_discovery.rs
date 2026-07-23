@@ -4,12 +4,15 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::bigpemu::installed_bigpemu_version;
+
 /// Emulator identities for which the port has an evidence-backed native
 /// executable name and registration template. This is intentionally smaller
 /// than LaunchBox's full plugin catalog: a filename is not treated as an
 /// emulator unless its adapter has been reviewed.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum EmulatorDiscoveryProfile {
+    BigPEmu,
     RetroArch,
     Dolphin,
     Pcsx2,
@@ -18,7 +21,8 @@ pub enum EmulatorDiscoveryProfile {
 }
 
 impl EmulatorDiscoveryProfile {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
+        Self::BigPEmu,
         Self::RetroArch,
         Self::Dolphin,
         Self::Pcsx2,
@@ -28,6 +32,7 @@ impl EmulatorDiscoveryProfile {
 
     pub const fn id(self) -> &'static str {
         match self {
+            Self::BigPEmu => "bigpemu",
             Self::RetroArch => "retroarch",
             Self::Dolphin => "dolphin",
             Self::Pcsx2 => "pcsx2",
@@ -38,6 +43,7 @@ impl EmulatorDiscoveryProfile {
 
     pub const fn title(self) -> &'static str {
         match self {
+            Self::BigPEmu => "BigPEmu",
             Self::RetroArch => "RetroArch",
             Self::Dolphin => "Dolphin",
             Self::Pcsx2 => "PCSX2",
@@ -51,6 +57,7 @@ impl EmulatorDiscoveryProfile {
     /// safe emulator-wide default.
     pub const fn command_line(self) -> Option<&'static str> {
         match self {
+            Self::BigPEmu => Some("%romfile% -localdata"),
             Self::RetroArch => None,
             Self::Dolphin => Some(
                 "-b -C Dolphin.Interface.ConfirmStop=False -C Dolphin.Display.Fullscreen=True -e",
@@ -70,21 +77,22 @@ impl EmulatorDiscoveryProfile {
     }
 
     pub const fn use_pause_screen(self) -> bool {
-        !matches!(self, Self::Xemu)
+        !matches!(self, Self::BigPEmu | Self::Xemu)
     }
 
     pub const fn suspend_process_on_pause(self) -> bool {
-        !matches!(self, Self::Xemu)
+        !matches!(self, Self::BigPEmu | Self::Xemu)
     }
 
     pub const fn forceful_pause_screen_activation(self) -> bool {
-        !matches!(self, Self::Xemu)
+        !matches!(self, Self::BigPEmu | Self::Xemu)
     }
 
     /// Platforms whose support is explicit in the concrete 13.27 adapter and
     /// does not depend on the online LaunchBox Games DB.
     pub const fn supported_platforms(self) -> &'static [&'static str] {
         match self {
+            Self::BigPEmu => &["Atari Jaguar", "Atari Jaguar CD"],
             Self::RetroArch => &[],
             Self::Dolphin => &["Nintendo GameCube", "Nintendo Wii"],
             Self::Pcsx2 => &["Sony PlayStation 2"],
@@ -96,6 +104,7 @@ impl EmulatorDiscoveryProfile {
     #[cfg(target_os = "windows")]
     const fn executable_names(self) -> &'static [&'static str] {
         match self {
+            Self::BigPEmu => &["BigPEmu.exe"],
             Self::RetroArch => &["retroarch.exe"],
             Self::Dolphin => &["Dolphin.exe"],
             Self::Pcsx2 => &["pcsx2-qt.exe", "pcsx2.exe"],
@@ -107,6 +116,9 @@ impl EmulatorDiscoveryProfile {
     #[cfg(target_os = "macos")]
     const fn executable_names(self) -> &'static [&'static str] {
         match self {
+            // No official desktop macOS build is currently published. Do not
+            // classify an unrelated file until a native artifact is reviewed.
+            Self::BigPEmu => &[],
             Self::RetroArch => &["retroarch"],
             Self::Dolphin => &["dolphin-emu"],
             Self::Pcsx2 => &["pcsx2-qt", "PCSX2"],
@@ -118,6 +130,7 @@ impl EmulatorDiscoveryProfile {
     #[cfg(all(unix, not(target_os = "macos")))]
     const fn executable_names(self) -> &'static [&'static str] {
         match self {
+            Self::BigPEmu => &["bigpemu"],
             Self::RetroArch => &["retroarch"],
             // `dolphin` is deliberately excluded on Unix because it is also
             // KDE's file manager. The emulator installs `dolphin-emu`.
@@ -166,6 +179,9 @@ pub struct DiscoveredEmulatorExecutable {
     pub profile: EmulatorDiscoveryProfile,
     pub executable: PathBuf,
     pub source: EmulatorDiscoverySource,
+    /// Version obtained by passive, profile-specific file inspection. Unknown
+    /// versions remain `None`; discovery never starts a candidate to ask it.
+    pub installed_version: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -300,10 +316,17 @@ fn push_candidate(
     source: EmulatorDiscoverySource,
 ) {
     if is_runnable_file(&executable) {
+        let installed_version = match profile {
+            EmulatorDiscoveryProfile::BigPEmu => {
+                installed_bigpemu_version(&executable).ok().flatten()
+            }
+            _ => None,
+        };
         candidates.push(DiscoveredEmulatorExecutable {
             profile,
             executable,
             source,
+            installed_version,
         });
     }
 }
@@ -344,6 +367,10 @@ fn native_application_candidates() -> Vec<(EmulatorDiscoveryProfile, PathBuf)> {
             continue;
         };
         candidates.extend([
+            (
+                EmulatorDiscoveryProfile::BigPEmu,
+                root.join("BigPEmu/BigPEmu.exe"),
+            ),
             (
                 EmulatorDiscoveryProfile::RetroArch,
                 root.join("RetroArch-Win64/retroarch.exe"),
@@ -420,6 +447,7 @@ mod tests {
         let portable = temporary.path().join("Emulators");
         let path_directory = temporary.path().join("bin");
         fs::create_dir_all(portable.join("PCSX2/bin")).expect("portable tree");
+        fs::create_dir_all(portable.join("BigPEmu")).expect("portable BigPEmu tree");
         fs::create_dir_all(portable.join("Xemu")).expect("portable Xemu tree");
         fs::create_dir_all(&path_directory).expect("PATH tree");
 
@@ -429,6 +457,17 @@ mod tests {
             portable.join("PCSX2/bin/pcsx2-qt")
         };
         make_executable(&portable_pcsx2);
+        let portable_bigpemu = if cfg!(target_os = "windows") {
+            portable.join("BigPEmu/BigPEmu.exe")
+        } else {
+            portable.join("BigPEmu/bigpemu")
+        };
+        make_executable(&portable_bigpemu);
+        fs::write(
+            portable.join("BigPEmu/ReadMe.txt"),
+            b"Title: BigPEmu\nVersion: 1.221\n",
+        )
+        .expect("BigPEmu readme");
         let portable_xemu = if cfg!(target_os = "windows") {
             portable.join("Xemu/xemu.exe")
         } else {
@@ -461,6 +500,12 @@ mod tests {
         let second = discover_emulator_executables(&request);
         assert_eq!(first, second);
         assert!(first.iter().any(|candidate| {
+            candidate.profile == EmulatorDiscoveryProfile::BigPEmu
+                && candidate.executable == portable_bigpemu
+                && candidate.source == EmulatorDiscoverySource::PortableLibrary
+                && candidate.installed_version.as_deref() == Some("1.221")
+        }));
+        assert!(first.iter().any(|candidate| {
             candidate.profile == EmulatorDiscoveryProfile::Pcsx2
                 && candidate.executable == portable_pcsx2
                 && candidate.source == EmulatorDiscoverySource::PortableLibrary
@@ -483,7 +528,7 @@ mod tests {
                 .iter()
                 .any(|candidate| candidate.profile == EmulatorDiscoveryProfile::RetroArch));
         }
-        assert_eq!(fs::read_dir(&portable).expect("portable root").count(), 2);
+        assert_eq!(fs::read_dir(&portable).expect("portable root").count(), 3);
     }
 
     #[cfg(unix)]
@@ -518,6 +563,15 @@ mod tests {
         assert!(EmulatorDiscoveryProfile::RetroArch
             .supported_platforms()
             .is_empty());
+        assert_eq!(
+            EmulatorDiscoveryProfile::BigPEmu.supported_platforms(),
+            ["Atari Jaguar", "Atari Jaguar CD"]
+        );
+        assert_eq!(
+            EmulatorDiscoveryProfile::BigPEmu.command_line(),
+            Some("%romfile% -localdata")
+        );
+        assert!(!EmulatorDiscoveryProfile::BigPEmu.use_pause_screen());
         assert_eq!(
             EmulatorDiscoveryProfile::Dolphin.supported_platforms(),
             ["Nintendo GameCube", "Nintendo Wii"]

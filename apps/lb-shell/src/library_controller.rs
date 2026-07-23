@@ -201,6 +201,9 @@ pub mod qobject {
         fn discovered_emulator_source_at(self: &LibraryController, index: i32) -> QString;
 
         #[qinvokable]
+        fn discovered_emulator_version_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
         fn discovered_emulator_registered_at(self: &LibraryController, index: i32) -> bool;
 
         #[qinvokable]
@@ -8043,6 +8046,7 @@ fn managed_pcsx2_emulator_payload(
         profile: EmulatorDiscoveryProfile::Pcsx2,
         executable: executable_path.to_path_buf(),
         source: EmulatorDiscoverySource::PortableLibrary,
+        installed_version: None,
     };
     let serialized = discovered_emulator_payload(
         &candidate,
@@ -15473,6 +15477,13 @@ impl qobject::LibraryController {
             .unwrap_or_default()
     }
 
+    pub fn discovered_emulator_version_at(&self, index: i32) -> QString {
+        self.discovered_emulator_at(index)
+            .and_then(|candidate| candidate.installed_version.as_deref())
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
     pub fn discovered_emulator_registered_at(&self, index: i32) -> bool {
         let Some(candidate) = self.discovered_emulator_at(index) else {
             return false;
@@ -19175,6 +19186,7 @@ mod tests {
             profile: EmulatorDiscoveryProfile::Pcsx2,
             executable,
             source: EmulatorDiscoverySource::PortableLibrary,
+            installed_version: None,
         };
         let platforms = vec![
             "Nintendo GameCube".to_string(),
@@ -19230,6 +19242,7 @@ mod tests {
             profile: EmulatorDiscoveryProfile::Xemu,
             executable,
             source: EmulatorDiscoverySource::PortableLibrary,
+            installed_version: None,
         };
         let serialized = discovered_emulator_payload(
             &candidate,
@@ -19271,6 +19284,63 @@ mod tests {
     }
 
     #[test]
+    fn discovered_bigpemu_payload_uses_native_jaguar_defaults_without_package_scripts() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let executable = directory.path().join("Emulators/BigPEmu/bigpemu");
+        let candidate = DiscoveredEmulatorExecutable {
+            profile: EmulatorDiscoveryProfile::BigPEmu,
+            executable,
+            source: EmulatorDiscoverySource::PortableLibrary,
+            installed_version: Some("1.221".into()),
+        };
+        let serialized = discovered_emulator_payload(
+            &candidate,
+            directory.path(),
+            &HostPathResolver::default(),
+            &[
+                "Atari Jaguar".into(),
+                "Atari Jaguar CD".into(),
+                "Microsoft Xbox".into(),
+            ],
+            None,
+        )
+        .expect("BigPEmu discovery payload");
+        let payload: EmulatorEditPayload =
+            serde_json::from_str(&serialized).expect("typed discovery payload");
+
+        assert_eq!(payload.emulator.title, "BigPEmu");
+        assert_eq!(
+            payload.emulator.application_path,
+            r"Emulators\BigPEmu\bigpemu"
+        );
+        assert_eq!(
+            payload.emulator.command_line.as_deref(),
+            Some("%romfile% -localdata")
+        );
+        assert!(!payload.emulator.auto_extract);
+        assert!(!payload.emulator.hide_console);
+        assert!(payload.emulator.use_startup_screen);
+        assert!(!payload.emulator.use_pause_screen);
+        assert!(payload.emulator.hide_mouse_cursor_in_game);
+        assert!(!payload.emulator.suspend_process_on_pause);
+        assert!(!payload.emulator.forceful_pause_screen_activation);
+        assert!(payload.emulator.auto_hotkey_script.is_none());
+        assert_eq!(payload.emulator.startup_load_delay, 5_000);
+        assert_eq!(
+            payload
+                .platforms
+                .iter()
+                .map(|mapping| mapping.platform.as_str())
+                .collect::<Vec<_>>(),
+            ["Atari Jaguar", "Atari Jaguar CD"]
+        );
+        assert!(payload.platforms.iter().all(|mapping| mapping.default
+            && mapping.command_line.is_none()
+            && mapping.auto_extract.is_none()
+            && !mapping.m3u_disc_load_enabled));
+    }
+
+    #[test]
     fn discovered_emulator_payload_respects_existing_defaults_and_registration() {
         let directory = tempfile::tempdir().expect("temporary library");
         let executable = directory.path().join("Emulators/PCSX2/pcsx2-qt");
@@ -19278,6 +19348,7 @@ mod tests {
             profile: EmulatorDiscoveryProfile::Pcsx2,
             executable,
             source: EmulatorDiscoverySource::PortableLibrary,
+            installed_version: None,
         };
         let configuration = EmulatorConfiguration {
             emulators: vec![Emulator {

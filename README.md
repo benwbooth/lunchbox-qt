@@ -162,7 +162,7 @@ freshly scans games and additional applications and refuses to orphan an
 explicit emulator reference. Application paths remain lexical LaunchBox
 strings on every host. The same manager can scan the portable `Emulators`
 folder, native application locations, and `PATH` for evidence-reviewed
-RetroArch, Dolphin, PCSX2, ScummVM, and Xemu executable names. Results show their
+BigPEmu, RetroArch, Dolphin, PCSX2, ScummVM, and Xemu executable names. Results show their
 native path and provenance, never execute a candidate, and require review in
 the complete editor before transactional registration. Portable paths are
 stored with LaunchBox backslashes while mapped and external paths use the

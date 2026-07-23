@@ -5329,6 +5329,8 @@ ApplicationWindow {
                         controller.discovered_emulator_path_at(index)
                     property string discoverySource:
                         controller.discovered_emulator_source_at(index)
+                    property string installedVersion:
+                        controller.discovered_emulator_version_at(index)
                     property bool registered:
                         controller.discovered_emulator_registered_at(index)
                     highlighted:
@@ -5348,6 +5350,10 @@ ApplicationWindow {
                                 text: discoveredEmulatorDelegate.executablePath
                                       + " · "
                                       + discoveredEmulatorDelegate.discoverySource
+                                      + (discoveredEmulatorDelegate.installedVersion.length > 0
+                                         ? " · version "
+                                           + discoveredEmulatorDelegate.installedVersion
+                                         : "")
                                 color: "#7d8590"
                                 font.pixelSize: 11
                                 elide: Text.ElideMiddle
