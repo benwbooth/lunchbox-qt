@@ -1,0 +1,36 @@
+  <GameSave>
+    <GameId>fixture-adventure</GameId>
+    <EmulatorFileName>retroarch.exe</EmulatorFileName>
+    <EmulatorCore>cores\snes9x_libretro.dll</EmulatorCore>
+    <Title>Live RetroArch Save</Title>
+    <SaveGroupName>Backup Run</SaveGroupName>
+    <DisplayChipText>Active</DisplayChipText>
+    <SaveGroupId>fixture-save-group-alpha</SaveGroupId>
+    <MatchLineageId>fixture-lineage-alpha</MatchLineageId>
+    <MigrationFamilyId>fixture-migration-alpha</MigrationFamilyId>
+    <FilePath>C:\Users\Ben\RetroArch\saves\fixture-live.srm</FilePath>
+    <OriginalFileName>fixture-live.srm</OriginalFileName>
+    <Slot>0</Slot>
+    <ReportedFileSizeBytes>32768</ReportedFileSizeBytes>
+    <ReportedLastModifiedUtc>2026-07-22T01:02:03.4567890Z</ReportedLastModifiedUtc>
+    <Md5>0123456789abcdef0123456789abcdef</Md5>
+    <FutureGameSaveField>keep-live-save-data</FutureGameSaveField>
+  </GameSave>
+  <GameSave>
+    <GameId>fixture-adventure</GameId>
+    <EmulatorFileName>retroarch.exe</EmulatorFileName>
+    <EmulatorCore>cores\snes9x_libretro.dll</EmulatorCore>
+    <Title>Vault Backup</Title>
+    <SaveGroupName>Backup Run</SaveGroupName>
+    <DisplayChipText>Vault</DisplayChipText>
+    <SaveGroupId>fixture-save-group-alpha</SaveGroupId>
+    <MatchLineageId>fixture-lineage-alpha</MatchLineageId>
+    <MigrationFamilyId>fixture-migration-alpha</MigrationFamilyId>
+    <FilePath>Saves\Fixture Console\fixture-adventure-01.srm</FilePath>
+    <OriginalFileName>fixture-live.srm</OriginalFileName>
+    <Slot>0</Slot>
+    <ReportedFileSizeBytes>32768</ReportedFileSizeBytes>
+    <ReportedLastModifiedUtc>2026-07-21T23:59:58.0000000Z</ReportedLastModifiedUtc>
+    <Md5>fedcba9876543210fedcba9876543210</Md5>
+    <FutureGameSaveField>keep-vault-save-data</FutureGameSaveField>
+  </GameSave>

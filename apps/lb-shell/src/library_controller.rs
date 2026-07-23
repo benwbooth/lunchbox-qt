@@ -43,6 +43,7 @@ pub mod qobject {
         #[qproperty(QString, navigation_filter_key)]
         #[qproperty(i32, platform_revision)]
         #[qproperty(i32, additional_application_revision)]
+        #[qproperty(i32, game_save_revision)]
         #[qproperty(i32, pending_recovery_count)]
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
@@ -308,6 +309,52 @@ pub mod qobject {
         );
 
         #[qinvokable]
+        fn game_save_count(self: &LibraryController, row: i32, game_id: QString) -> i32;
+
+        #[qinvokable]
+        fn game_save_manager_payload(
+            self: &LibraryController,
+            row: i32,
+            game_id: QString,
+        ) -> QString;
+
+        #[qinvokable]
+        fn rename_game_save_version(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            source_index: i32,
+            title: QString,
+        );
+
+        #[qinvokable]
+        fn rename_game_save_group(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            group_key: QString,
+            name: QString,
+        );
+
+        #[qinvokable]
+        fn combine_game_save_groups(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            source_group_key: QString,
+            target_group_key: QString,
+        );
+
+        #[qinvokable]
+        fn split_game_save_version(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            source_index: i32,
+            name: QString,
+        );
+
+        #[qinvokable]
         fn alternate_name_count(self: &LibraryController, row: i32, game_id: QString) -> i32;
 
         #[qinvokable]
@@ -393,6 +440,12 @@ pub mod qobject {
             self: &LibraryController,
             game_id: QString,
             application_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_game_save_metadata_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
         ) -> bool;
 
         #[qinvokable]
@@ -564,9 +617,10 @@ use cxx_qt_lib::{
 };
 use lb_domain::{
     AdditionalApplication, AdditionalApplicationEdit, AlternateName, CustomField,
-    EmulatorConfiguration, Game, GameLaunchConfiguration, GameMetadata, Mount, NavigationMetadata,
-    ParentRelationship, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
-    PlaylistDocument, PlaylistFilter, PlaylistGame, UNASSIGNED_EMULATOR_ID,
+    EmulatorConfiguration, Game, GameLaunchConfiguration, GameMetadata, GameSave,
+    GameSaveMetadataEdit, Mount, NavigationMetadata, ParentRelationship, PlatformCategory,
+    PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
+    UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -578,14 +632,14 @@ use lb_platform::{
     prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     ArchiveExtractor, HostPathMappings, HostPathResolver, LaunchContext, LaunchKind,
-    LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchTarget,
+    LaunchPathResolver, LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchTarget,
 };
 use lb_query::{filter_game_indices, GameFilter};
 use lb_storage::{
     find_game_references, find_platform_references, pending_transaction_manifests,
-    recover_pending_transactions, AuxiliaryDocument, GameReference, IndexedPlatformRecordEdit,
-    LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame, NewGameMetadata,
-    PlatformDocument, PlatformReference, StorageError, TransactionError,
+    recover_pending_transactions, AuxiliaryDocument, GameReference, IndexedGameSaveMetadataEdit,
+    IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame,
+    NewGameMetadata, PlatformDocument, PlatformReference, StorageError, TransactionError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -636,8 +690,9 @@ const GAME_SCUMM_VM_ASPECT_CORRECTION_ROLE: i32 = 289;
 const GAME_SCUMM_VM_FULLSCREEN_ROLE: i32 = 290;
 const GAME_SCUMM_VM_GAME_DATA_FOLDER_PATH_ROLE: i32 = 291;
 const GAME_SCUMM_VM_GAME_TYPE_ROLE: i32 = 292;
+const GAME_SAVE_COUNT_ROLE: i32 = 293;
 
-const GAME_ROLES: [(i32, &str); 36] = [
+const GAME_ROLES: [(i32, &str); 37] = [
     (GAME_ID_ROLE, "gameId"),
     (GAME_TITLE_ROLE, "gameTitle"),
     (GAME_PLATFORM_ROLE, "gamePlatform"),
@@ -689,6 +744,7 @@ const GAME_ROLES: [(i32, &str); 36] = [
         "gameScummVmGameDataFolderPath",
     ),
     (GAME_SCUMM_VM_GAME_TYPE_ROLE, "gameScummVmGameType"),
+    (GAME_SAVE_COUNT_ROLE, "gameSaveCount"),
 ];
 
 const EDITABLE_GAME_ROLES: [i32; 32] = [
@@ -749,6 +805,7 @@ pub struct LibraryControllerRust {
     navigation_filter_key: QString,
     platform_revision: i32,
     additional_application_revision: i32,
+    game_save_revision: i32,
     pending_recovery_count: i32,
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
@@ -769,6 +826,7 @@ pub struct LibraryControllerRust {
     mounts_by_game: BTreeMap<String, Vec<Mount>>,
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
+    game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
@@ -797,6 +855,7 @@ pub struct LibraryControllerRust {
     session_stats_writes: u64,
     session_stats_error: Option<String>,
     additional_application_write_notifications: u64,
+    game_save_write_notifications: u64,
     category_write_notifications: u64,
     last_category_detached_children: usize,
     playlist_write_notifications: u64,
@@ -847,6 +906,7 @@ struct LoadedLibrary {
     mounts_by_game: BTreeMap<String, Vec<Mount>>,
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
+    game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
     navigation_catalog: NavigationCatalog,
@@ -862,6 +922,7 @@ struct LibraryReplacement {
     mounts_by_game: BTreeMap<String, Vec<Mount>>,
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
+    game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
     navigation_catalog: NavigationCatalog,
@@ -889,6 +950,8 @@ impl LoadedLibrary {
             let mount_count = mounts_by_game.values().map(Vec::len).sum::<usize>();
             let alternate_names_by_game = collect_alternate_names_by_game(&library);
             let custom_fields_by_game = collect_custom_fields_by_game(&library);
+            let game_saves_by_game = collect_game_saves_by_game(&library);
+            let game_save_count = game_saves_by_game.values().map(Vec::len).sum::<usize>();
             let (platform_names, platform_sources) = platform_state_from_library(&library);
             let name = library
                 .platforms()
@@ -896,7 +959,7 @@ impl LoadedLibrary {
                 .map(|platform| platform.name.clone())
                 .unwrap_or_else(|| "LaunchBox Library".to_string());
             let message = format!(
-                "Loaded {} games, {additional_application_count} additional applications, and {mount_count} DOSBox mounts from {platform_count} platform file in {:.3}s.",
+                "Loaded {} games, {additional_application_count} additional applications, {game_save_count} game saves, and {mount_count} DOSBox mounts from {platform_count} platform file in {:.3}s.",
                 games.len(),
                 started.elapsed().as_secs_f64()
             );
@@ -918,6 +981,7 @@ impl LoadedLibrary {
                 mounts_by_game,
                 alternate_names_by_game,
                 custom_fields_by_game,
+                game_saves_by_game,
                 platform_names,
                 platform_sources,
                 navigation_catalog: NavigationCatalog::default(),
@@ -954,13 +1018,15 @@ impl LoadedLibrary {
         let mount_count = mounts_by_game.values().map(Vec::len).sum::<usize>();
         let alternate_names_by_game = collect_alternate_names_by_game(data.platforms());
         let custom_fields_by_game = collect_custom_fields_by_game(data.platforms());
+        let game_saves_by_game = collect_game_saves_by_game(data.platforms());
+        let game_save_count = game_saves_by_game.values().map(Vec::len).sum::<usize>();
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
             .map(|configuration| configuration.emulators.len())
             .unwrap_or_default();
         let message = format!(
-            "Loaded {} games, {additional_application_count} additional applications, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s.",
+            "Loaded {} games, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s.",
             games.len(),
             started.elapsed().as_secs_f64()
         );
@@ -980,6 +1046,7 @@ impl LoadedLibrary {
             mounts_by_game,
             alternate_names_by_game,
             custom_fields_by_game,
+            game_saves_by_game,
             platform_names,
             platform_sources,
             navigation_catalog,
@@ -1084,6 +1151,10 @@ fn collect_custom_fields_by_game(library: &LibraryIndex) -> BTreeMap<String, Vec
     index_custom_fields(library.custom_fields())
 }
 
+fn collect_game_saves_by_game(library: &LibraryIndex) -> BTreeMap<String, Vec<GameSave>> {
+    index_game_saves(library.game_saves())
+}
+
 fn index_mounts<'a>(mounts: impl IntoIterator<Item = &'a Mount>) -> BTreeMap<String, Vec<Mount>> {
     let mut by_game = BTreeMap::<String, Vec<Mount>>::new();
     for mount in mounts {
@@ -1119,6 +1190,96 @@ fn index_custom_fields<'a>(
             .push(custom_field.clone());
     }
     by_game
+}
+
+fn index_game_saves<'a>(
+    game_saves: impl IntoIterator<Item = &'a GameSave>,
+) -> BTreeMap<String, Vec<GameSave>> {
+    let mut by_game = BTreeMap::<String, Vec<GameSave>>::new();
+    for save in game_saves {
+        by_game
+            .entry(save.game_id.clone())
+            .or_default()
+            .push(save.clone());
+    }
+    by_game
+}
+
+fn game_save_group_key(save: &GameSave, source_index: usize) -> String {
+    save.save_group_id
+        .as_ref()
+        .map(|id| format!("id:{id}"))
+        .unwrap_or_else(|| format!("legacy:{source_index}"))
+}
+
+fn game_save_group_name(save: &GameSave, group_number: usize) -> String {
+    save.save_group_name
+        .as_deref()
+        .or(save.title.as_deref())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Save {group_number}"))
+}
+
+fn game_save_location_kind(
+    launchbox_root: Option<&Path>,
+    path_resolver: &HostPathResolver,
+    save: &GameSave,
+) -> &'static str {
+    let Some(launchbox_root) = launchbox_root else {
+        return "unresolved";
+    };
+    match path_resolver.resolve(launchbox_root, &save.file_path) {
+        Ok(path) if path.starts_with(launchbox_root.join("Saves")) => "vault",
+        Ok(_) => "active",
+        Err(_) => "unresolved",
+    }
+}
+
+fn build_game_save_manager_payload(
+    game_id: &str,
+    saves: &[GameSave],
+    launchbox_root: Option<&Path>,
+    path_resolver: &HostPathResolver,
+) -> GameSaveManagerPayload {
+    let mut groups = Vec::<GameSaveGroupPayload>::new();
+    for (source_index, save) in saves.iter().enumerate() {
+        let key = game_save_group_key(save, source_index);
+        let group_index = groups
+            .iter()
+            .position(|group| group.key == key)
+            .unwrap_or_else(|| {
+                let index = groups.len();
+                groups.push(GameSaveGroupPayload {
+                    key: key.clone(),
+                    name: game_save_group_name(save, index + 1),
+                    save_group_id: save.save_group_id.clone(),
+                    versions: Vec::new(),
+                });
+                index
+            });
+        let version_number = groups[group_index].versions.len() + 1;
+        groups[group_index].versions.push(GameSaveVersionPayload {
+            source_index,
+            title: save
+                .title
+                .clone()
+                .unwrap_or_else(|| format!("Version {version_number}")),
+            display_chip_text: save.display_chip_text.clone(),
+            file_path: save.file_path.clone(),
+            original_file_name: save.original_file_name.clone(),
+            slot: save.slot,
+            reported_file_size_bytes: save.reported_file_size_bytes.map(|size| size.to_string()),
+            reported_last_modified_utc: save.reported_last_modified_utc.clone(),
+            md5: save.md5.clone(),
+            location_kind: game_save_location_kind(launchbox_root, path_resolver, save),
+        });
+    }
+    GameSaveManagerPayload {
+        version: GAME_SAVE_MANAGER_PAYLOAD_VERSION,
+        game_id: game_id.to_string(),
+        groups,
+    }
 }
 
 fn index_additional_applications<'a>(
@@ -1172,6 +1333,21 @@ struct AdditionalApplicationWriteSuccess {
     game: Option<Game>,
     source: PathBuf,
     backup: PathBuf,
+}
+
+struct GameSaveWriteSuccess {
+    game_id: String,
+    saves: Vec<GameSave>,
+    source: PathBuf,
+    backup: PathBuf,
+    operation: String,
+}
+
+#[derive(Clone)]
+struct ExpectedGameSaveMetadataEdit {
+    source_index: usize,
+    expected: GameSave,
+    metadata: GameSaveMetadataEdit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1340,6 +1516,7 @@ enum PlatformWriteFailure {
 
 const GAME_EDIT_PAYLOAD_VERSION: u32 = 3;
 const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
+const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
@@ -1378,6 +1555,35 @@ struct GameEditPayload {
 struct AdditionalApplicationEditPayload {
     version: u32,
     application: AdditionalApplicationEdit,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct GameSaveVersionPayload {
+    source_index: usize,
+    title: String,
+    display_chip_text: Option<String>,
+    file_path: String,
+    original_file_name: Option<String>,
+    slot: Option<i32>,
+    reported_file_size_bytes: Option<String>,
+    reported_last_modified_utc: Option<String>,
+    md5: Option<String>,
+    location_kind: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct GameSaveGroupPayload {
+    key: String,
+    name: String,
+    save_group_id: Option<String>,
+    versions: Vec<GameSaveVersionPayload>,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct GameSaveManagerPayload {
+    version: u32,
+    game_id: String,
+    groups: Vec<GameSaveGroupPayload>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -2832,6 +3038,62 @@ fn write_additional_application(
     })
 }
 
+fn write_game_save_metadata(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    edits: Vec<ExpectedGameSaveMetadataEdit>,
+    operation: String,
+) -> Result<GameSaveWriteSuccess, GameWriteFailure> {
+    let mut document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let current = document
+        .library()
+        .game_saves
+        .iter()
+        .filter(|save| save.game_id == game_id)
+        .collect::<Vec<_>>();
+    for edit in &edits {
+        if current.get(edit.source_index).copied() != Some(&edit.expected) {
+            return Err(GameWriteFailure::Conflict(format!(
+                "game-save row {} changed after the manager was opened",
+                edit.source_index
+            )));
+        }
+    }
+    let saves = document
+        .set_game_save_metadata(
+            &game_id,
+            edits
+                .into_iter()
+                .map(|edit| IndexedGameSaveMetadataEdit {
+                    source_index: edit.source_index,
+                    metadata: edit.metadata,
+                })
+                .collect(),
+        )
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&document)
+        .map_err(classify_transaction_error)?;
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .next()
+        .map(|write| write.backup)
+        .ok_or_else(|| GameWriteFailure::Other("transaction reported no platform write".into()))?;
+    Ok(GameSaveWriteSuccess {
+        game_id,
+        saves,
+        source,
+        backup,
+        operation,
+    })
+}
+
 fn platform_catalog_path(root: &Path) -> Result<PathBuf, PlatformWriteFailure> {
     [root.join("Data/Platforms.xml"), root.join("Platforms.xml")]
         .into_iter()
@@ -4261,6 +4523,7 @@ impl qobject::LibraryController {
                     index_alternate_names(document.library().alternate_names.iter());
                 let custom_fields_by_game =
                     index_custom_fields(document.library().custom_fields.iter());
+                let game_saves_by_game = index_game_saves(document.library().game_saves.iter());
                 self.as_mut().replace_library(LibraryReplacement {
                     games,
                     game_sources: Vec::new(),
@@ -4268,6 +4531,7 @@ impl qobject::LibraryController {
                     mounts_by_game,
                     alternate_names_by_game,
                     custom_fields_by_game,
+                    game_saves_by_game,
                     platform_names: vec![document.library().name.clone()],
                     platform_sources: BTreeMap::new(),
                     navigation_catalog: NavigationCatalog::default(),
@@ -4821,6 +5085,292 @@ impl qobject::LibraryController {
             self.as_mut().set_writing(false);
             self.as_mut().set_status_message(qstring(format!(
                 "Could not start additional-application writer: {error}"
+            )));
+        }
+    }
+
+    pub fn rename_game_save_version(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        source_index: i32,
+        title: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let title = title.to_string().trim().to_string();
+        let Some(source_index) = usize::try_from(source_index).ok() else {
+            self.as_mut()
+                .set_status_message(qstring("The selected save version is invalid."));
+            return;
+        };
+        if title.is_empty() {
+            self.as_mut()
+                .set_status_message(qstring("A save-version name is required."));
+            return;
+        }
+        let Some(save) = self
+            .as_ref()
+            .game_saves_for_model(row, &game_id)
+            .and_then(|saves| saves.get(source_index))
+            .cloned()
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The selected save version no longer matches this game; reload and try again.",
+            ));
+            return;
+        };
+        let metadata = GameSaveMetadataEdit {
+            title: Some(title.clone()),
+            save_group_name: save.save_group_name.clone(),
+            save_group_id: save.save_group_id.clone(),
+        };
+        self.as_mut().start_game_save_write(
+            row,
+            game_id,
+            vec![ExpectedGameSaveMetadataEdit {
+                source_index,
+                expected: save,
+                metadata,
+            }],
+            format!("Renamed save version to {title}"),
+        );
+    }
+
+    pub fn rename_game_save_group(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        group_key: QString,
+        name: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let group_key = group_key.to_string();
+        let name = name.to_string().trim().to_string();
+        if name.is_empty() {
+            self.as_mut()
+                .set_status_message(qstring("A save-group name is required."));
+            return;
+        }
+        let Some(saves) = self
+            .as_ref()
+            .game_saves_for_model(row, &game_id)
+            .map(<[GameSave]>::to_vec)
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game's saves no longer match this model; reload and try again.",
+            ));
+            return;
+        };
+        let edits = saves
+            .iter()
+            .enumerate()
+            .filter(|(index, save)| game_save_group_key(save, *index) == group_key)
+            .map(|(source_index, save)| ExpectedGameSaveMetadataEdit {
+                source_index,
+                expected: save.clone(),
+                metadata: GameSaveMetadataEdit {
+                    title: save.title.clone(),
+                    save_group_name: Some(name.clone()),
+                    save_group_id: save.save_group_id.clone(),
+                },
+            })
+            .collect::<Vec<_>>();
+        if edits.is_empty() {
+            self.as_mut()
+                .set_status_message(qstring("The selected save group no longer exists."));
+            return;
+        }
+        self.as_mut().start_game_save_write(
+            row,
+            game_id,
+            edits,
+            format!("Renamed save group to {name}"),
+        );
+    }
+
+    pub fn combine_game_save_groups(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        source_group_key: QString,
+        target_group_key: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let source_group_key = source_group_key.to_string();
+        let target_group_key = target_group_key.to_string();
+        if source_group_key == target_group_key {
+            self.as_mut()
+                .set_status_message(qstring("Choose two different save groups to combine."));
+            return;
+        }
+        let Some(saves) = self
+            .as_ref()
+            .game_saves_for_model(row, &game_id)
+            .map(<[GameSave]>::to_vec)
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game's saves no longer match this model; reload and try again.",
+            ));
+            return;
+        };
+        let target = saves
+            .iter()
+            .enumerate()
+            .find(|(index, save)| game_save_group_key(save, *index) == target_group_key);
+        let Some((target_index, target)) = target else {
+            self.as_mut()
+                .set_status_message(qstring("The target save group no longer exists."));
+            return;
+        };
+        if !saves
+            .iter()
+            .enumerate()
+            .any(|(index, save)| game_save_group_key(save, index) == source_group_key)
+        {
+            self.as_mut()
+                .set_status_message(qstring("The source save group no longer exists."));
+            return;
+        }
+        let target_group_id = target
+            .save_group_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let target_name = game_save_group_name(target, target_index + 1);
+        let edits = saves
+            .iter()
+            .enumerate()
+            .filter(|(index, save)| {
+                let key = game_save_group_key(save, *index);
+                key == source_group_key || key == target_group_key
+            })
+            .map(|(source_index, save)| ExpectedGameSaveMetadataEdit {
+                source_index,
+                expected: save.clone(),
+                metadata: GameSaveMetadataEdit {
+                    title: save.title.clone(),
+                    save_group_name: Some(target_name.clone()),
+                    save_group_id: Some(target_group_id.clone()),
+                },
+            })
+            .collect();
+        self.as_mut().start_game_save_write(
+            row,
+            game_id,
+            edits,
+            format!("Combined save groups into {target_name}"),
+        );
+    }
+
+    pub fn split_game_save_version(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        source_index: i32,
+        name: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let game_id = game_id.to_string();
+        let name = name.to_string().trim().to_string();
+        let Some(source_index) = usize::try_from(source_index).ok() else {
+            self.as_mut()
+                .set_status_message(qstring("The selected save version is invalid."));
+            return;
+        };
+        if name.is_empty() {
+            self.as_mut()
+                .set_status_message(qstring("A name is required for the new save group."));
+            return;
+        }
+        let Some(saves) = self
+            .as_ref()
+            .game_saves_for_model(row, &game_id)
+            .map(<[GameSave]>::to_vec)
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game's saves no longer match this model; reload and try again.",
+            ));
+            return;
+        };
+        let Some(save) = saves.get(source_index).cloned() else {
+            self.as_mut().set_status_message(qstring(
+                "The selected save version no longer exists; reload and try again.",
+            ));
+            return;
+        };
+        let group_key = game_save_group_key(&save, source_index);
+        let group_size = saves
+            .iter()
+            .enumerate()
+            .filter(|(index, candidate)| game_save_group_key(candidate, *index) == group_key)
+            .count();
+        if group_size < 2 {
+            self.as_mut().set_status_message(qstring(
+                "This version is already the only member of its save group.",
+            ));
+            return;
+        }
+        let metadata = GameSaveMetadataEdit {
+            title: save.title.clone(),
+            save_group_name: Some(name.clone()),
+            save_group_id: Some(Uuid::new_v4().to_string()),
+        };
+        self.as_mut().start_game_save_write(
+            row,
+            game_id,
+            vec![ExpectedGameSaveMetadataEdit {
+                source_index,
+                expected: save,
+                metadata,
+            }],
+            format!("Split save version into {name}"),
+        );
+    }
+
+    fn start_game_save_write(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: String,
+        edits: Vec<ExpectedGameSaveMetadataEdit>,
+        operation: String,
+    ) {
+        let Some((source, root)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("{operation} in the background...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-game-save-write".to_string())
+            .spawn(move || {
+                let result = write_game_save_metadata(root, source, game_id, edits, operation);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_game_save_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start game-save writer: {error}"
             )));
         }
     }
@@ -6137,6 +6687,39 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_game_save_metadata_smoke_success(&self, game_id: QString) -> bool {
+        let game_id = game_id.to_string();
+        let rust = self.rust();
+        let saves = rust.game_saves_by_game.get(&game_id);
+        let success = saves.is_some_and(|saves| {
+            saves.len() == 3
+                && saves[0].title.as_deref() == Some("Renamed Active")
+                && saves[0].save_group_name.as_deref() == Some("Renamed Run")
+                && saves[1].save_group_name.as_deref() == Some("Renamed Run")
+                && saves[0].save_group_id.is_some()
+                && saves[0].save_group_id == saves[1].save_group_id
+                && saves[2].save_group_name.as_deref() == Some("Split History")
+                && saves[2].save_group_id.is_some()
+                && saves[2].save_group_id != saves[0].save_group_id
+                && saves[0].file_path == r"Saves\Fixture Adventure\slot1.sav"
+                && saves[1].file_path == r"C:\Users\Ben\RetroArch\saves\fixture-live.srm"
+                && saves[2].file_path == r"Saves\Fixture Console\fixture-adventure-01.srm"
+        }) && rust.game_save_write_notifications == 4
+            && *self.game_save_revision() == 4
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "GAME_SAVE_METADATA_SMOKE_COMPLETE groups=2 writes={} revision={} data_changes={}",
+                rust.game_save_write_notifications,
+                self.game_save_revision(),
+                rust.data_change_notifications,
+            );
+        }
+        success
+    }
+
     pub fn report_platform_crud_smoke_success(
         &self,
         platform_name: QString,
@@ -6467,6 +7050,13 @@ impl qobject::LibraryController {
                     .map(Vec::len)
                     .unwrap_or_default(),
             )),
+            GAME_SAVE_COUNT_ROLE => QVariant::from(&saturating_i32(
+                self.rust()
+                    .game_saves_by_game
+                    .get(&game.id)
+                    .map(Vec::len)
+                    .unwrap_or_default(),
+            )),
             GAME_SORT_TITLE_ROLE => {
                 QVariant::from(&qstring(game.sort_title.as_deref().unwrap_or_default()))
             }
@@ -6705,6 +7295,27 @@ impl qobject::LibraryController {
             .unwrap_or_default()
     }
 
+    pub fn game_save_count(&self, row: i32, game_id: QString) -> i32 {
+        self.game_saves_for_model(row, &game_id.to_string())
+            .map(|saves| saturating_i32(saves.len()))
+            .unwrap_or_default()
+    }
+
+    pub fn game_save_manager_payload(&self, row: i32, game_id: QString) -> QString {
+        let game_id = game_id.to_string();
+        let Some(saves) = self.game_saves_for_model(row, &game_id) else {
+            return QString::default();
+        };
+        serde_json::to_string(&build_game_save_manager_payload(
+            &game_id,
+            saves,
+            self.rust().launchbox_root.as_deref(),
+            &self.rust().path_resolver,
+        ))
+        .map(qstring)
+        .unwrap_or_default()
+    }
+
     pub fn new_additional_application_edit_payload(&self, row: i32, game_id: QString) -> QString {
         let next_priority = self
             .additional_applications_for_model(row, &game_id.to_string())
@@ -6881,6 +7492,7 @@ impl qobject::LibraryController {
                     mounts_by_game: loaded.mounts_by_game,
                     alternate_names_by_game: loaded.alternate_names_by_game,
                     custom_fields_by_game: loaded.custom_fields_by_game,
+                    game_saves_by_game: loaded.game_saves_by_game,
                     platform_names: loaded.platform_names,
                     platform_sources: loaded.platform_sources,
                     navigation_catalog: loaded.navigation_catalog,
@@ -7354,6 +7966,100 @@ impl qobject::LibraryController {
             }
             Err(GameWriteFailure::Other(message)) => self.as_mut().set_status_message(qstring(
                 format!("Could not change additional application: {message}"),
+            )),
+        }
+    }
+
+    fn finish_game_save_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<GameSaveWriteSuccess, GameWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let GameSaveWriteSuccess {
+                    game_id,
+                    saves,
+                    source,
+                    backup,
+                    operation,
+                } = success;
+                let actual_index = self
+                    .as_ref()
+                    .rust()
+                    .games
+                    .iter()
+                    .zip(&self.as_ref().rust().game_sources)
+                    .position(|(game, candidate_source)| {
+                        game.id == game_id && *candidate_source == source
+                    });
+                let Some(actual_index) = actual_index else {
+                    self.as_mut().set_status_message(qstring(
+                        "The edited game-save owner is no longer present in the loaded model; reload required.",
+                    ));
+                    return;
+                };
+                self.as_mut()
+                    .rust_mut()
+                    .game_saves_by_game
+                    .insert(game_id, saves);
+                self.as_mut().rust_mut().game_save_write_notifications = self
+                    .as_ref()
+                    .rust()
+                    .game_save_write_notifications
+                    .saturating_add(1);
+                let revision = self.as_ref().game_save_revision().saturating_add(1);
+                self.as_mut().set_game_save_revision(revision);
+                if let Some(filtered_row) = self
+                    .as_ref()
+                    .rust()
+                    .filtered_indices
+                    .iter()
+                    .position(|index| *index == actual_index)
+                {
+                    let row = saturating_i32(filtered_row);
+                    let parent = QModelIndex::default();
+                    let index = self.as_ref().model_index(row, 0, &parent);
+                    let mut roles = QList::<i32>::default();
+                    roles.append(GAME_SAVE_COUNT_ROLE);
+                    self.as_mut().rust_mut().data_change_notifications = self
+                        .as_ref()
+                        .rust()
+                        .data_change_notifications
+                        .saturating_add(1);
+                    self.as_mut().emit_data_changed(&index, &index, &roles);
+                }
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "{operation}. Exact backup: {}",
+                    backup.display()
+                )));
+            }
+            Err(GameWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict while changing save metadata: {message}. Reload before retrying."
+                )));
+            }
+            Err(GameWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(GameWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not change save metadata: {} unexpected dependent records were reported.",
+                    references.len()
+                )));
+            }
+            Err(GameWriteFailure::Other(message)) => self.as_mut().set_status_message(qstring(
+                format!("Could not change save metadata: {message}"),
             )),
         }
     }
@@ -8282,6 +8988,7 @@ impl qobject::LibraryController {
             mounts_by_game,
             alternate_names_by_game,
             custom_fields_by_game,
+            game_saves_by_game,
             platform_names,
             platform_sources,
             navigation_catalog,
@@ -8311,6 +9018,7 @@ impl qobject::LibraryController {
             rust.mounts_by_game = mounts_by_game;
             rust.alternate_names_by_game = alternate_names_by_game;
             rust.custom_fields_by_game = custom_fields_by_game;
+            rust.game_saves_by_game = game_saves_by_game;
             rust.filtered_indices = filtered_indices;
             rust.platform_counts = platform_counts;
             rust.platform_names = platform_names;
@@ -8332,6 +9040,7 @@ impl qobject::LibraryController {
             rust.row_remove_notifications = 0;
             rust.launch_notifications = 0;
             rust.additional_application_write_notifications = 0;
+            rust.game_save_write_notifications = 0;
             rust.category_write_notifications = 0;
             rust.last_category_detached_children = 0;
             rust.playlist_write_notifications = 0;
@@ -8462,6 +9171,20 @@ impl qobject::LibraryController {
         let index = usize::try_from(index).ok()?;
         self.additional_applications_for_model(row, game_id)?
             .get(index)
+    }
+
+    fn game_saves_for_model(&self, row: i32, game_id: &str) -> Option<&[GameSave]> {
+        let game = self.filtered_game(row)?;
+        if game.id != game_id {
+            return None;
+        }
+        Some(
+            self.rust()
+                .game_saves_by_game
+                .get(game_id)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        )
     }
 
     fn alternate_names_for_model(&self, row: i32, game_id: &str) -> Option<&[AlternateName]> {
@@ -10351,6 +11074,72 @@ mod tests {
                 .map(|application| application.id.as_str())
                 .collect::<Vec<_>>(),
             ["first", "later"]
+        );
+    }
+
+    #[test]
+    fn game_save_payload_preserves_groups_and_classifies_only_resolved_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let launchbox_root = directory.path();
+        let resolver = HostPathResolver::default()
+            .with_windows_drive_mapping('C', launchbox_root.join("windows-c"))
+            .unwrap();
+        let saves = vec![
+            GameSave {
+                game_id: "game".into(),
+                title: Some("Active Version".into()),
+                save_group_name: Some("Run One".into()),
+                save_group_id: Some("group-one".into()),
+                file_path: r"Saves\Fixture\game.srm".into(),
+                ..GameSave::default()
+            },
+            GameSave {
+                game_id: "game".into(),
+                title: Some("Older Version".into()),
+                save_group_name: Some("Run One".into()),
+                save_group_id: Some("group-one".into()),
+                file_path: r"Saves\Fixture\game-01.srm".into(),
+                ..GameSave::default()
+            },
+            GameSave {
+                game_id: "game".into(),
+                file_path: r"C:\RetroArch\saves\game.srm".into(),
+                ..GameSave::default()
+            },
+            GameSave {
+                game_id: "game".into(),
+                file_path: launchbox_root
+                    .join("external/game.srm")
+                    .to_string_lossy()
+                    .into_owned(),
+                ..GameSave::default()
+            },
+        ];
+        let payload =
+            build_game_save_manager_payload("game", &saves, Some(launchbox_root), &resolver);
+        assert_eq!(payload.version, GAME_SAVE_MANAGER_PAYLOAD_VERSION);
+        assert_eq!(payload.groups.len(), 3);
+        assert_eq!(payload.groups[0].key, "id:group-one");
+        assert_eq!(payload.groups[0].versions.len(), 2);
+        assert!(payload.groups[0]
+            .versions
+            .iter()
+            .all(|version| version.location_kind == "vault"));
+        assert_eq!(payload.groups[1].key, "legacy:2");
+        assert_eq!(payload.groups[1].versions[0].location_kind, "active");
+        assert_eq!(payload.groups[2].key, "legacy:3");
+        assert_eq!(payload.groups[2].versions[0].location_kind, "active");
+
+        let unresolved = build_game_save_manager_payload(
+            "game",
+            &saves[2..3],
+            Some(launchbox_root),
+            &HostPathResolver::default(),
+        );
+        assert_eq!(unresolved.groups[0].versions[0].location_kind, "unresolved");
+        assert_eq!(
+            unresolved.groups[0].versions[0].file_path,
+            r"C:\RetroArch\saves\game.srm"
         );
     }
 

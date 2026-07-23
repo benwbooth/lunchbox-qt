@@ -90,7 +90,7 @@ parity remain open.
 | LIB-001 | Create, edit, delete, and launch games | DV add/edit game pages; PA `IGame`; DM play/edit/delete |
 | LIB-002 | Rich game metadata, notes, sort titles, regions, versions, and status | DV metadata/notes/sort-title pages; PA game/additional-app fields |
 | LIB-003 | Alternate names and custom fields | DV alternate-name/custom-field pages; PA `IAlternateName`, `ICustomField` |
-| LIB-004 | Additional applications and documents per game | DV additional-app editor and Make Default command; PA `IAdditionalApplication`; BigBox selection actions; port subset has typed/lossless add/edit/delete, launch selection, and an evidence-derived transactional Make Default conversion that retains the selected row; save management remains open |
+| LIB-004 | Additional applications and documents per game | DV additional-app editor and Make Default command; PA `IAdditionalApplication`; BigBox selection actions; port subset has typed/lossless add/edit/delete, launch selection, and an evidence-derived transactional Make Default conversion that retains the selected row |
 | LIB-005 | Game controller support metadata | DV controller-support editor; PA controller APIs |
 | LIB-006 | Platforms and platform folders | DV platform management; PA `IPlatform`, `IPlatformFolder` |
 | LIB-007 | Nested platform categories | DV category editor; PA `IPlatformCategory`, `IParent` |
@@ -161,7 +161,7 @@ parity remain open.
 | RUN-009 | Startup screens and per-emulator/game overrides | DV startup settings/edit pages; shared startup views |
 | RUN-010 | Pause screens and per-emulator/game overrides | DV pause settings/edit pages; shared pause views |
 | RUN-011 | Window hiding, mouse hiding, startup delay, and shutdown-screen policy | PA emulator launch fields |
-| RUN-012 | Game save management, version history, backup, restore, and deletion | DV saves/history; desktop save commands; PA save contracts |
+| RUN-012 | Game save management, version history, backup, restore, and deletion | DV saves/history; desktop save commands; PA save contracts; port subset models every persisted 13.27 `GameSave` field and provides a lossless Qt group/version inventory with transactional rename, combine, and split metadata operations; emulator scanning, file/folder backup, restore, deletion, automatic policy, repair, and adapters remain open |
 | RUN-013 | Additional apps before/after or alternate launches | DV additional-app editor; PA launch/effective command line |
 | RUN-014 | Controller configuration actions exposed by emulator adapters | PA controller action/option/version contracts |
 | RUN-015 | RetroAchievements credential injection and hardcore mode | emulator RetroAchievements page; PA credential/support contracts |

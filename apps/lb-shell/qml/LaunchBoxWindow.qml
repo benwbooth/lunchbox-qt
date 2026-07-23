@@ -55,6 +55,11 @@ ApplicationWindow {
             "--additional-application-default-smoke-test") >= 0
     property int additionalApplicationDefaultSmokePhase: 0
     property bool additionalApplicationDefaultSmokeFinished: false
+    property bool gameSaveMetadataSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--game-save-metadata-smoke-test") >= 0
+    property int gameSaveMetadataSmokePhase: 0
+    property bool gameSaveMetadataSmokeFinished: false
     property int platformCrudSmokePhase: 0
     property int platformCrudBlockedReferences: 0
     property string platformCrudAddedGameId: ""
@@ -626,6 +631,74 @@ ApplicationWindow {
                           + window.additionalApplicationDefaultSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(15)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameSaveMetadataSmokeTest
+                 && !window.gameSaveMetadataSmokeFinished
+        onTriggered: {
+            const gameId = "fixture-adventure"
+            if (window.gameSaveMetadataSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3) {
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0 || controller.game_save_count(row, gameId) !== 3) {
+                    console.error("GAME_SAVE_METADATA_SMOKE_MISSING_FIXTURE")
+                    Qt.exit(16)
+                    return
+                }
+                gameSaveManager.prepare(row, gameId, "Fixture Adventure")
+                window.gameSaveMetadataSmokePhase = 1
+                gameSaveTextDialog.smoke("version", "Renamed Active")
+            } else if (window.gameSaveMetadataSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_save_revision === 1) {
+                window.gameSaveMetadataSmokePhase = 2
+                gameSaveManager.selectedGroupIndex = 0
+                gameSaveManager.selectedVersionIndex = 0
+                gameSaveTextDialog.smoke("group", "Renamed Run")
+            } else if (window.gameSaveMetadataSmokePhase === 2
+                       && !controller.writing
+                       && controller.game_save_revision === 2) {
+                window.gameSaveMetadataSmokePhase = 3
+                gameSaveManager.selectedGroupIndex = 1
+                gameSaveManager.selectedVersionIndex = 0
+                gameSaveCombineDialog.smoke()
+            } else if (window.gameSaveMetadataSmokePhase === 3
+                       && !controller.writing
+                       && controller.game_save_revision === 3) {
+                window.gameSaveMetadataSmokePhase = 4
+                gameSaveManager.selectedGroupIndex = 0
+                gameSaveManager.selectedVersionIndex = 2
+                gameSaveTextDialog.smoke("split", "Split History")
+            } else if (window.gameSaveMetadataSmokePhase === 4
+                       && !controller.writing
+                       && controller.game_save_revision === 4) {
+                if (!controller.report_game_save_metadata_smoke_success(gameId)) {
+                    console.error(
+                        "GAME_SAVE_METADATA_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(16)
+                    return
+                }
+                window.gameSaveMetadataSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.gameSaveMetadataSmokeTest
+                 && !window.gameSaveMetadataSmokeFinished
+        onTriggered: {
+            console.error("GAME_SAVE_METADATA_SMOKE_TIMEOUT phase="
+                          + window.gameSaveMetadataSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(16)
         }
     }
 
@@ -1348,6 +1421,7 @@ ApplicationWindow {
                         required property int gamePlayCount
                         required property int gameStarRating
                         required property int gameAdditionalApplicationCount
+                        required property int gameSaveCount
                         required property string gameSortTitle
                         required property string gameNotes
                         required property string gameDeveloper
@@ -1528,6 +1602,21 @@ ApplicationWindow {
                                      && controller.pending_recovery_count === 0
                                      && !controller.write_conflict
                             onClicked: additionalApplicationManager.prepare(
+                                           index, gameId, gameTitle)
+                        }
+                        Button {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.margins: 8
+                            z: 2
+                            text: "Saves (" + gameSaveCount + ")"
+                            visible: gameSaveCount > 0
+                            enabled: controller.library_path.length > 0
+                                     && !controller.loading && !controller.writing
+                                     && !controller.launching
+                                     && controller.pending_recovery_count === 0
+                                     && !controller.write_conflict
+                            onClicked: gameSaveManager.prepare(
                                            index, gameId, gameTitle)
                         }
                     }
@@ -1826,6 +1915,329 @@ ApplicationWindow {
                           + " application(s)"
                     color: "#7d8590"
                 }
+            }
+        }
+    }
+
+    Dialog {
+        id: gameSaveManager
+        anchors.centerIn: parent
+        modal: true
+        title: "Game Saves — " + gameTitle
+        standardButtons: Dialog.Close
+        property int modelRow: -1
+        property string gameId: ""
+        property string gameTitle: ""
+        property var groups: []
+        property int selectedGroupIndex: -1
+        property int selectedVersionIndex: -1
+        property int observedRevision: controller.game_save_revision
+
+        onObservedRevisionChanged: {
+            if (visible)
+                refresh()
+        }
+
+        function selectedGroup() {
+            return selectedGroupIndex >= 0
+                   && selectedGroupIndex < groups.length
+                   ? groups[selectedGroupIndex] : null
+        }
+
+        function selectedVersion() {
+            const group = selectedGroup()
+            return group !== null && selectedVersionIndex >= 0
+                   && selectedVersionIndex < group.versions.length
+                   ? group.versions[selectedVersionIndex] : null
+        }
+
+        function refresh() {
+            const payloadText =
+                controller.game_save_manager_payload(modelRow, gameId)
+            if (payloadText.length === 0) {
+                groups = []
+                selectedGroupIndex = -1
+                selectedVersionIndex = -1
+                return
+            }
+            const payload = JSON.parse(payloadText)
+            groups = payload.groups
+            if (groups.length === 0) {
+                selectedGroupIndex = -1
+                selectedVersionIndex = -1
+            } else {
+                selectedGroupIndex = Math.max(
+                    0, Math.min(selectedGroupIndex, groups.length - 1))
+                const group = groups[selectedGroupIndex]
+                selectedVersionIndex = Math.max(
+                    0, Math.min(selectedVersionIndex,
+                                group.versions.length - 1))
+            }
+        }
+
+        function prepare(row, id, title) {
+            modelRow = row
+            gameId = id
+            gameTitle = title
+            selectedGroupIndex = 0
+            selectedVersionIndex = 0
+            refresh()
+            open()
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.preferredWidth: 820
+                text: "Active identifies a resolved emulator save; Vault identifies a resolved path under LaunchBox/Saves. Unresolved Windows paths need a host mapping. This manager currently edits grouping metadata only and never moves or deletes save files."
+                wrapMode: Text.Wrap
+                color: "#aeb8c5"
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 360
+                spacing: 12
+                ColumnLayout {
+                    Layout.preferredWidth: 260
+                    Layout.fillHeight: true
+                    Label {
+                        text: "Save groups"
+                        font.bold: true
+                    }
+                    ListView {
+                        id: gameSaveGroupList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 4
+                        model: gameSaveManager.groups
+                        delegate: ItemDelegate {
+                            required property int index
+                            required property var modelData
+                            width: ListView.view.width
+                            highlighted:
+                                index === gameSaveManager.selectedGroupIndex
+                            text: modelData.name + "  ("
+                                  + modelData.versions.length + ")"
+                            onClicked: {
+                                gameSaveManager.selectedGroupIndex = index
+                                gameSaveManager.selectedVersionIndex = 0
+                            }
+                        }
+                    }
+                    RowLayout {
+                        Button {
+                            text: "Rename"
+                            enabled: gameSaveManager.selectedGroup() !== null
+                                     && !controller.writing
+                            onClicked: gameSaveTextDialog.prepare(
+                                           "group",
+                                           gameSaveManager.selectedGroup().name)
+                        }
+                        Button {
+                            text: "Combine…"
+                            enabled: gameSaveManager.groups.length > 1
+                                     && gameSaveManager.selectedGroup() !== null
+                                     && !controller.writing
+                            onClicked: gameSaveCombineDialog.prepare()
+                        }
+                    }
+                }
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.fillHeight: true
+                    color: "#30363d"
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Label {
+                        text: "Version history"
+                        font.bold: true
+                    }
+                    ListView {
+                        id: gameSaveVersionList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 6
+                        model: {
+                            const group = gameSaveManager.selectedGroup()
+                            return group !== null ? group.versions : []
+                        }
+                        delegate: ItemDelegate {
+                            required property int index
+                            required property var modelData
+                            width: ListView.view.width
+                            highlighted:
+                                index === gameSaveManager.selectedVersionIndex
+                            onClicked:
+                                gameSaveManager.selectedVersionIndex = index
+                            contentItem: Column {
+                                spacing: 3
+                                Label {
+                                    width: parent.width
+                                    text: modelData.title + "  ·  "
+                                          + modelData.location_kind.toUpperCase()
+                                          + (modelData.display_chip_text
+                                             ? "  ·  "
+                                               + modelData.display_chip_text : "")
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    width: parent.width
+                                    text: modelData.file_path
+                                    color: "#8b949e"
+                                    elide: Text.ElideMiddle
+                                }
+                                Label {
+                                    width: parent.width
+                                    visible: modelData.reported_last_modified_utc
+                                             || modelData.reported_file_size_bytes
+                                    text: (modelData.reported_last_modified_utc || "")
+                                          + (modelData.reported_file_size_bytes
+                                             ? "  ·  "
+                                               + modelData.reported_file_size_bytes
+                                               + " bytes" : "")
+                                    color: "#7d8590"
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+                    }
+                    RowLayout {
+                        Button {
+                            text: "Rename Version"
+                            enabled: gameSaveManager.selectedVersion() !== null
+                                     && !controller.writing
+                            onClicked: gameSaveTextDialog.prepare(
+                                           "version",
+                                           gameSaveManager.selectedVersion().title)
+                        }
+                        Button {
+                            text: "Make New Save"
+                            enabled: gameSaveManager.selectedVersion() !== null
+                                     && gameSaveManager.selectedGroup() !== null
+                                     && gameSaveManager.selectedGroup().versions.length > 1
+                                     && !controller.writing
+                            onClicked: gameSaveTextDialog.prepare(
+                                           "split",
+                                           gameSaveManager.selectedVersion().title
+                                           + " (New Save)")
+                        }
+                        Item { Layout.fillWidth: true }
+                        Label {
+                            text: gameSaveManager.selectedGroup() !== null
+                                  ? gameSaveManager.selectedGroup().versions.length
+                                    + " version(s)" : "0 versions"
+                            color: "#7d8590"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: gameSaveTextDialog
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Save | Dialog.Cancel
+        property string operation: ""
+        title: operation === "group" ? "Rename Save Group"
+               : operation === "split" ? "Make New Save"
+               : "Rename Save Version"
+
+        function prepare(requestedOperation, initialText) {
+            operation = requestedOperation
+            gameSaveTextField.text = initialText
+            open()
+            gameSaveTextField.forceActiveFocus()
+            gameSaveTextField.selectAll()
+        }
+
+        function smoke(requestedOperation, value) {
+            prepare(requestedOperation, value)
+            Qt.callLater(function() { gameSaveTextDialog.accept() })
+        }
+
+        onAccepted: {
+            const value = gameSaveTextField.text
+            const group = gameSaveManager.selectedGroup()
+            const version = gameSaveManager.selectedVersion()
+            if (operation === "group" && group !== null)
+                controller.rename_game_save_group(
+                    gameSaveManager.modelRow, gameSaveManager.gameId,
+                    group.key, value)
+            else if (operation === "split" && version !== null)
+                controller.split_game_save_version(
+                    gameSaveManager.modelRow, gameSaveManager.gameId,
+                    version.source_index, value)
+            else if (version !== null)
+                controller.rename_game_save_version(
+                    gameSaveManager.modelRow, gameSaveManager.gameId,
+                    version.source_index, value)
+        }
+
+        contentItem: ColumnLayout {
+            Label {
+                text: gameSaveTextDialog.operation === "split"
+                      ? "Move this version into a new save group. The save file stays in place."
+                      : "This changes LaunchBox metadata only. The save file stays in place."
+                wrapMode: Text.Wrap
+                Layout.preferredWidth: 460
+            }
+            TextField {
+                id: gameSaveTextField
+                Layout.fillWidth: true
+                placeholderText: "Name"
+            }
+        }
+    }
+
+    Dialog {
+        id: gameSaveCombineDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Combine Save Groups"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+
+        function prepare() {
+            gameSaveCombineTarget.currentIndex =
+                gameSaveManager.selectedGroupIndex === 0 ? 1 : 0
+            open()
+        }
+
+        function smoke() {
+            prepare()
+            Qt.callLater(function() { gameSaveCombineDialog.accept() })
+        }
+
+        onAccepted: {
+            const source = gameSaveManager.selectedGroup()
+            const target = gameSaveManager.groups[
+                               gameSaveCombineTarget.currentIndex]
+            if (source !== null && target !== undefined)
+                controller.combine_game_save_groups(
+                    gameSaveManager.modelRow, gameSaveManager.gameId,
+                    source.key, target.key)
+        }
+
+        contentItem: ColumnLayout {
+            Label {
+                Layout.preferredWidth: 460
+                text: "Move every version in “"
+                      + (gameSaveManager.selectedGroup() !== null
+                         ? gameSaveManager.selectedGroup().name : "")
+                      + "” into this existing group. Only LaunchBox grouping metadata changes."
+                wrapMode: Text.Wrap
+            }
+            ComboBox {
+                id: gameSaveCombineTarget
+                Layout.fillWidth: true
+                model: gameSaveManager.groups
+                textRole: "name"
             }
         }
     }

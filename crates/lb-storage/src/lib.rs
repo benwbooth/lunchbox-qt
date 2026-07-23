@@ -1,12 +1,12 @@
-#[cfg(test)]
-use lb_domain::GAME_XML_FIELDS;
 use lb_domain::{
     AdditionalApplication, AdditionalApplicationEdit, AlternateName, CatalogValidationError,
     CustomField, Game, GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave,
-    Mount, NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory,
-    PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument,
-    PlaylistFilter, PlaylistGame, ValidationError,
+    GameSaveMetadataEdit, Mount, NavigationMetadata, ParentRelationship, PlatformCatalog,
+    PlatformCategory, PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist,
+    PlaylistDocument, PlaylistFilter, PlaylistGame, ValidationError,
 };
+#[cfg(test)]
+use lb_domain::{GAME_SAVE_XML_FIELDS, GAME_XML_FIELDS};
 use serde::Deserialize;
 use std::fs;
 use std::io::{BufReader, Read, Write};
@@ -179,6 +179,14 @@ pub struct RemovedPlaylistRelationships {
 pub struct IndexedPlatformRecordEdit<T> {
     pub source_index: Option<usize>,
     pub record: T,
+}
+
+/// A metadata-only edit for one existing `<GameSave>` row. The source index is
+/// scoped to the owning game's save rows, in document order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexedGameSaveMetadataEdit {
+    pub source_index: usize,
+    pub metadata: GameSaveMetadataEdit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2394,6 +2402,63 @@ impl PlatformDocument {
             .collect())
     }
 
+    /// Applies metadata-only changes to existing save rows without creating,
+    /// deleting, moving, or otherwise claiming ownership of save files.
+    ///
+    /// Source indices are scoped to this game's `<GameSave>` rows in document
+    /// order. Every non-editable child, including unknown future LaunchBox
+    /// fields, remains byte-for-byte represented in the XML tree.
+    pub fn set_game_save_metadata(
+        &mut self,
+        id: &str,
+        edits: Vec<IndexedGameSaveMetadataEdit>,
+    ) -> Result<Vec<GameSave>, StorageError> {
+        self.require_game(id)?;
+        let originals = self
+            .library
+            .game_saves
+            .iter()
+            .filter(|record| record.game_id == id)
+            .cloned()
+            .collect::<Vec<_>>();
+        validate_game_save_metadata_edits(id, originals.len(), &edits)?;
+        let root_indices = matching_record_indices(&self.root, "GameSave", "GameId", id);
+        ensure_record_index_alignment("game save", id, originals.len(), root_indices.len())?;
+
+        for edit in &edits {
+            let original = &originals[edit.source_index];
+            let updated = edit.metadata.apply_to(original);
+            let element = self.root.children[root_indices[edit.source_index]]
+                .as_mut_element()
+                .expect("matching record index must identify an element");
+            if original.title != updated.title {
+                set_optional_child_text(element, "Title", updated.title.as_deref());
+            }
+            if original.save_group_name != updated.save_group_name {
+                set_optional_child_text(
+                    element,
+                    "SaveGroupName",
+                    updated.save_group_name.as_deref(),
+                );
+            }
+            if original.save_group_id != updated.save_group_id {
+                set_optional_child_text(element, "SaveGroupId", updated.save_group_id.as_deref());
+            }
+        }
+
+        self.library.game_saves = elements_named(&self.root, "GameSave")
+            .map(parse_game_save)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.library.validate()?;
+        Ok(self
+            .library
+            .game_saves
+            .iter()
+            .filter(|record| record.game_id == id)
+            .cloned()
+            .collect())
+    }
+
     fn require_game(&self, id: &str) -> Result<(), StorageError> {
         self.library
             .games
@@ -2683,6 +2748,50 @@ fn validate_indexed_record_edits<T>(
                 previous = Some(index);
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_game_save_metadata_edits(
+    game_id: &str,
+    original_count: usize,
+    edits: &[IndexedGameSaveMetadataEdit],
+) -> Result<(), StorageError> {
+    let mut previous = None;
+    for edit in edits {
+        if edit.source_index >= original_count {
+            return Err(invalid_game_record_edit(
+                "game save",
+                game_id,
+                format!(
+                    "source index {} is outside 0..{original_count}",
+                    edit.source_index
+                ),
+            ));
+        }
+        if previous.is_some_and(|previous| previous >= edit.source_index) {
+            return Err(invalid_game_record_edit(
+                "game save",
+                game_id,
+                "source indices must be unique and remain in source order",
+            ));
+        }
+        if [
+            edit.metadata.title.as_deref(),
+            edit.metadata.save_group_name.as_deref(),
+            edit.metadata.save_group_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(str::is_empty)
+        {
+            return Err(invalid_game_record_edit(
+                "game save",
+                game_id,
+                "optional metadata must use None instead of an empty string",
+            ));
+        }
+        previous = Some(edit.source_index);
     }
     Ok(())
 }
@@ -3849,12 +3958,30 @@ struct RawGameSave {
     emulator_core: String,
     #[serde(rename = "EmulatorFileName")]
     emulator_file_name: String,
-    #[serde(rename = "FilePath")]
-    file_path: String,
-    #[serde(rename = "Slot")]
-    slot: Option<i32>,
     #[serde(rename = "Title")]
     title: Option<String>,
+    #[serde(rename = "SaveGroupName")]
+    save_group_name: Option<String>,
+    #[serde(rename = "DisplayChipText")]
+    display_chip_text: Option<String>,
+    #[serde(rename = "SaveGroupId")]
+    save_group_id: Option<String>,
+    #[serde(rename = "MatchLineageId")]
+    match_lineage_id: Option<String>,
+    #[serde(rename = "MigrationFamilyId")]
+    migration_family_id: Option<String>,
+    #[serde(rename = "FilePath")]
+    file_path: String,
+    #[serde(rename = "OriginalFileName")]
+    original_file_name: Option<String>,
+    #[serde(rename = "Slot")]
+    slot: Option<i32>,
+    #[serde(rename = "ReportedFileSizeBytes")]
+    reported_file_size_bytes: Option<i64>,
+    #[serde(rename = "ReportedLastModifiedUtc")]
+    reported_last_modified_utc: Option<String>,
+    #[serde(rename = "Md5")]
+    md5: Option<String>,
 }
 
 fn load_platform_index(path: &Path) -> Result<PlatformLibrary, StorageError> {
@@ -4142,9 +4269,18 @@ impl RawGameSave {
             additional_application_id: non_empty(self.additional_application_id),
             emulator_core: self.emulator_core,
             emulator_file_name: self.emulator_file_name,
-            file_path: self.file_path,
-            slot: self.slot,
             title: non_empty(self.title),
+            save_group_name: non_empty(self.save_group_name),
+            display_chip_text: non_empty(self.display_chip_text),
+            save_group_id: non_empty(self.save_group_id),
+            match_lineage_id: non_empty(self.match_lineage_id),
+            migration_family_id: non_empty(self.migration_family_id),
+            file_path: self.file_path,
+            original_file_name: non_empty(self.original_file_name),
+            slot: self.slot,
+            reported_file_size_bytes: self.reported_file_size_bytes,
+            reported_last_modified_utc: non_empty(self.reported_last_modified_utc),
+            md5: non_empty(self.md5),
         };
         save.validate()?;
         Ok(save)
@@ -4302,9 +4438,18 @@ fn parse_game_save(element: &Element) -> Result<GameSave, StorageError> {
         additional_application_id: optional_child(element, "AdditionalApplicationId"),
         emulator_core: optional_child(element, "EmulatorCore").unwrap_or_default(),
         emulator_file_name: optional_child(element, "EmulatorFileName").unwrap_or_default(),
-        file_path: required_record_child(element, "GameSave", "FilePath")?,
-        slot: number_child(element, "Slot"),
         title: optional_child(element, "Title"),
+        save_group_name: optional_child(element, "SaveGroupName"),
+        display_chip_text: optional_child(element, "DisplayChipText"),
+        save_group_id: optional_child(element, "SaveGroupId"),
+        match_lineage_id: optional_child(element, "MatchLineageId"),
+        migration_family_id: optional_child(element, "MigrationFamilyId"),
+        file_path: required_record_child(element, "GameSave", "FilePath")?,
+        original_file_name: optional_child(element, "OriginalFileName"),
+        slot: number_child(element, "Slot"),
+        reported_file_size_bytes: number_child(element, "ReportedFileSizeBytes"),
+        reported_last_modified_utc: optional_child(element, "ReportedLastModifiedUtc"),
+        md5: optional_child(element, "Md5"),
     };
     save.validate()?;
     Ok(save)
@@ -5269,6 +5414,29 @@ mod tests {
         ),
     ];
 
+    fn full_game_save_fixture() -> String {
+        FIXTURE
+            .replace(
+                "    <EmulatorCore>fixture-core</EmulatorCore>",
+                "    <AdditionalApplicationId>fixture-adventure-manual</AdditionalApplicationId>\n    <EmulatorCore>fixture-core</EmulatorCore>",
+            )
+            .replace(
+                "    <FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>",
+                "    <SaveGroupName>Final Puzzle</SaveGroupName>\n    <DisplayChipText>Slot 1</DisplayChipText>\n    <SaveGroupId>save-group-alpha</SaveGroupId>\n    <MatchLineageId>lineage-alpha</MatchLineageId>\n    <MigrationFamilyId>migration-alpha</MigrationFamilyId>\n    <FilePath>Saves\\Fixture Adventure\\slot1.sav</FilePath>\n    <OriginalFileName>slot1-original.sav</OriginalFileName>",
+            )
+            .replace(
+                "    <Title>Before the Final Puzzle</Title>",
+                "    <Title>Before the Final Puzzle</Title>\n    <ReportedFileSizeBytes>9223372036854770000</ReportedFileSizeBytes>\n    <ReportedLastModifiedUtc>2026-07-22T01:02:03.4567890Z</ReportedLastModifiedUtc>\n    <Md5>0123456789abcdef0123456789abcdef</Md5>\n    <FutureGameSaveField>keep-save-data</FutureGameSaveField>",
+            )
+    }
+
+    fn grouped_game_save_fixture() -> String {
+        full_game_save_fixture().replace(
+            "  <FutureRootElement>preserve-me</FutureRootElement>",
+            "  <GameSave>\n    <EmulatorCore>fixture-core</EmulatorCore>\n    <EmulatorFileName>fixture-emulator</EmulatorFileName>\n    <Title>Earlier Checkpoint</Title>\n    <SaveGroupName>Earlier Run</SaveGroupName>\n    <SaveGroupId>save-group-beta</SaveGroupId>\n    <FilePath>C:\\Users\\Ben\\RetroArch\\saves\\fixture-backup.srm</FilePath>\n    <GameId>fixture-adventure</GameId>\n    <OriginalFileName>fixture.srm</OriginalFileName>\n    <ReportedFileSizeBytes>4096</ReportedFileSizeBytes>\n    <Md5>fedcba9876543210fedcba9876543210</Md5>\n    <FutureSecondSaveField>keep-second-save-data</FutureSecondSaveField>\n  </GameSave>\n  <FutureRootElement>preserve-me</FutureRootElement>",
+        )
+    }
+
     #[test]
     fn loads_real_launchbox_shaped_platform_document() {
         let document = PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes())
@@ -5286,6 +5454,152 @@ mod tests {
         assert_eq!(document.library().custom_fields.len(), 1);
         assert_eq!(document.library().controller_support.len(), 1);
         assert_eq!(document.library().game_saves.len(), 1);
+    }
+
+    #[test]
+    fn both_platform_readers_cover_the_full_1327_game_save_contract() {
+        let fixture = full_game_save_fixture();
+        let document =
+            PlatformDocument::from_reader("Fixture Console.xml", fixture.as_bytes()).unwrap();
+        let save = &document.library().game_saves[0];
+        assert_eq!(
+            save.additional_application_id.as_deref(),
+            Some("fixture-adventure-manual")
+        );
+        assert_eq!(save.save_group_name.as_deref(), Some("Final Puzzle"));
+        assert_eq!(save.display_chip_text.as_deref(), Some("Slot 1"));
+        assert_eq!(save.save_group_id.as_deref(), Some("save-group-alpha"));
+        assert_eq!(save.match_lineage_id.as_deref(), Some("lineage-alpha"));
+        assert_eq!(save.migration_family_id.as_deref(), Some("migration-alpha"));
+        assert_eq!(
+            save.original_file_name.as_deref(),
+            Some("slot1-original.sav")
+        );
+        assert_eq!(
+            save.reported_file_size_bytes,
+            Some(9_223_372_036_854_770_000)
+        );
+        assert_eq!(
+            save.reported_last_modified_utc.as_deref(),
+            Some("2026-07-22T01:02:03.4567890Z")
+        );
+        assert_eq!(
+            save.md5.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+
+        let root = Element::parse(fixture.as_bytes()).unwrap();
+        let game_save = elements_named(&root, "GameSave").next().unwrap();
+        let mut fixture_fields = game_save
+            .children
+            .iter()
+            .filter_map(XMLNode::as_element)
+            .map(|child| child.name.as_str())
+            .filter(|name| *name != "FutureGameSaveField")
+            .collect::<Vec<_>>();
+        fixture_fields.sort_unstable();
+        let mut modeled_fields = GAME_SAVE_XML_FIELDS.to_vec();
+        modeled_fields.sort_unstable();
+        assert_eq!(fixture_fields, modeled_fields);
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Fixture Console.xml");
+        fs::write(&path, fixture).unwrap();
+        let index = LibraryIndex::load(&path).unwrap();
+        assert_eq!(index.game_saves().next(), Some(save));
+    }
+
+    #[test]
+    fn game_save_metadata_edit_is_source_indexed_and_lossless() {
+        let fixture = grouped_game_save_fixture();
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", fixture.as_bytes()).unwrap();
+        let originals = document.library().game_saves.clone();
+        let edits = vec![
+            IndexedGameSaveMetadataEdit {
+                source_index: 0,
+                metadata: GameSaveMetadataEdit {
+                    title: Some("Renamed Version".into()),
+                    save_group_name: Some("Combined Run".into()),
+                    save_group_id: Some("save-group-alpha".into()),
+                },
+            },
+            IndexedGameSaveMetadataEdit {
+                source_index: 1,
+                metadata: GameSaveMetadataEdit {
+                    title: originals[1].title.clone(),
+                    save_group_name: Some("Combined Run".into()),
+                    save_group_id: Some("save-group-alpha".into()),
+                },
+            },
+        ];
+        let updated = document
+            .set_game_save_metadata("fixture-adventure", edits.clone())
+            .unwrap();
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[0], edits[0].metadata.apply_to(&originals[0]));
+        assert_eq!(updated[1], edits[1].metadata.apply_to(&originals[1]));
+        assert_eq!(updated[0].file_path, r"Saves\Fixture Adventure\slot1.sav");
+        assert_eq!(
+            updated[1].file_path,
+            r"C:\Users\Ben\RetroArch\saves\fixture-backup.srm"
+        );
+
+        let xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(xml.contains("<FutureGameSaveField>keep-save-data</FutureGameSaveField>"));
+        assert!(
+            xml.contains("<FutureSecondSaveField>keep-second-save-data</FutureSecondSaveField>")
+        );
+        assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+        let reparsed =
+            PlatformDocument::from_reader("Fixture Console.xml", xml.as_bytes()).unwrap();
+        assert_eq!(reparsed.library().game_saves, updated);
+    }
+
+    #[test]
+    fn invalid_game_save_metadata_edits_do_not_mutate_the_document() {
+        let fixture = grouped_game_save_fixture();
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", fixture.as_bytes()).unwrap();
+        let before = document.to_xml_bytes().unwrap();
+        let metadata = GameSaveMetadataEdit {
+            title: Some("Changed".into()),
+            save_group_name: Some("Group".into()),
+            save_group_id: Some("group".into()),
+        };
+        let duplicate = vec![
+            IndexedGameSaveMetadataEdit {
+                source_index: 0,
+                metadata: metadata.clone(),
+            },
+            IndexedGameSaveMetadataEdit {
+                source_index: 0,
+                metadata: metadata.clone(),
+            },
+        ];
+        assert!(matches!(
+            document.set_game_save_metadata("fixture-adventure", duplicate),
+            Err(StorageError::InvalidGameRecordEdit {
+                record: "game save",
+                ..
+            })
+        ));
+        assert_eq!(document.to_xml_bytes().unwrap(), before);
+
+        assert!(matches!(
+            document.set_game_save_metadata(
+                "fixture-adventure",
+                vec![IndexedGameSaveMetadataEdit {
+                    source_index: 2,
+                    metadata,
+                }],
+            ),
+            Err(StorageError::InvalidGameRecordEdit {
+                record: "game save",
+                ..
+            })
+        ));
+        assert_eq!(document.to_xml_bytes().unwrap(), before);
     }
 
     #[test]

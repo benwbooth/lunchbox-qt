@@ -663,15 +663,46 @@ impl GameControllerSupport {
     }
 }
 
+/// Persisted fields recovered from LaunchBox 13.27's concrete `GameSave`
+/// contract. This excludes runtime-only properties from `GameSaveBase`, such
+/// as `IsDirectory` and computed timestamps.
+pub const GAME_SAVE_XML_FIELDS: &[&str] = &[
+    "GameId",
+    "AdditionalApplicationId",
+    "EmulatorFileName",
+    "EmulatorCore",
+    "Title",
+    "SaveGroupName",
+    "DisplayChipText",
+    "SaveGroupId",
+    "MatchLineageId",
+    "MigrationFamilyId",
+    "FilePath",
+    "OriginalFileName",
+    "Slot",
+    "ReportedFileSizeBytes",
+    "ReportedLastModifiedUtc",
+    "Md5",
+];
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GameSave {
     pub game_id: String,
     pub additional_application_id: Option<String>,
     pub emulator_core: String,
     pub emulator_file_name: String,
-    pub file_path: String,
-    pub slot: Option<i32>,
     pub title: Option<String>,
+    pub save_group_name: Option<String>,
+    pub display_chip_text: Option<String>,
+    pub save_group_id: Option<String>,
+    pub match_lineage_id: Option<String>,
+    pub migration_family_id: Option<String>,
+    pub file_path: String,
+    pub original_file_name: Option<String>,
+    pub slot: Option<i32>,
+    pub reported_file_size_bytes: Option<i64>,
+    pub reported_last_modified_utc: Option<String>,
+    pub md5: Option<String>,
 }
 
 impl GameSave {
@@ -685,6 +716,28 @@ impl GameSave {
             });
         }
         Ok(())
+    }
+}
+
+/// The user-editable portion of a persisted LaunchBox 13.27 save record.
+///
+/// File ownership, emulator matching, hashes, timestamps, and migration
+/// lineage are deliberately excluded: changing those requires a separate
+/// filesystem-aware transaction instead of a metadata-only XML edit.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GameSaveMetadataEdit {
+    pub title: Option<String>,
+    pub save_group_name: Option<String>,
+    pub save_group_id: Option<String>,
+}
+
+impl GameSaveMetadataEdit {
+    pub fn apply_to(&self, save: &GameSave) -> GameSave {
+        let mut updated = save.clone();
+        updated.title = self.title.clone();
+        updated.save_group_name = self.save_group_name.clone();
+        updated.save_group_id = self.save_group_id.clone();
+        updated
     }
 }
 

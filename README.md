@@ -71,9 +71,8 @@ cargo run -p lb-shell --bin launchbox -- \
 
 Library parsing runs on a Rust worker thread and returns through CXX-Qt's queued
 Qt-thread bridge. QML consumes the controller as a real `QAbstractListModel`
-with 36 named identity, state, descriptive-metadata, launch-configuration, and
-additional-application
-roles; it does not receive a whole-library
+with 37 named identity, state, descriptive-metadata, launch-configuration, and
+additional-application, and game-save roles; it does not receive a whole-library
 JSON snapshot. `check_qml.sh` validates generated type metadata, then runs both
 binaries offscreen and proves all 36 roles survive a model-resetting filter
 operation. It also edits a
@@ -248,7 +247,14 @@ refused while a game-save row references the application. Make Default retains
 the selected additional-application row and transactionally copies its shared
 launch, emulator, version metadata, provider/cloud, and play-statistics fields
 onto the owning game while preserving game identity and game-only data. Save
-management and manual combine/expand remain open.
+records now use the full persisted 13.27 contract in both readers. A per-game
+Saves manager displays grouped version history and provides transactional
+Rename Version, Rename Group, Combine, and Make New Save metadata operations.
+Stored paths remain lexical; only paths resolved by the host-path service are
+classified Active or Vault, while unmapped Windows paths are shown as
+Unresolved. These operations never move or delete save files. Emulator save
+scanning, backup/restore/delete, automatic-backup policy, repair, and
+emulator-specific adapters remain open, as does manual game combine/expand.
 
 Emulator
 auto-extraction invokes 7-Zip without a shell for ZIP, 7z, and RAR inputs,

@@ -115,7 +115,20 @@ and unknown XML remain on the game, and the selected additional-application
 record remains unchanged. A read-only comparison of 25 historical real-library
 backup snapshots found no observed Make Default transition, so this field map
 is static-contract- and documentation-derived rather than a claimed live 13.27
-runtime oracle. Save management remains unimplemented.
+runtime oracle.
+
+The concrete 13.27 `GameSave` contract recovers 16 persisted fields: owning
+game/additional-application IDs, emulator filename/core, title, group name and
+ID, display chip, match lineage, migration family, lexical file path, original
+filename, slot, reported byte size and modified timestamp, and MD5. Runtime-only
+base properties such as `IsDirectory` are not persisted by that concrete
+record. The port now models all 16 in both readers and retains them losslessly.
+Its Qt Saves manager treats an existing group ID as authoritative and gives
+each ungrouped legacy row a separate in-memory key rather than guessing a 13.27
+migration. Rename, combine, and split edit only title/group fields through an
+indexed XML transaction. File ownership and emulator operations remain outside
+that metadata transaction. Backup, restore, permanent deletion, scanning,
+automatic policy, repair, and RetroArch/Dolphin/PCSX2 adapters remain open.
 
 Historical logs from the same read-only installation supply a narrow runtime
 oracle for session statistics without exposing game names or paths. Across the

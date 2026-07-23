@@ -227,7 +227,7 @@ completion metrics.
 
 The repository and a narrow library-browsing vertical slice now exist. Exact
 multi-document transactions, golden semantic-diff/failure coverage, and the
-36-role `QAbstractListModel` now pass. Pending recovery, write-conflict UX,
+37-role `QAbstractListModel` now pass. Pending recovery, write-conflict UX,
 safe rollback, and the first transactional desktop game-state edit also pass a
 temporary-library Qt smoke with a targeted `dataChanged`. Transactional title
 editing has expanded into 18 descriptive fields through a versioned typed
@@ -278,8 +278,12 @@ game-save reference refusal, and target/media isolation. Its Make Default action
 retains the selected row and transactionally copies the evidence-derived shared
 launch/version fields onto the owning game; a second real-dialog smoke proves
 the edit/default backup chain, direct-launch sentinel, model refresh, lexical
-Windows path, and game-only/unknown-data retention. Save management remains
-open, as do the manual combine/expand actions in `LIB-010`.
+Windows path, and game-only/unknown-data retention. The first save-management
+subset now models the full persisted 13.27 save record and provides lossless
+group/version inventory plus rename, combine, and split metadata operations.
+File/folder scanning, backup, restore, deletion, automatic policy, repair, and
+emulator adapters remain open, as do the manual combine/expand actions in
+`LIB-010`.
 The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:
@@ -289,8 +293,8 @@ Phase 0/1 evidence and product-safety gates:
 3. Convert the first ten critical runtime scenarios into structured fixtures
    and map them to feature-matrix IDs.
 4. Expand desktop editing beyond the now-working additional-application,
-   platform, nested-category, and playlist create/edit/delete workflows into
-   save management, manual combine/expand, and reviewed
+   platform, nested-category, playlist, and save-group metadata workflows into
+   filesystem-safe save backup/restore/delete, manual combine/expand, and reviewed
    cascade/remediation choices for dependencies. Category and playlist deletion now follow
    the recovered detach-to-root behavior without deleting child records or
    media. Alternate names and custom fields now pass typed storage and real-dialog runtime gates. The

@@ -96,6 +96,7 @@ edit_root=$(mktemp -d)
 crud_root=$(mktemp -d)
 additional_application_crud_root=$(mktemp -d)
 additional_application_default_root=$(mktemp -d)
+game_save_metadata_root=$(mktemp -d)
 import_root=$(mktemp -d)
 import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
@@ -108,7 +109,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$import_root" "$import_source_root" "$platform_crud_root" "$category_crud_root" "$playlist_crud_root" "$emulator_launch_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -503,6 +504,97 @@ if find "$additional_application_default_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox Make Default copying, retained app records, exact backup chain, lexical Windows paths, and unknown XML preservation validated."
+
+cp -R fixtures/launchbox/Data "$game_save_metadata_root/Data"
+game_save_metadata_platform="$game_save_metadata_root/Data/Platforms/Fixture Console.xml"
+sed -i \
+  "\|</GameSave>|r $workspace_root/fixtures/game-save-smoke-records.xml" \
+  "$game_save_metadata_platform"
+cp "$game_save_metadata_platform" "$game_save_metadata_root/original-platform.xml"
+game_save_metadata_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$game_save_metadata_root" \
+    --game-save-metadata-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_save_metadata_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_SAVE_METADATA_SMOKE_COMPLETE groups=2 writes=4 revision=4 data_changes=4' \
+  <<< "$game_save_metadata_output"; then
+  printf '%s\n' "$game_save_metadata_output" >&2
+  echo "LaunchBox did not validate dialog-driven game-save metadata editing." >&2
+  exit 1
+fi
+if [[ $(rg -c '<GameSave>' "$game_save_metadata_platform") -ne 3 ]] \
+  || [[ $(rg -c -F '<SaveGroupName>Renamed Run</SaveGroupName>' \
+    "$game_save_metadata_platform") -ne 2 ]] \
+  || [[ $(rg -c -F '<SaveGroupName>Split History</SaveGroupName>' \
+    "$game_save_metadata_platform") -ne 1 ]]; then
+  echo "Game-save metadata smoke produced the wrong final group/version shape." >&2
+  exit 1
+fi
+for expected in \
+  '<Title>Renamed Active</Title>' \
+  '<FilePath>Saves\Fixture Adventure\slot1.sav</FilePath>' \
+  '<FilePath>C:\Users\Ben\RetroArch\saves\fixture-live.srm</FilePath>' \
+  '<FilePath>Saves\Fixture Console\fixture-adventure-01.srm</FilePath>' \
+  '<ReportedFileSizeBytes>32768</ReportedFileSizeBytes>' \
+  '<ReportedLastModifiedUtc>2026-07-22T01:02:03.4567890Z</ReportedLastModifiedUtc>' \
+  '<Md5>0123456789abcdef0123456789abcdef</Md5>' \
+  '<FutureGameSaveField>keep-live-save-data</FutureGameSaveField>' \
+  '<FutureGameSaveField>keep-vault-save-data</FutureGameSaveField>' \
+  '<FutureRootElement>preserve-me</FutureRootElement>'; do
+  if ! rg -q -F "$expected" "$game_save_metadata_platform"; then
+    echo "Game-save metadata smoke did not preserve: $expected" >&2
+    exit 1
+  fi
+done
+
+mapfile -t game_save_metadata_backups < <(
+  find "$game_save_metadata_root/Data/Platforms" -maxdepth 1 -type f \
+    -name '*.lbport-transaction-backup-*' -print
+)
+if [[ ${#game_save_metadata_backups[@]} -ne 4 ]]; then
+  echo "Game-save metadata edits did not retain exactly four transaction backups." >&2
+  exit 1
+fi
+game_save_original_backups=0
+game_save_renamed_version_backups=0
+game_save_renamed_group_backups=0
+game_save_combined_backups=0
+for backup in "${game_save_metadata_backups[@]}"; do
+  if cmp -s "$backup" "$game_save_metadata_root/original-platform.xml"; then
+    ((game_save_original_backups += 1))
+  elif rg -q -F '<Title>Renamed Active</Title>' "$backup" \
+    && ! rg -q -F '<SaveGroupName>Renamed Run</SaveGroupName>' "$backup"; then
+    ((game_save_renamed_version_backups += 1))
+  elif [[ $(rg -c -F '<SaveGroupName>Renamed Run</SaveGroupName>' \
+    "$backup") -eq 1 ]] \
+    && [[ $(rg -c -F '<SaveGroupName>Backup Run</SaveGroupName>' \
+    "$backup") -eq 2 ]]; then
+    ((game_save_renamed_group_backups += 1))
+  elif [[ $(rg -c -F '<SaveGroupName>Renamed Run</SaveGroupName>' \
+    "$backup") -eq 3 ]] \
+    && ! rg -q -F '<SaveGroupName>Split History</SaveGroupName>' "$backup"; then
+    ((game_save_combined_backups += 1))
+  fi
+done
+if [[ $game_save_original_backups -ne 1 \
+  || $game_save_renamed_version_backups -ne 1 \
+  || $game_save_renamed_group_backups -ne 1 \
+  || $game_save_combined_backups -ne 1 ]]; then
+  echo "Game-save transaction backups do not prove the rename/combine/split chain." >&2
+  exit 1
+fi
+if find "$game_save_metadata_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful game-save metadata edits left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox dialog-driven save grouping/version metadata, active/vault path classification, lexical Windows paths, exact backup chain, and unknown XML preservation validated."
 
 cp -R fixtures/launchbox/Data "$import_root/Data"
 mkdir -p "$import_root/Metadata"
