@@ -12,8 +12,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-const MANIFEST_VERSION: u32 = 2;
+const MANIFEST_VERSION: u32 = 3;
 const LEGACY_MANIFEST_VERSION: u32 = 1;
+const REGULAR_FILE_MANIFEST_VERSION: u32 = 2;
 const MANIFEST_PREFIX: &str = ".lbport-transaction-";
 const MANIFEST_SUFFIX: &str = ".json";
 const LOCK_FILE_NAME: &str = ".lbport-transaction.lock";
@@ -69,11 +70,30 @@ impl FileRevision {
         }
         Ok(Self { byte_len, sha256 })
     }
+
+    pub fn read_symlink(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        let path = path.as_ref();
+        let metadata = fs::symlink_metadata(path).map_err(|source| StorageError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if !metadata.file_type().is_symlink() {
+            return Err(StorageError::AtomicDirectoryUnsafeEntry {
+                path: path.to_path_buf(),
+            });
+        }
+        let target = fs::read_link(path).map_err(|source| StorageError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Ok(Self::from_bytes(&symlink_target_bytes(&target)))
+    }
 }
 
 #[derive(Clone, Debug)]
 struct PendingChange {
     target: PathBuf,
+    kind: TransactionEntryKind,
     operation: TransactionOperation,
     candidate: Option<PendingCandidate>,
     expected: Option<FileRevision>,
@@ -87,6 +107,19 @@ enum PendingCandidate {
         expected: Option<FileRevision>,
         preserve_permissions: bool,
     },
+    #[cfg(unix)]
+    SourceSymlink {
+        path: PathBuf,
+        expected: FileRevision,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TransactionEntryKind {
+    #[default]
+    RegularFile,
+    Symlink,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -284,6 +317,7 @@ impl LibraryTransaction {
         let target = self.checked_new_target(target.as_ref())?;
         self.push_change(PendingChange {
             target,
+            kind: TransactionEntryKind::RegularFile,
             operation: TransactionOperation::Create,
             candidate: Some(PendingCandidate::SourceFile {
                 path: source,
@@ -323,6 +357,7 @@ impl LibraryTransaction {
         let target = self.checked_new_target(target.as_ref())?;
         self.push_change(PendingChange {
             target,
+            kind: TransactionEntryKind::RegularFile,
             operation: TransactionOperation::Create,
             candidate: Some(PendingCandidate::SourceFile {
                 path: source,
@@ -361,6 +396,7 @@ impl LibraryTransaction {
         let target = self.checked_new_target(target.as_ref())?;
         self.push_change(PendingChange {
             target,
+            kind: TransactionEntryKind::RegularFile,
             operation: TransactionOperation::Create,
             candidate: Some(PendingCandidate::SourceFile {
                 path: source,
@@ -429,6 +465,7 @@ impl LibraryTransaction {
         }
         self.push_change(PendingChange {
             target,
+            kind: TransactionEntryKind::RegularFile,
             operation: TransactionOperation::Replace,
             candidate: Some(PendingCandidate::SourceFile {
                 path: source,
@@ -470,6 +507,7 @@ impl LibraryTransaction {
         }
         self.push_change(PendingChange {
             target,
+            kind: TransactionEntryKind::RegularFile,
             operation: TransactionOperation::Replace,
             candidate: Some(PendingCandidate::SourceFile {
                 path: source,
@@ -489,6 +527,72 @@ impl LibraryTransaction {
         expected: FileRevision,
     ) -> Result<(), TransactionError> {
         self.stage_delete(target.as_ref(), expected)
+    }
+
+    /// Stages creation of one exact symbolic link under the library root.
+    ///
+    /// This is reserved for signed macOS application bundles whose framework
+    /// layout depends on relative symlinks. Callers must separately validate
+    /// that the link target is relative and remains inside the managed bundle.
+    #[cfg(unix)]
+    pub fn stage_symlink_copy_with_revision(
+        &mut self,
+        source: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+        expected: FileRevision,
+    ) -> Result<(), TransactionError> {
+        let source = checked_source_symlink(source.as_ref(), &expected)?;
+        let target = self.checked_new_target(target.as_ref())?;
+        self.push_change(PendingChange {
+            target,
+            kind: TransactionEntryKind::Symlink,
+            operation: TransactionOperation::Create,
+            candidate: Some(PendingCandidate::SourceSymlink {
+                path: source,
+                expected,
+            }),
+            expected: None,
+        })
+    }
+
+    /// Stages replacement of one exact symbolic link with another.
+    #[cfg(unix)]
+    pub fn stage_symlink_replace_with_revisions(
+        &mut self,
+        source: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+        source_expected: FileRevision,
+        target_expected: FileRevision,
+    ) -> Result<(), TransactionError> {
+        let source = checked_source_symlink(source.as_ref(), &source_expected)?;
+        let target = self.checked_symlink_target(target.as_ref())?;
+        self.push_change(PendingChange {
+            target,
+            kind: TransactionEntryKind::Symlink,
+            operation: TransactionOperation::Replace,
+            candidate: Some(PendingCandidate::SourceSymlink {
+                path: source,
+                expected: source_expected,
+            }),
+            expected: Some(target_expected),
+        })
+    }
+
+    /// Stages deletion of one exact symbolic link.
+    #[cfg(unix)]
+    pub fn stage_symlink_delete_with_revision(
+        &mut self,
+        target: impl AsRef<Path>,
+        expected: FileRevision,
+    ) -> Result<(), TransactionError> {
+        let target = self.checked_symlink_target(target.as_ref())?;
+        self.push_change(PendingChange {
+            target,
+            kind: TransactionEntryKind::Symlink,
+            operation: TransactionOperation::Delete,
+            candidate: None,
+            expected: Some(expected),
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -512,6 +616,7 @@ impl LibraryTransaction {
         let target = self.checked_target(target)?;
         self.push_change(PendingChange {
             target,
+            kind: TransactionEntryKind::RegularFile,
             operation: TransactionOperation::Replace,
             candidate: Some(PendingCandidate::Bytes(candidate)),
             expected: Some(expected),
@@ -522,6 +627,7 @@ impl LibraryTransaction {
         let target = self.checked_new_target(target)?;
         self.push_change(PendingChange {
             target,
+            kind: TransactionEntryKind::RegularFile,
             operation: TransactionOperation::Create,
             candidate: Some(PendingCandidate::Bytes(candidate)),
             expected: None,
@@ -536,6 +642,7 @@ impl LibraryTransaction {
         let target = self.checked_target(target)?;
         self.push_change(PendingChange {
             target,
+            kind: TransactionEntryKind::RegularFile,
             operation: TransactionOperation::Delete,
             candidate: None,
             expected: Some(expected),
@@ -608,6 +715,37 @@ impl LibraryTransaction {
             path: supplied_parent.to_path_buf(),
             source,
         })?;
+        if !parent.starts_with(&self.root) {
+            return Err(TransactionError::TargetOutsideRoot {
+                root: self.root.clone(),
+                path: parent.join(file_name),
+            });
+        }
+        Ok(parent.join(file_name))
+    }
+
+    #[cfg(unix)]
+    fn checked_symlink_target(&self, target: &Path) -> Result<PathBuf, TransactionError> {
+        let metadata = fs::symlink_metadata(target).map_err(|source| TransactionError::Io {
+            path: target.to_path_buf(),
+            source,
+        })?;
+        if !metadata.file_type().is_symlink() {
+            return Err(TransactionError::TargetNotSymlink {
+                path: target.to_path_buf(),
+            });
+        }
+        let file_name = target
+            .file_name()
+            .ok_or_else(|| TransactionError::UnsafeNewTarget {
+                path: target.to_path_buf(),
+            })?;
+        let parent = target
+            .parent()
+            .and_then(|parent| fs::canonicalize(parent).ok())
+            .ok_or_else(|| TransactionError::UnsafeNewTarget {
+                path: target.to_path_buf(),
+            })?;
         if !parent.starts_with(&self.root) {
             return Err(TransactionError::TargetOutsideRoot {
                 root: self.root.clone(),
@@ -803,7 +941,7 @@ fn verify_pending_changes(changes: &[PendingChange]) -> Result<(), TransactionEr
                     .expected
                     .as_ref()
                     .expect("replace/delete pending change has an expected revision");
-                let actual = FileRevision::read(&change.target)?;
+                let actual = revision_for_kind(&change.target, change.kind)?;
                 if actual != *expected {
                     return Err(TransactionError::Conflict {
                         path: change.target.clone(),
@@ -824,6 +962,41 @@ fn verify_pending_changes(changes: &[PendingChange]) -> Result<(), TransactionEr
     Ok(())
 }
 
+fn revision_for_kind(
+    path: &Path,
+    kind: TransactionEntryKind,
+) -> Result<FileRevision, TransactionError> {
+    match kind {
+        TransactionEntryKind::RegularFile => Ok(FileRevision::read(path)?),
+        TransactionEntryKind::Symlink => Ok(FileRevision::read_symlink(path)?),
+    }
+}
+
+#[cfg(unix)]
+fn checked_source_symlink(
+    source: &Path,
+    expected: &FileRevision,
+) -> Result<PathBuf, TransactionError> {
+    let metadata = fs::symlink_metadata(source).map_err(|source_error| TransactionError::Io {
+        path: source.to_path_buf(),
+        source: source_error,
+    })?;
+    if !metadata.file_type().is_symlink() {
+        return Err(TransactionError::SourceNotSymlink {
+            path: source.to_path_buf(),
+        });
+    }
+    let actual = FileRevision::read_symlink(source)?;
+    if actual != *expected {
+        return Err(TransactionError::SourceConflict {
+            path: source.to_path_buf(),
+            expected: expected.clone(),
+            actual,
+        });
+    }
+    Ok(source.to_path_buf())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TransactionManifest {
     version: u32,
@@ -834,6 +1007,8 @@ struct TransactionManifest {
 struct PreparedChange {
     #[serde(default)]
     operation: TransactionOperation,
+    #[serde(default)]
+    kind: TransactionEntryKind,
     target: PathBuf,
     backup: Option<PathBuf>,
     staged: Option<PathBuf>,
@@ -844,14 +1019,22 @@ struct PreparedChange {
 fn prepare_change(change: &PendingChange) -> Result<PreparedChange, TransactionError> {
     match change.operation {
         TransactionOperation::Replace => {
-            let metadata = regular_target_metadata(&change.target)?;
+            let permissions = match change.kind {
+                TransactionEntryKind::RegularFile => {
+                    Some(regular_target_metadata(&change.target)?.permissions())
+                }
+                TransactionEntryKind::Symlink => {
+                    symlink_target_metadata(&change.target)?;
+                    None
+                }
+            };
             let candidate = change
                 .candidate
                 .as_ref()
                 .expect("replace pending change has candidate data");
             let (staged, candidate_revision) =
-                prepare_staged_candidate(&change.target, candidate, Some(metadata.permissions()))?;
-            let backup = match prepare_backup(&change.target, &metadata) {
+                prepare_staged_candidate(&change.target, candidate, permissions)?;
+            let backup = match prepare_backup(&change.target, change.kind) {
                 Ok(backup) => backup,
                 Err(error) => {
                     let _ = fs::remove_file(&staged);
@@ -860,6 +1043,7 @@ fn prepare_change(change: &PendingChange) -> Result<PreparedChange, TransactionE
             };
             Ok(PreparedChange {
                 operation: change.operation,
+                kind: change.kind,
                 target: change.target.clone(),
                 backup: Some(backup),
                 staged: Some(staged),
@@ -876,6 +1060,7 @@ fn prepare_change(change: &PendingChange) -> Result<PreparedChange, TransactionE
                 prepare_staged_candidate(&change.target, candidate, None)?;
             Ok(PreparedChange {
                 operation: change.operation,
+                kind: change.kind,
                 target: change.target.clone(),
                 backup: None,
                 staged: Some(staged),
@@ -884,10 +1069,18 @@ fn prepare_change(change: &PendingChange) -> Result<PreparedChange, TransactionE
             })
         }
         TransactionOperation::Delete => {
-            let metadata = regular_target_metadata(&change.target)?;
-            let backup = prepare_backup(&change.target, &metadata)?;
+            match change.kind {
+                TransactionEntryKind::RegularFile => {
+                    regular_target_metadata(&change.target)?;
+                }
+                TransactionEntryKind::Symlink => {
+                    symlink_target_metadata(&change.target)?;
+                }
+            }
+            let backup = prepare_backup(&change.target, change.kind)?;
             Ok(PreparedChange {
                 operation: change.operation,
+                kind: change.kind,
                 target: change.target.clone(),
                 backup: Some(backup),
                 staged: None,
@@ -911,11 +1104,42 @@ fn regular_target_metadata(path: &Path) -> Result<fs::Metadata, TransactionError
     Ok(metadata)
 }
 
+fn symlink_target_metadata(path: &Path) -> Result<fs::Metadata, TransactionError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| TransactionError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.file_type().is_symlink() {
+        return Err(TransactionError::TargetNotSymlink {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(metadata)
+}
+
 fn prepare_staged_candidate(
     target: &Path,
     candidate: &PendingCandidate,
     permissions: Option<fs::Permissions>,
 ) -> Result<(PathBuf, FileRevision), TransactionError> {
+    #[cfg(unix)]
+    if let PendingCandidate::SourceSymlink { path, expected } = candidate {
+        let link_target = fs::read_link(path).map_err(|source| TransactionError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let actual = FileRevision::from_bytes(&symlink_target_bytes(&link_target));
+        if actual != *expected {
+            return Err(TransactionError::SourceConflict {
+                path: path.clone(),
+                expected: expected.clone(),
+                actual,
+            });
+        }
+        let staged_path =
+            create_unique_sibling_symlink(target, &link_target, "transaction-stage", true)?;
+        return Ok((staged_path, actual));
+    }
     let (staged_path, mut staged) = create_unique_sibling(target, "transaction-stage", true)?;
     let result = (|| {
         let revision = match candidate {
@@ -943,6 +1167,10 @@ fn prepare_staged_candidate(
                     write!(&mut sha256, "{byte:02x}").expect("writing to a String cannot fail");
                 }
                 FileRevision { byte_len, sha256 }
+            }
+            #[cfg(unix)]
+            PendingCandidate::SourceSymlink { .. } => {
+                unreachable!("symlink candidates are staged before opening a regular file")
             }
         };
         staged.flush()?;
@@ -991,7 +1219,15 @@ fn prepare_staged_candidate(
     Ok((staged_path, revision))
 }
 
-fn prepare_backup(target: &Path, metadata: &fs::Metadata) -> Result<PathBuf, TransactionError> {
+fn prepare_backup(target: &Path, kind: TransactionEntryKind) -> Result<PathBuf, TransactionError> {
+    if kind == TransactionEntryKind::Symlink {
+        let link_target = fs::read_link(target).map_err(|source| TransactionError::Io {
+            path: target.to_path_buf(),
+            source,
+        })?;
+        return create_unique_sibling_symlink(target, &link_target, "transaction-backup", false);
+    }
+    let metadata = regular_target_metadata(target)?;
     let (backup_path, mut backup) = create_unique_sibling(target, "transaction-backup", false)?;
     let result = fs::File::open(target)
         .and_then(|mut original| std::io::copy(&mut original, &mut backup))
@@ -1007,6 +1243,47 @@ fn prepare_backup(target: &Path, metadata: &fs::Metadata) -> Result<PathBuf, Tra
     }
     drop(backup);
     Ok(backup_path)
+}
+
+fn create_unique_sibling_symlink(
+    target: &Path,
+    link_target: &Path,
+    kind: &str,
+    hidden: bool,
+) -> Result<PathBuf, TransactionError> {
+    let (path, placeholder) = create_unique_sibling(target, kind, hidden)?;
+    drop(placeholder);
+    fs::remove_file(&path).map_err(|source| TransactionError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    #[cfg(unix)]
+    {
+        if let Err(source) = std::os::unix::fs::symlink(link_target, &path) {
+            return Err(TransactionError::Io { path, source });
+        }
+        sync_parent_directory(&path).map_err(|source| TransactionError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(path)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = link_target;
+        Err(TransactionError::SymlinkTransactionsUnsupported { path })
+    }
+}
+
+#[cfg(unix)]
+fn symlink_target_bytes(target: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    target.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn symlink_target_bytes(target: &Path) -> Vec<u8> {
+    target.to_string_lossy().as_bytes().to_vec()
 }
 
 fn apply_prepared_change(entry: &PreparedChange) -> Result<(), std::io::Error> {
@@ -1075,7 +1352,7 @@ fn write_manifest(
 }
 
 fn read_manifest(root: &Path, path: &Path) -> Result<TransactionManifest, TransactionError> {
-    validate_regular_artifact(root, path, path, true)?;
+    validate_transaction_artifact(root, path, path, true, TransactionEntryKind::RegularFile)?;
     let mut bytes = Vec::new();
     fs::File::open(path)
         .and_then(|mut file| file.read_to_end(&mut bytes))
@@ -1088,17 +1365,29 @@ fn read_manifest(root: &Path, path: &Path) -> Result<TransactionManifest, Transa
             path: path.to_path_buf(),
             source,
         })?;
-    if ![LEGACY_MANIFEST_VERSION, MANIFEST_VERSION].contains(&manifest.version) {
+    if ![
+        LEGACY_MANIFEST_VERSION,
+        REGULAR_FILE_MANIFEST_VERSION,
+        MANIFEST_VERSION,
+    ]
+    .contains(&manifest.version)
+    {
         return Err(TransactionError::UnsupportedManifestVersion {
             path: path.to_path_buf(),
             version: manifest.version,
         });
     }
     for entry in &manifest.entries {
+        if manifest.version < MANIFEST_VERSION && entry.kind != TransactionEntryKind::RegularFile {
+            return Err(TransactionError::IncompleteManifestEntry {
+                manifest: path.to_path_buf(),
+                target: entry.target.clone(),
+            });
+        }
         let target_must_exist = entry.operation == TransactionOperation::Replace;
-        validate_regular_artifact(root, path, &entry.target, target_must_exist)?;
+        validate_transaction_artifact(root, path, &entry.target, target_must_exist, entry.kind)?;
         if let Some(backup) = &entry.backup {
-            validate_regular_artifact(root, path, backup, true)?;
+            validate_transaction_artifact(root, path, backup, true, entry.kind)?;
         } else if entry.operation != TransactionOperation::Create {
             return Err(TransactionError::IncompleteManifestEntry {
                 manifest: path.to_path_buf(),
@@ -1106,7 +1395,7 @@ fn read_manifest(root: &Path, path: &Path) -> Result<TransactionManifest, Transa
             });
         }
         if let Some(staged) = &entry.staged {
-            validate_regular_artifact(root, path, staged, false)?;
+            validate_transaction_artifact(root, path, staged, false, entry.kind)?;
         } else if entry.operation != TransactionOperation::Delete {
             return Err(TransactionError::IncompleteManifestEntry {
                 manifest: path.to_path_buf(),
@@ -1140,11 +1429,12 @@ fn read_manifest(root: &Path, path: &Path) -> Result<TransactionManifest, Transa
     Ok(manifest)
 }
 
-fn validate_regular_artifact(
+fn validate_transaction_artifact(
     root: &Path,
     manifest: &Path,
     artifact: &Path,
     must_exist: bool,
+    kind: TransactionEntryKind,
 ) -> Result<(), TransactionError> {
     let is_normalized_absolute = artifact.is_absolute()
         && !artifact
@@ -1163,7 +1453,12 @@ fn validate_regular_artifact(
     }
 
     match fs::symlink_metadata(artifact) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+        Ok(metadata)
+            if (kind == TransactionEntryKind::RegularFile && metadata.file_type().is_file())
+                || (kind == TransactionEntryKind::Symlink && metadata.file_type().is_symlink()) =>
+        {
+            Ok(())
+        }
         Err(error) if !must_exist && error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Ok(_) | Err(_) => Err(TransactionError::UnsafeManifestPath {
             manifest: manifest.to_path_buf(),
@@ -1179,7 +1474,7 @@ fn rollback_manifest(
 ) -> Result<RecoveryReport, TransactionError> {
     let mut restored_targets = Vec::new();
     for entry in &manifest.entries {
-        let actual = optional_file_revision(&entry.target)?;
+        let actual = optional_revision(&entry.target, entry.kind)?;
         if actual == entry.original_revision {
             continue;
         }
@@ -1211,7 +1506,9 @@ fn rollback_manifest(
 
     for entry in &manifest.entries {
         if let Some(staged) = &entry.staged {
-            if staged.is_file() {
+            if fs::symlink_metadata(staged).is_ok_and(|metadata| {
+                metadata.file_type().is_file() || metadata.file_type().is_symlink()
+            }) {
                 fs::remove_file(staged).map_err(|source| TransactionError::Io {
                     path: staged.clone(),
                     source,
@@ -1226,9 +1523,21 @@ fn rollback_manifest(
     })
 }
 
-fn optional_file_revision(path: &Path) -> Result<Option<FileRevision>, TransactionError> {
+fn optional_revision(
+    path: &Path,
+    kind: TransactionEntryKind,
+) -> Result<Option<FileRevision>, TransactionError> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(Some(FileRevision::read(path)?)),
+        Ok(metadata)
+            if kind == TransactionEntryKind::RegularFile && metadata.file_type().is_file() =>
+        {
+            Ok(Some(FileRevision::read(path)?))
+        }
+        Ok(metadata)
+            if kind == TransactionEntryKind::Symlink && metadata.file_type().is_symlink() =>
+        {
+            Ok(Some(FileRevision::read_symlink(path)?))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Ok(_) => Err(TransactionError::TargetNotFile {
             path: path.to_path_buf(),
@@ -1249,6 +1558,35 @@ fn restore_entry(entry: &PreparedChange) -> Result<(), TransactionError> {
         .original_revision
         .as_ref()
         .expect("replace/delete transaction entry has an original revision");
+    if entry.kind == TransactionEntryKind::Symlink {
+        let link_target = fs::read_link(backup).map_err(|source| TransactionError::Io {
+            path: backup.clone(),
+            source,
+        })?;
+        let backup_revision = FileRevision::from_bytes(&symlink_target_bytes(&link_target));
+        if backup_revision != *original_revision {
+            return Err(TransactionError::BackupMismatch {
+                path: backup.clone(),
+                expected: original_revision.clone(),
+                actual: backup_revision,
+            });
+        }
+        let temporary = create_unique_sibling_symlink(
+            &entry.target,
+            &link_target,
+            "transaction-restore",
+            true,
+        )?;
+        replace_file(&temporary, &entry.target).map_err(|source| TransactionError::Io {
+            path: entry.target.clone(),
+            source,
+        })?;
+        sync_parent_directory(&entry.target).map_err(|source| TransactionError::Io {
+            path: entry.target.clone(),
+            source,
+        })?;
+        return Ok(());
+    }
     let backup_bytes = fs::read(backup).map_err(|source| TransactionError::Io {
         path: backup.clone(),
         source,
@@ -1361,8 +1699,14 @@ pub enum TransactionError {
     RootNotDirectory { path: PathBuf },
     #[error("transaction target is not a regular file: {path}")]
     TargetNotFile { path: PathBuf },
+    #[error("transaction target is not a symbolic link: {path}")]
+    TargetNotSymlink { path: PathBuf },
     #[error("transaction copy source is not a regular file: {path}")]
     SourceNotFile { path: PathBuf },
+    #[error("transaction copy source is not a symbolic link: {path}")]
+    SourceNotSymlink { path: PathBuf },
+    #[error("symbolic-link transactions are unsupported on this host: {path}")]
+    SymlinkTransactionsUnsupported { path: PathBuf },
     #[error("transaction source and target are the same file: {path}")]
     SourceEqualsTarget { path: PathBuf },
     #[error("transaction target {path} is outside root {root}")]
@@ -2288,6 +2632,63 @@ mod tests {
             Err(TransactionError::NewTargetAlreadyExists { path }) if path == new_path
         ));
         assert_eq!(fs::read(&new_path).unwrap(), b"external creator");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creates_replaces_and_deletes_exact_relative_symlinks_transactionally() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory
+            .path()
+            .join("Emulators/RetroArch/RetroArch.app/Frameworks");
+        fs::create_dir_all(&bundle).unwrap();
+        let sources = tempfile::tempdir().unwrap();
+        let source_a = sources.path().join("Current");
+        let source_b = sources.path().join("Current-next");
+        symlink(Path::new("A"), &source_a).unwrap();
+        symlink(Path::new("B"), &source_b).unwrap();
+        let target = bundle.join("Current");
+
+        let source_a_revision = FileRevision::read_symlink(&source_a).unwrap();
+        let mut create = LibraryTransaction::new(directory.path()).unwrap();
+        create
+            .stage_symlink_copy_with_revision(&source_a, &target, source_a_revision)
+            .unwrap();
+        let created = create.commit().unwrap();
+        assert_eq!(created.created_targets, vec![target.clone()]);
+        assert_eq!(fs::read_link(&target).unwrap(), Path::new("A"));
+
+        let target_revision = FileRevision::read_symlink(&target).unwrap();
+        let source_b_revision = FileRevision::read_symlink(&source_b).unwrap();
+        let mut replace = LibraryTransaction::new(directory.path()).unwrap();
+        replace
+            .stage_symlink_replace_with_revisions(
+                &source_b,
+                &target,
+                source_b_revision,
+                target_revision,
+            )
+            .unwrap();
+        let replaced = replace.commit().unwrap();
+        assert_eq!(fs::read_link(&target).unwrap(), Path::new("B"));
+        assert_eq!(
+            fs::read_link(&replaced.writes[0].backup).unwrap(),
+            Path::new("A")
+        );
+
+        let target_revision = FileRevision::read_symlink(&target).unwrap();
+        let mut delete = LibraryTransaction::new(directory.path()).unwrap();
+        delete
+            .stage_symlink_delete_with_revision(&target, target_revision)
+            .unwrap();
+        let deleted = delete.commit().unwrap();
+        assert!(fs::symlink_metadata(&target).is_err());
+        assert_eq!(
+            fs::read_link(&deleted.deleted_targets[0].backup).unwrap(),
+            Path::new("B")
+        );
     }
 
     #[test]

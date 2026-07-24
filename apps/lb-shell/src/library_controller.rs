@@ -252,6 +252,18 @@ pub mod qobject {
         fn remove_managed_xemu(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
+        fn check_retroarch_release(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn review_managed_retroarch(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn install_retroarch_release(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn remove_managed_retroarch(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
         fn cancel_emulator_install(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
@@ -963,7 +975,8 @@ use lb_integrations::emulator_lifecycle::{
     read_managed_emulator_install, read_managed_pcsx2_install, read_managed_xemu_install,
     DownloadReceipt, EmulatorLifecycleError, FileReleaseTransport, GithubReleaseTransport,
     ManagedEmulatorInstall, ManagedExecutableState, ManagedInstallAudit, ManagedInstalledFile,
-    Pcsx2ArtifactKind, Pcsx2ReleaseOffer, ReleaseTransport, MANAGED_INSTALL_MANIFEST_NAME,
+    ManagedInstalledLink, ManagedReleaseArtifact, Pcsx2ArtifactKind, Pcsx2ReleaseOffer,
+    ReleaseTransport, MANAGED_INSTALL_MANIFEST_NAME,
 };
 use lb_integrations::pcsx2::{
     default_pcsx2_data_directories, discover_pcsx2_saves, extract_pcsx2_memory_card_save,
@@ -978,6 +991,11 @@ use lb_integrations::retroarch::{
 use lb_integrations::retroarch_bios::{
     audit_retroarch_bios, default_retroarch_configuration_paths, RetroArchBiosAudit,
     RetroArchBiosTarget,
+};
+use lb_integrations::retroarch_lifecycle::{
+    download_retroarch_artifact, fetch_latest_retroarch_release, frontend_artifact,
+    BuildbotRetroArchReleaseTransport, FileRetroArchReleaseTransport, RetroArchArtifactKind,
+    RetroArchReleaseOffer, RetroArchReleaseTransport, RETROARCH_PROVIDER,
 };
 use lb_integrations::xemu::{
     download_xemu_release, fetch_latest_xemu_release, XemuArtifactKind, XemuReleaseOffer,
@@ -1273,6 +1291,8 @@ pub struct LibraryControllerRust {
     bigpemu_remove_state: Option<BigPEmuRemoveState>,
     xemu_release_state: Option<XemuReleaseState>,
     xemu_remove_state: Option<XemuRemoveState>,
+    retroarch_release_state: Option<RetroArchReleaseState>,
+    retroarch_remove_state: Option<RetroArchRemoveState>,
     emulator_install_cancel: Option<Arc<AtomicBool>>,
     path_mapping_settings_file: Option<PathBuf>,
     path_mappings: HostPathMappings,
@@ -1989,6 +2009,26 @@ struct XemuRemoveSuccess {
     recovery_files: Vec<PathBuf>,
 }
 
+struct RetroArchInstallSuccess {
+    emulator_write: EmulatorWriteSuccess,
+    manifest: ManagedEmulatorInstall,
+    executable: PathBuf,
+    installed_file_count: usize,
+    created_file_count: usize,
+    replaced_file_count: usize,
+    recovery_files: Vec<PathBuf>,
+}
+
+struct RetroArchRemoveSuccess {
+    configuration: EmulatorConfiguration,
+    removed_emulator: Option<Emulator>,
+    removed_mapping_count: usize,
+    emulator_document: PathBuf,
+    emulator_backup: Option<PathBuf>,
+    removed_file_count: usize,
+    recovery_files: Vec<PathBuf>,
+}
+
 struct CategoryWriteSuccess {
     name: String,
     categories: Vec<PlatformCategory>,
@@ -2580,6 +2620,78 @@ struct XemuRemoveState {
 
 #[derive(Clone, Debug, Serialize)]
 struct XemuRemovePayload {
+    version: u32,
+    profile_id: &'static str,
+    install_directory: String,
+    managed_install: Option<ManagedInstallAudit>,
+    emulator_id: Option<String>,
+    emulator_title: Option<String>,
+    reference_count: usize,
+    reference_summary: Option<String>,
+    owned_file_count: usize,
+    can_remove: bool,
+    blocked_reason: Option<String>,
+    read_only_check: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RetroArchInstallAction {
+    Install,
+    Update,
+    Repair,
+    Current,
+    Blocked,
+}
+
+impl RetroArchInstallAction {
+    const fn can_install(self) -> bool {
+        matches!(self, Self::Install | Self::Update | Self::Repair)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RetroArchReleaseState {
+    offer: RetroArchReleaseOffer,
+    install_directory: PathBuf,
+    executable_path: PathBuf,
+    existing_emulator_id: Option<String>,
+    existing_emulator_title: Option<String>,
+    managed_install: Option<ManagedInstallAudit>,
+    action: RetroArchInstallAction,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RetroArchReleasePayload {
+    version: u32,
+    profile_id: &'static str,
+    emulator_name: &'static str,
+    release: RetroArchReleaseOffer,
+    install_directory: String,
+    executable_path: String,
+    existing_emulator_id: Option<String>,
+    existing_emulator_title: Option<String>,
+    managed_install: Option<ManagedInstallAudit>,
+    action: RetroArchInstallAction,
+    can_install: bool,
+    blocked_reason: Option<String>,
+    read_only_check: bool,
+}
+
+#[derive(Clone, Debug)]
+struct RetroArchRemoveState {
+    audit: Option<ManagedInstallAudit>,
+    emulator_id: Option<String>,
+    emulator_title: Option<String>,
+    reference_count: usize,
+    reference_summary: Option<String>,
+    can_remove: bool,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RetroArchRemovePayload {
     version: u32,
     profile_id: &'static str,
     install_directory: String,
@@ -8907,6 +9019,482 @@ fn remove_managed_xemu(
     })
 }
 
+fn retroarch_release_payload(state: &RetroArchReleaseState) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&RetroArchReleasePayload {
+        version: EMULATOR_RELEASE_PAYLOAD_VERSION,
+        profile_id: "retroarch",
+        emulator_name: "RetroArch",
+        release: state.offer.clone(),
+        install_directory: state.install_directory.to_string_lossy().into_owned(),
+        executable_path: state.executable_path.to_string_lossy().into_owned(),
+        existing_emulator_id: state.existing_emulator_id.clone(),
+        existing_emulator_title: state.existing_emulator_title.clone(),
+        managed_install: state.managed_install.clone(),
+        action: state.action,
+        can_install: state.action.can_install(),
+        blocked_reason: state.blocked_reason.clone(),
+        read_only_check: true,
+    })
+}
+
+fn inspect_retroarch_release_state(
+    root: &Path,
+    configuration: Option<&EmulatorConfiguration>,
+    resolver: &HostPathResolver,
+    offer: RetroArchReleaseOffer,
+) -> Result<RetroArchReleaseState, EmulatorLifecycleError> {
+    let configured = configuration
+        .into_iter()
+        .flat_map(|configuration| &configuration.emulators)
+        .filter(|emulator| {
+            resolver
+                .resolve(root, &emulator.application_path)
+                .ok()
+                .is_some_and(|path| is_retroarch_emulator(&emulator.title, &path))
+        })
+        .collect::<Vec<_>>();
+    if configured.len() > 1 {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message: format!(
+                "found {} configured RetroArch entries; choose one explicitly before managed installation",
+                configured.len()
+            ),
+        });
+    }
+    let existing_emulator_id = configured.first().map(|emulator| emulator.id.clone());
+    let existing_emulator_title = configured.first().map(|emulator| emulator.title.clone());
+    let install_directory = root.join("Emulators/RetroArch");
+    let executable_path = install_directory.join(offer.artifact_kind.executable_name());
+    let managed_install =
+        read_managed_emulator_install(&install_directory, "retroarch", RETROARCH_PROVIDER)?;
+
+    let unsafe_install_directory = match fs::symlink_metadata(&install_directory) {
+        Ok(metadata) => !metadata.file_type().is_dir() || metadata.file_type().is_symlink(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(source) => {
+            return Err(EmulatorLifecycleError::Io {
+                path: install_directory,
+                source,
+            });
+        }
+    };
+    let (action, blocked_reason) = if unsafe_install_directory {
+        (
+            RetroArchInstallAction::Blocked,
+            Some("The portable RetroArch install path is a symlink or non-directory entry.".into()),
+        )
+    } else if let Some(audit) = managed_install.as_ref() {
+        let unsafe_file = audit
+            .installed_files
+            .iter()
+            .find(|file| file.state == ManagedExecutableState::Unsafe);
+        let unreadable_file = audit
+            .installed_files
+            .iter()
+            .find(|file| file.state == ManagedExecutableState::Unreadable);
+        let repair_file = audit.installed_files.iter().find(|file| {
+            matches!(
+                file.state,
+                ManagedExecutableState::Missing | ManagedExecutableState::Modified
+            )
+        });
+        let invalid_link = audit
+            .installed_links
+            .iter()
+            .find(|link| link.state != ManagedExecutableState::Valid);
+        if audit.executable_state == ManagedExecutableState::Unsafe {
+            (
+                RetroArchInstallAction::Blocked,
+                Some("The managed RetroArch executable is a symlink or non-regular entry.".into()),
+            )
+        } else if audit.executable_state == ManagedExecutableState::Unreadable {
+            (
+                RetroArchInstallAction::Blocked,
+                Some("The managed RetroArch executable cannot be read safely.".into()),
+            )
+        } else if let Some(file) = unsafe_file {
+            (
+                RetroArchInstallAction::Blocked,
+                Some(format!(
+                    "Managed path {} is a symlink or non-regular entry.",
+                    file.relative_path
+                )),
+            )
+        } else if let Some(file) = unreadable_file {
+            (
+                RetroArchInstallAction::Blocked,
+                Some(format!(
+                    "Managed path {} cannot be read safely.",
+                    file.relative_path
+                )),
+            )
+        } else if invalid_link.is_some_and(|link| {
+            matches!(
+                link.state,
+                ManagedExecutableState::Unsafe | ManagedExecutableState::Unreadable
+            )
+        }) {
+            (
+                RetroArchInstallAction::Blocked,
+                Some("A managed RetroArch macOS bundle link is unsafe or unreadable.".into()),
+            )
+        } else if !audit.ownership_manifest_current()
+            || audit.executable_state != ManagedExecutableState::Valid
+            || repair_file.is_some()
+            || invalid_link.is_some()
+        {
+            (RetroArchInstallAction::Repair, None)
+        } else if retroarch_update_available(audit, &offer) {
+            (RetroArchInstallAction::Update, None)
+        } else {
+            (RetroArchInstallAction::Current, None)
+        }
+    } else {
+        match fs::symlink_metadata(&executable_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (RetroArchInstallAction::Install, None)
+            }
+            Ok(_) => (
+                RetroArchInstallAction::Blocked,
+                Some(
+                    "The managed executable target already exists without a port-owned manifest."
+                        .into(),
+                ),
+            ),
+            Err(source) => {
+                return Err(EmulatorLifecycleError::Io {
+                    path: executable_path,
+                    source,
+                });
+            }
+        }
+    };
+    Ok(RetroArchReleaseState {
+        offer,
+        install_directory,
+        executable_path,
+        existing_emulator_id,
+        existing_emulator_title,
+        managed_install,
+        action,
+        blocked_reason,
+    })
+}
+
+fn retroarch_update_available(audit: &ManagedInstallAudit, offer: &RetroArchReleaseOffer) -> bool {
+    if audit.manifest.tag != offer.tag
+        || audit.manifest.artifact_kind != offer.artifact_kind.id()
+        || audit.manifest.asset_url != offer.asset_url
+        || audit.manifest.asset_byte_len != offer.asset_byte_len
+    {
+        return true;
+    }
+    match (
+        audit.manifest.supporting_artifacts.as_slice(),
+        offer.cores.as_ref(),
+    ) {
+        ([], None) => false,
+        ([installed], Some(available)) => {
+            installed.role != "cores"
+                || installed.asset_name != available.asset_name
+                || installed.asset_url != available.asset_url
+                || installed.asset_byte_len != available.asset_byte_len
+        }
+        _ => true,
+    }
+}
+
+fn retroarch_release_transport_from_command_line(
+) -> Result<Box<dyn RetroArchReleaseTransport>, EmulatorLifecycleError> {
+    let mut arguments = std::env::args_os();
+    let mut fixture = None;
+    while let Some(argument) = arguments.next() {
+        if argument != "--retroarch-release-fixture" {
+            continue;
+        }
+        let path = arguments
+            .next()
+            .ok_or_else(|| EmulatorLifecycleError::InvalidCatalog {
+                message: "--retroarch-release-fixture requires a directory".into(),
+            })?;
+        if fixture.replace(PathBuf::from(path)).is_some() {
+            return Err(EmulatorLifecycleError::InvalidCatalog {
+                message: "--retroarch-release-fixture may only be supplied once".into(),
+            });
+        }
+    }
+    match fixture {
+        Some(path) if path.is_absolute() => Ok(Box::new(FileRetroArchReleaseTransport::new(path))),
+        Some(_) => Err(EmulatorLifecycleError::InvalidCatalog {
+            message: "--retroarch-release-fixture requires an absolute directory".into(),
+        }),
+        None => Ok(Box::new(BuildbotRetroArchReleaseTransport)),
+    }
+}
+
+fn inspect_managed_retroarch_removal(
+    root: &Path,
+    configuration: Option<&EmulatorConfiguration>,
+    resolver: &HostPathResolver,
+) -> Result<RetroArchRemoveState, EmulatorWriteFailure> {
+    let install_directory = root.join("Emulators/RetroArch");
+    validate_managed_install_directory(root, &install_directory, "RetroArch")?;
+    let audit = read_managed_emulator_install(&install_directory, "retroarch", RETROARCH_PROVIDER)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let Some(audit) = audit else {
+        return Ok(RetroArchRemoveState {
+            audit: None,
+            emulator_id: None,
+            emulator_title: None,
+            reference_count: 0,
+            reference_summary: None,
+            can_remove: false,
+            blocked_reason: Some(
+                "No port-owned RetroArch install manifest exists in the portable directory.".into(),
+            ),
+        });
+    };
+    let emulator_id = audit.manifest.emulator_id.clone();
+    let emulator = emulator_id.as_deref().and_then(|emulator_id| {
+        configuration.and_then(|configuration| {
+            configuration
+                .emulators
+                .iter()
+                .find(|emulator| emulator.id.eq_ignore_ascii_case(emulator_id))
+        })
+    });
+    let references = match emulator_id.as_deref() {
+        Some(emulator_id) => find_emulator_references(root, emulator_id)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?,
+        None => Vec::new(),
+    };
+    let reference_summary =
+        (!references.is_empty()).then(|| summarize_emulator_references(&references));
+    let mut blocked_reason = None;
+    if !audit.ownership_manifest_current() {
+        blocked_reason = Some(
+            "This install uses a legacy manifest that does not enumerate every provider-owned path. Repair or update it before removal.".into(),
+        );
+    } else if let Some(file) = audit
+        .installed_files
+        .iter()
+        .find(|file| file.state != ManagedExecutableState::Valid)
+    {
+        blocked_reason = Some(format!(
+            "Owned file {} is {}; repair the managed install before removal.",
+            file.relative_path,
+            managed_file_state_label(file.state)
+        ));
+    } else if let Some(link) = audit
+        .installed_links
+        .iter()
+        .find(|link| link.state != ManagedExecutableState::Valid)
+    {
+        blocked_reason = Some(format!(
+            "Owned bundle link {} is {}; repair the managed install before removal.",
+            link.relative_path,
+            managed_file_state_label(link.state)
+        ));
+    } else if configuration.is_none() {
+        blocked_reason = Some("The loaded library has no readable emulator configuration.".into());
+    } else if let Some(emulator) = emulator {
+        match resolver.resolve(root, &emulator.application_path) {
+            Ok(path) if path == audit.executable_path => {}
+            Ok(path) => {
+                blocked_reason = Some(format!(
+                    "Emulator {} now points to {} instead of the managed executable.",
+                    emulator.id,
+                    path.display()
+                ));
+            }
+            Err(error) => {
+                blocked_reason = Some(format!(
+                    "The managed emulator application path cannot be resolved safely: {error}"
+                ));
+            }
+        }
+    }
+    if blocked_reason.is_none() && !references.is_empty() {
+        blocked_reason = Some(format!(
+            "The managed emulator is pinned by {} dependent record(s): {}",
+            references.len(),
+            reference_summary.as_deref().unwrap_or("unknown references")
+        ));
+    }
+    Ok(RetroArchRemoveState {
+        emulator_id,
+        emulator_title: emulator.map(|emulator| emulator.title.clone()),
+        reference_count: references.len(),
+        reference_summary,
+        can_remove: blocked_reason.is_none() && audit.safe_to_remove(),
+        blocked_reason,
+        audit: Some(audit),
+    })
+}
+
+fn retroarch_remove_payload(
+    root: &Path,
+    state: &RetroArchRemoveState,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&RetroArchRemovePayload {
+        version: EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION,
+        profile_id: "retroarch",
+        install_directory: root
+            .join("Emulators/RetroArch")
+            .to_string_lossy()
+            .into_owned(),
+        managed_install: state.audit.clone(),
+        emulator_id: state.emulator_id.clone(),
+        emulator_title: state.emulator_title.clone(),
+        reference_count: state.reference_count,
+        reference_summary: state.reference_summary.clone(),
+        owned_file_count: state.audit.as_ref().map_or(0, |audit| {
+            audit
+                .installed_files
+                .len()
+                .saturating_add(audit.installed_links.len())
+                .saturating_add(1)
+        }),
+        can_remove: state.can_remove,
+        blocked_reason: state.blocked_reason.clone(),
+        read_only_check: true,
+    })
+}
+
+fn remove_managed_retroarch(
+    root: PathBuf,
+    resolver: HostPathResolver,
+    reviewed: RetroArchRemoveState,
+) -> Result<RetroArchRemoveSuccess, EmulatorWriteFailure> {
+    if !reviewed.can_remove {
+        return Err(EmulatorWriteFailure::Other(
+            reviewed
+                .blocked_reason
+                .unwrap_or_else(|| "The managed RetroArch install is not safe to remove.".into()),
+        ));
+    }
+    let install_directory = root.join("Emulators/RetroArch");
+    validate_managed_install_directory(&root, &install_directory, "RetroArch")?;
+    let current =
+        read_managed_emulator_install(&install_directory, "retroarch", RETROARCH_PROVIDER)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if current != reviewed.audit {
+        return Err(EmulatorWriteFailure::Conflict(
+            "RetroArch managed paths changed after the removal review.".into(),
+        ));
+    }
+    let audit = current.ok_or_else(|| {
+        EmulatorWriteFailure::Conflict(
+            "The RetroArch ownership manifest disappeared after the removal review.".into(),
+        )
+    })?;
+    if !audit.safe_to_remove() {
+        return Err(EmulatorWriteFailure::Conflict(
+            "A managed RetroArch path is no longer exact after the removal review.".into(),
+        ));
+    }
+    let emulator_id = audit.manifest.emulator_id.as_deref().ok_or_else(|| {
+        EmulatorWriteFailure::Other(
+            "The RetroArch ownership manifest has no managed emulator ID.".into(),
+        )
+    })?;
+    let references = find_emulator_references(&root, emulator_id)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if !references.is_empty() {
+        return Err(EmulatorWriteFailure::Referenced(references));
+    }
+
+    let emulator_document = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&emulator_document)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let before = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let managed_emulator = before
+        .emulators
+        .iter()
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(emulator_id))
+        .cloned();
+    if let Some(emulator) = managed_emulator.as_ref() {
+        let application_path = resolver
+            .resolve(&root, &emulator.application_path)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        if application_path != audit.executable_path {
+            return Err(EmulatorWriteFailure::Conflict(format!(
+                "Emulator {} no longer points to the managed RetroArch executable.",
+                emulator.id
+            )));
+        }
+    }
+    let removed = managed_emulator
+        .as_ref()
+        .map(|_| {
+            document
+                .remove_emulator(emulator_id)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+        })
+        .transpose()?;
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_emulator_transaction_error)?;
+    if removed.is_some() {
+        transaction
+            .stage_auxiliary(&document)
+            .map_err(classify_emulator_transaction_error)?;
+    }
+    for file in &audit.installed_files {
+        let expected = FileRevision::read(&file.path)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        transaction
+            .stage_file_delete_with_revision(&file.path, expected)
+            .map_err(classify_emulator_transaction_error)?;
+    }
+    #[cfg(unix)]
+    for link in &audit.installed_links {
+        let expected = FileRevision::read_symlink(&link.path)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        transaction
+            .stage_symlink_delete_with_revision(&link.path, expected)
+            .map_err(classify_emulator_transaction_error)?;
+    }
+    #[cfg(not(unix))]
+    if !audit.installed_links.is_empty() {
+        return Err(EmulatorWriteFailure::Other(
+            "Managed RetroArch bundle links cannot be removed on this host.".into(),
+        ));
+    }
+    let manifest_revision = FileRevision::read(&audit.manifest_path)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    transaction
+        .stage_file_delete_with_revision(&audit.manifest_path, manifest_revision)
+        .map_err(classify_emulator_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_emulator_transaction_error)?;
+    let emulator_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == emulator_document)
+        .map(|write| write.backup.clone());
+    let recovery_files = report
+        .deleted_targets
+        .iter()
+        .map(|deleted| deleted.backup.clone())
+        .collect::<Vec<_>>();
+    Ok(RetroArchRemoveSuccess {
+        configuration,
+        removed_emulator: removed.as_ref().map(|removed| removed.emulator.clone()),
+        removed_mapping_count: removed.map_or(0, |removed| removed.platforms.len()),
+        emulator_document,
+        emulator_backup,
+        removed_file_count: report.deleted_targets.len(),
+        recovery_files,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EmulatorBiosAdapter {
     Pcsx2,
@@ -9175,6 +9763,50 @@ fn managed_xemu_emulator_payload(
         .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
     let candidate = DiscoveredEmulatorExecutable {
         profile: EmulatorDiscoveryProfile::Xemu,
+        executable: executable_path.to_path_buf(),
+        source: EmulatorDiscoverySource::PortableLibrary,
+        installed_version: None,
+    };
+    let serialized = discovered_emulator_payload(
+        &candidate,
+        root,
+        resolver,
+        platform_names,
+        Some(&configuration),
+    )?;
+    let mut payload = parse_emulator_edit_payload(None, &serialized, platform_names)
+        .map_err(EmulatorWriteFailure::Other)?;
+    payload.emulator.application_path = stored_path;
+    Ok(payload)
+}
+
+fn managed_retroarch_emulator_payload(
+    root: &Path,
+    resolver: &HostPathResolver,
+    platform_names: &[String],
+    existing_emulator_id: Option<&str>,
+    executable_path: &Path,
+) -> Result<EmulatorEditPayload, EmulatorWriteFailure> {
+    let stored_path = resolver
+        .stored_path_for_host_path(root, executable_path)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if let Some(emulator_id) = existing_emulator_id {
+        let serialized = load_emulator_edit_payload(root, emulator_id, platform_names)?;
+        let mut payload =
+            parse_emulator_edit_payload(Some(emulator_id), &serialized, platform_names)
+                .map_err(EmulatorWriteFailure::Other)?;
+        payload.emulator.application_path = stored_path;
+        return Ok(payload);
+    }
+
+    let source = emulator_document_path(root)?;
+    let document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let candidate = DiscoveredEmulatorExecutable {
+        profile: EmulatorDiscoveryProfile::RetroArch,
         executable: executable_path.to_path_buf(),
         source: EmulatorDiscoverySource::PortableLibrary,
         installed_version: None,
@@ -10274,6 +10906,944 @@ fn install_managed_xemu(
     })
 }
 
+fn install_managed_retroarch(
+    root: PathBuf,
+    resolver: HostPathResolver,
+    platform_names: Vec<String>,
+    state: RetroArchReleaseState,
+    transport: Box<dyn RetroArchReleaseTransport>,
+    cancel: Arc<AtomicBool>,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<RetroArchInstallSuccess, EmulatorWriteFailure> {
+    if !state.action.can_install() {
+        return Err(EmulatorWriteFailure::Other(
+            state
+                .blocked_reason
+                .unwrap_or_else(|| "RetroArch has no install or update action to apply.".into()),
+        ));
+    }
+    let temporary = tempfile::Builder::new()
+        .prefix(".lbport-retroarch-download-")
+        .tempdir_in(&root)
+        .map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "could not create a private RetroArch download directory: {error}"
+            ))
+        })?;
+    let frontend_offer = frontend_artifact(&state.offer);
+    let total_bytes = state
+        .offer
+        .cores
+        .as_ref()
+        .map_or(state.offer.asset_byte_len, |cores| {
+            state
+                .offer
+                .asset_byte_len
+                .saturating_add(cores.asset_byte_len)
+        });
+    let frontend_path = temporary.path().join(&frontend_offer.asset_name);
+    let frontend_receipt = download_retroarch_artifact(
+        transport.as_ref(),
+        &frontend_offer,
+        &frontend_path,
+        &mut |received, _| progress(received, total_bytes),
+        &|| cancel.load(Ordering::Relaxed),
+    )
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let (cores_path, cores_receipt) = if let Some(cores) = state.offer.cores.as_ref() {
+        let path = temporary.path().join(&cores.asset_name);
+        let offset = state.offer.asset_byte_len;
+        let receipt = download_retroarch_artifact(
+            transport.as_ref(),
+            cores,
+            &path,
+            &mut |received, _| progress(offset.saturating_add(received), total_bytes),
+            &|| cancel.load(Ordering::Relaxed),
+        )
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        (Some(path), Some(receipt))
+    } else {
+        (None, None)
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EmulatorWriteFailure::Other(
+            EmulatorLifecycleError::Cancelled.to_string(),
+        ));
+    }
+
+    let mut install_sources = prepare_retroarch_artifacts(
+        &root,
+        &state.offer,
+        &frontend_path,
+        cores_path.as_deref(),
+        temporary.path(),
+    )?;
+    install_sources.sort_by(|left, right| {
+        left.relative_target()
+            .cmp(right.relative_target())
+            .then_with(|| left.kind_order().cmp(&right.kind_order()))
+    });
+    if install_sources.is_empty() {
+        return Err(EmulatorWriteFailure::Other(
+            "The verified RetroArch artifact contained no installable paths.".into(),
+        ));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EmulatorWriteFailure::Other(
+            EmulatorLifecycleError::Cancelled.to_string(),
+        ));
+    }
+
+    revalidate_retroarch_install_precondition(&state)?;
+    let executable_source = install_sources
+        .iter()
+        .find_map(|entry| match entry {
+            PreparedRetroArchEntry::File(file)
+                if file.relative_target
+                    == Path::new(state.offer.artifact_kind.executable_name()) =>
+            {
+                Some(&file.source)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(format!(
+                "The verified RetroArch artifact did not contain {}.",
+                state.offer.artifact_kind.executable_name()
+            ))
+        })?;
+    let executable_receipt = file_receipt(executable_source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let payload = managed_retroarch_emulator_payload(
+        &root,
+        &resolver,
+        &platform_names,
+        state.existing_emulator_id.as_deref(),
+        &state.executable_path,
+    )?;
+    let mut installed_files = install_sources
+        .iter()
+        .filter_map(|entry| match entry {
+            PreparedRetroArchEntry::File(file) => Some(file),
+            PreparedRetroArchEntry::Link { .. } => None,
+        })
+        .map(|file| {
+            let receipt = file_receipt(&file.source)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+            ManagedInstalledFile::new(&file.relative_target, &receipt)
+                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut installed_links = install_sources
+        .iter()
+        .filter_map(|entry| match entry {
+            PreparedRetroArchEntry::Link {
+                relative_target,
+                target,
+                ..
+            } => Some(ManagedInstalledLink::new(relative_target, target)),
+            PreparedRetroArchEntry::File(_) => None,
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    installed_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    installed_links.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let supporting_artifacts = match (state.offer.cores.as_ref(), cores_receipt.as_ref()) {
+        (Some(cores), Some(receipt)) => vec![ManagedReleaseArtifact::new(
+            "cores",
+            cores.asset_name.clone(),
+            cores.asset_url.clone(),
+            receipt,
+        )
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?],
+        (None, None) => Vec::new(),
+        _ => {
+            return Err(EmulatorWriteFailure::Other(
+                "RetroArch cores download metadata is internally inconsistent.".into(),
+            ));
+        }
+    };
+    let manifest = ManagedEmulatorInstall::from_release_with_supporting_artifacts(
+        "retroarch".into(),
+        RETROARCH_PROVIDER.into(),
+        payload.emulator.id.clone(),
+        state.offer.version.clone(),
+        state.offer.tag.clone(),
+        false,
+        state.offer.artifact_kind.id().into(),
+        state.offer.asset_name.clone(),
+        state.offer.asset_url.clone(),
+        frontend_receipt.byte_len,
+        frontend_receipt.sha256,
+        None,
+        supporting_artifacts,
+        state.offer.artifact_kind.executable_name().into(),
+        &executable_receipt,
+        installed_files,
+        installed_links,
+    )
+    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let manifest_bytes = manifest
+        .to_json_bytes()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+
+    let source = emulator_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let operation = if let Some(existing_id) = state.existing_emulator_id.as_deref() {
+        let emulator = payload.emulator.clone();
+        let platform_edits = emulator_platform_records(&emulator.id, payload.platforms);
+        document
+            .set_emulator(existing_id, emulator, platform_edits)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        EmulatorWriteOperation::Edit
+    } else {
+        let emulator = payload.emulator.clone();
+        let platforms = emulator_platform_records(&emulator.id, payload.platforms)
+            .into_iter()
+            .map(|edit| edit.record)
+            .collect();
+        document
+            .add_emulator(emulator, platforms)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+        EmulatorWriteOperation::Create
+    };
+    let configuration = document
+        .emulator_configuration()
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulator = configuration
+        .emulators
+        .iter()
+        .find(|emulator| emulator.id.eq_ignore_ascii_case(&payload.emulator.id))
+        .cloned()
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "RetroArch disappeared from the candidate Emulators.xml document.".into(),
+            )
+        })?;
+    let mapping_count = configuration
+        .platforms
+        .iter()
+        .filter(|mapping| mapping.emulator_id.eq_ignore_ascii_case(&emulator.id))
+        .count();
+
+    let mut created_directories = Vec::new();
+    if let Err(error) = prepare_retroarch_install_directories(
+        &root,
+        &state.install_directory,
+        &install_sources,
+        &mut created_directories,
+    ) {
+        remove_created_empty_directories(&created_directories);
+        return Err(error);
+    }
+    let commit = (|| {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EmulatorWriteFailure::Other(
+                EmulatorLifecycleError::Cancelled.to_string(),
+            ));
+        }
+        let mut transaction =
+            LibraryTransaction::new(&root).map_err(classify_emulator_transaction_error)?;
+        transaction
+            .stage_auxiliary(&document)
+            .map_err(classify_emulator_transaction_error)?;
+        let initial_install = state.managed_install.is_none();
+        let previously_owned_paths = state
+            .managed_install
+            .as_ref()
+            .map(|audit| {
+                audit
+                    .installed_files
+                    .iter()
+                    .map(|file| managed_relative_path_key(&file.relative_path))
+                    .chain(
+                        audit
+                            .installed_links
+                            .iter()
+                            .map(|link| managed_relative_path_key(&link.relative_path)),
+                    )
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        for entry in &install_sources {
+            let target = state.install_directory.join(entry.relative_target());
+            let relative_key = managed_relative_path_key(
+                &entry.relative_target().to_string_lossy().replace('\\', "/"),
+            );
+            let previously_owned = previously_owned_paths.contains(&relative_key)
+                || state.managed_install.as_ref().is_some_and(|audit| {
+                    !audit.ownership_manifest_current() && target == audit.executable_path
+                });
+            match entry {
+                PreparedRetroArchEntry::File(file) => {
+                    let source_revision = FileRevision::read(&file.source)
+                        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                    match fs::symlink_metadata(&target) {
+                        Ok(metadata)
+                            if !initial_install
+                                && previously_owned
+                                && metadata.file_type().is_file()
+                                && !metadata.file_type().is_symlink() =>
+                        {
+                            let target_revision = FileRevision::read(&target)
+                                .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                            if file.preserve_permissions {
+                                transaction
+                                    .stage_file_replace_with_revisions_preserving_permissions(
+                                        &file.source,
+                                        &target,
+                                        source_revision,
+                                        target_revision,
+                                    )
+                                    .map_err(classify_emulator_transaction_error)?;
+                            } else {
+                                transaction
+                                    .stage_file_replace_with_revisions(
+                                        &file.source,
+                                        &target,
+                                        source_revision,
+                                        target_revision,
+                                    )
+                                    .map_err(classify_emulator_transaction_error)?;
+                            }
+                        }
+                        Ok(_) if initial_install || !previously_owned => {
+                            return Err(EmulatorWriteFailure::Other(format!(
+                                "Refusing to overwrite unmanaged RetroArch install path {}.",
+                                target.display()
+                            )));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            if file.preserve_permissions {
+                                transaction
+                                    .stage_file_copy_with_revision_preserving_permissions(
+                                        &file.source,
+                                        &target,
+                                        source_revision,
+                                    )
+                                    .map_err(classify_emulator_transaction_error)?;
+                            } else {
+                                transaction
+                                    .stage_file_copy_with_revision(
+                                        &file.source,
+                                        &target,
+                                        source_revision,
+                                    )
+                                    .map_err(classify_emulator_transaction_error)?;
+                            }
+                        }
+                        Ok(_) => {
+                            return Err(EmulatorWriteFailure::Other(format!(
+                                "Refusing unsafe RetroArch install target {}.",
+                                target.display()
+                            )));
+                        }
+                        Err(error) => {
+                            return Err(EmulatorWriteFailure::Other(format!(
+                                "Could not inspect RetroArch install target {}: {error}",
+                                target.display()
+                            )));
+                        }
+                    }
+                }
+                PreparedRetroArchEntry::Link { source, .. } => {
+                    #[cfg(unix)]
+                    {
+                        let source_revision = FileRevision::read_symlink(source)
+                            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                        match fs::symlink_metadata(&target) {
+                            Ok(metadata)
+                                if !initial_install
+                                    && previously_owned
+                                    && metadata.file_type().is_symlink() =>
+                            {
+                                let target_revision =
+                                    FileRevision::read_symlink(&target).map_err(|error| {
+                                        EmulatorWriteFailure::Other(error.to_string())
+                                    })?;
+                                transaction
+                                    .stage_symlink_replace_with_revisions(
+                                        source,
+                                        &target,
+                                        source_revision,
+                                        target_revision,
+                                    )
+                                    .map_err(classify_emulator_transaction_error)?;
+                            }
+                            Ok(_) if initial_install || !previously_owned => {
+                                return Err(EmulatorWriteFailure::Other(format!(
+                                    "Refusing to overwrite unmanaged RetroArch bundle link {}.",
+                                    target.display()
+                                )));
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                transaction
+                                    .stage_symlink_copy_with_revision(
+                                        source,
+                                        &target,
+                                        source_revision,
+                                    )
+                                    .map_err(classify_emulator_transaction_error)?;
+                            }
+                            Ok(_) => {
+                                return Err(EmulatorWriteFailure::Other(format!(
+                                    "Refusing unsafe RetroArch bundle-link target {}.",
+                                    target.display()
+                                )));
+                            }
+                            Err(error) => {
+                                return Err(EmulatorWriteFailure::Other(format!(
+                                    "Could not inspect RetroArch bundle-link target {}: {error}",
+                                    target.display()
+                                )));
+                            }
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = source;
+                        return Err(EmulatorWriteFailure::Other(
+                            "RetroArch bundle links are unsupported on this host.".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(previous) = state.managed_install.as_ref() {
+            let new_paths = manifest
+                .installed_files
+                .iter()
+                .map(|file| managed_relative_path_key(&file.relative_path))
+                .chain(
+                    manifest
+                        .installed_links
+                        .iter()
+                        .map(|link| managed_relative_path_key(&link.relative_path)),
+                )
+                .collect::<BTreeSet<_>>();
+            for file in &previous.installed_files {
+                if new_paths.contains(&managed_relative_path_key(&file.relative_path)) {
+                    continue;
+                }
+                if file.state != ManagedExecutableState::Valid {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing to remove stale managed path {} because it is {}.",
+                        file.path.display(),
+                        managed_file_state_label(file.state)
+                    )));
+                }
+                let expected = FileRevision::read(&file.path)
+                    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                transaction
+                    .stage_file_delete_with_revision(&file.path, expected)
+                    .map_err(classify_emulator_transaction_error)?;
+            }
+            #[cfg(unix)]
+            for link in &previous.installed_links {
+                if new_paths.contains(&managed_relative_path_key(&link.relative_path)) {
+                    continue;
+                }
+                if link.state != ManagedExecutableState::Valid {
+                    return Err(EmulatorWriteFailure::Other(format!(
+                        "Refusing to remove stale managed bundle link {} because it is {}.",
+                        link.path.display(),
+                        managed_file_state_label(link.state)
+                    )));
+                }
+                let expected = FileRevision::read_symlink(&link.path)
+                    .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+                transaction
+                    .stage_symlink_delete_with_revision(&link.path, expected)
+                    .map_err(classify_emulator_transaction_error)?;
+            }
+        }
+        let manifest_path = state.install_directory.join(MANAGED_INSTALL_MANIFEST_NAME);
+        if initial_install {
+            transaction
+                .stage_new_file_bytes(&manifest_path, manifest_bytes)
+                .map_err(classify_emulator_transaction_error)?;
+        } else {
+            stage_small_install_file(
+                &mut transaction,
+                &manifest_path,
+                manifest_bytes,
+                "RetroArch",
+            )?;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EmulatorWriteFailure::Other(
+                EmulatorLifecycleError::Cancelled.to_string(),
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(classify_emulator_transaction_error)
+    })();
+    let report = match commit {
+        Ok(report) => report,
+        Err(error) => {
+            remove_created_empty_directories(&created_directories);
+            return Err(error);
+        }
+    };
+    let backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            EmulatorWriteFailure::Other(
+                "RetroArch install transaction reported no Emulators.xml backup.".into(),
+            )
+        })?;
+    let recovery_files = report
+        .writes
+        .iter()
+        .filter(|write| write.target != source)
+        .map(|write| write.backup.clone())
+        .chain(
+            report
+                .deleted_targets
+                .iter()
+                .map(|write| write.backup.clone()),
+        )
+        .collect::<Vec<_>>();
+    let created_file_count = report.created_targets.len();
+    let replaced_file_count = report
+        .writes
+        .iter()
+        .filter(|write| write.target != source)
+        .count();
+    Ok(RetroArchInstallSuccess {
+        emulator_write: EmulatorWriteSuccess {
+            operation,
+            emulator,
+            configuration,
+            source,
+            backup,
+            mapping_count,
+        },
+        manifest,
+        executable: state.executable_path,
+        installed_file_count: install_sources.len().saturating_add(1),
+        created_file_count,
+        replaced_file_count,
+        recovery_files,
+    })
+}
+
+#[derive(Clone, Debug)]
+enum PreparedRetroArchEntry {
+    File(PreparedInstallFile),
+    Link {
+        source: PathBuf,
+        relative_target: PathBuf,
+        target: PathBuf,
+    },
+}
+
+impl PreparedRetroArchEntry {
+    fn relative_target(&self) -> &Path {
+        match self {
+            Self::File(file) => &file.relative_target,
+            Self::Link {
+                relative_target, ..
+            } => relative_target,
+        }
+    }
+
+    const fn kind_order(&self) -> u8 {
+        match self {
+            Self::File(_) => 0,
+            Self::Link { .. } => 1,
+        }
+    }
+}
+
+const RETROARCH_MACOS_BUNDLE_LINKS: [(&str, &str); 6] = [
+    (
+        "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/MoltenVK-v1.2.7",
+        "Versions/Current/MoltenVK-v1.2.7",
+    ),
+    (
+        "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/Resources",
+        "Versions/Current/Resources",
+    ),
+    (
+        "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/Versions/Current",
+        "A",
+    ),
+    (
+        "RetroArch.app/Contents/Frameworks/MoltenVK.framework/MoltenVK",
+        "Versions/Current/MoltenVK",
+    ),
+    (
+        "RetroArch.app/Contents/Frameworks/MoltenVK.framework/Resources",
+        "Versions/Current/Resources",
+    ),
+    (
+        "RetroArch.app/Contents/Frameworks/MoltenVK.framework/Versions/Current",
+        "A",
+    ),
+];
+
+fn prepare_retroarch_artifacts(
+    root: &Path,
+    offer: &RetroArchReleaseOffer,
+    frontend_artifact: &Path,
+    cores_artifact: Option<&Path>,
+    temporary_root: &Path,
+) -> Result<Vec<PreparedRetroArchEntry>, EmulatorWriteFailure> {
+    let mut prepared = if offer.artifact_kind == RetroArchArtifactKind::MacosMetalDmgUniversal {
+        if offer.cores.is_some() || cores_artifact.is_some() {
+            return Err(EmulatorWriteFailure::Other(
+                "The universal RetroArch macOS release must not include a fictitious stable cores archive."
+                    .into(),
+            ));
+        }
+        prepare_retroarch_macos_dmg(root, frontend_artifact, temporary_root)?
+    } else {
+        let Some(cores_artifact) = cores_artifact else {
+            return Err(EmulatorWriteFailure::Other(
+                "The RetroArch Linux and Windows install contracts require the matching cores archive."
+                    .into(),
+            ));
+        };
+        if offer.cores.is_none() {
+            return Err(EmulatorWriteFailure::Other(
+                "The RetroArch release metadata omitted the required cores artifact.".into(),
+            ));
+        }
+        let mut files = prepare_retroarch_wrapped_archive(
+            root,
+            offer.artifact_kind,
+            frontend_artifact,
+            &temporary_root.join("retroarch-frontend-extracted"),
+            true,
+        )?;
+        files.extend(prepare_retroarch_wrapped_archive(
+            root,
+            offer.artifact_kind,
+            cores_artifact,
+            &temporary_root.join("retroarch-cores-extracted"),
+            false,
+        )?);
+        files
+            .into_iter()
+            .map(PreparedRetroArchEntry::File)
+            .collect()
+    };
+
+    let mut owned_paths = BTreeSet::new();
+    for entry in &prepared {
+        let relative = entry.relative_target();
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "RetroArch prepared an unsafe install path: {}.",
+                relative.display()
+            )));
+        }
+        let key = managed_relative_path_key(&relative.to_string_lossy().replace('\\', "/"));
+        if !owned_paths.insert(key) {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "RetroArch artifacts collide at install path {}.",
+                relative.display()
+            )));
+        }
+    }
+    prepared.sort_by(|left, right| {
+        left.relative_target()
+            .cmp(right.relative_target())
+            .then_with(|| left.kind_order().cmp(&right.kind_order()))
+    });
+    Ok(prepared)
+}
+
+fn prepare_retroarch_wrapped_archive(
+    root: &Path,
+    artifact_kind: RetroArchArtifactKind,
+    artifact: &Path,
+    extraction: &Path,
+    require_executable: bool,
+) -> Result<Vec<PreparedInstallFile>, EmulatorWriteFailure> {
+    fs::create_dir(extraction).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not create the RetroArch extraction directory: {error}"
+        ))
+    })?;
+    let files = ArchiveExtractor::for_launchbox_root(root)
+        .extract_to_directory(artifact, extraction)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let archive_root = Path::new(artifact_kind.archive_root());
+    let expected_executable = Path::new(artifact_kind.executable_name());
+    let mut executable_count = 0usize;
+    let mut prepared = Vec::with_capacity(files.len());
+    for source in files {
+        let extracted_relative = source.strip_prefix(extraction).map_err(|_| {
+            EmulatorWriteFailure::Other(format!(
+                "RetroArch archive member is outside its extraction root: {}",
+                source.display()
+            ))
+        })?;
+        let relative_target = extracted_relative
+            .strip_prefix(archive_root)
+            .map_err(|_| {
+                EmulatorWriteFailure::Other(format!(
+                    "RetroArch archive member is outside the exact {} wrapper: {}",
+                    archive_root.display(),
+                    extracted_relative.display()
+                ))
+            })?
+            .to_path_buf();
+        validate_retroarch_install_member(&relative_target)?;
+        let metadata = fs::symlink_metadata(&source).map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "Could not inspect extracted RetroArch member {}: {error}",
+                source.display()
+            ))
+        })?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "RetroArch archive member is not a regular file: {}.",
+                source.display()
+            )));
+        }
+        let is_executable = relative_target == expected_executable;
+        if is_executable {
+            executable_count = executable_count.saturating_add(1);
+            make_file_executable(&source).map_err(|error| {
+                EmulatorWriteFailure::Other(format!(
+                    "Could not make the RetroArch executable runnable: {error}"
+                ))
+            })?;
+        }
+        prepared.push(PreparedInstallFile {
+            source,
+            relative_target,
+            preserve_permissions: is_executable,
+        });
+    }
+    if require_executable && executable_count != 1 {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "Expected exactly one {} in the verified RetroArch frontend archive, found {executable_count}.",
+            expected_executable.display()
+        )));
+    }
+    if !require_executable && executable_count != 0 {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "The RetroArch cores archive unexpectedly contains {}.",
+            expected_executable.display()
+        )));
+    }
+    if prepared.is_empty() {
+        return Err(EmulatorWriteFailure::Other(
+            "The verified RetroArch archive contained no installable files.".into(),
+        ));
+    }
+    Ok(prepared)
+}
+
+fn prepare_retroarch_macos_dmg(
+    root: &Path,
+    artifact: &Path,
+    temporary_root: &Path,
+) -> Result<Vec<PreparedRetroArchEntry>, EmulatorWriteFailure> {
+    let extraction = temporary_root.join("retroarch-macos-dmg-extracted");
+    fs::create_dir(&extraction).map_err(|error| {
+        EmulatorWriteFailure::Other(format!(
+            "Could not create the RetroArch DMG extraction directory: {error}"
+        ))
+    })?;
+    let files = ArchiveExtractor::for_launchbox_root(root)
+        .extract_to_directory(artifact, &extraction)
+        .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    prepare_retroarch_macos_extracted(&extraction, files)
+}
+
+fn prepare_retroarch_macos_extracted(
+    extraction: &Path,
+    files: Vec<PathBuf>,
+) -> Result<Vec<PreparedRetroArchEntry>, EmulatorWriteFailure> {
+    let source_bundle_root = Path::new("RetroArch/RetroArch.app");
+    let required_files = [
+        Path::new("RetroArch.app/Contents/MacOS/RetroArch"),
+        Path::new("RetroArch.app/Contents/Info.plist"),
+        Path::new("RetroArch.app/Contents/_CodeSignature/CodeResources"),
+        Path::new("RetroArch.app/Contents/Resources/assets.zip"),
+    ];
+    let executable_files = [
+        Path::new("RetroArch.app/Contents/MacOS/RetroArch"),
+        Path::new(
+            "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/Versions/A/MoltenVK-v1.2.7",
+        ),
+        Path::new(
+            "RetroArch.app/Contents/Frameworks/MoltenVK.framework/Versions/A/MoltenVK",
+        ),
+    ];
+    let expected_links = RETROARCH_MACOS_BUNDLE_LINKS
+        .iter()
+        .map(|(path, target)| ((*path).to_string(), (*target).to_string()))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen_links = BTreeSet::new();
+    let mut seen_files = BTreeSet::new();
+    let mut prepared = Vec::new();
+
+    for source in files {
+        let extracted_relative = source.strip_prefix(extraction).map_err(|_| {
+            EmulatorWriteFailure::Other(format!(
+                "RetroArch DMG member is outside its extraction root: {}",
+                source.display()
+            ))
+        })?;
+        let Ok(bundle_relative) = extracted_relative.strip_prefix(source_bundle_root) else {
+            continue;
+        };
+        if bundle_relative.as_os_str().is_empty() {
+            continue;
+        }
+        let relative_target = PathBuf::from("RetroArch.app").join(bundle_relative);
+        validate_retroarch_install_member(&relative_target)?;
+        let portable = relative_target.to_string_lossy().replace('\\', "/");
+        let metadata = fs::symlink_metadata(&source).map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "Could not inspect extracted RetroArch DMG member {}: {error}",
+                source.display()
+            ))
+        })?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "RetroArch DMG member is not the expected regular extracted entry: {}.",
+                source.display()
+            )));
+        }
+
+        if let Some(expected_target) = expected_links.get(&portable) {
+            let bytes = fs::read(&source).map_err(|error| {
+                EmulatorWriteFailure::Other(format!(
+                    "Could not read RetroArch framework-link placeholder {}: {error}",
+                    source.display()
+                ))
+            })?;
+            if bytes != expected_target.as_bytes() {
+                return Err(EmulatorWriteFailure::Other(format!(
+                    "RetroArch framework-link placeholder {} has an unexpected target.",
+                    relative_target.display()
+                )));
+            }
+            fs::remove_file(&source).map_err(|error| {
+                EmulatorWriteFailure::Other(format!(
+                    "Could not replace RetroArch framework-link placeholder {}: {error}",
+                    source.display()
+                ))
+            })?;
+            create_retroarch_bundle_link(Path::new(expected_target), &source)?;
+            seen_links.insert(portable);
+            prepared.push(PreparedRetroArchEntry::Link {
+                source,
+                relative_target,
+                target: PathBuf::from(expected_target),
+            });
+            continue;
+        }
+
+        if executable_files
+            .iter()
+            .any(|expected| relative_target == *expected)
+        {
+            make_file_executable(&source).map_err(|error| {
+                EmulatorWriteFailure::Other(format!(
+                    "Could not preserve a runnable RetroArch macOS bundle executable: {error}"
+                ))
+            })?;
+        }
+        seen_files.insert(portable);
+        prepared.push(PreparedRetroArchEntry::File(PreparedInstallFile {
+            source,
+            relative_target,
+            preserve_permissions: true,
+        }));
+    }
+
+    for required in required_files {
+        let portable = required.to_string_lossy().replace('\\', "/");
+        if !seen_files.contains(&portable) {
+            return Err(EmulatorWriteFailure::Other(format!(
+                "The universal RetroArch DMG is missing required bundle file {}.",
+                required.display()
+            )));
+        }
+    }
+    if seen_links.len() != expected_links.len()
+        || expected_links
+            .keys()
+            .any(|expected| !seen_links.contains(expected))
+    {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "The universal RetroArch DMG contains {} of the {} required framework links.",
+            seen_links.len(),
+            expected_links.len()
+        )));
+    }
+    if prepared.is_empty() {
+        return Err(EmulatorWriteFailure::Other(
+            "The universal RetroArch DMG contained no installable app bundle.".into(),
+        ));
+    }
+    Ok(prepared)
+}
+
+fn validate_retroarch_install_member(relative: &Path) -> Result<(), EmulatorWriteFailure> {
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "RetroArch archive produced an unsafe member path: {}.",
+            relative.display()
+        )));
+    }
+    if relative
+        .parent()
+        .is_some_and(|parent| parent.as_os_str().is_empty())
+        && relative.file_name().is_some_and(|name| {
+            name.to_string_lossy()
+                .eq_ignore_ascii_case(MANAGED_INSTALL_MANIFEST_NAME)
+        })
+    {
+        return Err(EmulatorWriteFailure::Other(format!(
+            "RetroArch archive attempts to own reserved install metadata {}.",
+            relative.display()
+        )));
+    }
+    Ok(())
+}
+
+fn create_retroarch_bundle_link(target: &Path, link: &Path) -> Result<(), EmulatorWriteFailure> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).map_err(|error| {
+            EmulatorWriteFailure::Other(format!(
+                "Could not reconstruct RetroArch bundle link {} -> {}: {error}",
+                link.display(),
+                target.display()
+            ))
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (target, link);
+        Err(EmulatorWriteFailure::Other(
+            "The universal RetroArch macOS bundle can only be prepared on a Unix host.".into(),
+        ))
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PreparedInstallFile {
     source: PathBuf,
@@ -10797,6 +12367,37 @@ fn prepare_install_directories(
     Ok(())
 }
 
+fn prepare_retroarch_install_directories(
+    root: &Path,
+    install_directory: &Path,
+    sources: &[PreparedRetroArchEntry],
+    created: &mut Vec<PathBuf>,
+) -> Result<(), EmulatorWriteFailure> {
+    let root =
+        fs::canonicalize(root).map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    let emulators = root.join("Emulators");
+    ensure_real_install_directory(&root, &emulators, created, "RetroArch")?;
+    ensure_real_install_directory(&root, install_directory, created, "RetroArch")?;
+    let mut directories = Vec::new();
+    for parent in sources
+        .iter()
+        .filter_map(|entry| entry.relative_target().parent())
+    {
+        for ancestor in parent
+            .ancestors()
+            .filter(|ancestor| !ancestor.as_os_str().is_empty())
+        {
+            directories.push(install_directory.join(ancestor));
+        }
+    }
+    directories.sort_by_key(|path| path.components().count());
+    directories.dedup();
+    for directory in directories {
+        ensure_real_install_directory(&root, &directory, created, "RetroArch")?;
+    }
+    Ok(())
+}
+
 fn ensure_real_install_directory(
     root: &Path,
     directory: &Path,
@@ -10920,6 +12521,25 @@ fn revalidate_xemu_install_precondition(
     if current.is_none() && fs::symlink_metadata(&state.executable_path).is_ok() {
         return Err(EmulatorWriteFailure::Conflict(
             "The managed Xemu executable target appeared after the release check.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn revalidate_retroarch_install_precondition(
+    state: &RetroArchReleaseState,
+) -> Result<(), EmulatorWriteFailure> {
+    let current =
+        read_managed_emulator_install(&state.install_directory, "retroarch", RETROARCH_PROVIDER)
+            .map_err(|error| EmulatorWriteFailure::Other(error.to_string()))?;
+    if current != state.managed_install {
+        return Err(EmulatorWriteFailure::Conflict(
+            "RetroArch install contents changed after the release check.".into(),
+        ));
+    }
+    if current.is_none() && fs::symlink_metadata(&state.executable_path).is_ok() {
+        return Err(EmulatorWriteFailure::Conflict(
+            "The managed RetroArch executable target appeared after the release check.".into(),
         ));
     }
     Ok(())
@@ -17274,6 +18894,7 @@ impl qobject::LibraryController {
             rust.pcsx2_remove_state = None;
             rust.bigpemu_remove_state = None;
             rust.xemu_remove_state = None;
+            rust.retroarch_remove_state = None;
         }
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_emulator_managed_checking(true);
@@ -17407,6 +19028,7 @@ impl qobject::LibraryController {
             rust.pcsx2_release_state = None;
             rust.bigpemu_release_state = None;
             rust.xemu_release_state = None;
+            rust.retroarch_release_state = None;
         }
         self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_emulator_release_checking(true);
@@ -17565,6 +19187,7 @@ impl qobject::LibraryController {
             rust.pcsx2_remove_state = None;
             rust.bigpemu_remove_state = None;
             rust.xemu_remove_state = None;
+            rust.retroarch_remove_state = None;
         }
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_emulator_managed_checking(true);
@@ -17698,6 +19321,7 @@ impl qobject::LibraryController {
             rust.pcsx2_release_state = None;
             rust.bigpemu_release_state = None;
             rust.xemu_release_state = None;
+            rust.retroarch_release_state = None;
         }
         self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_emulator_release_checking(true);
@@ -17863,6 +19487,7 @@ impl qobject::LibraryController {
             rust.pcsx2_remove_state = None;
             rust.bigpemu_remove_state = None;
             rust.xemu_remove_state = None;
+            rust.retroarch_remove_state = None;
         }
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_emulator_managed_checking(true);
@@ -17994,6 +19619,7 @@ impl qobject::LibraryController {
             rust.pcsx2_release_state = None;
             rust.bigpemu_release_state = None;
             rust.xemu_release_state = None;
+            rust.retroarch_release_state = None;
         }
         self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_emulator_release_checking(true);
@@ -18129,6 +19755,306 @@ impl qobject::LibraryController {
             self.as_mut().rust_mut().emulator_install_cancel = None;
             self.as_mut().set_status_message(qstring(format!(
                 "Could not start the Xemu installer: {error}"
+            )));
+        }
+    }
+
+    pub fn review_managed_retroarch(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator review requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let configuration = self.as_ref().rust().emulator_configuration.clone();
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.pcsx2_remove_state = None;
+            rust.bigpemu_remove_state = None;
+            rust.xemu_remove_state = None;
+            rust.retroarch_remove_state = None;
+        }
+        self.as_mut().set_emulator_managed_json(QString::default());
+        self.as_mut().set_emulator_managed_checking(true);
+        self.as_mut().set_status_message(qstring(
+            "Auditing the local RetroArch ownership manifest without changing files...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-retroarch-managed-review".to_string())
+            .spawn(move || {
+                let result =
+                    inspect_managed_retroarch_removal(&root, configuration.as_ref(), &resolver)
+                        .map(|state| (root, state));
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_managed_retroarch_review(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_managed_checking(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the managed RetroArch review: {error}"
+            )));
+        }
+    }
+
+    pub fn remove_managed_retroarch(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        if *self.as_ref().pending_recovery_count() > 0 {
+            self.as_mut().set_status_message(qstring(
+                "Recover the interrupted transaction before removing managed RetroArch files.",
+            ));
+            return;
+        }
+        if *self.as_ref().write_conflict() {
+            self.as_mut().set_status_message(qstring(
+                "Reload the library before removing RetroArch after a write conflict.",
+            ));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator removal requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let Some(state) = self.as_ref().rust().retroarch_remove_state.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Review the local managed RetroArch install before removing it.",
+            ));
+            return;
+        };
+        if !state.can_remove {
+            self.as_mut().set_status_message(qstring(
+                state
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("The managed RetroArch install is not safe to remove."),
+            ));
+            return;
+        }
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Removing only verified port-owned RetroArch files and bundle links in one recoverable transaction...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-retroarch-managed-remove".to_string())
+            .spawn(move || {
+                let result = remove_managed_retroarch(root, resolver, state);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_managed_retroarch_remove(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start managed RetroArch removal: {error}"
+            )));
+        }
+    }
+
+    pub fn check_retroarch_release(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator installation requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let artifact_kind = match RetroArchArtifactKind::current_host() {
+            Ok(artifact_kind) => artifact_kind,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not check RetroArch releases: {error}"
+                )));
+                return;
+            }
+        };
+        let transport = match retroarch_release_transport_from_command_line() {
+            Ok(transport) => transport,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not initialize the RetroArch release provider: {error}"
+                )));
+                return;
+            }
+        };
+        let configuration = self.as_ref().rust().emulator_configuration.clone();
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let generation = self.as_ref().rust().request_generation;
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.pcsx2_release_state = None;
+            rust.bigpemu_release_state = None;
+            rust.xemu_release_state = None;
+            rust.retroarch_release_state = None;
+        }
+        self.as_mut().set_emulator_release_json(QString::default());
+        self.as_mut().set_emulator_release_checking(true);
+        self.as_mut().set_status_message(qstring(
+            "Checking the official RetroArch stable buildbot without changing the library...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-retroarch-release-check".to_string())
+            .spawn(move || {
+                let result = fetch_latest_retroarch_release(transport.as_ref(), artifact_kind)
+                    .and_then(|offer| {
+                        inspect_retroarch_release_state(
+                            &root,
+                            configuration.as_ref(),
+                            &resolver,
+                            offer,
+                        )
+                    });
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_retroarch_release_check(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_release_checking(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the RetroArch release check: {error}"
+            )));
+        }
+    }
+
+    pub fn install_retroarch_release(mut self: Pin<&mut Self>) {
+        if self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return;
+        }
+        if *self.as_ref().pending_recovery_count() > 0 {
+            self.as_mut().set_status_message(qstring(
+                "Recover the interrupted transaction before installing RetroArch.",
+            ));
+            return;
+        }
+        if *self.as_ref().write_conflict() {
+            self.as_mut().set_status_message(qstring(
+                "Reload the library before installing RetroArch after a write conflict.",
+            ));
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Managed emulator installation requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let Some(state) = self.as_ref().rust().retroarch_release_state.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Check the official RetroArch stable release before installing or updating it.",
+            ));
+            return;
+        };
+        if !state.action.can_install() {
+            self.as_mut().set_status_message(qstring(
+                state
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("The checked RetroArch release has no action to apply."),
+            ));
+            return;
+        }
+        let transport = match retroarch_release_transport_from_command_line() {
+            Ok(transport) => transport,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not initialize the RetroArch release provider: {error}"
+                )));
+                return;
+            }
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let platform_names = self.as_ref().rust().platform_names.clone();
+        let generation = self.as_ref().rust().request_generation;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.as_mut().rust_mut().emulator_install_cancel = Some(cancel.clone());
+        self.as_mut().set_emulator_install_progress(0.0);
+        self.as_mut().set_emulator_installing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Downloading RetroArch {} from the exact stable buildbot URL and computing local SHA-256 before one transactional update...",
+            state.offer.version
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let progress_thread = qt_thread.clone();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-retroarch-install".to_string())
+            .spawn(move || {
+                let mut last_percent = None;
+                let result = install_managed_retroarch(
+                    root,
+                    resolver,
+                    platform_names,
+                    state,
+                    transport,
+                    cancel,
+                    |received, total| {
+                        let percent = if total == 0 {
+                            0
+                        } else {
+                            received.saturating_mul(100).saturating_div(total).min(100)
+                        };
+                        if last_percent == Some(percent) {
+                            return;
+                        }
+                        last_percent = Some(percent);
+                        let progress = percent as f64 / 100.0;
+                        progress_thread
+                            .queue(move |mut controller| {
+                                controller
+                                    .as_mut()
+                                    .finish_emulator_install_progress(generation, progress);
+                            })
+                            .ok();
+                    },
+                );
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_retroarch_install(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_emulator_installing(false);
+            self.as_mut().rust_mut().emulator_install_cancel = None;
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the RetroArch installer: {error}"
             )));
         }
     }
@@ -19928,6 +21854,8 @@ impl qobject::LibraryController {
                     rust.bigpemu_remove_state = None;
                     rust.xemu_release_state = None;
                     rust.xemu_remove_state = None;
+                    rust.retroarch_release_state = None;
+                    rust.retroarch_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_remove_notifications =
@@ -20117,6 +22045,8 @@ impl qobject::LibraryController {
                     rust.bigpemu_remove_state = None;
                     rust.xemu_release_state = None;
                     rust.xemu_remove_state = None;
+                    rust.retroarch_release_state = None;
+                    rust.retroarch_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_install_notifications =
@@ -20288,6 +22218,8 @@ impl qobject::LibraryController {
                     rust.bigpemu_remove_state = None;
                     rust.xemu_release_state = None;
                     rust.xemu_remove_state = None;
+                    rust.retroarch_release_state = None;
+                    rust.retroarch_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_remove_notifications =
@@ -20466,6 +22398,8 @@ impl qobject::LibraryController {
                     rust.bigpemu_remove_state = None;
                     rust.xemu_release_state = None;
                     rust.xemu_remove_state = None;
+                    rust.retroarch_release_state = None;
+                    rust.retroarch_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_install_notifications =
@@ -20641,6 +22575,8 @@ impl qobject::LibraryController {
                     rust.bigpemu_remove_state = None;
                     rust.xemu_release_state = None;
                     rust.xemu_remove_state = None;
+                    rust.retroarch_release_state = None;
+                    rust.retroarch_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_remove_notifications =
@@ -20820,6 +22756,8 @@ impl qobject::LibraryController {
                     rust.bigpemu_remove_state = None;
                     rust.xemu_release_state = None;
                     rust.xemu_remove_state = None;
+                    rust.retroarch_release_state = None;
+                    rust.retroarch_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                     rust.emulator_install_notifications =
@@ -20899,6 +22837,364 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_managed_retroarch_review(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<(PathBuf, RetroArchRemoveState), EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_emulator_managed_checking(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok((root, state)) => {
+                let payload = match retroarch_remove_payload(&root, &state) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.as_mut().set_status_message(qstring(format!(
+                            "Could not serialize the managed RetroArch review: {error}"
+                        )));
+                        return;
+                    }
+                };
+                let can_remove = state.can_remove;
+                let owned_path_count = state.audit.as_ref().map_or(0, |audit| {
+                    audit
+                        .installed_files
+                        .len()
+                        .saturating_add(audit.installed_links.len())
+                        .saturating_add(1)
+                });
+                let blocked_reason = state.blocked_reason.clone();
+                self.as_mut().rust_mut().retroarch_remove_state = Some(state);
+                self.as_mut().set_emulator_managed_json(qstring(payload));
+                let revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut().set_emulator_install_revision(revision);
+                self.as_mut().set_status_message(qstring(if can_remove {
+                    format!(
+                        "Managed RetroArch removal is ready: {owned_path_count} exact port-owned file, link, and manifest path(s) can be removed; user settings and directories will be retained."
+                    )
+                } else {
+                    format!(
+                        "Managed RetroArch removal is unavailable: {}",
+                        blocked_reason.unwrap_or_else(|| "no removable managed install".into())
+                    )
+                }));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                let summary = summarize_emulator_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed RetroArch removal review found {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Conflict(message))
+            | Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not review managed RetroArch removal: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery before managed RetroArch review: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_managed_retroarch_remove(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<RetroArchRemoveSuccess, EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let removed_emulator_id = success
+                    .removed_emulator
+                    .as_ref()
+                    .map(|emulator| emulator.id.clone());
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_configuration = Some(success.configuration);
+                    rust.discovered_emulators.clear();
+                    rust.emulator_bios_audit = None;
+                    rust.emulator_bios_emulator_id = None;
+                    rust.pcsx2_release_state = None;
+                    rust.pcsx2_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
+                    rust.xemu_release_state = None;
+                    rust.xemu_remove_state = None;
+                    rust.retroarch_release_state = None;
+                    rust.retroarch_remove_state = None;
+                    rust.emulator_write_notifications =
+                        rust.emulator_write_notifications.saturating_add(1);
+                    rust.emulator_remove_notifications =
+                        rust.emulator_remove_notifications.saturating_add(1);
+                }
+                if removed_emulator_id
+                    .as_deref()
+                    .is_some_and(|id| self.as_ref().last_added_emulator_id().to_string() == id)
+                {
+                    self.as_mut().set_last_added_emulator_id(QString::default());
+                }
+                self.as_mut()
+                    .set_emulator_bios_audit_json(QString::default());
+                self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut().set_emulator_managed_json(QString::default());
+                self.as_mut().set_delete_blocker_count(0);
+                self.as_mut().set_delete_blocker_summary(QString::default());
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_pending_recovery_count(0);
+                let emulator_revision = self.as_ref().emulator_revision().saturating_add(1);
+                self.as_mut().set_emulator_revision(emulator_revision);
+                let discovery_revision = self
+                    .as_ref()
+                    .emulator_discovery_revision()
+                    .saturating_add(1);
+                self.as_mut()
+                    .set_emulator_discovery_revision(discovery_revision);
+                let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(bios_revision);
+                let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut()
+                    .set_emulator_install_revision(install_revision);
+                let xml_result = match success.emulator_backup.as_ref() {
+                    Some(backup) => format!(
+                        " Removed emulator definition and {} mapping(s) from {}; exact XML backup: {}.",
+                        success.removed_mapping_count,
+                        success.emulator_document.display(),
+                        backup.display()
+                    ),
+                    None => " No matching emulator definition remained to remove.".into(),
+                };
+                self.as_mut().set_status_message(qstring(format!(
+                    "Removed {} verified port-owned RetroArch file, link, and manifest path(s) with {} exact recovery copy/copies. User settings, unrelated files, and directories were retained.{xml_result}",
+                    success.removed_file_count,
+                    success.recovery_files.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                let summary = summarize_emulator_references(&references);
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(references.len()));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed RetroArch removal blocked by {} dependent record(s): {summary}",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Managed RetroArch removal stopped on a write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted RetroArch removal requires recovery: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not remove managed RetroArch: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_retroarch_release_check(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<RetroArchReleaseState, EmulatorLifecycleError>,
+    ) {
+        self.as_mut().set_emulator_release_checking(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(state) => {
+                let payload = match retroarch_release_payload(&state) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.as_mut().set_status_message(qstring(format!(
+                            "Could not serialize the RetroArch release review: {error}"
+                        )));
+                        return;
+                    }
+                };
+                let action = state.action;
+                let version = state.offer.version.clone();
+                let artifact_kind = state.offer.artifact_kind;
+                let blocked_reason = state.blocked_reason.clone();
+                self.as_mut().rust_mut().retroarch_release_state = Some(state);
+                self.as_mut().set_emulator_release_json(qstring(payload));
+                let revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut().set_emulator_install_revision(revision);
+                let target = if artifact_kind == RetroArchArtifactKind::MacosMetalDmgUniversal {
+                    "universal macOS Metal app bundle"
+                } else {
+                    "frontend and matching cores archives"
+                };
+                let message = match action {
+                    RetroArchInstallAction::Install => format!(
+                        "Official RetroArch stable {version} {target} is ready for a reviewed portable install."
+                    ),
+                    RetroArchInstallAction::Update => format!(
+                        "Official RetroArch stable {version} {target} is ready to update the managed portable install."
+                    ),
+                    RetroArchInstallAction::Repair => format!(
+                        "Official RetroArch stable {version} {target} is ready to repair the managed portable install."
+                    ),
+                    RetroArchInstallAction::Current => format!(
+                        "The managed portable RetroArch install is current at {version}."
+                    ),
+                    RetroArchInstallAction::Blocked => format!(
+                        "Managed RetroArch installation is blocked: {}",
+                        blocked_reason.unwrap_or_else(|| "unsafe existing install state".into())
+                    ),
+                };
+                self.as_mut().set_status_message(qstring(message));
+            }
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not check RetroArch releases: {error}"
+                )));
+            }
+        }
+    }
+
+    fn finish_retroarch_install(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<RetroArchInstallSuccess, EmulatorWriteFailure>,
+    ) {
+        self.as_mut().set_emulator_installing(false);
+        self.as_mut().rust_mut().emulator_install_cancel = None;
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let RetroArchInstallSuccess {
+                    emulator_write,
+                    manifest,
+                    executable,
+                    installed_file_count,
+                    created_file_count,
+                    replaced_file_count,
+                    recovery_files,
+                } = success;
+                let operation = emulator_write.operation;
+                let emulator_id = emulator_write.emulator.id.clone();
+                let emulator_title = emulator_write.emulator.title.clone();
+                let mapping_count = emulator_write.mapping_count;
+                let source = emulator_write.source.clone();
+                let backup = emulator_write.backup.clone();
+                {
+                    let mut rust = self.as_mut().rust_mut();
+                    rust.emulator_configuration = Some(emulator_write.configuration);
+                    rust.discovered_emulators.clear();
+                    rust.emulator_bios_audit = None;
+                    rust.emulator_bios_emulator_id = None;
+                    rust.pcsx2_release_state = None;
+                    rust.pcsx2_remove_state = None;
+                    rust.bigpemu_release_state = None;
+                    rust.bigpemu_remove_state = None;
+                    rust.xemu_release_state = None;
+                    rust.xemu_remove_state = None;
+                    rust.retroarch_release_state = None;
+                    rust.retroarch_remove_state = None;
+                    rust.emulator_write_notifications =
+                        rust.emulator_write_notifications.saturating_add(1);
+                    rust.emulator_install_notifications =
+                        rust.emulator_install_notifications.saturating_add(1);
+                }
+                self.as_mut().set_emulator_install_progress(1.0);
+                self.as_mut().set_emulator_release_json(QString::default());
+                self.as_mut().set_emulator_managed_json(QString::default());
+                self.as_mut()
+                    .set_emulator_bios_audit_json(QString::default());
+                let emulator_revision = self.as_ref().emulator_revision().saturating_add(1);
+                self.as_mut().set_emulator_revision(emulator_revision);
+                let discovery_revision = self
+                    .as_ref()
+                    .emulator_discovery_revision()
+                    .saturating_add(1);
+                self.as_mut()
+                    .set_emulator_discovery_revision(discovery_revision);
+                let bios_revision = self.as_ref().emulator_bios_revision().saturating_add(1);
+                self.as_mut().set_emulator_bios_revision(bios_revision);
+                let install_revision = self.as_ref().emulator_install_revision().saturating_add(1);
+                self.as_mut()
+                    .set_emulator_install_revision(install_revision);
+                if operation == EmulatorWriteOperation::Create {
+                    self.as_mut()
+                        .set_last_added_emulator_id(qstring(&emulator_id));
+                }
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_pending_recovery_count(0);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Installed RetroArch {} at {} and {} platform mapping(s) in one transaction: {} managed file/link path(s), {} created, {} replaced. Exact URL and byte count were checked; local SHA-256 was recorded because the stable buildbot publishes no digest. Emulators.xml: {}; exact XML backup: {}; binary recovery copies: {}. Recheck releases to refresh status.",
+                    manifest.version,
+                    executable.display(),
+                    mapping_count,
+                    installed_file_count,
+                    created_file_count,
+                    replaced_file_count,
+                    source.display(),
+                    backup.display(),
+                    recovery_files.len()
+                )));
+                eprintln!(
+                    "RetroArch managed install committed: emulator={emulator_title} id={emulator_id} version={} local_sha256={} files_and_links={installed_file_count}",
+                    manifest.version, manifest.asset_sha256
+                );
+            }
+            Err(EmulatorWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "RetroArch install stopped on a write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(EmulatorWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted RetroArch transaction requires recovery: {message}"
+                )));
+            }
+            Err(EmulatorWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "RetroArch install stopped on an unexpected reference result ({} records).",
+                    references.len()
+                )));
+            }
+            Err(EmulatorWriteFailure::Other(message))
+                if message == EmulatorLifecycleError::Cancelled.to_string() =>
+            {
+                self.as_mut().set_status_message(qstring(
+                    "RetroArch installation cancelled; no library changes were committed.",
+                ));
+            }
+            Err(EmulatorWriteFailure::Other(message)) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not install RetroArch: {message}")));
+            }
+        }
+    }
+
     fn finish_emulator_write(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -20927,6 +23223,8 @@ impl qobject::LibraryController {
                     rust.bigpemu_remove_state = None;
                     rust.xemu_release_state = None;
                     rust.xemu_remove_state = None;
+                    rust.retroarch_release_state = None;
+                    rust.retroarch_remove_state = None;
                     rust.emulator_write_notifications =
                         rust.emulator_write_notifications.saturating_add(1);
                 }
@@ -21724,6 +24022,8 @@ impl qobject::LibraryController {
             rust.bigpemu_remove_state = None;
             rust.xemu_release_state = None;
             rust.xemu_remove_state = None;
+            rust.retroarch_release_state = None;
+            rust.retroarch_remove_state = None;
             if let Some(cancel) = rust.emulator_install_cancel.take() {
                 cancel.store(true, Ordering::Relaxed);
             }
@@ -23036,6 +25336,259 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn retroarch_linux_test_offer(
+        fixture: &Path,
+        version: &str,
+        frontend_bytes: &[u8],
+        core_bytes: &[u8],
+    ) -> RetroArchReleaseOffer {
+        let wrapper = "RetroArch-Linux-x86_64";
+        let source_key = version.replace('.', "-");
+        let frontend_source = fixture.join(format!("retroarch-frontend-{source_key}"));
+        let cores_source = fixture.join(format!("retroarch-cores-{source_key}"));
+        let executable = frontend_source
+            .join(wrapper)
+            .join("RetroArch-Linux-x86_64.AppImage");
+        let assets = frontend_source
+            .join(wrapper)
+            .join("RetroArch-Linux-x86_64.AppImage.home/.config/retroarch/assets/menu.txt");
+        let core = cores_source.join(wrapper).join(
+            "RetroArch-Linux-x86_64.AppImage.home/.config/retroarch/cores/fixture_libretro.so",
+        );
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(assets.parent().unwrap()).unwrap();
+        fs::create_dir_all(core.parent().unwrap()).unwrap();
+        fs::write(&executable, frontend_bytes).unwrap();
+        fs::write(&assets, format!("assets for {version}\n")).unwrap();
+        fs::write(&core, core_bytes).unwrap();
+
+        let frontend_archive = fixture.join("RetroArch.7z");
+        let cores_archive = fixture.join("RetroArch_cores.7z");
+        if frontend_archive.exists() {
+            fs::remove_file(&frontend_archive).unwrap();
+        }
+        if cores_archive.exists() {
+            fs::remove_file(&cores_archive).unwrap();
+        }
+        for (source, archive) in [
+            (&frontend_source, &frontend_archive),
+            (&cores_source, &cores_archive),
+        ] {
+            let output = Command::new("7z")
+                .current_dir(source)
+                .arg("a")
+                .arg("-t7z")
+                .arg("-bd")
+                .arg("-bb0")
+                .arg("-y")
+                .arg(archive)
+                .arg("--")
+                .arg(wrapper)
+                .output()
+                .expect("create RetroArch 7z fixture");
+            assert!(
+                output.status.success(),
+                "could not create RetroArch fixture: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        fs::write(
+            fixture.join("stable.html"),
+            format!(r#"<a href="{version}/">{version}</a>"#),
+        )
+        .unwrap();
+        fetch_latest_retroarch_release(
+            &FileRetroArchReleaseTransport::new(fixture),
+            RetroArchArtifactKind::Linux7zX64,
+        )
+        .expect("fetch RetroArch fixture release")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_retroarch_install_update_repair_review_and_removal_are_exact() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temporary library");
+        let fixture = tempfile::tempdir().expect("release fixture");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data");
+        let platform_directory = data.join("Platforms");
+        fs::create_dir(&platform_directory).expect("create Platforms");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/launchbox/Data/Platforms/Fixture Console.xml"),
+            platform_directory.join("Fixture Console.xml"),
+        )
+        .expect("copy platform fixture");
+        let emulator_document = data.join("Emulators.xml");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/launchbox/Data/Emulators.xml"),
+            &emulator_document,
+        )
+        .unwrap();
+        let original_xml = fs::read(&emulator_document).unwrap();
+        let resolver = HostPathResolver::default();
+        let first_offer = retroarch_linux_test_offer(
+            fixture.path(),
+            "1.22.2",
+            b"first RetroArch AppImage\n",
+            b"first fixture core\n",
+        );
+        let initial_configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let first_state = inspect_retroarch_release_state(
+            directory.path(),
+            Some(&initial_configuration),
+            &resolver,
+            first_offer,
+        )
+        .expect("inspect initial RetroArch install");
+        assert_eq!(first_state.action, RetroArchInstallAction::Install);
+        let first = install_managed_retroarch(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            Vec::new(),
+            first_state,
+            Box::new(FileRetroArchReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("install managed RetroArch");
+        assert_eq!(first.manifest.profile_id, "retroarch");
+        assert_eq!(first.manifest.provider, RETROARCH_PROVIDER);
+        assert_eq!(first.manifest.schema_version, 3);
+        assert_eq!(first.manifest.supporting_artifacts.len(), 1);
+        assert_eq!(first.manifest.supporting_artifacts[0].role, "cores");
+        assert!(first.manifest.installed_links.is_empty());
+        assert_eq!(
+            fs::read(&first.emulator_write.backup).unwrap(),
+            original_xml
+        );
+        assert_eq!(
+            fs::read(&first.executable).unwrap(),
+            b"first RetroArch AppImage\n"
+        );
+        assert_ne!(
+            fs::metadata(&first.executable)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+        assert_eq!(
+            first.emulator_write.emulator.application_path,
+            r"Emulators\RetroArch\RetroArch-Linux-x86_64.AppImage"
+        );
+
+        let install_directory = directory.path().join("Emulators/RetroArch");
+        let user_configuration = install_directory.join("retroarch.cfg");
+        let user_save = install_directory.join("saves/user.srm");
+        fs::create_dir_all(user_save.parent().unwrap()).unwrap();
+        fs::write(&user_configuration, b"user configuration\n").unwrap();
+        fs::write(&user_save, b"user save\n").unwrap();
+        let before_update_xml = fs::read(&emulator_document).unwrap();
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let second_offer = retroarch_linux_test_offer(
+            fixture.path(),
+            "1.22.3",
+            b"second RetroArch AppImage\n",
+            b"second fixture core\n",
+        );
+        let second_state = inspect_retroarch_release_state(
+            directory.path(),
+            Some(&configuration),
+            &resolver,
+            second_offer,
+        )
+        .expect("inspect RetroArch update");
+        assert_eq!(second_state.action, RetroArchInstallAction::Update);
+        let second = install_managed_retroarch(
+            directory.path().to_path_buf(),
+            resolver.clone(),
+            Vec::new(),
+            second_state,
+            Box::new(FileRetroArchReleaseTransport::new(fixture.path())),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .expect("update managed RetroArch");
+        assert_eq!(second.manifest.version, "1.22.3");
+        assert_eq!(
+            fs::read(&second.executable).unwrap(),
+            b"second RetroArch AppImage\n"
+        );
+        assert_eq!(
+            fs::read(&second.emulator_write.backup).unwrap(),
+            before_update_xml
+        );
+        assert_eq!(
+            fs::read(&user_configuration).unwrap(),
+            b"user configuration\n"
+        );
+        assert_eq!(fs::read(&user_save).unwrap(), b"user save\n");
+
+        let core = install_directory.join(
+            "RetroArch-Linux-x86_64.AppImage.home/.config/retroarch/cores/fixture_libretro.so",
+        );
+        fs::write(&core, b"user modified managed core\n").unwrap();
+        let configuration = AuxiliaryDocument::load(&emulator_document)
+            .unwrap()
+            .emulator_configuration()
+            .unwrap();
+        let repair = inspect_retroarch_release_state(
+            directory.path(),
+            Some(&configuration),
+            &resolver,
+            retroarch_linux_test_offer(
+                fixture.path(),
+                "1.22.3",
+                b"second RetroArch AppImage\n",
+                b"second fixture core\n",
+            ),
+        )
+        .expect("inspect RetroArch repair");
+        assert_eq!(repair.action, RetroArchInstallAction::Repair);
+        let blocked =
+            inspect_managed_retroarch_removal(directory.path(), Some(&configuration), &resolver)
+                .expect("review modified RetroArch removal");
+        assert!(!blocked.can_remove);
+        fs::write(&core, b"second fixture core\n").unwrap();
+
+        let removable =
+            inspect_managed_retroarch_removal(directory.path(), Some(&configuration), &resolver)
+                .expect("review removable RetroArch");
+        assert!(removable.can_remove);
+        let owned_file_count = removable.audit.as_ref().unwrap().installed_files.len();
+        let removed = remove_managed_retroarch(directory.path().to_path_buf(), resolver, removable)
+            .expect("remove managed RetroArch");
+        assert_eq!(
+            removed.removed_file_count,
+            owned_file_count.saturating_add(1)
+        );
+        assert!(removed.removed_emulator.is_some());
+        assert!(!second.executable.exists());
+        assert!(!install_directory
+            .join(MANAGED_INSTALL_MANIFEST_NAME)
+            .exists());
+        assert_eq!(
+            fs::read(&user_configuration).unwrap(),
+            b"user configuration\n"
+        );
+        assert_eq!(fs::read(&user_save).unwrap(), b"user save\n");
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[cfg(unix)]
     #[test]
     fn official_shaped_xemu_windows_and_macos_zips_keep_exact_native_layouts() {
         use std::os::unix::fs::PermissionsExt;
@@ -23140,6 +25693,143 @@ mod tests {
                 & 0o111,
             0
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retroarch_macos_dmg_placeholders_become_exact_safe_bundle_links() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let extraction = tempfile::tempdir().expect("temporary DMG extraction");
+        let bundle = extraction.path().join("RetroArch/RetroArch.app");
+        let required = [
+            (
+                "Contents/MacOS/RetroArch",
+                b"universal RetroArch".as_slice(),
+            ),
+            ("Contents/Info.plist", b"<plist/>".as_slice()),
+            (
+                "Contents/_CodeSignature/CodeResources",
+                b"signed resources".as_slice(),
+            ),
+            ("Contents/Resources/assets.zip", b"assets".as_slice()),
+            (
+                "Contents/Frameworks/MoltenVK.framework/Versions/A/MoltenVK",
+                b"universal MoltenVK".as_slice(),
+            ),
+            (
+                "Contents/Frameworks/MoltenVK-v1.2.7.framework/Versions/A/MoltenVK-v1.2.7",
+                b"universal MoltenVK 1.2.7".as_slice(),
+            ),
+        ];
+        let mut files = Vec::new();
+        for (relative, bytes) in required {
+            let path = bundle.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, bytes).unwrap();
+            files.push(path);
+        }
+        for (relative, target) in RETROARCH_MACOS_BUNDLE_LINKS {
+            let relative = Path::new(relative)
+                .strip_prefix("RetroArch.app")
+                .expect("bundle-relative link");
+            let path = bundle.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, target.as_bytes()).unwrap();
+            files.push(path);
+        }
+        let prepared =
+            prepare_retroarch_macos_extracted(extraction.path(), files).expect("prepare app");
+        let links = prepared
+            .iter()
+            .filter_map(|entry| match entry {
+                PreparedRetroArchEntry::Link {
+                    source,
+                    relative_target,
+                    target,
+                } => Some((source, relative_target, target)),
+                PreparedRetroArchEntry::File(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(links.len(), RETROARCH_MACOS_BUNDLE_LINKS.len());
+        for (relative, target) in RETROARCH_MACOS_BUNDLE_LINKS {
+            let (_, _, prepared_target) = links
+                .iter()
+                .find(|(_, prepared_relative, _)| {
+                    prepared_relative.as_path() == Path::new(relative)
+                })
+                .expect("exact managed framework link");
+            assert_eq!(prepared_target.as_path(), Path::new(target));
+            let extracted_link = bundle.join(
+                Path::new(relative)
+                    .strip_prefix("RetroArch.app")
+                    .expect("bundle-relative link"),
+            );
+            assert_eq!(
+                fs::read_link(extracted_link).unwrap(),
+                PathBuf::from(target)
+            );
+        }
+        let executable = prepared
+            .iter()
+            .find_map(|entry| match entry {
+                PreparedRetroArchEntry::File(file)
+                    if file.relative_target
+                        == Path::new("RetroArch.app/Contents/MacOS/RetroArch") =>
+                {
+                    Some(file)
+                }
+                _ => None,
+            })
+            .expect("managed app executable");
+        assert!(executable.preserve_permissions);
+        assert_ne!(
+            fs::metadata(&executable.source)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+
+        let unsafe_placeholder =
+            bundle.join("Contents/Frameworks/MoltenVK.framework/Versions/Current");
+        fs::remove_file(&unsafe_placeholder).unwrap();
+        fs::write(&unsafe_placeholder, b"../../escape").unwrap();
+        let mut unsafe_files = prepared
+            .into_iter()
+            .map(|entry| match entry {
+                PreparedRetroArchEntry::File(file) => file.source,
+                PreparedRetroArchEntry::Link { source, .. } => {
+                    if source == unsafe_placeholder {
+                        source
+                    } else {
+                        fs::remove_file(&source).unwrap();
+                        let expected = RETROARCH_MACOS_BUNDLE_LINKS
+                            .iter()
+                            .find(|(relative, _)| {
+                                bundle.join(
+                                    Path::new(relative)
+                                        .strip_prefix("RetroArch.app")
+                                        .expect("bundle-relative link"),
+                                ) == source
+                            })
+                            .map(|(_, target)| *target)
+                            .unwrap();
+                        fs::write(&source, expected.as_bytes()).unwrap();
+                        source
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        unsafe_files.sort();
+        let failure = prepare_retroarch_macos_extracted(extraction.path(), unsafe_files)
+            .expect_err("reject changed framework-link target");
+        assert!(matches!(
+            failure,
+            EmulatorWriteFailure::Other(message)
+                if message.contains("unexpected target")
+        ));
     }
 
     #[cfg(unix)]

@@ -11,15 +11,16 @@ pub const PCSX2_RELEASES_API: &str =
 pub const XEMU_RELEASES_API: &str =
     "https://api.github.com/repos/xemu-project/xemu/releases/latest";
 pub const MANAGED_INSTALL_MANIFEST_NAME: &str = ".launchbox-port-install.json";
-pub const MANAGED_INSTALL_MANIFEST_VERSION: u32 = 2;
+pub const MANAGED_INSTALL_MANIFEST_VERSION: u32 = 3;
 const LEGACY_MANAGED_INSTALL_MANIFEST_VERSION: u32 = 1;
+const OWNERSHIP_MANAGED_INSTALL_MANIFEST_VERSION: u32 = 2;
 
 const PCSX2_GITHUB_ASSET_PREFIX: &str = "https://github.com/PCSX2/pcsx2/releases/download/";
 const XEMU_GITHUB_ASSET_PREFIX: &str = "https://github.com/xemu-project/xemu/releases/download/";
 pub(crate) const MAX_RELEASE_CATALOG_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_MANAGED_FILES: usize = 16 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_MANAGED_FILES: usize = 64 * 1024;
 const DOWNLOAD_BUFFER_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -119,6 +120,38 @@ pub struct ManagedInstalledFile {
     pub sha256: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManagedInstalledLink {
+    pub relative_path: String,
+    pub target: String,
+}
+
+impl ManagedInstalledLink {
+    pub fn new(relative_path: &Path, target: &Path) -> Result<Self, EmulatorLifecycleError> {
+        let link = Self {
+            relative_path: portable_relative_path(relative_path)?,
+            target: portable_link_target(target)?,
+        };
+        link.validate()?;
+        Ok(link)
+    }
+
+    pub fn host_relative_path(&self) -> Result<PathBuf, EmulatorLifecycleError> {
+        validate_portable_relative_path(&self.relative_path)?;
+        Ok(self.relative_path.split('/').collect())
+    }
+
+    pub fn host_target(&self) -> Result<PathBuf, EmulatorLifecycleError> {
+        validate_portable_link(&self.relative_path, &self.target)?;
+        Ok(self.target.split('/').collect())
+    }
+
+    fn validate(&self) -> Result<(), EmulatorLifecycleError> {
+        validate_portable_relative_path(&self.relative_path)?;
+        validate_portable_link(&self.relative_path, &self.target)
+    }
+}
+
 impl ManagedInstalledFile {
     pub fn new(
         relative_path: &Path,
@@ -146,6 +179,56 @@ impl ManagedInstalledFile {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManagedReleaseArtifact {
+    pub role: String,
+    pub asset_name: String,
+    pub asset_url: String,
+    pub asset_byte_len: u64,
+    pub asset_sha256: String,
+}
+
+impl ManagedReleaseArtifact {
+    pub fn new(
+        role: impl Into<String>,
+        asset_name: impl Into<String>,
+        asset_url: impl Into<String>,
+        receipt: &DownloadReceipt,
+    ) -> Result<Self, EmulatorLifecycleError> {
+        let artifact = Self {
+            role: role.into(),
+            asset_name: asset_name.into(),
+            asset_url: asset_url.into(),
+            asset_byte_len: receipt.byte_len,
+            asset_sha256: receipt.sha256.clone(),
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
+    fn validate(&self) -> Result<(), EmulatorLifecycleError> {
+        if self.role.is_empty()
+            || self.role.len() > 64
+            || !self
+                .role
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(EmulatorLifecycleError::InvalidManifest {
+                message: format!("managed release artifact role is invalid: {}", self.role),
+            });
+        }
+        validate_asset_name(&self.asset_name)?;
+        if self.asset_byte_len == 0 || self.asset_byte_len > MAX_ARTIFACT_BYTES {
+            return Err(EmulatorLifecycleError::InvalidAssetSize {
+                asset: self.asset_name.clone(),
+                byte_len: self.asset_byte_len,
+            });
+        }
+        validate_sha256(&self.asset_sha256)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ManagedEmulatorInstall {
     pub schema_version: u32,
     pub profile_id: String,
@@ -162,11 +245,15 @@ pub struct ManagedEmulatorInstall {
     pub asset_sha256: String,
     #[serde(default)]
     pub asset_fnv1a64: Option<String>,
+    #[serde(default)]
+    pub supporting_artifacts: Vec<ManagedReleaseArtifact>,
     pub executable_name: String,
     pub executable_byte_len: u64,
     pub executable_sha256: String,
     #[serde(default)]
     pub installed_files: Vec<ManagedInstalledFile>,
+    #[serde(default)]
+    pub installed_links: Vec<ManagedInstalledLink>,
 }
 
 impl ManagedEmulatorInstall {
@@ -190,10 +277,12 @@ impl ManagedEmulatorInstall {
             asset_byte_len: offer.asset_byte_len,
             asset_sha256: offer.asset_sha256.clone(),
             asset_fnv1a64: None,
+            supporting_artifacts: Vec::new(),
             executable_name: offer.artifact_kind.executable_name().into(),
             executable_byte_len: executable.byte_len,
             executable_sha256: executable.sha256.clone(),
             installed_files,
+            installed_links: Vec::new(),
         };
         manifest.validate()?;
         Ok(manifest)
@@ -217,6 +306,47 @@ impl ManagedEmulatorInstall {
         executable: &DownloadReceipt,
         installed_files: Vec<ManagedInstalledFile>,
     ) -> Result<Self, EmulatorLifecycleError> {
+        Self::from_release_with_supporting_artifacts(
+            profile_id,
+            provider,
+            emulator_id,
+            version,
+            tag,
+            prerelease,
+            artifact_kind,
+            asset_name,
+            asset_url,
+            asset_byte_len,
+            asset_sha256,
+            asset_fnv1a64,
+            Vec::new(),
+            executable_name,
+            executable,
+            installed_files,
+            Vec::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_release_with_supporting_artifacts(
+        profile_id: String,
+        provider: String,
+        emulator_id: String,
+        version: String,
+        tag: String,
+        prerelease: bool,
+        artifact_kind: String,
+        asset_name: String,
+        asset_url: String,
+        asset_byte_len: u64,
+        asset_sha256: String,
+        asset_fnv1a64: Option<String>,
+        supporting_artifacts: Vec<ManagedReleaseArtifact>,
+        executable_name: String,
+        executable: &DownloadReceipt,
+        installed_files: Vec<ManagedInstalledFile>,
+        installed_links: Vec<ManagedInstalledLink>,
+    ) -> Result<Self, EmulatorLifecycleError> {
         let manifest = Self {
             schema_version: MANAGED_INSTALL_MANIFEST_VERSION,
             profile_id,
@@ -231,10 +361,12 @@ impl ManagedEmulatorInstall {
             asset_byte_len,
             asset_sha256,
             asset_fnv1a64,
+            supporting_artifacts,
             executable_name,
             executable_byte_len: executable.byte_len,
             executable_sha256: executable.sha256.clone(),
             installed_files,
+            installed_links,
         };
         manifest.validate()?;
         Ok(manifest)
@@ -243,7 +375,9 @@ impl ManagedEmulatorInstall {
     pub fn validate(&self) -> Result<(), EmulatorLifecycleError> {
         if !matches!(
             self.schema_version,
-            LEGACY_MANAGED_INSTALL_MANIFEST_VERSION | MANAGED_INSTALL_MANIFEST_VERSION
+            LEGACY_MANAGED_INSTALL_MANIFEST_VERSION
+                | OWNERSHIP_MANAGED_INSTALL_MANIFEST_VERSION
+                | MANAGED_INSTALL_MANIFEST_VERSION
         ) {
             return Err(EmulatorLifecycleError::UnsupportedManifestVersion {
                 version: self.schema_version,
@@ -339,6 +473,79 @@ impl ManagedEmulatorInstall {
                     }
                 }
             }
+            ("retroarch", "buildbot.libretro.com/stable") => {
+                let expected_asset_name = if self.artifact_kind == "macos_metal_dmg_universal" {
+                    "RetroArch_Metal.dmg"
+                } else {
+                    "RetroArch.7z"
+                };
+                validate_retroarch_buildbot_asset_url(
+                    &self.asset_url,
+                    &self.version,
+                    &self.artifact_kind,
+                    expected_asset_name,
+                )?;
+                if self.asset_fnv1a64.is_some() {
+                    return Err(EmulatorLifecycleError::InvalidManifest {
+                        message: "RetroArch manifest unexpectedly contains an FNV hash".into(),
+                    });
+                }
+                if self.prerelease
+                    || self.tag != self.version
+                    || self.asset_name != expected_asset_name
+                {
+                    return Err(EmulatorLifecycleError::InvalidManifest {
+                        message:
+                            "managed RetroArch release metadata does not match a stable buildbot release"
+                                .into(),
+                    });
+                }
+                let expected_executable = match self.artifact_kind.as_str() {
+                    "linux_7z_x64" => "RetroArch-Linux-x86_64.AppImage",
+                    "windows_7z_x64" | "windows_7z_x86" => "retroarch.exe",
+                    "macos_metal_dmg_universal" => "RetroArch.app/Contents/MacOS/RetroArch",
+                    _ => {
+                        return Err(EmulatorLifecycleError::InvalidManifest {
+                            message: format!(
+                                "managed RetroArch artifact kind is unknown: {}",
+                                self.artifact_kind
+                            ),
+                        });
+                    }
+                };
+                if self.artifact_kind == "macos_metal_dmg_universal" {
+                    if !self.supporting_artifacts.is_empty() {
+                        return Err(EmulatorLifecycleError::InvalidManifest {
+                            message:
+                                "managed macOS RetroArch manifest unexpectedly contains a separate cores artifact"
+                                    .into(),
+                        });
+                    }
+                } else {
+                    let [cores] = self.supporting_artifacts.as_slice() else {
+                        return Err(EmulatorLifecycleError::InvalidManifest {
+                            message:
+                                "managed RetroArch manifest must contain exactly one cores artifact"
+                                    .into(),
+                        });
+                    };
+                    cores.validate()?;
+                    if cores.role != "cores" || cores.asset_name != "RetroArch_cores.7z" {
+                        return Err(EmulatorLifecycleError::InvalidManifest {
+                            message:
+                                "managed RetroArch supporting artifact is not the cores archive"
+                                    .into(),
+                        });
+                    }
+                    validate_retroarch_buildbot_asset_url(
+                        &cores.asset_url,
+                        &self.version,
+                        &self.artifact_kind,
+                        "RetroArch_cores.7z",
+                    )?;
+                }
+                expected_executable
+            }
             _ => {
                 return Err(EmulatorLifecycleError::InvalidManifest {
                     message: format!(
@@ -376,13 +583,31 @@ impl ManagedEmulatorInstall {
         validate_sha256(&self.executable_sha256)?;
 
         if self.schema_version == LEGACY_MANAGED_INSTALL_MANIFEST_VERSION {
-            if self.emulator_id.is_some() || !self.installed_files.is_empty() {
+            if self.emulator_id.is_some()
+                || !self.installed_files.is_empty()
+                || !self.installed_links.is_empty()
+                || !self.supporting_artifacts.is_empty()
+            {
                 return Err(EmulatorLifecycleError::InvalidManifest {
-                    message: "legacy manifest unexpectedly contains version 2 ownership data"
-                        .into(),
+                    message: "legacy manifest unexpectedly contains newer ownership data".into(),
                 });
             }
             return Ok(());
+        }
+        if self.schema_version == OWNERSHIP_MANAGED_INSTALL_MANIFEST_VERSION
+            && (!self.supporting_artifacts.is_empty() || !self.installed_links.is_empty())
+        {
+            return Err(EmulatorLifecycleError::InvalidManifest {
+                message: "version 2 manifest unexpectedly contains version 3 artifact data".into(),
+            });
+        }
+        if self.profile_id != "retroarch" && !self.supporting_artifacts.is_empty() {
+            return Err(EmulatorLifecycleError::InvalidManifest {
+                message: format!(
+                    "managed {} manifest unexpectedly contains supporting artifacts",
+                    self.profile_id
+                ),
+            });
         }
 
         if self.emulator_id.as_deref().is_none_or(|id| {
@@ -392,11 +617,19 @@ impl ManagedEmulatorInstall {
                 message: "managed emulator ID is empty".into(),
             });
         }
-        if self.installed_files.is_empty() || self.installed_files.len() > MAX_MANAGED_FILES {
+        if self.installed_files.is_empty()
+            || self
+                .installed_files
+                .len()
+                .saturating_add(self.installed_links.len())
+                > MAX_MANAGED_FILES
+        {
             return Err(EmulatorLifecycleError::InvalidManifest {
                 message: format!(
-                    "managed install owns invalid file count {}",
-                    self.installed_files.len()
+                    "managed install owns invalid path count {}",
+                    self.installed_files
+                        .len()
+                        .saturating_add(self.installed_links.len())
                 ),
             });
         }
@@ -419,6 +652,22 @@ impl ManagedEmulatorInstall {
                     });
                 }
             }
+        }
+        for link in &self.installed_links {
+            link.validate()?;
+            if !normalized_paths.insert(link.relative_path.to_ascii_lowercase()) {
+                return Err(EmulatorLifecycleError::InvalidManifest {
+                    message: format!("managed install owns duplicate path {}", link.relative_path),
+                });
+            }
+        }
+        if self.artifact_kind == "macos_metal_dmg_universal" {
+            validate_retroarch_macos_links(&self.installed_links)?;
+        } else if !self.installed_links.is_empty() {
+            return Err(EmulatorLifecycleError::InvalidManifest {
+                message: "managed symbolic links are only supported for the RetroArch macOS bundle"
+                    .into(),
+            });
         }
         if executable_matches != 1 {
             return Err(EmulatorLifecycleError::InvalidManifest {
@@ -458,6 +707,7 @@ pub struct ManagedInstallAudit {
     pub executable_state: ManagedExecutableState,
     pub actual_executable: Option<DownloadReceipt>,
     pub installed_files: Vec<ManagedInstalledFileAudit>,
+    pub installed_links: Vec<ManagedInstalledLinkAudit>,
 }
 
 impl ManagedInstallAudit {
@@ -491,7 +741,10 @@ impl ManagedInstallAudit {
     }
 
     pub fn ownership_manifest_current(&self) -> bool {
-        self.manifest.schema_version == MANAGED_INSTALL_MANIFEST_VERSION
+        matches!(
+            self.manifest.schema_version,
+            OWNERSHIP_MANAGED_INSTALL_MANIFEST_VERSION | MANAGED_INSTALL_MANIFEST_VERSION
+        )
     }
 
     pub fn safe_to_remove(&self) -> bool {
@@ -501,6 +754,10 @@ impl ManagedInstallAudit {
                 .installed_files
                 .iter()
                 .all(|file| file.state == ManagedExecutableState::Valid)
+            && self
+                .installed_links
+                .iter()
+                .all(|link| link.state == ManagedExecutableState::Valid)
     }
 }
 
@@ -510,6 +767,15 @@ pub struct ManagedInstalledFileAudit {
     pub path: PathBuf,
     pub state: ManagedExecutableState,
     pub actual: Option<DownloadReceipt>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ManagedInstalledLinkAudit {
+    pub relative_path: String,
+    pub path: PathBuf,
+    pub target: String,
+    pub state: ManagedExecutableState,
+    pub actual_target: Option<String>,
 }
 
 pub trait ReleaseTransport: Send + Sync {
@@ -827,6 +1093,40 @@ pub fn read_managed_emulator_install(
             })
         })
         .collect::<Result<Vec<_>, EmulatorLifecycleError>>()?;
+    let installed_links = manifest
+        .installed_links
+        .iter()
+        .map(|link| {
+            let relative = link.host_relative_path()?;
+            let path = install_directory.join(relative);
+            let actual_target = match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => fs::read_link(&path)
+                    .ok()
+                    .and_then(|target| portable_link_target(&target).ok()),
+                _ => None,
+            };
+            let state = match fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    ManagedExecutableState::Missing
+                }
+                Ok(metadata) if !metadata.file_type().is_symlink() => {
+                    ManagedExecutableState::Unsafe
+                }
+                Ok(_) if actual_target.as_deref() == Some(link.target.as_str()) => {
+                    ManagedExecutableState::Valid
+                }
+                Ok(_) => ManagedExecutableState::Modified,
+                Err(_) => ManagedExecutableState::Unreadable,
+            };
+            Ok(ManagedInstalledLinkAudit {
+                relative_path: link.relative_path.clone(),
+                path,
+                target: link.target.clone(),
+                state,
+                actual_target,
+            })
+        })
+        .collect::<Result<Vec<_>, EmulatorLifecycleError>>()?;
     Ok(Some(ManagedInstallAudit {
         manifest,
         manifest_path,
@@ -834,6 +1134,7 @@ pub fn read_managed_emulator_install(
         executable_state,
         actual_executable,
         installed_files,
+        installed_links,
     }))
 }
 
@@ -934,6 +1235,86 @@ fn validate_portable_relative_path(path: &str) -> Result<(), EmulatorLifecycleEr
     Ok(())
 }
 
+fn portable_link_target(path: &Path) -> Result<String, EmulatorLifecycleError> {
+    use std::path::Component;
+
+    if path.is_absolute() {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message: format!(
+                "managed symbolic-link target is absolute: {}",
+                path.display()
+            ),
+        });
+    }
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                let part =
+                    part.to_str()
+                        .ok_or_else(|| EmulatorLifecycleError::InvalidManifest {
+                            message: format!(
+                                "managed symbolic-link target is not valid UTF-8: {}",
+                                path.display()
+                            ),
+                        })?;
+                parts.push(part);
+            }
+            Component::ParentDir => parts.push(".."),
+            Component::CurDir => {}
+            _ => {
+                return Err(EmulatorLifecycleError::InvalidManifest {
+                    message: format!("managed symbolic-link target is unsafe: {}", path.display()),
+                });
+            }
+        }
+    }
+    let portable = parts.join("/");
+    if portable.is_empty() || portable.contains('\\') {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message: format!("managed symbolic-link target is unsafe: {}", path.display()),
+        });
+    }
+    Ok(portable)
+}
+
+fn validate_portable_link(relative_path: &str, target: &str) -> Result<(), EmulatorLifecycleError> {
+    if target.is_empty()
+        || target.len() > 4096
+        || target.starts_with('/')
+        || target.contains('\\')
+        || target.as_bytes().get(1) == Some(&b':')
+    {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message: format!("managed symbolic-link target is unsafe: {target}"),
+        });
+    }
+    let mut depth = relative_path.split('/').count().saturating_sub(1);
+    for component in target.split('/') {
+        if component.is_empty() || component == "." {
+            return Err(EmulatorLifecycleError::InvalidManifest {
+                message: format!("managed symbolic-link target is unsafe: {target}"),
+            });
+        }
+        if component == ".." {
+            if depth == 0 {
+                return Err(EmulatorLifecycleError::InvalidManifest {
+                    message: format!("managed symbolic-link target escapes its install: {target}"),
+                });
+            }
+            depth -= 1;
+        } else {
+            if !portable_component_is_safe(component) {
+                return Err(EmulatorLifecycleError::InvalidManifest {
+                    message: format!("managed symbolic-link target is unsafe: {target}"),
+                });
+            }
+            depth = depth.saturating_add(1);
+        }
+    }
+    Ok(())
+}
+
 fn portable_component_is_safe(component: &str) -> bool {
     if component.is_empty()
         || component.len() > 255
@@ -957,7 +1338,7 @@ fn portable_component_is_safe(component: &str) -> bool {
             && stem.as_bytes()[3] != b'0')
 }
 
-fn stream_download(
+pub(crate) fn stream_download(
     mut source: impl Read,
     destination: &Path,
     expected_byte_len: u64,
@@ -1147,6 +1528,79 @@ fn validate_bigpemu_manifest_url(
     {
         return Err(EmulatorLifecycleError::UntrustedUrl {
             url: url.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_retroarch_buildbot_asset_url(
+    url: &str,
+    version: &str,
+    artifact_kind: &str,
+    asset_name: &str,
+) -> Result<(), EmulatorLifecycleError> {
+    let platform = match artifact_kind {
+        "linux_7z_x64" => "linux/x86_64",
+        "windows_7z_x64" => "windows/x86_64",
+        "windows_7z_x86" => "windows/x86",
+        "macos_metal_dmg_universal" => "apple/osx/universal",
+        _ => {
+            return Err(EmulatorLifecycleError::InvalidManifest {
+                message: format!("managed RetroArch artifact kind is unknown: {artifact_kind}"),
+            });
+        }
+    };
+    let expected =
+        format!("https://buildbot.libretro.com/stable/{version}/{platform}/{asset_name}");
+    if url != expected || url.contains(['\r', '\n', '?', '#']) {
+        return Err(EmulatorLifecycleError::UntrustedUrl {
+            url: url.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_retroarch_macos_links(
+    links: &[ManagedInstalledLink],
+) -> Result<(), EmulatorLifecycleError> {
+    const EXPECTED: [(&str, &str); 6] = [
+        (
+            "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/MoltenVK-v1.2.7",
+            "Versions/Current/MoltenVK-v1.2.7",
+        ),
+        (
+            "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/Resources",
+            "Versions/Current/Resources",
+        ),
+        (
+            "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/Versions/Current",
+            "A",
+        ),
+        (
+            "RetroArch.app/Contents/Frameworks/MoltenVK.framework/MoltenVK",
+            "Versions/Current/MoltenVK",
+        ),
+        (
+            "RetroArch.app/Contents/Frameworks/MoltenVK.framework/Resources",
+            "Versions/Current/Resources",
+        ),
+        (
+            "RetroArch.app/Contents/Frameworks/MoltenVK.framework/Versions/Current",
+            "A",
+        ),
+    ];
+    let actual = links
+        .iter()
+        .map(|link| (link.relative_path.as_str(), link.target.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = EXPECTED
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual != expected {
+        return Err(EmulatorLifecycleError::InvalidManifest {
+            message:
+                "managed RetroArch macOS bundle does not contain its exact framework symlink set"
+                    .into(),
         });
     }
     Ok(())
@@ -1487,6 +1941,22 @@ mod tests {
             .iter()
             .any(|file| file.relative_path == "portable.ini"));
 
+        let mut ownership_v2 = serde_json::to_value(&manifest).unwrap();
+        ownership_v2
+            .as_object_mut()
+            .unwrap()
+            .insert("schema_version".into(), serde_json::json!(2));
+        fs::write(
+            directory.path().join(MANAGED_INSTALL_MANIFEST_NAME),
+            serde_json::to_vec_pretty(&ownership_v2).unwrap(),
+        )
+        .unwrap();
+        let ownership_v2_audit = read_managed_pcsx2_install(directory.path())
+            .unwrap()
+            .unwrap();
+        assert!(ownership_v2_audit.ownership_manifest_current());
+        assert!(ownership_v2_audit.safe_to_remove());
+
         let mut legacy = serde_json::to_value(&manifest).unwrap();
         let object = legacy.as_object_mut().unwrap();
         object.insert("schema_version".into(), serde_json::json!(1));
@@ -1628,6 +2098,111 @@ mod tests {
             untrusted.validate(),
             Err(EmulatorLifecycleError::UntrustedUrl { .. })
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_retroarch_macos_manifest_audits_exact_bundle_links_and_rejects_escapes() {
+        use std::os::unix::fs::symlink;
+
+        const LINKS: [(&str, &str); 6] = [
+            (
+                "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/MoltenVK-v1.2.7",
+                "Versions/Current/MoltenVK-v1.2.7",
+            ),
+            (
+                "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/Resources",
+                "Versions/Current/Resources",
+            ),
+            (
+                "RetroArch.app/Contents/Frameworks/MoltenVK-v1.2.7.framework/Versions/Current",
+                "A",
+            ),
+            (
+                "RetroArch.app/Contents/Frameworks/MoltenVK.framework/MoltenVK",
+                "Versions/Current/MoltenVK",
+            ),
+            (
+                "RetroArch.app/Contents/Frameworks/MoltenVK.framework/Resources",
+                "Versions/Current/Resources",
+            ),
+            (
+                "RetroArch.app/Contents/Frameworks/MoltenVK.framework/Versions/Current",
+                "A",
+            ),
+        ];
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory
+            .path()
+            .join("RetroArch.app/Contents/MacOS/RetroArch");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"universal RetroArch").unwrap();
+        let executable_receipt = file_receipt(&executable).unwrap();
+        let links = LINKS
+            .into_iter()
+            .map(|(relative, target)| {
+                let path = directory.path().join(relative);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                symlink(target, &path).unwrap();
+                ManagedInstalledLink::new(Path::new(relative), Path::new(target)).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let manifest = ManagedEmulatorInstall::from_release_with_supporting_artifacts(
+            "retroarch".into(),
+            "buildbot.libretro.com/stable".into(),
+            "managed-retroarch".into(),
+            "1.22.2".into(),
+            "1.22.2".into(),
+            false,
+            "macos_metal_dmg_universal".into(),
+            "RetroArch_Metal.dmg".into(),
+            "https://buildbot.libretro.com/stable/1.22.2/apple/osx/universal/RetroArch_Metal.dmg"
+                .into(),
+            232_801_022,
+            "42".repeat(32),
+            None,
+            Vec::new(),
+            "RetroArch.app/Contents/MacOS/RetroArch".into(),
+            &executable_receipt,
+            vec![ManagedInstalledFile::new(
+                Path::new("RetroArch.app/Contents/MacOS/RetroArch"),
+                &executable_receipt,
+            )
+            .unwrap()],
+            links,
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join(MANAGED_INSTALL_MANIFEST_NAME),
+            manifest.to_json_bytes().unwrap(),
+        )
+        .unwrap();
+        let audit = read_managed_emulator_install(
+            directory.path(),
+            "retroarch",
+            "buildbot.libretro.com/stable",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(audit.installed_links.len(), LINKS.len());
+        assert!(audit
+            .installed_links
+            .iter()
+            .all(|link| link.state == ManagedExecutableState::Valid));
+        assert!(audit.safe_to_remove());
+
+        let mut wrong_target = manifest.clone();
+        wrong_target.installed_links[0].target = "../../escape".into();
+        assert!(matches!(
+            wrong_target.validate(),
+            Err(EmulatorLifecycleError::InvalidManifest { .. })
+        ));
+        assert!(ManagedInstalledLink::new(
+            Path::new("RetroArch.app/Contents/Frameworks/escape"),
+            Path::new("../../../../outside")
+        )
+        .is_err());
     }
 
     #[cfg(unix)]

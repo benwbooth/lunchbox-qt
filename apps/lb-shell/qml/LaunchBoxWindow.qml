@@ -2154,7 +2154,7 @@ ApplicationWindow {
                     JSON.parse(controller.emulator_managed_json)
                 if (review.version !== 1 || review.profile_id !== "pcsx2"
                         || review.managed_install === null
-                        || review.managed_install.manifest.schema_version !== 2
+                        || review.managed_install.manifest.schema_version !== 3
                         || review.managed_install.manifest.installed_files.length !== 2
                         || review.owned_file_count !== 3
                         || review.reference_count !== 0
@@ -5255,6 +5255,18 @@ ApplicationWindow {
                     onClicked: pcsx2InstallManager.prepareXemu()
                 }
                 Button {
+                    text: "Manage RetroArch"
+                    enabled: !controller.loading && !controller.import_scanning
+                             && !controller.emulator_discovery_scanning
+                             && !controller.emulator_bios_scanning
+                             && !controller.emulator_release_checking
+                             && !controller.emulator_installing
+                             && !controller.writing && !controller.launching
+                             && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: pcsx2InstallManager.prepareRetroArch()
+                }
+                Button {
                     text: "Edit"
                     enabled: emulatorManager.selectedIndex >= 0
                              && !controller.writing
@@ -5429,7 +5441,10 @@ ApplicationWindow {
         property string profileId: "pcsx2"
         property string displayName: profileId === "bigpemu"
                                      ? "BigPEmu"
-                                     : (profileId === "xemu" ? "Xemu" : "PCSX2")
+                                     : (profileId === "xemu"
+                                        ? "Xemu"
+                                        : (profileId === "retroarch"
+                                           ? "RetroArch" : "PCSX2"))
         property var review: null
         property var managedReview: null
         property bool releaseCheckPending: false
@@ -5455,6 +5470,8 @@ ApplicationWindow {
                 controller.review_managed_bigpemu()
             else if (profileId === "xemu")
                 controller.review_managed_xemu()
+            else if (profileId === "retroarch")
+                controller.review_managed_retroarch()
             else
                 controller.review_managed_pcsx2()
         }
@@ -5469,6 +5486,10 @@ ApplicationWindow {
 
         function prepareXemu() {
             prepareProfile("xemu")
+        }
+
+        function prepareRetroArch() {
+            prepareProfile("retroarch")
         }
 
         function smokeCheck() {
@@ -5505,6 +5526,8 @@ ApplicationWindow {
                             controller.check_bigpemu_release()
                         else if (pcsx2InstallManager.profileId === "xemu")
                             controller.check_xemu_release()
+                        else if (pcsx2InstallManager.profileId === "retroarch")
+                            controller.check_retroarch_release()
                         else
                             controller.check_pcsx2_release()
                     })
@@ -5523,7 +5546,9 @@ ApplicationWindow {
                       ? "This provider checks Rich Whitehouse's official BigPEmu release page, selects the exact Windows or Linux artifact for this host, verifies its published byte count and 64-bit FNV-1a hash, computes SHA-256 locally, safely extracts it, excludes the optional Linux make_desktop.sh helper, and commits every owned path, an ownership manifest, and Data/Emulators.xml together. It never invokes a package script or downloaded executable during installation."
                       : (pcsx2InstallManager.profileId === "xemu"
                          ? "This provider checks xemu-project/xemu's official latest GitHub release, selects only the exact stable Windows or Linux asset or signed universal macOS asset for this host, verifies GitHub's SHA-256 digest and byte count, safely extracts ZIP bundles, and commits every owned path, an ownership manifest, and Data/Emulators.xml together. Debug, unsigned, and moving-alias assets are rejected, and no downloaded executable is run during installation."
-                         : "This provider checks PCSX2/pcsx2 on GitHub, selects the exact native artifact, verifies GitHub's SHA-256 digest and byte count, then commits every portable artifact path, portable.ini, an ownership manifest, and Data/Emulators.xml together. It never runs the downloaded artifact during installation.")
+                         : (pcsx2InstallManager.profileId === "retroarch"
+                            ? "This provider checks RetroArch's official stable buildbot, selects the exact Windows or Linux frontend plus cores archives or the signed universal macOS Metal DMG, checks exact HTTPS URLs and published byte counts, computes and records SHA-256 locally, and commits every owned file, required macOS framework link, an ownership manifest, and Data/Emulators.xml together. The buildbot publishes no SHA-256 sidecars, so no upstream digest is claimed. No package script, shell interpreter, or downloaded executable is run during installation."
+                            : "This provider checks PCSX2/pcsx2 on GitHub, selects the exact native artifact, verifies GitHub's SHA-256 digest and byte count, then commits every portable artifact path, portable.ini, an ownership manifest, and Data/Emulators.xml together. It never runs the downloaded artifact during installation."))
                 wrapMode: Text.Wrap
                 color: "#7fbfff"
             }
@@ -5551,7 +5576,9 @@ ApplicationWindow {
                                      ? " · nightly" : " · stable")
                                   : (pcsx2InstallManager.profileId === "xemu"
                                      ? (release.prerelease
-                                        ? " · prerelease" : " · stable") : ""))
+                                        ? " · prerelease" : " · stable")
+                                     : (pcsx2InstallManager.profileId === "retroarch"
+                                        ? " · stable" : "")))
                                + " · " + pcsx2InstallManager.actionLabel()
                     }
                     color: pcsx2InstallManager.review !== null
@@ -5593,7 +5620,23 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 visible: pcsx2InstallManager.review !== null
+                         && pcsx2InstallManager.profileId === "retroarch"
+                         && pcsx2InstallManager.review.release.cores !== null
+                         && pcsx2InstallManager.review.release.cores !== undefined
+                text: pcsx2InstallManager.review === null ? ""
+                      : "Cores: "
+                        + pcsx2InstallManager.review.release.cores.asset_name
+                        + " · "
+                        + pcsx2InstallManager.review.release.cores.asset_byte_len
+                        + " bytes"
+                color: "#c9d1d9"
+                elide: Text.ElideMiddle
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
                          && pcsx2InstallManager.profileId !== "bigpemu"
+                         && pcsx2InstallManager.profileId !== "retroarch"
                 text: pcsx2InstallManager.review === null ? ""
                       : "SHA-256: "
                         + pcsx2InstallManager.review.release.asset_sha256
@@ -5601,6 +5644,15 @@ ApplicationWindow {
                 font.family: "monospace"
                 font.pixelSize: 11
                 elide: Text.ElideMiddle
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                         && pcsx2InstallManager.profileId === "retroarch"
+                text: "Upstream digest: not published · SHA-256 will be computed locally and recorded after download"
+                color: "#d29922"
+                font.pixelSize: 11
+                elide: Text.ElideRight
             }
             Label {
                 Layout.fillWidth: true
@@ -5644,6 +5696,15 @@ ApplicationWindow {
             }
             Label {
                 Layout.fillWidth: true
+                visible: pcsx2InstallManager.review !== null
+                         && pcsx2InstallManager.review.release.artifact_kind
+                            === "macos_metal_dmg_universal"
+                text: "The official RetroArch Metal DMG contains a universal app for Intel and Apple Silicon. Its signed app layout and six exact MoltenVK framework symlinks are retained transactionally; native macOS execution still requires a real-host verification gate."
+                wrapMode: Text.Wrap
+                color: "#d29922"
+            }
+            Label {
+                Layout.fillWidth: true
                 visible: pcsx2InstallManager.managedReview !== null
                          && pcsx2InstallManager.managedReview.managed_install
                             !== null
@@ -5660,7 +5721,7 @@ ApplicationWindow {
                            + installed.executable_state
                            + " · "
                            + pcsx2InstallManager.managedReview.owned_file_count
-                           + " recoverable owned files"
+                           + " recoverable owned paths"
                 }
                 color: "#c9d1d9"
             }
@@ -5685,7 +5746,7 @@ ApplicationWindow {
             }
             Label {
                 Layout.fillWidth: true
-                text: "Updates replace only manifest-owned paths. Removal requires every owned file to match its recorded digest, refuses pinned emulator references, retains exact recovery copies, and leaves user settings, unrelated files, and directories in place."
+                text: "Updates replace only manifest-owned paths. Removal requires every owned file and link to match its recorded state, refuses pinned emulator references, retains exact recovery copies, and leaves user settings, unrelated files, and directories in place."
                 wrapMode: Text.Wrap
                 color: "#d29922"
             }
@@ -5713,6 +5774,8 @@ ApplicationWindow {
                             controller.install_bigpemu_release()
                         else if (pcsx2InstallManager.profileId === "xemu")
                             controller.install_xemu_release()
+                        else if (pcsx2InstallManager.profileId === "retroarch")
+                            controller.install_retroarch_release()
                         else
                             controller.install_pcsx2_release()
                     }
@@ -5762,6 +5825,8 @@ ApplicationWindow {
                 controller.remove_managed_bigpemu()
             else if (pcsx2InstallManager.profileId === "xemu")
                 controller.remove_managed_xemu()
+            else if (pcsx2InstallManager.profileId === "retroarch")
+                controller.remove_managed_retroarch()
             else
                 controller.remove_managed_pcsx2()
         }
@@ -5771,7 +5836,7 @@ ApplicationWindow {
             text: pcsx2InstallManager.managedReview === null ? ""
                   : "Remove "
                     + pcsx2InstallManager.managedReview.owned_file_count
-                    + " verified port-owned file(s) and the managed emulator definition? Exact recovery copies are retained. User settings, unrelated files, ROMs, media, and directories are not deleted."
+                    + " verified port-owned file/link path(s) and the managed emulator definition? Exact recovery copies are retained. User settings, unrelated files, ROMs, media, and directories are not deleted."
             wrapMode: Text.Wrap
         }
     }

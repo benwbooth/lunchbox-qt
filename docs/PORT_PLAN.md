@@ -7,8 +7,9 @@ Build two native Qt 6 applications over one Rust core:
 - **LaunchBox**: mouse/keyboard desktop library management and configuration.
 - **BigBox**: controller-first full-screen couch/arcade experience.
 
-Linux and Windows are first-class targets. macOS should remain architecturally
-possible, but it is not a parity gate until explicitly added.
+Linux, Windows, and macOS are first-class targets. Linux-hosted checks compile
+the portable Rust core for Windows and both Darwin architectures; native Qt
+runtime behavior still requires real Windows and macOS host gates.
 
 The objective is behavioral and data compatibility, not a mechanical
 translation of protected C# syntax. Existing user libraries and media should be
@@ -289,8 +290,18 @@ are refused; byte count and SHA-256 are mandatory; ZIP layouts and bundle
 permissions are preserved through the shared safe extraction boundary; and
 install, update, repair, reference-gated removal, recovery copies, Xbox
 registration, executable mode, and user configuration/BIOS retention are
-transactional. Other emulator providers, dependencies,
-cores, automatic update policy, and native macOS runtime validation remain open
+transactional. RetroArch is the fourth provider and follows the recovered
+13.27 stable-buildbot contract: Windows and Linux install the exact frontend
+and matching cores 7z pair, while Intel and Apple Silicon share the official
+universal Metal DMG. The buildbot publishes byte counts but no SHA-256
+sidecars, so the UI makes that distinction explicit and records locally
+computed SHA-256 receipts without claiming an upstream digest. The macOS app
+root, signature resources, permissions, and six exact MoltenVK framework
+symlinks are preserved as transaction-owned paths. Install, update, repair,
+stale-path cleanup, registration, and reference-gated removal remain
+shell-free and never execute a downloaded artifact. Further emulator
+providers, dependency policy, user-driven core selection, netplay, automatic
+update policy, and native Windows/macOS runtime validation remain open
 under `RUN-003`. The first three `RUN-004` adapters audit the complete recovered
 PCSX2 BIOS group of 73 alternatives, Xemu's three required boot-ROM/HDD/
 flash-BIOS groups, and RetroArch's complete 630-row/103-core requirement

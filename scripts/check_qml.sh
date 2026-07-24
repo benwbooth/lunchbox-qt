@@ -2351,7 +2351,7 @@ if ! cmp -s "$emulator_install_asset" "$emulator_install_executable" \
   exit 1
 fi
 for expected in \
-  '"schema_version": 2' \
+  '"schema_version": 3' \
   '"profile_id": "pcsx2"' \
   '"provider": "github:PCSX2/pcsx2"' \
   '"emulator_id": "' \
@@ -2446,7 +2446,7 @@ if ! find "$emulator_install_directory" -maxdepth 1 -type f \
     -size 0 -print -quit | rg -q . \
   || ! find "$emulator_install_directory" -maxdepth 1 -type f \
     -name '.launchbox-port-install.json.lbport-transaction-backup-*' \
-    -exec rg -q -F '"schema_version": 2' {} \; -print -quit | rg -q . \
+    -exec rg -q -F '"schema_version": 3' {} \; -print -quit | rg -q . \
   || ! find "$emulator_install_root/Data" -maxdepth 1 -type f \
     -name 'Emulators.xml.lbport-transaction-backup-*' \
     -exec cmp -s "$emulator_installed_document" {} \; -print -quit | rg -q . \
