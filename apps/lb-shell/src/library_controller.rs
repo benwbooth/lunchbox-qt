@@ -747,6 +747,16 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_big_box_game_details_media_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            image_index: i32,
+            video_index: i32,
+            image_url: QString,
+            video_url: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_game_details_layout_smoke_success(
             self: &LibraryController,
             reloaded: bool,
@@ -18458,6 +18468,29 @@ impl qobject::LibraryController {
         if success {
             eprintln!(
                 "GAME_DETAILS_MEDIA_SMOKE_COMPLETE id={game_id} items=4 image=Box-Front video=Video-Snap autoplay=1"
+            );
+        }
+        success
+    }
+
+    pub fn report_big_box_game_details_media_smoke_success(
+        &self,
+        game_id: QString,
+        image_index: i32,
+        video_index: i32,
+        image_url: QString,
+        video_url: QString,
+    ) -> bool {
+        let success = self.report_game_details_media_smoke_success(
+            game_id,
+            image_index,
+            video_index,
+            image_url,
+            video_url,
+        );
+        if success {
+            eprintln!(
+                "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=4 image=Box-Front video=Video-Snap autoplay=1 controls=1"
             );
         }
         success

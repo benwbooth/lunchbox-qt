@@ -89,6 +89,17 @@ Trailer priority. These facts establish the current read-only selected-game
 media contract; they do not establish every codec, theme, platform-video, or
 media-management behavior.
 
+The installed CriticalZoneV2 BigBox `TextGamesView.xaml` independently places
+an `ImageView`, an `ImageVideoView` explicitly marked as video content, and a
+`GameDetailsView` beside the game list. Its game-details resources bind title,
+details, notes, rating, favorite, portable, completed, and broken state. The
+shared `InputAction` contract includes `BigBoxShowGameDetails`,
+`BigBoxShowImages`, `BigBoxPlayGame`, directional navigation, Select, and Back.
+This establishes separate full-screen media/details presentation and
+controller-oriented entry/navigation as the first `BB-004` boundary. It does
+not establish exact protected transition timing, every configurable binding,
+theme-specific layout behavior, or 3D/related/document/application panes.
+
 The compiled port subsequently loaded that same read-only installation through
 the normal Qt worker transaction and selected 24,920 front images across the
 full 47-entry persisted fallback list. It scanned 161,968 supported files in

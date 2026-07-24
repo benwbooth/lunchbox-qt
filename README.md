@@ -99,7 +99,7 @@ the exact expanded argument vector.
 
 LaunchBox and BigBox render each game's selected front image from the library's
 own `PlatformFolder` records. The same bounded read-only Rust index retains all
-configured image families for LaunchBox's details gallery and indexes Video
+configured image families for both details galleries and indexes Video
 Snap, Theme Video, Trailer, Recording, and Marquee media from the recovered
 folder contract plus explicit game video paths. Persisted image-type, region,
 and video-type priorities, filename normalization, and numeric ordering are
@@ -134,6 +134,20 @@ gallery without changing the fixture. A second two-process scenario
 exercises hide, dock, pop out, native popup rendering, exact state-file bytes,
 shutdown preservation, and fresh-process restoration without writing library
 XML or settings.
+
+BigBox exposes the same stable-ID media collection through a dedicated
+full-screen game-details layer, matching the stock theme's separate image,
+image/video, and details presenters. Select **Details** or press `D`, then use
+left/right to wrap through media, Space to play or pause, Enter to launch, and
+Escape to return to the game wheel. The screen includes selectable thumbnails,
+one active Qt Multimedia player, previous/next and mute controls, local and
+community ratings, play statistics, metadata, and notes. Playback stops when
+the layer closes, and recycled game delegates never own a media player. Its
+compiled offscreen scenario opens the real Details button, decodes and
+autoplays the authored H.264 fixture, pauses, uses Previous, clicks actual image
+and video thumbnails, renders the 1280x720 details screen, resumes playback,
+closes through Back, proves the player stops, and verifies every media and
+library byte remains unchanged.
 
 Both frontends also use one typed, read-only library-filter contract. It
 combines text and platform/category/playlist navigation with favorite,

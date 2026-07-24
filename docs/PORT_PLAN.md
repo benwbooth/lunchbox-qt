@@ -269,16 +269,24 @@ Native Windows and Intel/Apple Silicon macOS Qt interaction remains an explicit
 real-host release gate.
 The current read-only media vertical keeps front-art selection in both shells
 and adds every configured image family plus per-game Video Snap, Theme Video,
-Trailer, Recording, and Marquee media to LaunchBox details. The shared
+Trailer, Recording, and Marquee media to both details surfaces. The shared
 cross-platform resolver is the only persisted-path boundary; Qt receives native
 local URLs. Type, region, numeric-image, and recovered video priorities are
 deterministic, while directory/file/size/item limits and symlink refusal keep
 large or hostile libraries isolated. Pure tests and compiled offscreen
-SVG/H.264 decode, selection, autoplay, play/pause, and rendered-gallery
-scenarios cover the portable pipeline without media writes. Native Windows and
+SVG/H.264 decode, selection, autoplay, play/pause, actual-thumbnail, and
+rendered-gallery scenarios cover both frontends without media writes. BigBox's
+first `BB-004` subset follows the stock theme's separate image,
+image/video, and game-details presenters: `D`/Details opens one full-screen
+stable-ID layer outside recycled delegates; left/right or Previous/Next wraps
+the collection, Space/play-pause and mute control video, Enter launches, and
+Back/Escape stops playback and returns to the game wheel. A metadata/notes
+column accompanies the media. Native Windows and
 Intel/Apple Silicon macOS Qt Multimedia execution remain explicit real-host
 gates, and all media mutation, download, manual/music playback, platform-video
-management, cleanup, and migration work remains open.
+management, standalone image zoom, 3D models, related/document/application
+panes, custom BigBox theme layouts/transitions, cleanup, and migration work
+remains open.
 The first three `DESK-002` verticals add a resizable LaunchBox selected-game
 details pane over the shared virtualized model plus hide/show and native
 pop-out/dock behavior. Its stable-ID selection contract survives filter and

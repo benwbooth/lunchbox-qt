@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQml.Models
+import QtMultimedia
 import LaunchBoxPort
 
 ApplicationWindow {
@@ -17,6 +18,14 @@ ApplicationWindow {
     property bool smokeTest: Qt.application.arguments.indexOf("--smoke-test") >= 0
     property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
     property bool mediaSmokeFinished: false
+    property bool gameDetailsMediaSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-game-details-media-smoke-test") >= 0
+    property int gameDetailsMediaSmokePhase: 0
+    property bool gameDetailsMediaSmokeFinished: false
+    property bool gameDetailsMediaScreenshotRequested: false
+    property string gameDetailsMediaScreenshotPath:
+        argumentValue("--bigbox-game-details-media-screenshot")
     property bool navigationSmokeTest:
         Qt.application.arguments.indexOf("--navigation-smoke-test") >= 0
     property bool libraryFilterSmokeTest:
@@ -65,6 +74,20 @@ ApplicationWindow {
     property string launchPauseScreenshotPath:
         argumentValue("--launch-pause-screenshot")
     property string activeNavigationName: "All Games"
+    property string selectedBigBoxGameId: ""
+    property string selectedBigBoxGameTitle: ""
+    property string selectedBigBoxGamePlatform: ""
+    property string selectedBigBoxGameNotes: ""
+    property string selectedBigBoxGameDeveloper: ""
+    property string selectedBigBoxGamePublisher: ""
+    property string selectedBigBoxGameGenre: ""
+    property string selectedBigBoxGameVersion: ""
+    property bool selectedBigBoxGameFavorite: false
+    property bool selectedBigBoxGameCompleted: false
+    property int selectedBigBoxGamePlayCount: 0
+    property int selectedBigBoxGameStarRating: 0
+    property real selectedBigBoxGamePlayTimeSeconds: 0
+    property real selectedBigBoxGameCommunityRating: 0
     property string launchSmokeGameId: {
         const requested = argumentValue("--launch-game-id")
         return requested.length > 0 ? requested : "fixture-racer"
@@ -130,6 +153,40 @@ ApplicationWindow {
             if (gameId.length > 0)
                 controller.launch_game(gameList.currentIndex, gameId)
         }
+    }
+
+    function openGameDetails() {
+        if (selectedBigBoxGameId.length === 0 || controller.loading
+                || controller.writing)
+            return false
+        bigBoxGameDetails.open()
+        return true
+    }
+
+    function formatPlayTime(seconds) {
+        const totalMinutes = Math.floor(Math.max(0, seconds) / 60)
+        const hours = Math.floor(totalMinutes / 60)
+        const minutes = totalMinutes % 60
+        if (hours > 0)
+            return hours + "h " + minutes + "m"
+        return minutes + "m"
+    }
+
+    function clearSelectedBigBoxGame() {
+        selectedBigBoxGameId = ""
+        selectedBigBoxGameTitle = ""
+        selectedBigBoxGamePlatform = ""
+        selectedBigBoxGameNotes = ""
+        selectedBigBoxGameDeveloper = ""
+        selectedBigBoxGamePublisher = ""
+        selectedBigBoxGameGenre = ""
+        selectedBigBoxGameVersion = ""
+        selectedBigBoxGameFavorite = false
+        selectedBigBoxGameCompleted = false
+        selectedBigBoxGamePlayCount = 0
+        selectedBigBoxGameStarRating = 0
+        selectedBigBoxGamePlayTimeSeconds = 0
+        selectedBigBoxGameCommunityRating = 0
     }
 
     function showLaunchWithSelection() {
@@ -498,6 +555,142 @@ ApplicationWindow {
             console.error("MEDIA_SMOKE_TIMEOUT images="
                           + controller.front_image_count)
             Qt.exit(45)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameDetailsMediaSmokeTest
+                 && !window.gameDetailsMediaSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0
+                    || window.selectedBigBoxGameId.length === 0)
+                return
+            if (window.gameDetailsMediaSmokePhase === 0) {
+                const row = controller.row_for_game_id("fixture-adventure")
+                if (row < 0)
+                    return
+                gameList.currentIndex = row
+                gameList.positionViewAtIndex(row, ListView.Center)
+                if (window.selectedBigBoxGameId !== "fixture-adventure")
+                    return
+                bigBoxGameDetailsButton.clicked()
+                window.gameDetailsMediaSmokePhase = 1
+            } else if (window.gameDetailsMediaSmokePhase === 1) {
+                if (!bigBoxGameDetails.opened
+                        || bigBoxGameDetails.mediaCount !== 4
+                        || bigBoxGameDetails.selectedMediaIndex !== 3
+                        || bigBoxGameDetails.selectedMediaKind !== "video"
+                        || bigBoxGameDetails.selectedMediaType !== "Video Snap"
+                        || bigBoxGameDetails.mediaDuration <= 0
+                        || bigBoxGameDetails.mediaError !== MediaPlayer.NoError
+                        || bigBoxGameDetails.mediaPlaybackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                bigBoxMediaPlayPauseButton.clicked()
+                window.gameDetailsMediaSmokePhase = 2
+            } else if (window.gameDetailsMediaSmokePhase === 2) {
+                if (bigBoxGameDetails.mediaPlaybackState
+                        !== MediaPlayer.PausedState)
+                    return
+                bigBoxPreviousMediaButton.clicked()
+                window.gameDetailsMediaSmokePhase = 3
+            } else if (window.gameDetailsMediaSmokePhase === 3) {
+                if (bigBoxGameDetails.selectedMediaIndex !== 2
+                        || bigBoxGameDetails.selectedMediaKind !== "image"
+                        || bigBoxGameDetails.mediaImageStatus !== Image.Ready)
+                    return
+                if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(0)) {
+                    console.error(
+                        "BIGBOX_GAME_DETAILS_MEDIA_IMAGE_THUMBNAIL_MISSING")
+                    Qt.exit(507)
+                    return
+                }
+                window.gameDetailsMediaSmokePhase = 4
+            } else if (window.gameDetailsMediaSmokePhase === 4) {
+                if (bigBoxGameDetails.selectedMediaIndex !== 0
+                        || bigBoxGameDetails.selectedMediaKind !== "image"
+                        || bigBoxGameDetails.selectedMediaType
+                           !== "Box - Front"
+                        || bigBoxGameDetails.mediaImageStatus !== Image.Ready)
+                    return
+                if (window.gameDetailsMediaScreenshotRequested)
+                    return
+                window.gameDetailsMediaScreenshotRequested = true
+                const continueWithVideo = function() {
+                    if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(3)) {
+                        console.error(
+                            "BIGBOX_GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
+                        Qt.exit(508)
+                        return
+                    }
+                    window.gameDetailsMediaSmokePhase = 5
+                }
+                if (window.gameDetailsMediaScreenshotPath.length === 0) {
+                    continueWithVideo()
+                    return
+                }
+                bigBoxGameDetailsContent.grabToImage(function(result) {
+                    if (!result.saveToFile(
+                            window.gameDetailsMediaScreenshotPath)) {
+                        console.error(
+                            "BIGBOX_GAME_DETAILS_MEDIA_SCREENSHOT_SAVE_FAILED path="
+                            + window.gameDetailsMediaScreenshotPath)
+                        Qt.exit(509)
+                        return
+                    }
+                    continueWithVideo()
+                })
+            } else if (window.gameDetailsMediaSmokePhase === 5) {
+                if (bigBoxGameDetails.selectedMediaIndex !== 3
+                        || bigBoxGameDetails.selectedMediaKind !== "video"
+                        || bigBoxGameDetails.selectedMediaType !== "Video Snap"
+                        || bigBoxGameDetails.mediaDuration <= 0
+                        || bigBoxGameDetails.mediaError !== MediaPlayer.NoError
+                        || bigBoxGameDetails.mediaPlaybackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                bigBoxGameDetailsBackButton.clicked()
+                window.gameDetailsMediaSmokePhase = 6
+            } else if (window.gameDetailsMediaSmokePhase === 6) {
+                if (bigBoxGameDetails.opened
+                        || bigBoxGameDetails.mediaPlaybackState
+                           !== MediaPlayer.StoppedState)
+                    return
+                if (!controller
+                        .report_big_box_game_details_media_smoke_success(
+                        "fixture-adventure", 0, 3,
+                        controller.game_media_url_at(
+                            "fixture-adventure", 0).toString(),
+                        controller.game_media_url_at(
+                            "fixture-adventure", 3).toString())) {
+                    console.error(
+                        "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
+                    Qt.exit(510)
+                    return
+                }
+                window.gameDetailsMediaSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.gameDetailsMediaSmokeTest
+                 && !window.gameDetailsMediaSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_TIMEOUT phase="
+                + window.gameDetailsMediaSmokePhase
+                + " id=" + window.selectedBigBoxGameId
+                + " open=" + bigBoxGameDetails.opened
+                + " media=" + bigBoxGameDetails.mediaCount
+                + " selected=" + bigBoxGameDetails.selectedMediaIndex
+                + " playback=" + bigBoxGameDetails.mediaPlaybackState
+                + " status=" + controller.status_message)
+            Qt.exit(511)
         }
     }
 
@@ -1386,6 +1579,17 @@ ApplicationWindow {
                 preferredHighlightEnd: width * 0.64
                 snapMode: ListView.SnapOneItem
                 model: controller
+                onCountChanged: {
+                    if (count === 0) {
+                        window.clearSelectedBigBoxGame()
+                    } else if (currentIndex < 0) {
+                        currentIndex = 0
+                    }
+                }
+                onCurrentIndexChanged: {
+                    if (currentIndex < 0)
+                        window.clearSelectedBigBoxGame()
+                }
                 Keys.onReturnPressed: function(event) {
                     window.launchSelection()
                     event.accepted = true
@@ -1409,6 +1613,11 @@ ApplicationWindow {
                     required property int gamePlayCount
                     required property int gameStarRating
                     required property int gameAdditionalApplicationCount
+                    required property string gameNotes
+                    required property string gameDeveloper
+                    required property string gamePublisher
+                    required property string gameGenre
+                    required property string gameVersion
                     required property real gamePlayTimeSeconds
                     required property string gameLastPlayedDate
                     required property string gameDateAdded
@@ -1423,23 +1632,49 @@ ApplicationWindow {
                     required property int gameDatabaseId
                     required property string gameAlternateNames
                     required property url gameFrontImageUrl
-                    Component.onCompleted: window.verifyModelRoles(
-                                               index, gameId, gameTitle, gamePlatform,
-                                               gameFavorite, gameCompleted, gamePlayCount,
-                                               gameStarRating,
-                                               gameAdditionalApplicationCount,
-                                               gamePlayTimeSeconds,
-                                               gameLastPlayedDate, gameDateAdded,
-                                               gameDateModified,
-                                               gameCommunityStarRating,
-                                               gameCommunityStarRatingTotalVotes,
-                                               gameInstalledState,
-                                               gameHidden, gameBroken,
-                                               gamePortable, gameVideoUrl,
-                                               gameDatabaseId,
-                                               gameAlternateNames,
-                                               gameFrontImageUrl,
-                                               gameList.count)
+
+                    function publishCurrentGame() {
+                        if (!ListView.isCurrentItem)
+                            return
+                        window.selectedBigBoxGameId = gameId
+                        window.selectedBigBoxGameTitle = gameTitle
+                        window.selectedBigBoxGamePlatform = gamePlatform
+                        window.selectedBigBoxGameNotes = gameNotes
+                        window.selectedBigBoxGameDeveloper = gameDeveloper
+                        window.selectedBigBoxGamePublisher = gamePublisher
+                        window.selectedBigBoxGameGenre = gameGenre
+                        window.selectedBigBoxGameVersion = gameVersion
+                        window.selectedBigBoxGameFavorite = gameFavorite
+                        window.selectedBigBoxGameCompleted = gameCompleted
+                        window.selectedBigBoxGamePlayCount = gamePlayCount
+                        window.selectedBigBoxGameStarRating = gameStarRating
+                        window.selectedBigBoxGamePlayTimeSeconds =
+                            gamePlayTimeSeconds
+                        window.selectedBigBoxGameCommunityRating =
+                            gameCommunityStarRating
+                    }
+
+                    Component.onCompleted: {
+                        window.verifyModelRoles(
+                            index, gameId, gameTitle, gamePlatform,
+                            gameFavorite, gameCompleted, gamePlayCount,
+                            gameStarRating,
+                            gameAdditionalApplicationCount,
+                            gamePlayTimeSeconds,
+                            gameLastPlayedDate, gameDateAdded,
+                            gameDateModified,
+                            gameCommunityStarRating,
+                            gameCommunityStarRatingTotalVotes,
+                            gameInstalledState,
+                            gameHidden, gameBroken,
+                            gamePortable, gameVideoUrl,
+                            gameDatabaseId,
+                            gameAlternateNames,
+                            gameFrontImageUrl,
+                            gameList.count)
+                        publishCurrentGame()
+                    }
+                    ListView.onIsCurrentItemChanged: publishCurrentGame()
                     width: 370
                     height: gameList.height - 20
                     radius: 14
@@ -1572,6 +1807,13 @@ ApplicationWindow {
                          && !controller.loading && !controller.writing
                 onClicked: window.selectRandomGame()
             }
+            Button {
+                id: bigBoxGameDetailsButton
+                text: "DETAILS"
+                enabled: window.selectedBigBoxGameId.length > 0
+                         && !controller.loading && !controller.writing
+                onClicked: window.openGameDetails()
+            }
             Label {
                 Layout.fillWidth: true
                 text: gameList.count > 0
@@ -1594,9 +1836,691 @@ ApplicationWindow {
             Label {
                 text: controller.launching
                       ? "LAUNCHING…"
-                      : "↑ / TAB  BROWSE     G  FILTERS     R  RANDOM     ← →  GAMES     ENTER  PLAY"
+                      : "D  DETAILS     ← →  GAMES     ENTER  PLAY"
                 color: "#9badc4"
                 font.pixelSize: 18
+            }
+        }
+    }
+
+    Popup {
+        id: bigBoxGameDetails
+        x: 0
+        y: 0
+        width: window.width
+        height: window.height
+        padding: 0
+        modal: true
+        dim: false
+        focus: true
+        closePolicy: Popup.NoAutoClose
+        property string mediaGameId: window.selectedBigBoxGameId
+        readonly property int mediaRevision: controller.game_media_revision
+        readonly property int mediaCount: {
+            const revision = mediaRevision
+            return mediaGameId.length > 0
+                ? controller.game_media_count_for_game(mediaGameId) : 0
+        }
+        property int selectedMediaIndex: -1
+        readonly property string selectedMediaKind:
+            selectedMediaIndex >= 0
+            ? controller.game_media_kind_at(
+                  mediaGameId, selectedMediaIndex) : ""
+        readonly property string selectedMediaType:
+            selectedMediaIndex >= 0
+            ? controller.game_media_type_at(
+                  mediaGameId, selectedMediaIndex) : ""
+        readonly property url selectedMediaSource:
+            selectedMediaIndex >= 0
+            ? controller.game_media_url_at(
+                  mediaGameId, selectedMediaIndex) : ""
+        readonly property int mediaImageStatus:
+            bigBoxSelectedMediaImage.status
+        readonly property int mediaPlaybackState:
+            bigBoxMediaPlayer.playbackState
+        readonly property int mediaStatus:
+            bigBoxMediaPlayer.mediaStatus
+        readonly property var mediaError:
+            bigBoxMediaPlayer.error
+        readonly property real mediaDuration:
+            bigBoxMediaPlayer.duration
+
+        function resetMediaSelection() {
+            bigBoxMediaPlayer.stop()
+            selectedMediaIndex =
+                mediaGameId.length > 0
+                ? controller.game_media_default_index(mediaGameId) : -1
+            if (selectedMediaIndex >= 0)
+                bigBoxMediaThumbnailList.positionViewAtIndex(
+                    selectedMediaIndex, ListView.Contain)
+        }
+
+        function selectMedia(index) {
+            if (index < 0 || index >= mediaCount)
+                return false
+            bigBoxMediaPlayer.stop()
+            selectedMediaIndex = index
+            bigBoxMediaThumbnailList.positionViewAtIndex(
+                index, ListView.Contain)
+            return true
+        }
+
+        function selectPreviousMedia() {
+            if (mediaCount === 0)
+                return false
+            return selectMedia(
+                selectedMediaIndex <= 0
+                ? mediaCount - 1 : selectedMediaIndex - 1)
+        }
+
+        function selectNextMedia() {
+            if (mediaCount === 0)
+                return false
+            return selectMedia(
+                selectedMediaIndex < 0
+                || selectedMediaIndex + 1 >= mediaCount
+                ? 0 : selectedMediaIndex + 1)
+        }
+
+        function togglePlayback() {
+            if (selectedMediaKind !== "video")
+                return false
+            if (bigBoxMediaPlayer.playbackState
+                    === MediaPlayer.PlayingState) {
+                bigBoxMediaPlayer.pause()
+            } else {
+                if (bigBoxMediaPlayer.mediaStatus
+                        === MediaPlayer.EndOfMedia)
+                    bigBoxMediaPlayer.position = 0
+                bigBoxMediaPlayer.play()
+            }
+            return true
+        }
+
+        function clickMediaThumbnailForSmoke(index) {
+            const item = bigBoxMediaThumbnailList.itemAtIndex(index)
+            if (!item)
+                return false
+            // qmllint disable missing-property
+            item["clickForSmoke"]()
+            // qmllint enable missing-property
+            return true
+        }
+
+        onOpened: {
+            resetMediaSelection()
+            Qt.callLater(function() {
+                bigBoxGameDetailsContent.forceActiveFocus()
+            })
+        }
+        onClosed: {
+            bigBoxMediaPlayer.stop()
+            gameList.forceActiveFocus()
+        }
+        onMediaGameIdChanged: {
+            if (opened)
+                Qt.callLater(resetMediaSelection)
+        }
+        onMediaRevisionChanged: {
+            if (opened)
+                Qt.callLater(resetMediaSelection)
+        }
+
+        background: Rectangle {
+            gradient: Gradient {
+                GradientStop {
+                    position: 0
+                    color: "#17243b"
+                }
+                GradientStop {
+                    position: 0.58
+                    color: "#090d14"
+                }
+                GradientStop {
+                    position: 1
+                    color: "#050609"
+                }
+            }
+        }
+
+        contentItem: FocusScope {
+            id: bigBoxGameDetailsContent
+            focus: true
+
+            Keys.onLeftPressed: function(event) {
+                bigBoxGameDetails.selectPreviousMedia()
+                event.accepted = true
+            }
+            Keys.onRightPressed: function(event) {
+                bigBoxGameDetails.selectNextMedia()
+                event.accepted = true
+            }
+            Keys.onSpacePressed: function(event) {
+                bigBoxGameDetails.togglePlayback()
+                event.accepted = true
+            }
+            Keys.onEscapePressed: function(event) {
+                bigBoxGameDetails.close()
+                event.accepted = true
+            }
+            Keys.onReturnPressed: function(event) {
+                bigBoxGameDetails.close()
+                Qt.callLater(window.launchSelection)
+                event.accepted = true
+            }
+            Keys.onEnterPressed: function(event) {
+                bigBoxGameDetails.close()
+                Qt.callLater(window.launchSelection)
+                event.accepted = true
+            }
+            Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Back) {
+                    bigBoxGameDetails.close()
+                    event.accepted = true
+                }
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 38
+                spacing: 16
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 18
+
+                    Button {
+                        id: bigBoxGameDetailsBackButton
+                        text: "‹  BACK"
+                        onClicked: bigBoxGameDetails.close()
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+                        Label {
+                            Layout.fillWidth: true
+                            text: window.selectedBigBoxGameTitle
+                            color: "#ffffff"
+                            font.pixelSize: 34
+                            font.bold: true
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: window.selectedBigBoxGamePlatform.toUpperCase()
+                            color: "#67b3ff"
+                            font.pixelSize: 17
+                            font.bold: true
+                            font.letterSpacing: 2
+                            elide: Text.ElideRight
+                        }
+                    }
+                    Label {
+                        text: bigBoxGameDetails.mediaCount > 0
+                              ? (bigBoxGameDetails.selectedMediaIndex + 1)
+                                + " / " + bigBoxGameDetails.mediaCount
+                              : "NO MEDIA"
+                        color: "#a9bdd6"
+                        font.pixelSize: 18
+                        font.bold: true
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 24
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.preferredWidth: 780
+                        spacing: 10
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: 330
+                            radius: 12
+                            color: "#080c12"
+                            border.color: "#30445d"
+                            border.width: 2
+                            clip: true
+
+                            Image {
+                                id: bigBoxSelectedMediaImage
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                visible:
+                                    bigBoxGameDetails.selectedMediaKind
+                                    === "image"
+                                source: visible
+                                        ? bigBoxGameDetails
+                                          .selectedMediaSource : ""
+                                asynchronous: true
+                                cache: true
+                                fillMode: Image.PreserveAspectFit
+                                sourceSize.width: 1280
+                                sourceSize.height: 960
+                            }
+
+                            AudioOutput {
+                                id: bigBoxMediaAudio
+                                muted: window.gameDetailsMediaSmokeTest
+                            }
+
+                            MediaPlayer {
+                                id: bigBoxMediaPlayer
+                                source:
+                                    bigBoxGameDetails.selectedMediaKind
+                                    === "video"
+                                    ? bigBoxGameDetails
+                                      .selectedMediaSource : ""
+                                audioOutput: bigBoxMediaAudio
+                                videoOutput: bigBoxVideoOutput
+                                onSourceChanged: {
+                                    if (source.toString().length > 0
+                                            && bigBoxGameDetails.opened
+                                            && controller
+                                               .details_auto_play_video)
+                                        Qt.callLater(play)
+                                }
+                                onErrorOccurred: function(error,
+                                                          errorString) {
+                                    console.warn(
+                                        "BigBox selected-game media error "
+                                        + error + ": " + errorString)
+                                }
+                            }
+
+                            VideoOutput {
+                                id: bigBoxVideoOutput
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                visible:
+                                    bigBoxGameDetails.selectedMediaKind
+                                    === "video"
+                                fillMode: VideoOutput.PreserveAspectFit
+                            }
+
+                            Label {
+                                anchors.centerIn: parent
+                                width: parent.width - 40
+                                visible:
+                                    bigBoxGameDetails.mediaCount === 0
+                                text: "No images or videos are available for this game."
+                                color: "#6f829a"
+                                font.pixelSize: 22
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.Wrap
+                            }
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                height: 44
+                                color: "#d10b1118"
+                                visible:
+                                    bigBoxGameDetails.mediaCount > 0
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 14
+                                    anchors.rightMargin: 14
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text:
+                                            bigBoxGameDetails
+                                            .selectedMediaType
+                                        color: "#ffffff"
+                                        font.pixelSize: 16
+                                        font.bold: true
+                                        elide: Text.ElideRight
+                                    }
+                                    Label {
+                                        text:
+                                            bigBoxGameDetails
+                                            .selectedMediaKind
+                                            .toUpperCase()
+                                        color: "#7fbfff"
+                                        font.pixelSize: 14
+                                        font.bold: true
+                                    }
+                                }
+                            }
+                        }
+
+                        ListView {
+                            id: bigBoxMediaThumbnailList
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 94
+                            orientation: ListView.Horizontal
+                            spacing: 10
+                            clip: true
+                            model: bigBoxGameDetails.mediaCount
+                            currentIndex:
+                                bigBoxGameDetails.selectedMediaIndex
+
+                            delegate: Rectangle {
+                                id: bigBoxMediaThumbnail
+                                required property int index
+                                width: 122
+                                height: 90
+                                radius: 7
+                                color:
+                                    ListView.isCurrentItem
+                                    ? "#244d73" : "#0e151f"
+                                border.color:
+                                    ListView.isCurrentItem
+                                    ? "#67b7ff" : "#34475d"
+                                border.width:
+                                    ListView.isCurrentItem ? 3 : 1
+                                readonly property string kind:
+                                    controller.game_media_kind_at(
+                                        bigBoxGameDetails.mediaGameId,
+                                        index)
+                                readonly property string mediaType:
+                                    controller.game_media_type_at(
+                                        bigBoxGameDetails.mediaGameId,
+                                        index)
+                                readonly property url mediaSource:
+                                    controller.game_media_url_at(
+                                        bigBoxGameDetails.mediaGameId,
+                                        index)
+
+                                function clickForSmoke() {
+                                    bigBoxMediaThumbnailMouse.clicked(null)
+                                }
+
+                                Image {
+                                    anchors.fill: parent
+                                    anchors.margins: 5
+                                    visible:
+                                        bigBoxMediaThumbnail.kind
+                                        === "image"
+                                    source:
+                                        visible
+                                        ? bigBoxMediaThumbnail.mediaSource : ""
+                                    asynchronous: true
+                                    cache: true
+                                    fillMode: Image.PreserveAspectCrop
+                                    sourceSize.width: 244
+                                    sourceSize.height: 180
+                                }
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: 5
+                                    visible:
+                                        bigBoxMediaThumbnail.kind
+                                        === "video"
+                                    color: "#17283b"
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: "▶"
+                                        color: "#79c0ff"
+                                        font.pixelSize: 30
+                                    }
+                                }
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    anchors.margins: 5
+                                    height: 25
+                                    color: "#d00b1118"
+                                    Label {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 6
+                                        anchors.rightMargin: 6
+                                        text:
+                                            bigBoxMediaThumbnail.mediaType
+                                        color: "#ffffff"
+                                        font.pixelSize: 10
+                                        verticalAlignment:
+                                            Text.AlignVCenter
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                                MouseArea {
+                                    id: bigBoxMediaThumbnailMouse
+                                    anchors.fill: parent
+                                    onClicked:
+                                        bigBoxGameDetails.selectMedia(
+                                            bigBoxMediaThumbnail.index)
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+                            Button {
+                                id: bigBoxPreviousMediaButton
+                                text: "‹  PREVIOUS"
+                                enabled:
+                                    bigBoxGameDetails.mediaCount > 1
+                                onClicked:
+                                    bigBoxGameDetails
+                                    .selectPreviousMedia()
+                            }
+                            Button {
+                                id: bigBoxMediaPlayPauseButton
+                                Layout.fillWidth: true
+                                visible:
+                                    bigBoxGameDetails.selectedMediaKind
+                                    === "video"
+                                text:
+                                    bigBoxMediaPlayer.playbackState
+                                    === MediaPlayer.PlayingState
+                                    ? "PAUSE VIDEO" : "PLAY VIDEO"
+                                onClicked:
+                                    bigBoxGameDetails.togglePlayback()
+                            }
+                            Button {
+                                visible:
+                                    bigBoxGameDetails.selectedMediaKind
+                                    === "video"
+                                text: bigBoxMediaAudio.muted
+                                      ? "UNMUTE" : "MUTE"
+                                onClicked:
+                                    bigBoxMediaAudio.muted =
+                                        !bigBoxMediaAudio.muted
+                            }
+                            Button {
+                                id: bigBoxNextMediaButton
+                                text: "NEXT  ›"
+                                enabled:
+                                    bigBoxGameDetails.mediaCount > 1
+                                onClicked:
+                                    bigBoxGameDetails.selectNextMedia()
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillHeight: true
+                        Layout.preferredWidth: 390
+                        Layout.minimumWidth: 310
+                        radius: 12
+                        color: "#c40d1520"
+                        border.color: "#30445d"
+                        border.width: 1
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 22
+                            spacing: 12
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: "GAME DETAILS"
+                                color: "#67b3ff"
+                                font.pixelSize: 22
+                                font.bold: true
+                                font.letterSpacing: 2
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text:
+                                    (window.selectedBigBoxGameFavorite
+                                     ? "★ FAVORITE    " : "")
+                                    + (window.selectedBigBoxGameCompleted
+                                       ? "✓ COMPLETED" : "")
+                                visible: text.length > 0
+                                color: "#f0c04a"
+                                font.pixelSize: 15
+                                font.bold: true
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text:
+                                    "Rating  "
+                                    + window.selectedBigBoxGameStarRating
+                                    + " / 5"
+                                    + (window
+                                       .selectedBigBoxGameCommunityRating > 0
+                                       ? "    Community  "
+                                         + window
+                                           .selectedBigBoxGameCommunityRating
+                                           .toFixed(2)
+                                       : "")
+                                color: "#dce7f5"
+                                font.pixelSize: 16
+                                wrapMode: Text.Wrap
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text:
+                                    "Played  "
+                                    + window.selectedBigBoxGamePlayCount
+                                    + " times  •  "
+                                    + window.formatPlayTime(
+                                        window
+                                        .selectedBigBoxGamePlayTimeSeconds)
+                                color: "#a9bdd6"
+                                font.pixelSize: 15
+                                wrapMode: Text.Wrap
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: 1
+                                color: "#30445d"
+                            }
+
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: 2
+                                columnSpacing: 10
+                                rowSpacing: 8
+
+                                Label {
+                                    text: "Developer"
+                                    color: "#71869f"
+                                    font.pixelSize: 14
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text:
+                                        window.selectedBigBoxGameDeveloper
+                                        .length > 0
+                                        ? window
+                                          .selectedBigBoxGameDeveloper : "—"
+                                    color: "#dce7f5"
+                                    font.pixelSize: 14
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    text: "Publisher"
+                                    color: "#71869f"
+                                    font.pixelSize: 14
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text:
+                                        window.selectedBigBoxGamePublisher
+                                        .length > 0
+                                        ? window
+                                          .selectedBigBoxGamePublisher : "—"
+                                    color: "#dce7f5"
+                                    font.pixelSize: 14
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    text: "Genre"
+                                    color: "#71869f"
+                                    font.pixelSize: 14
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text:
+                                        window.selectedBigBoxGameGenre
+                                        .length > 0
+                                        ? window
+                                          .selectedBigBoxGameGenre : "—"
+                                    color: "#dce7f5"
+                                    font.pixelSize: 14
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    text: "Version"
+                                    color: "#71869f"
+                                    font.pixelSize: 14
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text:
+                                        window.selectedBigBoxGameVersion
+                                        .length > 0
+                                        ? window
+                                          .selectedBigBoxGameVersion : "—"
+                                    color: "#dce7f5"
+                                    font.pixelSize: 14
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: "DESCRIPTION"
+                                color: "#67b3ff"
+                                font.pixelSize: 16
+                                font.bold: true
+                            }
+                            ScrollView {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                contentWidth: availableWidth
+
+                                Label {
+                                    width: parent.width
+                                    text:
+                                        window.selectedBigBoxGameNotes
+                                        .length > 0
+                                        ? window.selectedBigBoxGameNotes
+                                        : "No description is available."
+                                    color: "#c7d5e5"
+                                    font.pixelSize: 16
+                                    wrapMode: Text.Wrap
+                                }
+                            }
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text:
+                            "← →  MEDIA     SPACE  PLAY / PAUSE"
+                            + "     ENTER  PLAY GAME     ESC  BACK"
+                        color: "#9badc4"
+                        font.pixelSize: 16
+                    }
+                }
             }
         }
     }
@@ -1690,11 +2614,22 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "L"
+        enabled: !bigBoxGameDetails.opened
         onActivated: window.showLaunchWithSelection()
     }
 
     Shortcut {
+        sequence: "D"
+        enabled: !bigBoxGameDetails.opened
+                 && !attributeFilterDrawer.opened
+                 && !navigationDrawer.opened
+                 && window.selectedBigBoxGameId.length > 0
+        onActivated: window.openGameDetails()
+    }
+
+    Shortcut {
         sequence: "Tab"
+        enabled: !bigBoxGameDetails.opened
         onActivated: {
             if (navigationDrawer.opened) {
                 navigationDrawer.close()
@@ -1707,17 +2642,21 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "F"
+        enabled: !bigBoxGameDetails.opened
         onActivated: window.openNavigation()
     }
 
     Shortcut {
         sequence: "G"
+        enabled: !bigBoxGameDetails.opened
         onActivated: window.openAttributeFilters()
     }
 
     Shortcut {
         sequence: "R"
-        enabled: !attributeFilterDrawer.opened && !navigationDrawer.opened
+        enabled: !bigBoxGameDetails.opened
+                 && !attributeFilterDrawer.opened
+                 && !navigationDrawer.opened
                  && controller.filtered_count > 0
         onActivated: window.selectRandomGame()
     }
@@ -1725,7 +2664,9 @@ ApplicationWindow {
     Shortcut {
         sequence: "Esc"
         onActivated: {
-            if (attributeFilterDrawer.opened) {
+            if (bigBoxGameDetails.opened) {
+                bigBoxGameDetails.close()
+            } else if (attributeFilterDrawer.opened) {
                 attributeFilterDrawer.close()
                 gameList.forceActiveFocus()
             } else if (navigationDrawer.opened) {
