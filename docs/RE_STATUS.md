@@ -74,6 +74,21 @@ Observed front art used JPG, PNG, GIF, and TIF files beneath media-type and
 optional region directories. This is evidence from the older 13.24 library,
 not a claim that every 13.27 priority or naming edge case is recovered.
 
+The recovered 13.27 stock `GameDetailsView.xaml` binds `MediaList.SelectedItem`
+to `MediaPreview.MediaItem`; the concrete `MediaItem` exposes location, preview,
+full-size preview, and an `IsVideo` discriminator. `GameDetailsViewModel`
+exposes screenshot/fanart collections, clear-logo/background images, video
+visibility, pause/resume, and volume control. The plugin contract separately
+exposes explicit video paths and all image details. `VideoTypes.cs` names the
+five exact families Recording, Theme Video, Trailer, Video Snap, and Marquee,
+and the installed resource list recovers 28 accepted video extensions. The
+older real installation's value-free video census found 27,429 MP4 files and
+the expected Theme, Trailer, Recordings, and Marquee subfolders. Its settings
+enable details video and autoplay with Theme Video, Video Snap, Recording, then
+Trailer priority. These facts establish the current read-only selected-game
+media contract; they do not establish every codec, theme, platform-video, or
+media-management behavior.
+
 The compiled port subsequently loaded that same read-only installation through
 the normal Qt worker transaction and selected 24,920 front images across the
 full 47-entry persisted fallback list. It scanned 161,968 supported files in
@@ -83,6 +98,15 @@ seconds and delivered all 35,869 games to the model. The loader also had to
 preserve two distinct `Arcade` mappings that the real library retains as
 default; unpinned launch selection remains deliberately ambiguous rather than
 silently choosing one.
+
+After the selected-game index was generalized, a new read-only Qt load retained
+the same 35,869 games and 24,920 front selections plus 211,120 detail media
+items. It scanned 211,085 supported files across 1,802 folders in 34.852 seconds
+with zero unsafe, oversized, or truncated entries. The 104 unresolved entries
+are isolated configured or explicit media paths rather than a load failure.
+This benchmark was run on Linux over the mounted Windows filesystem; native
+Windows and Intel/Apple Silicon macOS media backend behavior remains a separate
+release gate.
 
 A value-free launch-plan audit additionally classified every game without
 recording titles or paths. It established that 1,848 games use the all-zero

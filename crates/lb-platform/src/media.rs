@@ -10,6 +10,9 @@ const MAX_REGION_PRIORITIES: usize = 64;
 const MAX_PLATFORM_FOLDERS: usize = 4_096;
 const MAX_FILES_PER_FOLDER: usize = 100_000;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_VIDEO_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_MEDIA_ITEMS: usize = 1_000_000;
+const MAX_MEDIA_ITEMS_PER_GAME: usize = 512;
 
 const FALLBACK_FRONT_IMAGE_TYPES: &[&str] = &[
     "Box - Front",
@@ -20,6 +23,107 @@ const FALLBACK_FRONT_IMAGE_TYPES: &[&str] = &[
 const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &[
     "bmp", "gif", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp",
 ];
+
+const FALLBACK_VIDEO_TYPES: &[&str] = &[
+    "Theme Video",
+    "Video Snap",
+    "Recording",
+    "Trailer",
+    "Marquee",
+];
+
+const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &[
+    "3g2", "3gp", "3gp2", "3gpp", "asf", "avi", "ifo", "m1v", "m2t", "m2ts", "m2v", "m4v", "mod",
+    "mov", "mp4", "mp4v", "mpa", "mpe", "mpeg", "mpg", "mts", "ts", "tts", "vob", "webm", "wm",
+    "wmd", "wmv",
+];
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum GameMediaKind {
+    Image,
+    Video,
+}
+
+impl GameMediaKind {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Video => "video",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GameMediaItem {
+    pub kind: GameMediaKind,
+    pub media_type: String,
+    pub path: PathBuf,
+    pub region: Option<String>,
+    pub ordinal: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GameDetailsMediaPolicy {
+    pub show_video: bool,
+    pub auto_play_video: bool,
+    pub video_type_priorities: Vec<String>,
+}
+
+impl Default for GameDetailsMediaPolicy {
+    fn default() -> Self {
+        Self {
+            show_video: true,
+            auto_play_video: true,
+            video_type_priorities: FALLBACK_VIDEO_TYPES
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+}
+
+impl GameDetailsMediaPolicy {
+    pub fn from_settings(settings: Option<&FrontendSettings>) -> Self {
+        let fallback = Self::default();
+        let Some(settings) = settings else {
+            return fallback;
+        };
+        Self {
+            show_video: settings.get_bool("ShowDetailsVideo").unwrap_or(true),
+            auto_play_video: settings.get_bool("AutoPlayDetailsVideo").unwrap_or(true),
+            video_type_priorities: settings
+                .get("VideoTypePriorities")
+                .map(split_priorities)
+                .filter(|values| !values.is_empty())
+                .unwrap_or(fallback.video_type_priorities),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GameMediaIndex {
+    pub items_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
+    pub front_paths_by_game_id: BTreeMap<String, PathBuf>,
+    pub policy: GameDetailsMediaPolicy,
+    pub report: GameMediaIndexReport,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GameMediaIndexReport {
+    pub configured_folders: usize,
+    pub truncated_configured_folders: usize,
+    pub scanned_folders: usize,
+    pub scanned_files: usize,
+    pub indexed_images: usize,
+    pub indexed_videos: usize,
+    pub matched_games: usize,
+    pub unresolved_folders: usize,
+    pub unresolved_files: usize,
+    pub unsafe_entries: usize,
+    pub oversized_files: usize,
+    pub truncated_folders: usize,
+    pub truncated_items: usize,
+}
 
 /// One immutable, read-only index of the front artwork selected for each game.
 ///
@@ -173,6 +277,630 @@ pub fn index_front_images(
         paths_by_game_id,
         report,
     }
+}
+
+/// Builds the read-only image/video collection consumed by LaunchBox's
+/// selected-game media list.
+///
+/// The index retains native host paths only at this platform boundary. It
+/// reads configured platform folders, explicit game video paths, region
+/// folders, and LaunchBox's numbered filename convention without following
+/// links or creating media. Images and videos stay keyed by stable game ID so
+/// sorting and filtering cannot retarget a preview.
+pub fn index_game_media(
+    launchbox_root: &Path,
+    games: &[Game],
+    folders: &[PlatformFolder],
+    settings: Option<&FrontendSettings>,
+    path_resolver: &dyn LaunchPathResolver,
+) -> GameMediaIndex {
+    let policy = GameDetailsMediaPolicy::from_settings(settings);
+    let front_priorities = front_image_type_priorities(settings);
+    let region_priorities = region_priorities(settings);
+    let games_by_platform = games_by_platform(games);
+    let mut scan_report = FrontImageIndexReport::default();
+    let mut report = GameMediaIndexReport::default();
+    let mut items_by_game_id = BTreeMap::<String, Vec<GameMediaItem>>::new();
+    let mut seen_by_game_id = BTreeMap::<String, BTreeSet<PathBuf>>::new();
+    let mut scanned_paths = BTreeSet::<(GameMediaKind, PathBuf)>::new();
+    let mut indexed_items = 0_usize;
+
+    if folders.len() > MAX_PLATFORM_FOLDERS {
+        report.truncated_configured_folders = folders.len() - MAX_PLATFORM_FOLDERS;
+    }
+    for folder in folders.iter().take(MAX_PLATFORM_FOLDERS) {
+        if folder.platform.trim().is_empty()
+            || folder.media_type.trim().is_empty()
+            || folder.folder_path.trim().is_empty()
+        {
+            continue;
+        }
+        let media_kind = match normalized_key(&folder.media_type).as_str() {
+            "manual" | "music" => continue,
+            "video" | "theme video" => GameMediaKind::Video,
+            _ => GameMediaKind::Image,
+        };
+        if media_kind == GameMediaKind::Video && !policy.show_video {
+            continue;
+        }
+        report.configured_folders = report.configured_folders.saturating_add(1);
+        let Ok(native_folder) = path_resolver.resolve(launchbox_root, &folder.folder_path) else {
+            scan_report.unresolved_folders = scan_report.unresolved_folders.saturating_add(1);
+            continue;
+        };
+        if media_kind == GameMediaKind::Image
+            && !scanned_paths.insert((media_kind, native_folder.clone()))
+        {
+            continue;
+        }
+        if media_kind == GameMediaKind::Video
+            && scanned_paths.contains(&(media_kind, native_folder.clone()))
+        {
+            continue;
+        }
+        let Some(platform_games) = games_by_platform.get(&normalized_key(&folder.platform)) else {
+            continue;
+        };
+        match media_kind {
+            GameMediaKind::Image => {
+                let candidates = scan_image_folder(&native_folder, &mut scan_report);
+                for game in platform_games {
+                    let title_key = normalized_key(&launchbox_media_stem(&game.title));
+                    let Some(matches) = candidates.get(&title_key) else {
+                        continue;
+                    };
+                    let mut matches = matches.iter().collect::<Vec<_>>();
+                    matches.sort_by(|left, right| {
+                        candidate_region_rank(left, game.region.as_deref(), &region_priorities)
+                            .cmp(&candidate_region_rank(
+                                right,
+                                game.region.as_deref(),
+                                &region_priorities,
+                            ))
+                            .then_with(|| left.ordinal.cmp(&right.ordinal))
+                            .then_with(|| left.path.cmp(&right.path))
+                    });
+                    for candidate in matches {
+                        push_game_media_item(
+                            game,
+                            GameMediaItem {
+                                kind: GameMediaKind::Image,
+                                media_type: folder.media_type.clone(),
+                                path: candidate.path.clone(),
+                                region: candidate.region.clone(),
+                                ordinal: candidate.ordinal,
+                            },
+                            &mut items_by_game_id,
+                            &mut seen_by_game_id,
+                            &mut indexed_items,
+                            &mut report,
+                        );
+                    }
+                }
+            }
+            GameMediaKind::Video => {
+                let candidates = scan_video_folder(
+                    &native_folder,
+                    &folder.media_type,
+                    &policy.video_type_priorities,
+                    &mut scanned_paths,
+                    &mut scan_report,
+                );
+                for game in platform_games {
+                    let title_key = normalized_key(&launchbox_media_stem(&game.title));
+                    let Some(matches) = candidates.get(&title_key) else {
+                        continue;
+                    };
+                    let mut matches = matches.iter().collect::<Vec<_>>();
+                    matches.sort_by(|left, right| {
+                        video_type_rank(&left.media_type, &policy.video_type_priorities)
+                            .cmp(&video_type_rank(
+                                &right.media_type,
+                                &policy.video_type_priorities,
+                            ))
+                            .then_with(|| {
+                                media_region_rank(
+                                    left.region.as_deref(),
+                                    game.region.as_deref(),
+                                    &region_priorities,
+                                )
+                                .cmp(&media_region_rank(
+                                    right.region.as_deref(),
+                                    game.region.as_deref(),
+                                    &region_priorities,
+                                ))
+                            })
+                            .then_with(|| left.ordinal.cmp(&right.ordinal))
+                            .then_with(|| left.path.cmp(&right.path))
+                    });
+                    for candidate in matches {
+                        push_game_media_item(
+                            game,
+                            GameMediaItem {
+                                kind: GameMediaKind::Video,
+                                media_type: candidate.media_type.clone(),
+                                path: candidate.path.clone(),
+                                region: candidate.region.clone(),
+                                ordinal: candidate.ordinal,
+                            },
+                            &mut items_by_game_id,
+                            &mut seen_by_game_id,
+                            &mut indexed_items,
+                            &mut report,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if policy.show_video {
+        for game in games {
+            for (stored_path, media_type) in [
+                (game.theme_video_path.as_deref(), "Theme Video"),
+                (game.video_path.as_deref(), "Video Snap"),
+            ] {
+                let Some(stored_path) = stored_path.filter(|value| !value.trim().is_empty()) else {
+                    continue;
+                };
+                let Ok(path) = path_resolver.resolve(launchbox_root, stored_path) else {
+                    report.unresolved_files = report.unresolved_files.saturating_add(1);
+                    continue;
+                };
+                if !validate_media_file(
+                    &path,
+                    SUPPORTED_VIDEO_EXTENSIONS,
+                    MAX_VIDEO_BYTES,
+                    &mut scan_report,
+                ) {
+                    report.unresolved_files = report.unresolved_files.saturating_add(1);
+                    continue;
+                }
+                push_game_media_item(
+                    game,
+                    GameMediaItem {
+                        kind: GameMediaKind::Video,
+                        media_type: media_type.to_string(),
+                        path,
+                        region: game.region.clone(),
+                        ordinal: 0,
+                    },
+                    &mut items_by_game_id,
+                    &mut seen_by_game_id,
+                    &mut indexed_items,
+                    &mut report,
+                );
+            }
+        }
+    }
+
+    for items in items_by_game_id.values_mut() {
+        items.sort_by(|left, right| {
+            let left_kind = match left.kind {
+                GameMediaKind::Image => 0,
+                GameMediaKind::Video => 1,
+            };
+            let right_kind = match right.kind {
+                GameMediaKind::Image => 0,
+                GameMediaKind::Video => 1,
+            };
+            let left_type = if left.kind == GameMediaKind::Image {
+                media_type_rank(&left.media_type, &front_priorities)
+            } else {
+                media_type_rank(&left.media_type, &policy.video_type_priorities)
+            };
+            let right_type = if right.kind == GameMediaKind::Image {
+                media_type_rank(&right.media_type, &front_priorities)
+            } else {
+                media_type_rank(&right.media_type, &policy.video_type_priorities)
+            };
+            left_kind
+                .cmp(&right_kind)
+                .then_with(|| left_type.cmp(&right_type))
+                .then_with(|| left.ordinal.cmp(&right.ordinal))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+    }
+
+    let games_by_id = games
+        .iter()
+        .map(|game| (game.id.as_str(), game))
+        .collect::<BTreeMap<_, _>>();
+    let mut front_paths_by_game_id = BTreeMap::new();
+    for (game_id, items) in &items_by_game_id {
+        let Some(game) = games_by_id.get(game_id.as_str()) else {
+            continue;
+        };
+        let selected = front_priorities.iter().find_map(|priority| {
+            items
+                .iter()
+                .filter(|item| {
+                    item.kind == GameMediaKind::Image
+                        && item.media_type.trim().eq_ignore_ascii_case(priority)
+                })
+                .min_by(|left, right| {
+                    media_region_rank(
+                        left.region.as_deref(),
+                        game.region.as_deref(),
+                        &region_priorities,
+                    )
+                    .cmp(&media_region_rank(
+                        right.region.as_deref(),
+                        game.region.as_deref(),
+                        &region_priorities,
+                    ))
+                    .then_with(|| left.ordinal.cmp(&right.ordinal))
+                    .then_with(|| left.path.cmp(&right.path))
+                })
+        });
+        if let Some(selected) = selected {
+            front_paths_by_game_id.insert(game_id.clone(), selected.path.clone());
+        }
+    }
+
+    report.scanned_folders = scan_report.scanned_folders;
+    report.scanned_files = scan_report.scanned_files;
+    report.unresolved_folders = scan_report.unresolved_folders;
+    report.unsafe_entries = scan_report.unsafe_entries;
+    report.oversized_files = scan_report.oversized_files;
+    report.truncated_folders = scan_report.truncated_folders;
+    report.matched_games = items_by_game_id.len();
+    GameMediaIndex {
+        items_by_game_id,
+        front_paths_by_game_id,
+        policy,
+        report,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VideoCandidate {
+    path: PathBuf,
+    media_type: String,
+    region: Option<String>,
+    ordinal: u32,
+}
+
+fn scan_video_folder(
+    folder: &Path,
+    configured_media_type: &str,
+    video_type_priorities: &[String],
+    scanned_paths: &mut BTreeSet<(GameMediaKind, PathBuf)>,
+    report: &mut FrontImageIndexReport,
+) -> BTreeMap<String, Vec<VideoCandidate>> {
+    let mut candidates = BTreeMap::<String, Vec<VideoCandidate>>::new();
+    let mut remaining = MAX_FILES_PER_FOLDER;
+    if configured_media_type
+        .trim()
+        .eq_ignore_ascii_case("Theme Video")
+    {
+        scan_video_level(
+            folder,
+            "Theme Video",
+            true,
+            &mut remaining,
+            scanned_paths,
+            report,
+            &mut candidates,
+        );
+    } else {
+        if !scanned_paths.insert((GameMediaKind::Video, folder.to_path_buf())) {
+            return candidates;
+        }
+        if !safe_media_directory(folder, report) {
+            return candidates;
+        }
+        report.scanned_folders = report.scanned_folders.saturating_add(1);
+        let Ok((entries, truncated)) = sorted_directory_entries(folder, remaining) else {
+            report.unresolved_folders = report.unresolved_folders.saturating_add(1);
+            return candidates;
+        };
+        if truncated {
+            report.truncated_folders = report.truncated_folders.saturating_add(1);
+        }
+        for entry in entries {
+            if remaining == 0 {
+                report.truncated_folders = report.truncated_folders.saturating_add(1);
+                break;
+            }
+            remaining -= 1;
+            let Ok(file_type) = entry.file_type() else {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                continue;
+            };
+            if file_type.is_symlink() {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                continue;
+            }
+            if file_type.is_file() {
+                add_video_candidate(&mut candidates, entry.path(), "Video Snap", None, report);
+                continue;
+            }
+            if !file_type.is_dir() {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                continue;
+            };
+            let Some(media_type) = video_subfolder_type(&name) else {
+                continue;
+            };
+            scan_video_level(
+                &entry.path(),
+                media_type,
+                true,
+                &mut remaining,
+                scanned_paths,
+                report,
+                &mut candidates,
+            );
+        }
+    }
+    for values in candidates.values_mut() {
+        values.sort_by(|left, right| {
+            video_type_rank(&left.media_type, video_type_priorities)
+                .cmp(&video_type_rank(&right.media_type, video_type_priorities))
+                .then_with(|| left.ordinal.cmp(&right.ordinal))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+    }
+    candidates
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_video_level(
+    folder: &Path,
+    media_type: &str,
+    allow_regions: bool,
+    remaining: &mut usize,
+    scanned_paths: &mut BTreeSet<(GameMediaKind, PathBuf)>,
+    report: &mut FrontImageIndexReport,
+    candidates: &mut BTreeMap<String, Vec<VideoCandidate>>,
+) {
+    if !scanned_paths.insert((GameMediaKind::Video, folder.to_path_buf())) {
+        return;
+    }
+    if !safe_media_directory(folder, report) {
+        return;
+    }
+    report.scanned_folders = report.scanned_folders.saturating_add(1);
+    let Ok((entries, truncated)) = sorted_directory_entries(folder, *remaining) else {
+        report.unresolved_folders = report.unresolved_folders.saturating_add(1);
+        return;
+    };
+    if truncated {
+        report.truncated_folders = report.truncated_folders.saturating_add(1);
+    }
+    for entry in entries {
+        if *remaining == 0 {
+            report.truncated_folders = report.truncated_folders.saturating_add(1);
+            break;
+        }
+        *remaining -= 1;
+        let Ok(file_type) = entry.file_type() else {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        };
+        if file_type.is_symlink() {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        }
+        if file_type.is_file() {
+            add_video_candidate(candidates, entry.path(), media_type, None, report);
+            continue;
+        }
+        if !allow_regions || !file_type.is_dir() {
+            if !file_type.is_dir() {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            }
+            continue;
+        }
+        let Some(region) = entry.file_name().to_str().map(str::to_string) else {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        };
+        if !scanned_paths.insert((GameMediaKind::Video, entry.path())) {
+            continue;
+        }
+        if !safe_media_directory(&entry.path(), report) {
+            continue;
+        }
+        report.scanned_folders = report.scanned_folders.saturating_add(1);
+        let Ok((region_entries, region_truncated)) =
+            sorted_directory_entries(&entry.path(), *remaining)
+        else {
+            report.unresolved_folders = report.unresolved_folders.saturating_add(1);
+            continue;
+        };
+        if region_truncated {
+            report.truncated_folders = report.truncated_folders.saturating_add(1);
+        }
+        for region_entry in region_entries {
+            if *remaining == 0 {
+                report.truncated_folders = report.truncated_folders.saturating_add(1);
+                break;
+            }
+            *remaining -= 1;
+            let Ok(region_type) = region_entry.file_type() else {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                continue;
+            };
+            if !region_type.is_file() || region_type.is_symlink() {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                continue;
+            }
+            add_video_candidate(
+                candidates,
+                region_entry.path(),
+                media_type,
+                Some(region.clone()),
+                report,
+            );
+        }
+    }
+}
+
+fn safe_media_directory(folder: &Path, report: &mut FrontImageIndexReport) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(folder) else {
+        report.unresolved_folders = report.unresolved_folders.saturating_add(1);
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+        return false;
+    }
+    true
+}
+
+fn add_video_candidate(
+    candidates: &mut BTreeMap<String, Vec<VideoCandidate>>,
+    path: PathBuf,
+    media_type: &str,
+    region: Option<String>,
+    report: &mut FrontImageIndexReport,
+) {
+    if !validate_media_file(&path, SUPPORTED_VIDEO_EXTENSIONS, MAX_VIDEO_BYTES, report) {
+        return;
+    }
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+        return;
+    };
+    let (base, ordinal) = split_image_ordinal(stem);
+    if base.is_empty() {
+        return;
+    }
+    report.scanned_files = report.scanned_files.saturating_add(1);
+    candidates
+        .entry(normalized_key(base))
+        .or_default()
+        .push(VideoCandidate {
+            path,
+            media_type: media_type.to_string(),
+            region,
+            ordinal,
+        });
+}
+
+fn validate_media_file(
+    path: &Path,
+    extensions: &[&str],
+    maximum_bytes: u64,
+    report: &mut FrontImageIndexReport,
+) -> bool {
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    if !extensions
+        .iter()
+        .any(|supported| extension.eq_ignore_ascii_case(supported))
+    {
+        return false;
+    }
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+        return false;
+    }
+    if metadata.len() > maximum_bytes {
+        report.oversized_files = report.oversized_files.saturating_add(1);
+        return false;
+    }
+    true
+}
+
+fn push_game_media_item(
+    game: &Game,
+    item: GameMediaItem,
+    items_by_game_id: &mut BTreeMap<String, Vec<GameMediaItem>>,
+    seen_by_game_id: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+    indexed_items: &mut usize,
+    report: &mut GameMediaIndexReport,
+) {
+    if *indexed_items >= MAX_MEDIA_ITEMS {
+        report.truncated_items = report.truncated_items.saturating_add(1);
+        return;
+    }
+    let game_items = items_by_game_id.entry(game.id.clone()).or_default();
+    if game_items.len() >= MAX_MEDIA_ITEMS_PER_GAME {
+        report.truncated_items = report.truncated_items.saturating_add(1);
+        return;
+    }
+    if !seen_by_game_id
+        .entry(game.id.clone())
+        .or_default()
+        .insert(item.path.clone())
+    {
+        return;
+    }
+    match item.kind {
+        GameMediaKind::Image => {
+            report.indexed_images = report.indexed_images.saturating_add(1);
+        }
+        GameMediaKind::Video => {
+            report.indexed_videos = report.indexed_videos.saturating_add(1);
+        }
+    }
+    game_items.push(item);
+    *indexed_items = (*indexed_items).saturating_add(1);
+}
+
+fn video_subfolder_type(folder_name: &str) -> Option<&'static str> {
+    if folder_name.eq_ignore_ascii_case("Theme") {
+        Some("Theme Video")
+    } else if folder_name.eq_ignore_ascii_case("Trailer") {
+        Some("Trailer")
+    } else if folder_name.eq_ignore_ascii_case("Recordings") {
+        Some("Recording")
+    } else if folder_name.eq_ignore_ascii_case("Marquee") {
+        Some("Marquee")
+    } else {
+        None
+    }
+}
+
+fn video_type_rank(media_type: &str, priorities: &[String]) -> usize {
+    media_type_rank(media_type, priorities)
+}
+
+fn media_type_rank(media_type: &str, priorities: &[String]) -> usize {
+    priorities
+        .iter()
+        .position(|priority| priority.trim().eq_ignore_ascii_case(media_type.trim()))
+        .unwrap_or(priorities.len())
+}
+
+fn media_region_rank(
+    region: Option<&str>,
+    game_region: Option<&str>,
+    region_priorities: &[String],
+) -> (u8, usize, String) {
+    let candidate_regions = region.map(region_parts).unwrap_or_default();
+    if let Some(priority) = region_priorities
+        .iter()
+        .position(|priority| candidate_regions.contains(&normalized_key(priority)))
+    {
+        return (0, priority, String::new());
+    }
+    if game_region.is_some_and(|game_region| {
+        let game_regions = region_parts(game_region);
+        candidate_regions
+            .iter()
+            .any(|candidate| game_regions.contains(candidate))
+    }) {
+        return (1, 0, String::new());
+    }
+    if region.is_none() {
+        return (2, 0, String::new());
+    }
+    if candidate_regions.contains(&normalized_key("World")) {
+        return (3, 0, String::new());
+    }
+    (4, 0, region.map(normalized_key).unwrap_or_default())
 }
 
 fn split_priorities(value: &str) -> Vec<String> {
@@ -543,6 +1271,236 @@ mod tests {
             front_image_type_priorities(Some(&unrelated_default)),
             FALLBACK_FRONT_IMAGE_TYPES
         );
+    }
+
+    #[test]
+    fn selected_game_media_policy_uses_typed_launchbox_settings_and_safe_fallbacks() {
+        let configured = FrontendSettings {
+            entries: vec![
+                SettingEntry {
+                    key: "ShowDetailsVideo".into(),
+                    value: "false".into(),
+                },
+                SettingEntry {
+                    key: "AutoPlayDetailsVideo".into(),
+                    value: "true".into(),
+                },
+                SettingEntry {
+                    key: "VideoTypePriorities".into(),
+                    value: "Trailer, Theme Video, trailer, Video Snap".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            GameDetailsMediaPolicy::from_settings(Some(&configured)),
+            GameDetailsMediaPolicy {
+                show_video: false,
+                auto_play_video: true,
+                video_type_priorities: vec![
+                    "Trailer".into(),
+                    "Theme Video".into(),
+                    "Video Snap".into(),
+                ],
+            }
+        );
+
+        let malformed = FrontendSettings {
+            entries: vec![
+                SettingEntry {
+                    key: "ShowDetailsVideo".into(),
+                    value: "sometimes".into(),
+                },
+                SettingEntry {
+                    key: "AutoPlayDetailsVideo".into(),
+                    value: String::new(),
+                },
+                SettingEntry {
+                    key: "VideoTypePriorities".into(),
+                    value: " , , ".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            GameDetailsMediaPolicy::from_settings(Some(&malformed)),
+            GameDetailsMediaPolicy::default()
+        );
+    }
+
+    #[test]
+    fn indexes_all_selected_game_media_with_native_paths_and_launchbox_ordering() {
+        let directory = tempfile::tempdir().expect("temporary LaunchBox root");
+        let boxes = directory.path().join("Images/Fixture Console/Box - Front");
+        let screenshots = directory
+            .path()
+            .join("Images/Fixture Console/Screenshot - Gameplay");
+        let fanart = directory
+            .path()
+            .join("Images/Fixture Console/Fanart - Background");
+        let videos = directory.path().join("Videos/Fixture Console");
+        for folder in [&boxes, &screenshots, &fanart] {
+            fs::create_dir_all(folder.join("North America")).expect("image region");
+        }
+        fs::create_dir_all(videos.join("Theme/North America")).expect("theme video region");
+        fs::create_dir_all(videos.join("Trailer")).expect("trailer video folder");
+        fs::write(boxes.join("North America/Fixture Adventure-02.png"), b"box").expect("box");
+        fs::write(
+            screenshots.join("North America/Fixture Adventure-01.jpg"),
+            b"screenshot",
+        )
+        .expect("screenshot");
+        fs::write(
+            fanart.join("North America/Fixture Adventure-01.webp"),
+            b"fanart",
+        )
+        .expect("fanart");
+        fs::write(videos.join("Fixture Adventure-03.mp4"), b"video snap").expect("video snap");
+        fs::write(
+            videos.join("Theme/North America/Fixture Adventure-01.mp4"),
+            b"theme",
+        )
+        .expect("theme");
+        fs::write(videos.join("Trailer/Fixture Adventure-02.webm"), b"trailer").expect("trailer");
+        fs::write(videos.join("explicit-file-name.mov"), b"explicit").expect("explicit video");
+
+        let folders = [
+            PlatformFolder {
+                platform: "Fixture Console".into(),
+                media_type: "Video".into(),
+                folder_path: r"Videos\Fixture Console".into(),
+            },
+            PlatformFolder {
+                platform: "Fixture Console".into(),
+                media_type: "Theme Video".into(),
+                folder_path: r"Videos\Fixture Console\Theme".into(),
+            },
+            PlatformFolder {
+                platform: "Fixture Console".into(),
+                media_type: "Screenshot - Gameplay".into(),
+                folder_path: r"Images\Fixture Console\Screenshot - Gameplay".into(),
+            },
+            PlatformFolder {
+                platform: "Fixture Console".into(),
+                media_type: "Box - Front".into(),
+                folder_path: r"Images\Fixture Console\Box - Front".into(),
+            },
+            PlatformFolder {
+                platform: "Fixture Console".into(),
+                media_type: "Fanart - Background".into(),
+                folder_path: r"Images\Fixture Console\Fanart - Background".into(),
+            },
+        ];
+        let mut fixture_game = game(
+            "fixture-adventure",
+            "Fixture Adventure",
+            Some("North America"),
+        );
+        fixture_game.video_path = Some(r"Videos\Fixture Console\explicit-file-name.mov".into());
+        fixture_game.theme_video_path =
+            Some(r"Videos\Fixture Console\Theme\North America\Fixture Adventure-01.mp4".into());
+        let configured = FrontendSettings {
+            entries: vec![
+                SettingEntry {
+                    key: "FrontImageTypePriorities".into(),
+                    value: "Box - Front,Screenshot - Gameplay,Fanart - Background".into(),
+                },
+                SettingEntry {
+                    key: "RegionPriorities".into(),
+                    value: "North America,World".into(),
+                },
+                SettingEntry {
+                    key: "ShowDetailsVideo".into(),
+                    value: "true".into(),
+                },
+                SettingEntry {
+                    key: "AutoPlayDetailsVideo".into(),
+                    value: "true".into(),
+                },
+                SettingEntry {
+                    key: "VideoTypePriorities".into(),
+                    value: "Theme Video,Trailer,Video Snap".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+
+        let index = index_game_media(
+            directory.path(),
+            &[fixture_game],
+            &folders,
+            Some(&configured),
+            &HostPathResolver::default(),
+        );
+        let items = &index.items_by_game_id["fixture-adventure"];
+        assert_eq!(items.len(), 7);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| (item.kind, item.media_type.as_str(), item.ordinal))
+                .collect::<Vec<_>>(),
+            [
+                (GameMediaKind::Image, "Box - Front", 2),
+                (GameMediaKind::Image, "Screenshot - Gameplay", 1),
+                (GameMediaKind::Image, "Fanart - Background", 1),
+                (GameMediaKind::Video, "Theme Video", 1),
+                (GameMediaKind::Video, "Trailer", 2),
+                (GameMediaKind::Video, "Video Snap", 0),
+                (GameMediaKind::Video, "Video Snap", 3),
+            ]
+        );
+        assert_eq!(
+            index.front_paths_by_game_id["fixture-adventure"],
+            boxes.join("North America/Fixture Adventure-02.png")
+        );
+        assert_eq!(index.report.indexed_images, 3);
+        assert_eq!(index.report.indexed_videos, 4);
+        assert_eq!(index.report.matched_games, 1);
+        assert!(
+            items
+                .iter()
+                .all(|item| item.path.starts_with(directory.path())),
+            "only native paths leave the platform boundary"
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.media_type == "Theme Video")
+                .count(),
+            1,
+            "an explicitly configured Theme folder must not duplicate the Video-root scan"
+        );
+    }
+
+    #[test]
+    fn selected_game_media_hides_all_videos_when_launchbox_disables_them() {
+        let directory = tempfile::tempdir().expect("temporary LaunchBox root");
+        let videos = directory.path().join("Videos/Fixture Console");
+        fs::create_dir_all(&videos).expect("video folder");
+        fs::write(videos.join("Fixture-01.mp4"), b"video").expect("video");
+        let mut fixture_game = game("fixture", "Fixture", None);
+        fixture_game.video_path = Some(r"Videos\Fixture Console\Fixture-01.mp4".into());
+        let configured = FrontendSettings {
+            entries: vec![SettingEntry {
+                key: "ShowDetailsVideo".into(),
+                value: "false".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        let index = index_game_media(
+            directory.path(),
+            &[fixture_game],
+            &[PlatformFolder {
+                platform: "Fixture Console".into(),
+                media_type: "Video".into(),
+                folder_path: r"Videos\Fixture Console".into(),
+            }],
+            Some(&configured),
+            &HostPathResolver::default(),
+        );
+        assert!(index.items_by_game_id.is_empty());
+        assert_eq!(index.report.indexed_videos, 0);
+        assert_eq!(index.report.configured_folders, 0);
     }
 
     #[test]

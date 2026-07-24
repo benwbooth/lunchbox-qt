@@ -224,15 +224,15 @@ parity remain open.
 | MED-001 | LaunchBox Games Database metadata matching/download | welcome GamesDB and metadata-source views; installed platform metadata |
 | MED-002 | EmuMovies authentication and downloads | DV EmuMovies import/options pages |
 | MED-003 | Metadata/media update for existing games | DV download-metadata workflow; DM download metadata/media |
-| MED-004 | Per-game images and image-type selection | DV images page/image downloader; PA `ImageTypes` catalogue; the port's first read-only subset indexes configured front-image folders by persisted image-type/region priority and renders native file URLs in both shells, with bounded/symlink-safe scanning and a real offscreen decode/render gate. Image editing, downloads, alternate views, and the remaining image families stay open |
-| MED-005 | Game and platform videos/theme videos | DV videos page/platform-video downloader; video options |
+| MED-004 | Per-game images and image-type selection | DV images page/image downloader; PA `ImageTypes` catalogue; the port's read-only index retains every configured image family using persisted front-image/region priorities and renders native file URLs in both shells plus a selectable multi-image LaunchBox details gallery. Bounded/symlink-safe scanning and real offscreen SVG decode/render gates cover front, gameplay screenshot, and background fixtures. Image editing, downloads, full-screen viewing, and media mutation stay open |
+| MED-005 | Game and platform videos/theme videos | DV videos page/platform-video downloader; video options; the port indexes per-game Video Snap, Theme Video, Trailer, Recording, and Marquee folders plus explicit `VideoPath`/`ThemeVideoPath`, honors recovered details visibility/autoplay/type priorities, and previews the selection through Qt Multimedia. Platform-video download/management and media mutation stay open |
 | MED-006 | Manuals, music, and additional media playback | DM view manual/play music; media viewer controls |
 | MED-007 | Media manager, cleanup, missing-media refresh, and duplicate-image grouping | DV media manager/cleanup; DM refresh actions; SI image dupe grouper |
-| MED-008 | Regional and media-type priorities | DV region and priority option pages |
+| MED-008 | Regional and media-type priorities | DV region and priority option pages; the read-only game-media index applies persisted region, front-image-type, and video-type priority lists with typed bounded fallbacks |
 | MED-009 | 3D boxes, DVD/jewel cases, and full-screen model previews | DV model settings/previews; shared cover-flow model controls |
 | MED-010 | Screenshots and screen capture | DV screen-capture options; image viewer |
 | MED-011 | Background, clear logo, banner, cartridge, disc, arcade, storefront, and screenshot image families | PA exhaustive `ImageTypes` fields |
-| MED-012 | Video/audio playback and thumbnails | WPF video controls; bundled VLC, FFmpeg, and Chromium components |
+| MED-012 | Video/audio playback and thumbnails | WPF video controls; bundled VLC, FFmpeg, and Chromium components; the LaunchBox details pane now has real image/video thumbnail selection, Qt Multimedia H.264 decode, autoplay, play/pause, mute, and native-URL preview coverage. Broad codec/backend parity, audio-only playback, and BigBox media views stay open |
 
 ## Emulator and launch orchestration
 
@@ -277,7 +277,7 @@ parity remain open.
 | ID | Feature family | Static evidence |
 |---|---|---|
 | DESK-001 | Box/grid and list library views | PA main-view modes; DV content view models |
-| DESK-002 | Resizable sidebar, game details, controls bar, and pop-out details | PA dimensions/view state; DM toggles/pop-out |
+| DESK-002 | Resizable sidebar, game details, controls bar, and pop-out details | PA dimensions/view state; DM toggles/pop-out; the LaunchBox details pane is resizable, hideable, dockable/pop-out, platform-state persisted, and includes the recovered selectable image/video media preview contract |
 | DESK-003 | Platform/category/playlist sidebar management | DM sidebar add/edit/delete; PA root hierarchy |
 | DESK-004 | Image zoom, type switching, box flip, full-screen images/models | DM zoom/image/model/flip actions |
 | DESK-005 | Backgrounds, colors, fonts, spacing, and dialog theme | DV visual option pages and compiled styles |

@@ -13,8 +13,9 @@ pub use archive::{
 pub use dosbox::DosBoxPlanError;
 pub use m3u::M3uPreparationError;
 pub use media::{
-    front_image_type_priorities, index_front_images, launchbox_media_stem, region_priorities,
-    FrontImageIndex, FrontImageIndexReport,
+    front_image_type_priorities, index_front_images, index_game_media, launchbox_media_stem,
+    region_priorities, FrontImageIndex, FrontImageIndexReport, GameDetailsMediaPolicy,
+    GameMediaIndex, GameMediaIndexReport, GameMediaItem, GameMediaKind,
 };
 pub use path::{
     default_platform_folders, is_windows_absolute_path, navigation_document_file_name,

@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtQml.Models
+import QtMultimedia
 import LaunchBoxPort
 
 ApplicationWindow {
@@ -71,6 +72,14 @@ ApplicationWindow {
         Qt.application.arguments.indexOf("--game-details-smoke-test") >= 0
     property int gameDetailsSmokePhase: 0
     property bool gameDetailsSmokeFinished: false
+    property bool gameDetailsMediaSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--game-details-media-smoke-test") >= 0
+    property int gameDetailsMediaSmokePhase: 0
+    property bool gameDetailsMediaSmokeFinished: false
+    property bool gameDetailsMediaScreenshotRequested: false
+    property string gameDetailsMediaScreenshotPath:
+        argumentValue("--game-details-media-screenshot")
     property bool gameDetailsLayoutSmokeTest:
         Qt.application.arguments.indexOf(
             "--game-details-layout-smoke-test") >= 0
@@ -1584,6 +1593,20 @@ ApplicationWindow {
                           + " count=" + controller.filtered_count
                           + " status=" + controller.status_message)
             Qt.exit(484)
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.gameDetailsMediaSmokeTest
+                 && !window.gameDetailsMediaSmokeFinished
+        onTriggered: {
+            console.error(
+                "GAME_DETAILS_MEDIA_SMOKE_TIMEOUT phase="
+                + window.gameDetailsMediaSmokePhase
+                + " id=" + window.selectedGameId
+                + " status=" + controller.status_message)
+            Qt.exit(498)
         }
     }
 
@@ -4589,6 +4612,245 @@ ApplicationWindow {
                             border.color: "#303844"
                             border.width: 1
                             property var game: window.selectedGameItem
+                            readonly property string mediaGameId:
+                                game ? game.gameId : ""
+                            readonly property int mediaRevision:
+                                controller.game_media_revision
+                            readonly property int mediaCount: {
+                                const revision = mediaRevision
+                                return mediaGameId.length > 0
+                                    ? controller.game_media_count_for_game(
+                                          mediaGameId) : 0
+                            }
+                            property int selectedMediaIndex: -1
+                            readonly property string selectedMediaKind:
+                                selectedMediaIndex >= 0
+                                ? controller.game_media_kind_at(
+                                      mediaGameId, selectedMediaIndex) : ""
+                            readonly property string selectedMediaType:
+                                selectedMediaIndex >= 0
+                                ? controller.game_media_type_at(
+                                      mediaGameId, selectedMediaIndex) : ""
+                            readonly property url selectedMediaSource:
+                                selectedMediaIndex >= 0
+                                ? controller.game_media_url_at(
+                                      mediaGameId, selectedMediaIndex) : ""
+                            readonly property int mediaImageStatus:
+                                selectedMediaImage.status
+                            readonly property int mediaPlaybackState:
+                                detailsMediaPlayer.playbackState
+                            readonly property int mediaStatus:
+                                detailsMediaPlayer.mediaStatus
+                            readonly property var mediaError:
+                                detailsMediaPlayer.error
+                            readonly property real mediaDuration:
+                                detailsMediaPlayer.duration
+
+                            function resetMediaSelection() {
+                                detailsMediaPlayer.stop()
+                                selectedMediaIndex =
+                                    mediaGameId.length > 0
+                                    ? controller.game_media_default_index(
+                                          mediaGameId) : -1
+                            }
+
+                            function selectMedia(index) {
+                                if (index < 0 || index >= mediaCount)
+                                    return false
+                                detailsMediaPlayer.stop()
+                                selectedMediaIndex = index
+                                return true
+                            }
+
+                            function clickMediaThumbnailForSmoke(index) {
+                                const item = detailsMediaList.itemAtIndex(index)
+                                if (!item)
+                                    return false
+                                // qmllint disable missing-property
+                                item["clickForSmoke"]()
+                                // qmllint enable missing-property
+                                return true
+                            }
+
+                            function clickMediaPlayPauseForSmoke() {
+                                if (!detailsMediaPlayPause.visible)
+                                    return false
+                                detailsMediaPlayPause.clicked()
+                                return true
+                            }
+
+                            onMediaGameIdChanged:
+                                Qt.callLater(resetMediaSelection)
+                            onMediaRevisionChanged:
+                                Qt.callLater(resetMediaSelection)
+                            Component.onCompleted: resetMediaSelection()
+
+                            Timer {
+                                interval: 25
+                                repeat: true
+                                running:
+                                    window.gameDetailsMediaSmokeTest
+                                    && !window
+                                        .gameDetailsMediaSmokeFinished
+                                onTriggered: {
+                                    if (controller.loading
+                                            || controller.library_path
+                                               .length === 0)
+                                        return
+                                    if (window.gameDetailsMediaSmokePhase
+                                            === 0) {
+                                        window.setAttributeFilters(
+                                            "any", "none", true, true)
+                                        window.restoreGameSelection(
+                                            "fixture-adventure")
+                                        window.gameDetailsMediaSmokePhase = 1
+                                    } else if (
+                                            window
+                                            .gameDetailsMediaSmokePhase
+                                            === 1) {
+                                        if (window.selectedGameId
+                                                !== "fixture-adventure"
+                                                || gameDetailsPane
+                                                   .mediaCount !== 4
+                                                || gameDetailsPane
+                                                   .selectedMediaIndex !== 3
+                                                || gameDetailsPane
+                                                   .selectedMediaKind
+                                                   !== "video"
+                                                || gameDetailsPane
+                                                   .selectedMediaType
+                                                   !== "Video Snap"
+                                                || gameDetailsPane
+                                                   .mediaDuration <= 0
+                                                || gameDetailsPane
+                                                   .mediaError
+                                                   !== MediaPlayer.NoError
+                                                || gameDetailsPane
+                                                   .mediaPlaybackState
+                                                   !== MediaPlayer
+                                                      .PlayingState)
+                                            return
+                                        detailsMediaPlayPause.clicked()
+                                        window.gameDetailsMediaSmokePhase = 2
+                                    } else if (
+                                            window
+                                            .gameDetailsMediaSmokePhase
+                                            === 2) {
+                                        if (gameDetailsPane
+                                                .mediaPlaybackState
+                                                !== MediaPlayer.PausedState)
+                                            return
+                                        if (!gameDetailsPane
+                                                .clickMediaThumbnailForSmoke(
+                                                    0)) {
+                                            console.error(
+                                                "GAME_DETAILS_MEDIA_IMAGE_THUMBNAIL_MISSING")
+                                            Qt.exit(494)
+                                            return
+                                        }
+                                        window.gameDetailsMediaSmokePhase = 3
+                                    } else if (
+                                            window
+                                            .gameDetailsMediaSmokePhase
+                                            === 3) {
+                                        if (gameDetailsPane
+                                                .selectedMediaIndex !== 0
+                                                || gameDetailsPane
+                                                   .selectedMediaKind
+                                                   !== "image"
+                                                || gameDetailsPane
+                                                   .selectedMediaType
+                                                   !== "Box - Front"
+                                                || gameDetailsPane
+                                                   .mediaImageStatus
+                                                   !== Image.Ready)
+                                            return
+                                        if (window
+                                                .gameDetailsMediaScreenshotRequested)
+                                            return
+                                        window
+                                            .gameDetailsMediaScreenshotRequested =
+                                            true
+                                        const continueWithVideo =
+                                            function() {
+                                                if (!gameDetailsPane
+                                                        .clickMediaThumbnailForSmoke(
+                                                            3)) {
+                                                    console.error(
+                                                        "GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
+                                                    Qt.exit(495)
+                                                    return
+                                                }
+                                                window
+                                                    .gameDetailsMediaSmokePhase =
+                                                    4
+                                            }
+                                        if (window
+                                                .gameDetailsMediaScreenshotPath
+                                                .length === 0) {
+                                            continueWithVideo()
+                                            return
+                                        }
+                                        gameDetailsPane.grabToImage(
+                                            function(result) {
+                                                if (!result.saveToFile(
+                                                        window
+                                                        .gameDetailsMediaScreenshotPath)) {
+                                                    console.error(
+                                                        "GAME_DETAILS_MEDIA_SCREENSHOT_SAVE_FAILED path="
+                                                        + window
+                                                          .gameDetailsMediaScreenshotPath)
+                                                    Qt.exit(496)
+                                                    return
+                                                }
+                                                continueWithVideo()
+                                            })
+                                    } else if (
+                                            window
+                                            .gameDetailsMediaSmokePhase
+                                            === 4) {
+                                        if (gameDetailsPane
+                                                .selectedMediaIndex !== 3
+                                                || gameDetailsPane
+                                                   .selectedMediaKind
+                                                   !== "video"
+                                                || gameDetailsPane
+                                                   .selectedMediaType
+                                                   !== "Video Snap"
+                                                || gameDetailsPane
+                                                   .mediaDuration <= 0
+                                                || gameDetailsPane
+                                                   .mediaError
+                                                   !== MediaPlayer.NoError
+                                                || gameDetailsPane
+                                                   .mediaPlaybackState
+                                                   !== MediaPlayer
+                                                      .PlayingState)
+                                            return
+                                        if (!controller
+                                                .report_game_details_media_smoke_success(
+                                                    "fixture-adventure",
+                                                    0, 3,
+                                                    controller
+                                                    .game_media_url_at(
+                                                        "fixture-adventure",
+                                                        0).toString(),
+                                                    controller
+                                                    .game_media_url_at(
+                                                        "fixture-adventure",
+                                                        3).toString())) {
+                                            console.error(
+                                                "GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
+                                            Qt.exit(497)
+                                            return
+                                        }
+                                        window
+                                            .gameDetailsMediaSmokeFinished =
+                                            true
+                                        Qt.quit()
+                                    }
+                                }
+                            }
 
                             Label {
                                 anchors.centerIn: parent
@@ -4617,39 +4879,302 @@ ApplicationWindow {
 
                                     Item {
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 285
+                                        Layout.preferredHeight: 392
 
-                                        Rectangle {
-                                            anchors.fill: parent
-                                            radius: 6
-                                            color: "#0f141b"
-                                            visible: detailsCoverImage.status !== Image.Ready
-                                            Label {
-                                                anchors.centerIn: parent
-                                                width: parent.width - 30
-                                                text: gameDetailsPane.game
-                                                      ? gameDetailsPane.game.gameTitle : ""
-                                                color: "#66788d"
-                                                font.pixelSize: 22
-                                                font.bold: true
-                                                horizontalAlignment: Text.AlignHCenter
-                                                wrapMode: Text.Wrap
-                                            }
-                                        }
                                         Image {
                                             id: detailsCoverImage
-                                            anchors.fill: parent
+                                            width: 1
+                                            height: 1
+                                            opacity: 0
                                             source: gameDetailsPane.game
                                                     ? gameDetailsPane.game.gameFrontImageUrl : ""
                                             asynchronous: true
                                             cache: true
-                                            fillMode: Image.PreserveAspectFit
                                             sourceSize.width: 480
                                             sourceSize.height: 640
                                             onSourceChanged:
                                                 window.gameDetailsCoverSource = source
                                             onStatusChanged:
                                                 window.gameDetailsCoverStatus = status
+                                        }
+
+                                        Rectangle {
+                                            id: selectedMediaPreview
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.top: parent.top
+                                            height: 258
+                                            radius: 6
+                                            color: "#0f141b"
+                                            clip: true
+
+                                            Image {
+                                                id: selectedMediaImage
+                                                anchors.fill: parent
+                                                anchors.margins: 4
+                                                visible:
+                                                    gameDetailsPane.selectedMediaKind
+                                                    === "image"
+                                                source: visible
+                                                        ? gameDetailsPane
+                                                          .selectedMediaSource : ""
+                                                asynchronous: true
+                                                cache: true
+                                                fillMode: Image.PreserveAspectFit
+                                                sourceSize.width: 960
+                                                sourceSize.height: 720
+                                            }
+
+                                            AudioOutput {
+                                                id: detailsMediaAudio
+                                                muted: window.isSmokeRun()
+                                            }
+
+                                            MediaPlayer {
+                                                id: detailsMediaPlayer
+                                                source:
+                                                    gameDetailsPane.selectedMediaKind
+                                                    === "video"
+                                                    ? gameDetailsPane
+                                                      .selectedMediaSource : ""
+                                                audioOutput: detailsMediaAudio
+                                                videoOutput: detailsVideoOutput
+                                                onSourceChanged: {
+                                                    if (source.toString().length > 0
+                                                            && controller
+                                                               .details_auto_play_video)
+                                                        Qt.callLater(play)
+                                                }
+                                                onErrorOccurred: function(error,
+                                                                          errorString) {
+                                                    console.warn(
+                                                        "Selected-game media error "
+                                                        + error + ": "
+                                                        + errorString)
+                                                }
+                                            }
+
+                                            VideoOutput {
+                                                id: detailsVideoOutput
+                                                anchors.fill: parent
+                                                anchors.margins: 4
+                                                visible:
+                                                    gameDetailsPane.selectedMediaKind
+                                                    === "video"
+                                                fillMode:
+                                                    VideoOutput.PreserveAspectFit
+                                            }
+
+                                            Label {
+                                                anchors.centerIn: parent
+                                                width: parent.width - 30
+                                                visible:
+                                                    gameDetailsPane.mediaCount === 0
+                                                text: "No images or videos are available."
+                                                color: "#66788d"
+                                                font.pixelSize: 15
+                                                horizontalAlignment: Text.AlignHCenter
+                                                wrapMode: Text.Wrap
+                                            }
+
+                                            Rectangle {
+                                                anchors.left: parent.left
+                                                anchors.right: parent.right
+                                                anchors.bottom: parent.bottom
+                                                height: 34
+                                                color: "#b3090e16"
+                                                visible:
+                                                    gameDetailsPane.mediaCount > 0
+
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 10
+                                                    anchors.rightMargin: 10
+                                                    spacing: 8
+
+                                                    Label {
+                                                        Layout.fillWidth: true
+                                                        text:
+                                                            gameDetailsPane
+                                                            .selectedMediaType
+                                                        color: "#d7e1ec"
+                                                        font.pixelSize: 12
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    Label {
+                                                        text:
+                                                            gameDetailsPane
+                                                            .selectedMediaIndex
+                                                            + 1 + " / "
+                                                            + gameDetailsPane
+                                                              .mediaCount
+                                                        color: "#8b949e"
+                                                        font.pixelSize: 12
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        RowLayout {
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.top:
+                                                selectedMediaPreview.bottom
+                                            anchors.topMargin: 6
+                                            height: 36
+                                            visible:
+                                                gameDetailsPane.selectedMediaKind
+                                                === "video"
+
+                                            Button {
+                                                id: detailsMediaPlayPause
+                                                Layout.fillWidth: true
+                                                text:
+                                                    detailsMediaPlayer
+                                                    .playbackState
+                                                    === MediaPlayer.PlayingState
+                                                    ? "Pause video"
+                                                    : "Play video"
+                                                onClicked: {
+                                                    if (detailsMediaPlayer
+                                                            .playbackState
+                                                            === MediaPlayer
+                                                               .PlayingState) {
+                                                        detailsMediaPlayer.pause()
+                                                    } else {
+                                                        if (detailsMediaPlayer
+                                                                .mediaStatus
+                                                                === MediaPlayer
+                                                                   .EndOfMedia)
+                                                            detailsMediaPlayer
+                                                                .position = 0
+                                                        detailsMediaPlayer.play()
+                                                    }
+                                                }
+                                            }
+                                            Button {
+                                                text: detailsMediaAudio.muted
+                                                      ? "Unmute" : "Mute"
+                                                onClicked:
+                                                    detailsMediaAudio.muted =
+                                                        !detailsMediaAudio.muted
+                                            }
+                                        }
+
+                                        ListView {
+                                            id: detailsMediaList
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.bottom: parent.bottom
+                                            height: 86
+                                            orientation: ListView.Horizontal
+                                            spacing: 8
+                                            clip: true
+                                            model: gameDetailsPane.mediaCount
+                                            currentIndex:
+                                                gameDetailsPane
+                                                .selectedMediaIndex
+
+                                            delegate: Rectangle {
+                                                id: mediaThumbnail
+                                                required property int index
+                                                width: 76
+                                                height: 82
+                                                radius: 5
+                                                color:
+                                                    ListView.isCurrentItem
+                                                    ? "#244d73" : "#10161e"
+                                                border.color:
+                                                    ListView.isCurrentItem
+                                                    ? "#67b7ff" : "#34404e"
+                                                border.width:
+                                                    ListView.isCurrentItem
+                                                    ? 2 : 1
+                                                readonly property string kind:
+                                                    controller
+                                                    .game_media_kind_at(
+                                                        gameDetailsPane
+                                                        .mediaGameId, index)
+                                                readonly property string mediaType:
+                                                    controller
+                                                    .game_media_type_at(
+                                                        gameDetailsPane
+                                                        .mediaGameId, index)
+                                                readonly property url mediaSource:
+                                                    controller
+                                                    .game_media_url_at(
+                                                        gameDetailsPane
+                                                        .mediaGameId, index)
+
+                                                function clickForSmoke() {
+                                                    mediaThumbnailMouse
+                                                        .clicked(null)
+                                                }
+
+                                                Image {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 4
+                                                    visible:
+                                                        mediaThumbnail.kind
+                                                        === "image"
+                                                    source:
+                                                        visible
+                                                        ? mediaThumbnail
+                                                          .mediaSource : ""
+                                                    asynchronous: true
+                                                    cache: true
+                                                    fillMode:
+                                                        Image.PreserveAspectCrop
+                                                    sourceSize.width: 232
+                                                    sourceSize.height: 164
+                                                }
+                                                Rectangle {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 4
+                                                    visible:
+                                                        mediaThumbnail.kind
+                                                        === "video"
+                                                    color: "#17283b"
+                                                    Label {
+                                                        anchors.centerIn: parent
+                                                        text: "▶"
+                                                        color: "#79c0ff"
+                                                        font.pixelSize: 28
+                                                    }
+                                                }
+                                                Rectangle {
+                                                    anchors.left: parent.left
+                                                    anchors.right: parent.right
+                                                    anchors.bottom:
+                                                        parent.bottom
+                                                    anchors.margins: 4
+                                                    height: 24
+                                                    color: "#c20b1118"
+                                                    Label {
+                                                        anchors.fill: parent
+                                                        anchors.leftMargin: 5
+                                                        anchors.rightMargin: 5
+                                                        text:
+                                                            mediaThumbnail
+                                                            .mediaType
+                                                        color: "#ffffff"
+                                                        font.pixelSize: 10
+                                                        verticalAlignment:
+                                                            Text.AlignVCenter
+                                                        elide:
+                                                            Text.ElideRight
+                                                    }
+                                                }
+                                                MouseArea {
+                                                    id: mediaThumbnailMouse
+                                                    anchors.fill: parent
+                                                    onClicked:
+                                                        gameDetailsPane
+                                                        .selectMedia(
+                                                            mediaThumbnail
+                                                            .index)
+                                                }
+                                            }
                                         }
                                     }
 

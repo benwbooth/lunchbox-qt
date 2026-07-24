@@ -97,33 +97,40 @@ settings in one transaction. A fresh Linux process then
 reloads that edit and executes the stored Windows-separated relative path with
 the exact expanded argument vector.
 
-LaunchBox and BigBox now render the selected per-game front image from the
-library's own `PlatformFolder` records. A bounded read-only Rust index applies
-the persisted front-image-type and region priorities, LaunchBox's observed
-filename normalization and numeric image ordering, then exposes only a native
-`file:` URL through the model. Portable backslash paths and explicitly mapped
-Windows drive/UNC paths cross the shared host resolver; QML contains no host
-path rules or construction. Symlinks, deep nesting, non-regular files,
-oversized files, and unbounded directories fail closed. The offscreen suite
-requires both frontends to decode and render a real SVG fixture without
-changing any library file.
+LaunchBox and BigBox render each game's selected front image from the library's
+own `PlatformFolder` records. The same bounded read-only Rust index retains all
+configured image families for LaunchBox's details gallery and indexes Video
+Snap, Theme Video, Trailer, Recording, and Marquee media from the recovered
+folder contract plus explicit game video paths. Persisted image-type, region,
+and video-type priorities, filename normalization, and numeric ordering are
+deterministic. Portable backslash paths and explicitly mapped Windows drive/UNC
+paths cross the shared host resolver; QML receives only native `file:` URLs and
+contains no host path rules. Symlinks, deep nesting, non-regular files,
+oversized files, unbounded directories, and unsupported extensions fail
+closed. No media or XML is changed.
 
 LaunchBox also has a resizable selected-game details pane backed directly by
 that role model. Stable game IDs preserve selection through filtering, sorting,
 editing, insertion, and removal; when a game is filtered out the first visible
-row is selected deterministically. The pane renders front artwork, descriptive
-metadata, notes, installed/favorite/completed state, play statistics, local and
-community ratings, and the existing Play, Edit, Launch With, Apps, Saves, and
-Wikipedia actions. **Details** hides or shows it, and **Pop Out/Dock** moves the
-same live view into a native Qt window. Dock width, visibility, popup state,
-normal geometry, and maximized state are atomically persisted outside the
-portable library. Defaults are
+row is selected deterministically. The pane renders a selectable image/video
+thumbnail row and large preview, honors `ShowDetailsVideo`,
+`AutoPlayDetailsVideo`, and `VideoTypePriorities`, and provides real Qt
+Multimedia play/pause and mute controls. It also presents descriptive metadata,
+notes, installed/favorite/completed state, play statistics, local/community
+ratings, and the existing Play, Edit, Launch With, Apps, Saves, and Wikipedia
+actions. **Details** hides or shows it, and **Pop Out/Dock** moves the same live
+view into a native Qt window. Dock width, visibility, popup state, normal
+geometry, and maximized state are atomically persisted outside the portable
+library. Defaults are
 `$XDG_CONFIG_HOME/launchbox-port/ui-state.json` on Linux (falling back to
 `~/.config`), `~/Library/Application Support/LaunchBox Port/ui-state.json` on
 macOS, and `%APPDATA%\LaunchBox Port\ui-state.json` on Windows;
 `--ui-state-file` selects an explicit test or portable location. One offscreen
 interaction exercises retained selection, filtered-out fallback, restoration,
-native artwork decoding, and a real rendered PNG. A second two-process scenario
+native artwork decoding, and a real rendered PNG. A separate compiled scenario
+uses an authored H.264 test pattern to prove native video URLs, decode,
+autoplay, real thumbnail selection, play/pause, and a rendered multi-image
+gallery without changing the fixture. A second two-process scenario
 exercises hide, dock, pop out, native popup rendering, exact state-file bytes,
 shutdown preservation, and fresh-process restoration without writing library
 XML or settings.

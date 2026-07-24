@@ -14,6 +14,8 @@ pub mod qobject {
         type QModelIndex = cxx_qt_lib::QModelIndex;
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
+        include!("cxx-qt-lib/qurl.h");
+        type QUrl = cxx_qt_lib::QUrl;
         include!("cxx-qt-lib/qvariant.h");
         type QVariant = cxx_qt_lib::QVariant;
     }
@@ -73,6 +75,10 @@ pub mod qobject {
         #[qproperty(bool, write_conflict)]
         #[qproperty(i32, game_count)]
         #[qproperty(i32, front_image_count)]
+        #[qproperty(i32, indexed_media_count)]
+        #[qproperty(i32, game_media_revision)]
+        #[qproperty(bool, details_show_video)]
+        #[qproperty(bool, details_auto_play_video)]
         #[qproperty(i32, filtered_count)]
         #[qproperty(i32, platform_entry_count)]
         #[qproperty(i32, navigation_entry_count)]
@@ -144,6 +150,28 @@ pub mod qobject {
 
         #[qinvokable]
         fn local_path_from_url(self: &LibraryController, value: QString) -> QString;
+
+        #[qinvokable]
+        fn game_media_count_for_game(self: &LibraryController, game_id: QString) -> i32;
+
+        #[qinvokable]
+        fn game_media_url_at(self: &LibraryController, game_id: QString, index: i32) -> QUrl;
+
+        #[qinvokable]
+        fn game_media_kind_at(self: &LibraryController, game_id: QString, index: i32) -> QString;
+
+        #[qinvokable]
+        fn game_media_type_at(self: &LibraryController, game_id: QString, index: i32) -> QString;
+
+        #[qinvokable]
+        fn game_media_file_name_at(
+            self: &LibraryController,
+            game_id: QString,
+            index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn game_media_default_index(self: &LibraryController, game_id: QString) -> i32;
 
         #[qinvokable]
         fn preview_rom_import(self: Pin<&mut LibraryController>, request_payload: QString);
@@ -709,6 +737,16 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_game_details_media_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            image_index: i32,
+            video_index: i32,
+            image_url: QString,
+            video_url: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_game_details_layout_smoke_success(
             self: &LibraryController,
             reloaded: bool,
@@ -1147,15 +1185,16 @@ use lb_integrations::xemu_bios::{
 use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
 use lb_platform::{
     default_host_path_mappings_path, default_launchbox_ui_state_path, default_platform_folders,
-    execute_launch_sequence_controlled, index_front_images, navigation_document_file_name,
+    execute_launch_sequence_controlled, index_game_media, navigation_document_file_name,
     platform_document_file_name, portable_storage_name,
     prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     select_emulator_for_game, ArchiveExtractor, FrontendLaunchScreenPolicy,
-    FrontendPauseScreenPolicy, GameDetailsWindowState, HostPathMappings, HostPathResolver,
-    LaunchBoxUiState, LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver,
-    LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport,
-    LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
+    FrontendPauseScreenPolicy, GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem,
+    GameMediaKind, HostPathMappings, HostPathResolver, LaunchBoxUiState, LaunchContext,
+    LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence,
+    LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy,
+    LaunchTarget,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
@@ -1404,6 +1443,10 @@ pub struct LibraryControllerRust {
     write_conflict: bool,
     game_count: i32,
     front_image_count: i32,
+    indexed_media_count: i32,
+    game_media_revision: i32,
+    details_show_video: bool,
+    details_auto_play_video: bool,
     filtered_count: i32,
     platform_entry_count: i32,
     navigation_entry_count: i32,
@@ -1458,6 +1501,8 @@ pub struct LibraryControllerRust {
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
     front_image_paths: BTreeMap<String, PathBuf>,
+    game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
+    game_details_media_policy: GameDetailsMediaPolicy,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
@@ -1574,6 +1619,8 @@ struct LoadedLibrary {
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
     front_image_paths: BTreeMap<String, PathBuf>,
+    game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
+    game_details_media_policy: GameDetailsMediaPolicy,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
     navigation_catalog: NavigationCatalog,
@@ -1600,6 +1647,8 @@ struct LibraryReplacement {
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
     front_image_paths: BTreeMap<String, PathBuf>,
+    game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
+    game_details_media_policy: GameDetailsMediaPolicy,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
     navigation_catalog: NavigationCatalog,
@@ -1669,6 +1718,8 @@ impl LoadedLibrary {
                 custom_fields_by_game,
                 game_saves_by_game,
                 front_image_paths: BTreeMap::new(),
+                game_media_by_game_id: BTreeMap::new(),
+                game_details_media_policy: GameDetailsMediaPolicy::default(),
                 platform_names,
                 platform_sources,
                 navigation_catalog: NavigationCatalog::default(),
@@ -1733,7 +1784,7 @@ impl LoadedLibrary {
         let custom_fields_by_game = collect_custom_fields_by_game(data.platforms());
         let game_saves_by_game = collect_game_saves_by_game(data.platforms());
         let game_save_count = game_saves_by_game.values().map(Vec::len).sum::<usize>();
-        let front_image_index = index_front_images(
+        let game_media_index = index_game_media(
             &root,
             &games,
             data.platform_catalog()
@@ -1742,26 +1793,37 @@ impl LoadedLibrary {
             data.settings(),
             path_resolver,
         );
-        let front_image_count = front_image_index.paths_by_game_id.len();
-        let artwork_report = front_image_index.report;
-        let front_image_paths = front_image_index.paths_by_game_id;
-        let artwork_truncations = artwork_report
+        let front_image_count = game_media_index.front_paths_by_game_id.len();
+        let indexed_media_count = game_media_index
+            .items_by_game_id
+            .values()
+            .map(Vec::len)
+            .sum::<usize>();
+        let media_report = game_media_index.report;
+        let media_truncations = media_report
             .truncated_folders
-            .saturating_add(artwork_report.truncated_configured_folders);
+            .saturating_add(media_report.truncated_configured_folders)
+            .saturating_add(media_report.truncated_items);
+        let front_image_paths = game_media_index.front_paths_by_game_id;
+        let game_media_by_game_id = game_media_index.items_by_game_id;
+        let game_details_media_policy = game_media_index.policy;
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
             .map(|configuration| configuration.emulators.len())
             .unwrap_or_default();
         let message = format!(
-            "Loaded {} games, {front_image_count} front images, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s (artwork: {} files across {} folders; {} unsafe, {} oversized, {} truncated).",
+            "Loaded {} games, {front_image_count} front images, {indexed_media_count} detail media items, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s (media: {} files across {} folders; {} unsafe, {} oversized, {} unresolved, {} truncated).",
             games.len(),
             started.elapsed().as_secs_f64(),
-            artwork_report.scanned_files,
-            artwork_report.scanned_folders,
-            artwork_report.unsafe_entries,
-            artwork_report.oversized_files,
-            artwork_truncations
+            media_report.scanned_files,
+            media_report.scanned_folders,
+            media_report.unsafe_entries,
+            media_report.oversized_files,
+            media_report
+                .unresolved_folders
+                .saturating_add(media_report.unresolved_files),
+            media_truncations
         );
         let launchbox_root = Some(root.clone());
         let pending_recovery_count = pending_transaction_manifests(&root)
@@ -1780,6 +1842,8 @@ impl LoadedLibrary {
             custom_fields_by_game,
             game_saves_by_game,
             front_image_paths,
+            game_media_by_game_id,
+            game_details_media_policy,
             platform_names,
             platform_sources,
             navigation_catalog,
@@ -15163,6 +15227,8 @@ impl qobject::LibraryController {
                     custom_fields_by_game,
                     game_saves_by_game,
                     front_image_paths: BTreeMap::new(),
+                    game_media_by_game_id: BTreeMap::new(),
+                    game_details_media_policy: GameDetailsMediaPolicy::default(),
                     platform_names: vec![document.library().name.clone()],
                     platform_sources: BTreeMap::new(),
                     navigation_catalog: NavigationCatalog::default(),
@@ -15240,6 +15306,60 @@ impl qobject::LibraryController {
     pub fn local_path_from_url(&self, value: QString) -> QString {
         let url = QUrl::from_user_input(&value, &QString::default());
         url.to_local_file().unwrap_or_default()
+    }
+
+    pub fn game_media_count_for_game(&self, game_id: QString) -> i32 {
+        saturating_i32(
+            self.rust()
+                .game_media_by_game_id
+                .get(&game_id.to_string())
+                .map(Vec::len)
+                .unwrap_or_default(),
+        )
+    }
+
+    pub fn game_media_url_at(&self, game_id: QString, index: i32) -> QUrl {
+        self.game_media_item(&game_id.to_string(), index)
+            .map(|item| QUrl::from_local_file(&qstring(item.path.to_string_lossy())))
+            .unwrap_or_default()
+    }
+
+    pub fn game_media_kind_at(&self, game_id: QString, index: i32) -> QString {
+        self.game_media_item(&game_id.to_string(), index)
+            .map(|item| qstring(item.kind.key()))
+            .unwrap_or_default()
+    }
+
+    pub fn game_media_type_at(&self, game_id: QString, index: i32) -> QString {
+        self.game_media_item(&game_id.to_string(), index)
+            .map(|item| qstring(&item.media_type))
+            .unwrap_or_default()
+    }
+
+    pub fn game_media_file_name_at(&self, game_id: QString, index: i32) -> QString {
+        self.game_media_item(&game_id.to_string(), index)
+            .and_then(|item| item.path.file_name())
+            .map(|name| qstring(name.to_string_lossy()))
+            .unwrap_or_default()
+    }
+
+    pub fn game_media_default_index(&self, game_id: QString) -> i32 {
+        let Some(items) = self.rust().game_media_by_game_id.get(&game_id.to_string()) else {
+            return -1;
+        };
+        let preferred_kind = if self.rust().game_details_media_policy.show_video
+            && self.rust().game_details_media_policy.auto_play_video
+        {
+            GameMediaKind::Video
+        } else {
+            GameMediaKind::Image
+        };
+        items
+            .iter()
+            .position(|item| item.kind == preferred_kind)
+            .or_else(|| (!items.is_empty()).then_some(0))
+            .map(saturating_i32)
+            .unwrap_or(-1)
     }
 
     pub fn preview_rom_import(mut self: Pin<&mut Self>, request_payload: QString) {
@@ -18272,6 +18392,72 @@ impl qobject::LibraryController {
                     .game_saves_by_game
                     .get(&game.id)
                     .map_or(0, Vec::len),
+            );
+        }
+        success
+    }
+
+    pub fn report_game_details_media_smoke_success(
+        &self,
+        game_id: QString,
+        image_index: i32,
+        video_index: i32,
+        image_url: QString,
+        video_url: QString,
+    ) -> bool {
+        let game_id = game_id.to_string();
+        let Some(items) = self.rust().game_media_by_game_id.get(&game_id) else {
+            return false;
+        };
+        let Some(image) = usize::try_from(image_index)
+            .ok()
+            .and_then(|index| items.get(index))
+        else {
+            return false;
+        };
+        let Some(video) = usize::try_from(video_index)
+            .ok()
+            .and_then(|index| items.get(index))
+        else {
+            return false;
+        };
+        let image_url = QUrl::from_user_input(&image_url, &QString::default());
+        let video_url = QUrl::from_user_input(&video_url, &QString::default());
+        let Some(image_file) = image_url
+            .to_local_file()
+            .map(|path| PathBuf::from(path.to_string()))
+        else {
+            return false;
+        };
+        let Some(video_file) = video_url
+            .to_local_file()
+            .map(|path| PathBuf::from(path.to_string()))
+        else {
+            return false;
+        };
+        let safe_regular_file = |path: &Path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        };
+        let success = game_id == "fixture-adventure"
+            && items.len() == 4
+            && *self.indexed_media_count() == 4
+            && image.kind == GameMediaKind::Image
+            && image.media_type == "Box - Front"
+            && image.path == image_file
+            && safe_regular_file(&image_file)
+            && video.kind == GameMediaKind::Video
+            && video.media_type == "Video Snap"
+            && video.path == video_file
+            && safe_regular_file(&video_file)
+            && self.game_media_default_index(qstring(&game_id)) == video_index
+            && *self.details_show_video()
+            && *self.details_auto_play_video()
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            eprintln!(
+                "GAME_DETAILS_MEDIA_SMOKE_COMPLETE id={game_id} items=4 image=Box-Front video=Video-Snap autoplay=1"
             );
         }
         success
@@ -22219,6 +22405,8 @@ impl qobject::LibraryController {
                     custom_fields_by_game: loaded.custom_fields_by_game,
                     game_saves_by_game: loaded.game_saves_by_game,
                     front_image_paths: loaded.front_image_paths,
+                    game_media_by_game_id: loaded.game_media_by_game_id,
+                    game_details_media_policy: loaded.game_details_media_policy,
                     platform_names: loaded.platform_names,
                     platform_sources: loaded.platform_sources,
                     navigation_catalog: loaded.navigation_catalog,
@@ -25583,6 +25771,7 @@ impl qobject::LibraryController {
                 {
                     let mut rust = self.as_mut().rust_mut();
                     rust.front_image_paths.remove(&deleted.game.id);
+                    rust.game_media_by_game_id.remove(&deleted.game.id);
                     rust.games.remove(actual_index);
                     rust.game_sources.remove(actual_index);
                     rust.filtered_indices.retain(|index| *index != actual_index);
@@ -25598,6 +25787,17 @@ impl qobject::LibraryController {
                 let front_image_count =
                     saturating_i32(self.as_ref().rust().front_image_paths.len());
                 self.as_mut().set_front_image_count(front_image_count);
+                let indexed_media_count = saturating_i32(
+                    self.as_ref()
+                        .rust()
+                        .game_media_by_game_id
+                        .values()
+                        .map(Vec::len)
+                        .sum::<usize>(),
+                );
+                self.as_mut().set_indexed_media_count(indexed_media_count);
+                let revision = self.as_ref().rust().game_media_revision.wrapping_add(1);
+                self.as_mut().set_game_media_revision(revision);
                 if filtered_row.is_some() {
                     self.as_mut().end_remove_rows();
                 }
@@ -25802,6 +26002,8 @@ impl qobject::LibraryController {
             custom_fields_by_game,
             game_saves_by_game,
             front_image_paths,
+            game_media_by_game_id,
+            game_details_media_policy,
             platform_names,
             platform_sources,
             navigation_catalog,
@@ -25824,6 +26026,10 @@ impl qobject::LibraryController {
         debug_assert!(game_sources.is_empty() || game_sources.len() == games.len());
         let game_count = saturating_i32(games.len());
         let front_image_count = saturating_i32(front_image_paths.len());
+        let indexed_media_count =
+            saturating_i32(game_media_by_game_id.values().map(Vec::len).sum::<usize>());
+        let details_show_video = game_details_media_policy.show_video;
+        let details_auto_play_video = game_details_media_policy.auto_play_video;
         let platform_counts = collect_platform_counts(&games, &platform_names);
         let platform_entry_count = saturating_i32(platform_counts.len());
         let (navigation_entries, category_platforms, category_game_ids, playlist_game_ids) =
@@ -25849,6 +26055,8 @@ impl qobject::LibraryController {
             rust.custom_fields_by_game = custom_fields_by_game;
             rust.game_saves_by_game = game_saves_by_game;
             rust.front_image_paths = front_image_paths;
+            rust.game_media_by_game_id = game_media_by_game_id;
+            rust.game_details_media_policy = game_details_media_policy;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
             rust.platform_counts = platform_counts;
@@ -25947,6 +26155,12 @@ impl qobject::LibraryController {
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_front_image_count(front_image_count);
+        self.as_mut().set_indexed_media_count(indexed_media_count);
+        let game_media_revision = self.as_ref().game_media_revision().wrapping_add(1);
+        self.as_mut().set_game_media_revision(game_media_revision);
+        self.as_mut().set_details_show_video(details_show_video);
+        self.as_mut()
+            .set_details_auto_play_video(details_auto_play_video);
         self.as_mut().set_filtered_count(filtered_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
         self.as_mut()
@@ -26049,6 +26263,14 @@ impl qobject::LibraryController {
         let index = usize::try_from(index).ok()?;
         let game_index = *self.rust().filtered_indices.get(index)?;
         self.rust().games.get(game_index)
+    }
+
+    fn game_media_item(&self, game_id: &str, index: i32) -> Option<&GameMediaItem> {
+        let index = usize::try_from(index).ok()?;
+        self.rust()
+            .game_media_by_game_id
+            .get(game_id)
+            .and_then(|items| items.get(index))
     }
 
     fn navigation_entry_at(&self, index: i32) -> Option<&NavigationEntry> {
@@ -30273,7 +30495,7 @@ mod tests {
             payload,
         )
         .unwrap();
-        assert_eq!(edited.folder_count, 3);
+        assert_eq!(edited.folder_count, 5);
         assert_eq!(
             fs::read(&edited.catalog_backup).unwrap(),
             original_catalog.as_bytes()
@@ -30298,8 +30520,8 @@ mod tests {
         assert_eq!(platform.release_date.as_deref(), Some("2001-02-03"));
         assert!(platform.metadata.hide_in_big_box);
         assert!(platform.disable_auto_import);
-        assert_eq!(catalog.folders[2].media_type, "Manual");
-        assert_eq!(catalog.folders[2].folder_path, r"Manuals\Fixture Console");
+        assert_eq!(catalog.folders[4].media_type, "Manual");
+        assert_eq!(catalog.folders[4].folder_path, r"Manuals\Fixture Console");
         assert!(!directory.path().join("Manuals").exists());
     }
 

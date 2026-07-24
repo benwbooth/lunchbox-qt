@@ -956,7 +956,7 @@ mod tests {
         let catalog = index.platform_catalog().expect("platform catalog");
         assert_eq!(catalog.platforms.len(), 1);
         assert_eq!(catalog.categories.len(), 1);
-        assert_eq!(catalog.folders.len(), 2);
+        assert_eq!(catalog.folders.len(), 4);
         assert_eq!(catalog.platforms[0].release_date.as_deref(), Some("1999"));
 
         assert_eq!(index.parents().len(), 2);
@@ -973,7 +973,7 @@ mod tests {
 
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         let settings = index.settings().expect("LaunchBox settings");
-        assert_eq!(settings.entries.len(), 18);
+        assert_eq!(settings.entries.len(), 22);
         assert_eq!(settings.get("Theme"), Some("Fixture Theme"));
         assert_eq!(settings.get_bool("DebugLog"), Some(false));
         assert_eq!(settings.get_bool("UseStartupScreen"), Some(true));
@@ -998,6 +998,16 @@ mod tests {
         assert_eq!(settings.get_bool("SortByDesc"), Some(false));
         assert_eq!(settings.get_bool("ListView"), Some(false));
         assert_eq!(settings.get("NextBoxSize"), Some("0.17214286"));
+        assert_eq!(settings.get_bool("ShowDetailsVideo"), Some(true));
+        assert_eq!(settings.get_bool("AutoPlayDetailsVideo"), Some(true));
+        assert_eq!(
+            settings.get("VideoTypePriorities"),
+            Some("Theme Video,Video Snap,Recording,Trailer")
+        );
+        assert_eq!(
+            settings.get("FrontImageTypePriorities"),
+            Some("Box - Front,Screenshot - Gameplay,Fanart - Background")
+        );
         assert_eq!(
             settings.get("ListViewOrderedColumnPriorities"),
             Some(

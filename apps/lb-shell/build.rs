@@ -11,6 +11,7 @@ fn main() {
     CxxQtBuilder::new_qml_module(
         QmlModule::new("LaunchBoxPort")
             .depend("QtQml.Models")
+            .depend("QtMultimedia")
             .qml_files([
                 "qml/LaunchBoxWindow.qml",
                 "qml/BigBoxWindow.qml",
@@ -21,6 +22,7 @@ fn main() {
     )
     .qt_module("Quick")
     .qt_module("QuickControls2")
+    .qt_module("Multimedia")
     .file("src/library_controller.rs")
     .build();
 }

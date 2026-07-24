@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12335c"/>
+      <stop offset="1" stop-color="#6bc1d4"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="540" fill="url(#sky)"/>
+  <circle cx="760" cy="105" r="58" fill="#ffe08a"/>
+  <path d="M0 390 L180 210 L335 380 L490 175 L720 390 L960 250 L960 540 L0 540 Z"
+        fill="#254d5f"/>
+  <path d="M0 435 Q180 365 350 430 T680 420 T960 410 L960 540 L0 540 Z"
+        fill="#18343f"/>
+  <rect x="448" y="338" width="64" height="112" rx="12" fill="#f4c14e"/>
+  <circle cx="480" cy="315" r="36" fill="#ffe3bb"/>
+  <path d="M418 430 L480 370 L542 430" fill="none" stroke="#72d4ff" stroke-width="16"/>
+  <text x="36" y="62" fill="#ffffff" font-family="sans-serif" font-size="34"
+        font-weight="700">FIXTURE ADVENTURE</text>
+  <text x="36" y="101" fill="#bcecff" font-family="sans-serif" font-size="22">
+    GAMEPLAY SCREENSHOT
+  </text>
+</svg>

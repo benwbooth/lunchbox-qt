@@ -104,6 +104,21 @@ done
 echo "LaunchBox and BigBox role-model runtime smokes validated."
 
 cp -a fixtures/launchbox/. "$media_root/"
+fixture_video="$media_root/Videos/Fixture Console/fixture-adventure.mp4"
+mkdir -p "$(dirname "$fixture_video")"
+base64 --decode fixtures/media/fixture-video.mp4.base64 > "$fixture_video"
+if [[ $(sha256sum "$fixture_video" | cut -d' ' -f1) \
+  != d415ca3d0511bb16cbbc5a508fe831f7a0f080e9c187475de907ba070431a205 ]]; then
+  echo "Decoded selected-game video fixture does not match its pinned source." >&2
+  exit 1
+fi
+media_files_manifest="$test_config_root/media-files.before.sha256"
+(
+  cd "$media_root"
+  find Images Videos -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$media_files_manifest"
 media_platform="$media_root/Data/Platforms/Fixture Console.xml"
 cp "$media_platform" "$media_platform.before-media-smoke"
 for shell in launchbox bigbox; do
@@ -164,6 +179,41 @@ cmp "$media_platform.before-media-smoke" "$media_platform"
 cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
 
 echo "LaunchBox stable-ID selection, resizable game details, metadata actions, play statistics, community rating, and rendered artwork validated without library writes."
+
+game_details_media_screenshot="$test_config_root/launchbox-game-details-media.png"
+game_details_media_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$media_root" \
+    --game-details-media-smoke-test \
+    --game-details-media-screenshot "$game_details_media_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_details_media_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=4 image=Box-Front video=Video-Snap autoplay=1' \
+  <<< "$game_details_media_output"; then
+  printf '%s\n' "$game_details_media_output" >&2
+  echo "LaunchBox did not validate selected-game image and video media." >&2
+  exit 1
+fi
+if [[ ! -s "$game_details_media_screenshot" ]] \
+  || [[ $(wc -c < "$game_details_media_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$game_details_media_screenshot" | tr -d ' \n') \
+    != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$game_details_media_output" >&2
+  echo "LaunchBox did not render a valid selected-game media PNG." >&2
+  exit 1
+fi
+cmp "$media_platform.before-media-smoke" "$media_platform"
+cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
+(
+  cd "$media_root"
+  sha256sum --check "$media_files_manifest"
+) >/dev/null
+
+echo "LaunchBox selected-game image thumbnails, decoded H.264 video, autoplay, real play/pause controls, selection, and preview rendering validated without media or library writes."
 
 game_details_ui_state="$test_config_root/game-details-ui-state.json"
 expected_game_details_ui_state="$test_config_root/expected-game-details-ui-state.json"

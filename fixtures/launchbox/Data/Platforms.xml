@@ -28,4 +28,14 @@
     <MediaType>Box - Front</MediaType>
     <FolderPath>Images\Fixture Console\Box - Front</FolderPath>
   </PlatformFolder>
+  <PlatformFolder>
+    <Platform>Fixture Console</Platform>
+    <MediaType>Screenshot - Gameplay</MediaType>
+    <FolderPath>Images/Fixture Console/Screenshot - Gameplay</FolderPath>
+  </PlatformFolder>
+  <PlatformFolder>
+    <Platform>Fixture Console</Platform>
+    <MediaType>Fanart - Background</MediaType>
+    <FolderPath>Images\Fixture Console\Fanart - Background</FolderPath>
+  </PlatformFolder>
 </LaunchBox>

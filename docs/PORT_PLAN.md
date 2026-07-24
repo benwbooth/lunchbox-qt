@@ -267,16 +267,19 @@ offscreen controls prove stable selection, responsive rendering, exact
 settings backups, byte-identical platform XML, and fresh-process restoration.
 Native Windows and Intel/Apple Silicon macOS Qt interaction remains an explicit
 real-host release gate.
-The first `MED-004` vertical now reads configured front-image folders through
-the shared cross-platform resolver and renders real game artwork in both
-frontends through a native file-URL model role. Type, region, and numeric-image
-priority are deterministic; directory/file/size limits and symlink refusal keep
-large or hostile libraries isolated. Pure tests and a compiled offscreen
-decode/render scenario cover the portable pipeline. Native Windows and macOS
-Qt rendering are still explicit real-host gates, and all media mutation,
-download, video/audio/manual, alternate-image, cleanup, and migration work
-remains open.
-The first two `DESK-002` verticals add a resizable LaunchBox selected-game
+The current read-only media vertical keeps front-art selection in both shells
+and adds every configured image family plus per-game Video Snap, Theme Video,
+Trailer, Recording, and Marquee media to LaunchBox details. The shared
+cross-platform resolver is the only persisted-path boundary; Qt receives native
+local URLs. Type, region, numeric-image, and recovered video priorities are
+deterministic, while directory/file/size/item limits and symlink refusal keep
+large or hostile libraries isolated. Pure tests and compiled offscreen
+SVG/H.264 decode, selection, autoplay, play/pause, and rendered-gallery
+scenarios cover the portable pipeline without media writes. Native Windows and
+Intel/Apple Silicon macOS Qt Multimedia execution remain explicit real-host
+gates, and all media mutation, download, manual/music playback, platform-video
+management, cleanup, and migration work remains open.
+The first three `DESK-002` verticals add a resizable LaunchBox selected-game
 details pane over the shared virtualized model plus hide/show and native
 pop-out/dock behavior. Its stable-ID selection contract survives filter and
 sort resets, edits, insertion, and removal, with a defined first-visible
@@ -289,9 +292,11 @@ configuration location, never in shared LaunchBox XML. Real offscreen
 interactions verify selection transitions, native image paths, dock/hide/pop
 transitions, a rendered native popup, atomic exact state bytes, shutdown
 preservation, and restoration in a fresh process while fixture
-platform/settings documents stay byte-identical. Details customization,
-videos, multi-display geometry recovery, and native Windows/macOS Qt
-interaction remain open.
+platform/settings documents stay byte-identical. Its third vertical follows
+the recovered stock `MediaList`/`MediaPreview` shape with a selectable
+thumbnail row, large image/video preview, details-video settings, and playback
+controls. Details customization, full media-view parity, multi-display geometry
+recovery, and native Windows/macOS Qt interaction remain open.
 Transactional title
 editing has expanded into 18 descriptive fields through a versioned typed
 payload; it recomputes sort/search membership, removes explicitly cleared
