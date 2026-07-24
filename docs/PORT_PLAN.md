@@ -234,7 +234,7 @@ completion metrics.
 
 The repository and a narrow library-browsing vertical slice now exist. Exact
 multi-document transactions, golden semantic-diff/failure coverage, and the
-45-role `QAbstractListModel` now pass. Pending recovery, write-conflict UX,
+51-role `QAbstractListModel` now pass. Pending recovery, write-conflict UX,
 safe rollback, and the first transactional desktop game-state edit also pass a
 temporary-library Qt smoke with a targeted `dataChanged`. Transactional title
 editing now composes with the first complete persisted-status `LIB-014`

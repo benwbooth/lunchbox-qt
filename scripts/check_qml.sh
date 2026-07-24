@@ -180,6 +180,43 @@ cat > "$expected_game_details_ui_state" <<'EOF'
     "width": 640,
     "height": 560,
     "maximized": false
+  },
+  "list_view_column_widths": {
+    "Added": 140,
+    "Alternate Names": 220,
+    "Application Path": 300,
+    "Badges": 90,
+    "Broken": 90,
+    "Community Star Rating": 170,
+    "Community Star Rating Count": 190,
+    "Completed": 110,
+    "Developer": 180,
+    "Favorite": 95,
+    "Genre": 150,
+    "Hide": 80,
+    "Installed": 95,
+    "Last Played": 140,
+    "Launchbox Database ID": 180,
+    "Max Players": 110,
+    "Modified": 140,
+    "Platform": 150,
+    "Play Count": 110,
+    "Play Mode": 120,
+    "Play Time": 120,
+    "Portable": 95,
+    "Publisher": 180,
+    "Rating": 90,
+    "Region": 100,
+    "Release Date": 120,
+    "Release Type": 120,
+    "Series": 150,
+    "Source": 120,
+    "Star Rating": 110,
+    "Status": 120,
+    "Title": 260,
+    "Version": 100,
+    "Video URL": 260,
+    "Wikipedia URL": 260
   }
 }
 EOF
@@ -390,12 +427,67 @@ cp -a fixtures/launchbox/. "$launchbox_list_root/"
 list_platform="$launchbox_list_root/Data/Platforms/Fixture Console.xml"
 list_settings="$launchbox_list_root/Data/Settings.xml"
 list_screenshot="$launchbox_list_root/launchbox-list-view.png"
+list_ui_state="$launchbox_list_root/list-view-ui-state.json"
+expected_list_ui_state="$launchbox_list_root/expected-list-view-ui-state.json"
+cat > "$expected_list_ui_state" <<'EOF'
+{
+  "version": 1,
+  "show_game_details": true,
+  "game_details_popped_out": false,
+  "game_details_pane_width": 360,
+  "game_details_window": {
+    "x": 120,
+    "y": 80,
+    "width": 480,
+    "height": 640,
+    "maximized": false
+  },
+  "list_view_column_widths": {
+    "Added": 140,
+    "Alternate Names": 220,
+    "Application Path": 300,
+    "Badges": 90,
+    "Broken": 90,
+    "Community Star Rating": 170,
+    "Community Star Rating Count": 190,
+    "Completed": 110,
+    "Developer": 180,
+    "Favorite": 95,
+    "Genre": 150,
+    "Hide": 80,
+    "Installed": 95,
+    "Last Played": 140,
+    "Launchbox Database ID": 180,
+    "Max Players": 110,
+    "Modified": 140,
+    "Platform": 150,
+    "Play Count": 110,
+    "Play Mode": 120,
+    "Play Time": 120,
+    "Portable": 95,
+    "Publisher": 180,
+    "Rating": 90,
+    "Region": 100,
+    "Release Date": 120,
+    "Release Type": 120,
+    "Series": 150,
+    "Source": 120,
+    "Star Rating": 110,
+    "Status": 120,
+    "Title": 320,
+    "Version": 100,
+    "Video URL": 260,
+    "Wikipedia URL": 260
+  }
+}
+EOF
 cp "$list_platform" "$list_platform.before-list-view-smoke"
 list_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
     --library "$launchbox_list_root" \
     --library-list-view-smoke-test \
     --library-list-view-screenshot "$list_screenshot" \
+    --ui-state-file "$list_ui_state" \
     --path-mappings-file "$empty_path_mappings" 2>&1
 ) || {
   printf '%s\n' "$list_output" >&2
@@ -418,15 +510,29 @@ if [[ ! -s "$list_screenshot" ]] \
 fi
 if ! rg -q '<ListView>true</ListView>' "$list_settings" \
   || ! rg -q '<SortBy>PlayCount</SortBy>' "$list_settings" \
-  || ! rg -q '<SortByDesc>true</SortByDesc>' "$list_settings"; then
-  echo "LaunchBox did not persist its LaunchBox-compatible list view and header sort." >&2
+  || ! rg -q '<SortByDesc>true</SortByDesc>' "$list_settings" \
+  || ! rg -q \
+    '<ListViewOrderedColumnPriorities>Badges,Play Count,Title,Platform,Developer,Publisher,Release Date,Rating,Genre,Series,Region,Play Mode,Version,Status,Source,Last Played,Added,Modified,Favorite,Completed,Broken,Portable,Hide,Star Rating,Community Star Rating,Community Star Rating Count,Alternate Names,Wikipedia URL,Max Players,Release Type,Video URL,Installed,Application Path,Launchbox Database ID,Play Time</ListViewOrderedColumnPriorities>' \
+    "$list_settings" \
+  || ! rg -q \
+    '<ListViewVisibleColumnIndexPriorities>33,16,0,1,2,4,5,6,7,8,9,10,11,12,13,14,15,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,34</ListViewVisibleColumnIndexPriorities>' \
+    "$list_settings"; then
+  echo "LaunchBox did not persist its compatible list view, column order/visibility, and header sort." >&2
+  exit 1
+fi
+if ! cmp -s "$expected_list_ui_state" "$list_ui_state"; then
+  printf '%s\n' "$list_output" >&2
+  diff -u "$expected_list_ui_state" "$list_ui_state" >&2 || true
+  echo "LaunchBox persisted the wrong host-specific list column widths." >&2
   exit 1
 fi
 cp "$list_settings" "$list_settings.after-list-view-smoke"
+cp "$list_ui_state" "$list_ui_state.after-list-view-smoke"
 list_reload_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
     --library "$launchbox_list_root" \
     --library-list-view-reload-smoke-test \
+    --ui-state-file "$list_ui_state" \
     --path-mappings-file "$empty_path_mappings" 2>&1
 ) || {
   printf '%s\n' "$list_reload_output" >&2
@@ -440,9 +546,10 @@ if ! rg -q \
   exit 1
 fi
 cmp "$list_settings.after-list-view-smoke" "$list_settings"
+cmp "$list_ui_state.after-list-view-smoke" "$list_ui_state"
 cmp "$list_platform.before-list-view-smoke" "$list_platform"
 
-echo "LaunchBox model-backed grid/list switching, sortable columns, stable-ID selection, rendered rows, atomic Settings.xml persistence, and new-process restoration validated."
+echo "LaunchBox model-backed grid/list switching, all 35 original columns, configurable order/visibility/width, stable-ID selection, rendered rows, compatible atomic Settings.xml persistence, platform-native UI state, and new-process restoration validated."
 
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"

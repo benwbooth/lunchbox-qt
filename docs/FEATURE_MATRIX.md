@@ -30,9 +30,11 @@ subset of `LIB-013`, now including 17 typed Arrange By modes, atomic
 frontends. The first `DESK-001` subset also switches LaunchBox between its
 box-art grid and a virtualized multi-column list over that same model and
 stable-ID selection. It loads and atomically persists the original `ListView`
-setting, exposes query-backed sortable headers, and renders nine recovered
-default columns. Original column visibility/order/width customization, the
-remaining columns, and box-size controls remain open. A source-indexed
+setting, exposes query-backed sortable headers, and renders all 35 recovered
+13.27 columns. The original stable column order and visibility indexes persist
+transactionally in shared `Settings.xml`; bounded per-host widths persist in
+platform-native UI state, and a real Columns dialog edits all three. Box-size
+controls remain open. A source-indexed
 transactional editor also implements the
 three-field alternate-name and name/value custom-field subset of `LIB-003`.
 The dialog-driven portable platform create/edit/delete, recovered platform

@@ -82,10 +82,10 @@ cargo run -p lb-shell --bin launchbox -- \
 
 Library parsing runs on a Rust worker thread and returns through CXX-Qt's queued
 Qt-thread bridge. QML consumes the controller as a real `QAbstractListModel`
-with 45 named identity, state, descriptive-metadata, launch-configuration,
+with 51 named identity, state, descriptive-metadata, launch-configuration,
 additional-application, game-save, front-image, and play-statistics roles; it
 does not receive a whole-library JSON snapshot. `check_qml.sh` validates
-generated type metadata, then runs both binaries offscreen and proves all 45
+generated type metadata, then runs both binaries offscreen and proves all 51
 roles survive a model-resetting filter operation. It also edits a
 temporary fixture library through the Qt shell and checks the targeted model
 notification for a state-only edit, descriptive-metadata search refresh, exact
@@ -198,12 +198,15 @@ platform-neutral Rust/Qt behavior shared unchanged by Linux, Windows, Intel
 macOS, and Apple Silicon.
 LaunchBox can now switch that same model and stable-ID selection between its
 box-art grid and a virtualized, horizontally scrollable list. The list shows
-state, title, platform, developer, release date, genre, content rating, play
-count, and play time; supported headers drive the shared sorter. The original
-`Settings.xml` `ListView` Boolean is loaded and transactionally persisted, so a
-new process restores the selected view on every supported host. Column
-visibility, ordering, resizing, the remaining original columns, and box-size
-controls are still tracked as later `DESK-001` work.
+all 35 columns recovered from LaunchBox 13.27; supported headers drive the
+shared sorter. A real Columns dialog controls visibility, display order, and
+bounded pixel widths. The original `Settings.xml` `ListView`,
+`ListViewOrderedColumnPriorities`, and
+`ListViewVisibleColumnIndexPriorities` values are loaded and transactionally
+persisted with their stable WPF indexes, while machine-specific widths remain
+in the port's platform-native UI state. A new process restores both documents
+on Linux, Windows, Intel macOS, and Apple Silicon. Box-size controls remain
+later `DESK-001` work.
 Existing-platform game additions generate UUIDs and use targeted Qt row
 insertion. Deletion freshly scans every modeled platform, playlist, navigation,
 clone, save, controller, and blacklist reference and refuses orphaning; an

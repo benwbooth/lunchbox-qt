@@ -27,10 +27,11 @@ pub use path_settings::{
 };
 pub use scummvm::ScummVmPlanError;
 pub use ui_state::{
-    default_launchbox_ui_state_path, GameDetailsWindowState, LaunchBoxUiState,
-    LaunchBoxUiStateError, LAUNCHBOX_UI_STATE_VERSION, MAX_GAME_DETAILS_PANE_WIDTH,
-    MAX_GAME_DETAILS_WINDOW_HEIGHT, MAX_GAME_DETAILS_WINDOW_WIDTH, MIN_GAME_DETAILS_PANE_WIDTH,
-    MIN_GAME_DETAILS_WINDOW_HEIGHT, MIN_GAME_DETAILS_WINDOW_WIDTH,
+    default_launchbox_ui_state_path, default_list_view_column_widths, GameDetailsWindowState,
+    LaunchBoxUiState, LaunchBoxUiStateError, LAUNCHBOX_UI_STATE_VERSION,
+    MAX_GAME_DETAILS_PANE_WIDTH, MAX_GAME_DETAILS_WINDOW_HEIGHT, MAX_GAME_DETAILS_WINDOW_WIDTH,
+    MAX_LIST_VIEW_COLUMN_WIDTH, MIN_GAME_DETAILS_PANE_WIDTH, MIN_GAME_DETAILS_WINDOW_HEIGHT,
+    MIN_GAME_DETAILS_WINDOW_WIDTH, MIN_LIST_VIEW_COLUMN_WIDTH,
 };
 
 use lb_domain::{

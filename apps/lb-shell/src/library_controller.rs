@@ -32,6 +32,7 @@ pub mod qobject {
         #[qproperty(QString, game_sort)]
         #[qproperty(bool, game_sort_descending)]
         #[qproperty(bool, list_view)]
+        #[qproperty(QString, list_view_layout_json)]
         #[qproperty(bool, include_hidden_games)]
         #[qproperty(bool, include_broken_games)]
         #[qproperty(bool, loading)]
@@ -377,6 +378,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn apply_list_view(self: Pin<&mut LibraryController>, list_view: bool) -> bool;
+
+        #[qinvokable]
+        fn apply_list_view_columns(
+            self: Pin<&mut LibraryController>,
+            request_payload: QString,
+        ) -> bool;
 
         #[qinvokable]
         fn select_random_game(self: Pin<&mut LibraryController>, avoid_game_id: QString) -> i32;
@@ -1063,9 +1070,9 @@ use cxx_qt_lib::{
 use lb_domain::{
     AdditionalApplication, AdditionalApplicationEdit, AlternateName, CustomField, Emulator,
     EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game, GameLaunchConfiguration,
-    GameMetadata, GameSave, GameSaveMetadataEdit, Mount, NavigationMetadata, ParentRelationship,
-    PlatformCategory, PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument,
-    PlaylistFilter, PlaylistGame, UNASSIGNED_EMULATOR_ID,
+    GameMetadata, GameSave, GameSaveMetadataEdit, ListViewColumnLayout, Mount, NavigationMetadata,
+    ParentRelationship, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
+    PlaylistDocument, PlaylistFilter, PlaylistGame, UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -1215,8 +1222,14 @@ const GAME_DATE_MODIFIED_ROLE: i32 = 298;
 const GAME_COMMUNITY_STAR_RATING_ROLE: i32 = 299;
 const GAME_COMMUNITY_STAR_RATING_TOTAL_VOTES_ROLE: i32 = 300;
 const GAME_INSTALLED_STATE_ROLE: i32 = 301;
+const GAME_HIDDEN_ROLE: i32 = 302;
+const GAME_BROKEN_ROLE: i32 = 303;
+const GAME_PORTABLE_ROLE: i32 = 304;
+const GAME_VIDEO_URL_ROLE: i32 = 305;
+const GAME_DATABASE_ID_ROLE: i32 = 306;
+const GAME_ALTERNATE_NAMES_ROLE: i32 = 307;
 
-const GAME_ROLES: [(i32, &str); 45] = [
+const GAME_ROLES: [(i32, &str); 51] = [
     (GAME_ID_ROLE, "gameId"),
     (GAME_TITLE_ROLE, "gameTitle"),
     (GAME_PLATFORM_ROLE, "gamePlatform"),
@@ -1280,6 +1293,12 @@ const GAME_ROLES: [(i32, &str); 45] = [
         "gameCommunityStarRatingTotalVotes",
     ),
     (GAME_INSTALLED_STATE_ROLE, "gameInstalledState"),
+    (GAME_HIDDEN_ROLE, "gameHidden"),
+    (GAME_BROKEN_ROLE, "gameBroken"),
+    (GAME_PORTABLE_ROLE, "gamePortable"),
+    (GAME_VIDEO_URL_ROLE, "gameVideoUrl"),
+    (GAME_DATABASE_ID_ROLE, "gameDatabaseId"),
+    (GAME_ALTERNATE_NAMES_ROLE, "gameAlternateNames"),
 ];
 
 const EDITABLE_GAME_ROLES: [i32; 32] = [
@@ -1329,6 +1348,7 @@ pub struct LibraryControllerRust {
     game_sort: QString,
     game_sort_descending: bool,
     list_view: bool,
+    list_view_layout_json: QString,
     include_hidden_games: bool,
     include_broken_games: bool,
     loading: bool,
@@ -1462,6 +1482,7 @@ pub struct LibraryControllerRust {
     ui_state_file: Option<PathBuf>,
     ui_state: LaunchBoxUiState,
     ui_state_initialized: bool,
+    list_view_column_layout: ListViewColumnLayout,
     request_generation: u64,
     random_selection_counter: u64,
     model_reset_notifications: u64,
@@ -1551,6 +1572,7 @@ struct LoadedLibrary {
     game_sort: GameSort,
     game_sort_descending: bool,
     list_view: bool,
+    list_view_column_layout: ListViewColumnLayout,
 }
 
 struct LibraryReplacement {
@@ -1575,6 +1597,7 @@ struct LibraryReplacement {
     game_sort: GameSort,
     game_sort_descending: bool,
     list_view: bool,
+    list_view_column_layout: ListViewColumnLayout,
     name: String,
     message: String,
     pending_recovery_count: usize,
@@ -1642,6 +1665,7 @@ impl LoadedLibrary {
                 game_sort: GameSort::default(),
                 game_sort_descending: false,
                 list_view: false,
+                list_view_column_layout: ListViewColumnLayout::default(),
             });
         }
 
@@ -1649,6 +1673,7 @@ impl LoadedLibrary {
         let root = PathBuf::from(&path);
         let (game_sort, game_sort_descending) = game_sort_from_settings(data.settings());
         let list_view = list_view_from_settings(data.settings());
+        let list_view_column_layout = ListViewColumnLayout::from_settings(data.settings());
         let launchbox_launch_screen_policy =
             FrontendLaunchScreenPolicy::from_settings(data.settings())
                 .map_err(|error| error.to_string())?;
@@ -1749,6 +1774,7 @@ impl LoadedLibrary {
             game_sort,
             game_sort_descending,
             list_view,
+            list_view_column_layout,
         })
     }
 }
@@ -2035,6 +2061,49 @@ enum GameSortWriteFailure {
 
 struct ListViewWriteSuccess {
     backup: PathBuf,
+}
+
+const LIST_VIEW_LAYOUT_PAYLOAD_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ListViewLayoutPayload {
+    version: u32,
+    ordered_columns: Vec<String>,
+    visible_column_indexes: Vec<usize>,
+    column_widths: BTreeMap<String, u32>,
+}
+
+impl ListViewLayoutPayload {
+    fn from_parts(layout: &ListViewColumnLayout, state: &LaunchBoxUiState) -> Self {
+        Self {
+            version: LIST_VIEW_LAYOUT_PAYLOAD_VERSION,
+            ordered_columns: layout.ordered_columns.clone(),
+            visible_column_indexes: layout.visible_column_indexes.clone(),
+            column_widths: state.list_view_column_widths.clone(),
+        }
+    }
+
+    fn validate(
+        &self,
+        current_state: &LaunchBoxUiState,
+    ) -> Result<(ListViewColumnLayout, LaunchBoxUiState), String> {
+        if self.version != LIST_VIEW_LAYOUT_PAYLOAD_VERSION {
+            return Err(format!(
+                "list-view layout version {} is unsupported",
+                self.version
+            ));
+        }
+        let layout = ListViewColumnLayout {
+            ordered_columns: self.ordered_columns.clone(),
+            visible_column_indexes: self.visible_column_indexes.clone(),
+        };
+        layout.validate().map_err(|error| error.to_string())?;
+        let mut state = current_state.clone();
+        state.list_view_column_widths = self.column_widths.clone();
+        state.validate().map_err(|error| error.to_string())?;
+        Ok((layout, state))
+    }
 }
 
 enum ListViewWriteFailure {
@@ -4336,6 +4405,52 @@ fn write_list_view_setting(
         .ok_or_else(|| {
             ListViewWriteFailure::Other(
                 "view-mode transaction reported no Settings.xml write".into(),
+            )
+        })?;
+    Ok(ListViewWriteSuccess { backup })
+}
+
+fn write_list_view_column_settings(
+    root: PathBuf,
+    layout: ListViewColumnLayout,
+) -> Result<ListViewWriteSuccess, ListViewWriteFailure> {
+    layout
+        .validate()
+        .map_err(|error| ListViewWriteFailure::Other(error.to_string()))?;
+    let settings_path = root.join("Data").join("Settings.xml");
+    let mut settings = AuxiliaryDocument::load(&settings_path)
+        .map_err(|error| ListViewWriteFailure::Other(error.to_string()))?;
+    settings
+        .set_single_record_field(
+            "Settings",
+            "ListViewOrderedColumnPriorities",
+            &layout.ordered_setting(),
+        )
+        .and_then(|()| {
+            settings.set_single_record_field(
+                "Settings",
+                "ListViewVisibleColumnIndexPriorities",
+                &layout.visible_indexes_setting(),
+            )
+        })
+        .map_err(|error| ListViewWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_list_view_transaction_error)?;
+    transaction
+        .stage_auxiliary(&settings)
+        .map_err(classify_list_view_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_list_view_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == settings_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            ListViewWriteFailure::Other(
+                "list-column transaction reported no Settings.xml write".into(),
             )
         })?;
     Ok(ListViewWriteSuccess { backup })
@@ -14604,6 +14719,23 @@ impl qobject::LibraryController {
         self.as_mut()
             .set_game_details_window_maximized(state.game_details_window.maximized);
         self.as_mut().rust_mut().ui_state = state;
+        self.as_mut().refresh_list_view_layout_json();
+    }
+
+    fn refresh_list_view_layout_json(mut self: Pin<&mut Self>) {
+        let payload = {
+            let this = self.as_ref();
+            ListViewLayoutPayload::from_parts(
+                &this.rust().list_view_column_layout,
+                &this.rust().ui_state,
+            )
+        };
+        match serde_json::to_string(&payload) {
+            Ok(payload) => self.as_mut().set_list_view_layout_json(qstring(payload)),
+            Err(error) => self.as_mut().set_status_message(qstring(format!(
+                "Could not encode LaunchBox list layout: {error}"
+            ))),
+        }
     }
 
     pub fn initialize_launchbox_ui_state(mut self: Pin<&mut Self>) -> bool {
@@ -14960,6 +15092,7 @@ impl qobject::LibraryController {
                     game_sort: GameSort::default(),
                     game_sort_descending: false,
                     list_view: false,
+                    list_view_column_layout: ListViewColumnLayout::default(),
                     name: "Fixture Console".into(),
                     message: "Embedded compatibility fixture".into(),
                     pending_recovery_count: 0,
@@ -15328,6 +15461,94 @@ impl qobject::LibraryController {
                 )));
                 return false;
             }
+        }
+        true
+    }
+
+    pub fn apply_list_view_columns(mut self: Pin<&mut Self>, request_payload: QString) -> bool {
+        if !self.as_mut().initialize_launchbox_ui_state() {
+            return false;
+        }
+        let payload =
+            match serde_json::from_str::<ListViewLayoutPayload>(&request_payload.to_string()) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.as_mut().set_status_message(qstring(format!(
+                        "Could not decode LaunchBox list layout: {error}"
+                    )));
+                    return false;
+                }
+            };
+        let (layout, next_state) = match payload.validate(&self.as_ref().rust().ui_state) {
+            Ok(layout) => layout,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not apply LaunchBox list layout: {error}"
+                )));
+                return false;
+            }
+        };
+        let launchbox_root = self.as_ref().rust().launchbox_root.clone();
+        if launchbox_root.is_some() && !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+        let Some(ui_state_path) = self.as_ref().rust().ui_state_file.clone() else {
+            self.as_mut()
+                .set_status_message(qstring("The LaunchBox desktop layout path is unavailable."));
+            return false;
+        };
+        let previous_layout = self.as_ref().rust().list_view_column_layout.clone();
+        let previous_state = self.as_ref().rust().ui_state.clone();
+        if let Err(error) = next_state.save_atomic(&ui_state_path) {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not save LaunchBox list column widths: {error}"
+            )));
+            return false;
+        }
+
+        self.as_mut().rust_mut().list_view_column_layout = layout.clone();
+        self.as_mut().apply_launchbox_ui_state(next_state);
+        let Some(root) = launchbox_root else {
+            self.as_mut()
+                .set_status_message(qstring("Saved host-specific list column widths."));
+            return true;
+        };
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Saving LaunchBox list columns in the background...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let queued_previous_layout = previous_layout.clone();
+        let queued_previous_state = previous_state.clone();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-list-column-settings-write".to_string())
+            .spawn(move || {
+                let result = write_list_view_column_settings(root, layout);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_list_view_columns_write(
+                            generation,
+                            queued_previous_layout,
+                            queued_previous_state,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            let rollback_error = self
+                .as_mut()
+                .restore_list_view_layout(previous_layout, previous_state);
+            let rollback = rollback_error
+                .map(|rollback| format!(" Host-state rollback also failed: {rollback}"))
+                .unwrap_or_default();
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start list-column settings writer: {error}.{rollback}"
+            )));
+            return false;
         }
         true
     }
@@ -17932,6 +18153,7 @@ impl qobject::LibraryController {
                 height: 560,
                 maximized: false,
             },
+            list_view_column_widths: lb_platform::default_list_view_column_widths(),
         };
         let loaded = self
             .rust()
@@ -18038,12 +18260,31 @@ impl qobject::LibraryController {
         } else {
             "fixture-adventure"
         };
+        let list_layout = &rust.list_view_column_layout;
+        let list_columns_match = list_layout.ordered_columns.len() == 35
+            && list_layout
+                .ordered_columns
+                .first()
+                .is_some_and(|name| name == "Badges")
+            && list_layout
+                .ordered_columns
+                .get(1)
+                .is_some_and(|name| name == "Play Count")
+            && list_layout
+                .ordered_columns
+                .get(2)
+                .is_some_and(|name| name == "Title")
+            && list_layout.visible_column_indexes.len() == 34
+            && !list_layout.visible_column_indexes.contains(&3)
+            && rust.ui_state.list_view_column_widths.get("Title") == Some(&320);
         let success = rust.games.len() == 3
             && ordered_ids == ["fixture-racer", "fixture-adventure", "fixture-puzzle"]
             && *self.list_view()
             && self.game_sort().to_string() == GameSort::PlayCount.key()
             && *self.game_sort_descending()
             && selected_game_id == expected_selected
+            && list_columns_match
+            && *self.ui_state_ready()
             && !*self.writing()
             && !*self.write_conflict()
             && *self.pending_recovery_count() == 0;
@@ -19653,6 +19894,31 @@ impl qobject::LibraryController {
                 Some(false) => 0,
                 None => -1,
             }),
+            GAME_HIDDEN_ROLE => QVariant::from(&game.hidden),
+            GAME_BROKEN_ROLE => QVariant::from(&game.broken),
+            GAME_PORTABLE_ROLE => QVariant::from(&game.portable),
+            GAME_VIDEO_URL_ROLE => {
+                QVariant::from(&qstring(game.video_url.as_deref().unwrap_or_default()))
+            }
+            GAME_DATABASE_ID_ROLE => QVariant::from(
+                &game
+                    .database_id
+                    .map(|value| saturating_i32(value as usize))
+                    .unwrap_or_default(),
+            ),
+            GAME_ALTERNATE_NAMES_ROLE => QVariant::from(&qstring(
+                self.rust()
+                    .alternate_names_by_game
+                    .get(&game.id)
+                    .map(|names| {
+                        names
+                            .iter()
+                            .map(|name| name.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })
+                    .unwrap_or_default(),
+            )),
             GAME_SORT_TITLE_ROLE => {
                 QVariant::from(&qstring(game.sort_title.as_deref().unwrap_or_default()))
             }
@@ -21795,6 +22061,7 @@ impl qobject::LibraryController {
                     game_sort: loaded.game_sort,
                     game_sort_descending: loaded.game_sort_descending,
                     list_view: loaded.list_view,
+                    list_view_column_layout: loaded.list_view_column_layout,
                     name: loaded.name,
                     message: loaded.message,
                     pending_recovery_count: loaded.pending_recovery_count,
@@ -22006,6 +22273,73 @@ impl qobject::LibraryController {
                 self.as_mut().set_status_message(qstring(format!(
                     "Could not save library view mode: {message}"
                 )));
+            }
+        }
+    }
+
+    fn restore_list_view_layout(
+        mut self: Pin<&mut Self>,
+        layout: ListViewColumnLayout,
+        state: LaunchBoxUiState,
+    ) -> Option<String> {
+        let write_error = self
+            .as_ref()
+            .rust()
+            .ui_state_file
+            .as_ref()
+            .and_then(|path| state.save_atomic(path).err())
+            .map(|error| error.to_string());
+        self.as_mut().rust_mut().list_view_column_layout = layout;
+        self.as_mut().apply_launchbox_ui_state(state);
+        write_error
+    }
+
+    fn finish_list_view_columns_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        previous_layout: ListViewColumnLayout,
+        previous_state: LaunchBoxUiState,
+        result: Result<ListViewWriteSuccess, ListViewWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(written) => {
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved LaunchBox list columns. Exact backup: {}",
+                    written.backup.display()
+                )));
+            }
+            Err(error) => {
+                let (kind, message, pending_count) = match error {
+                    ListViewWriteFailure::Conflict(message) => ("Write conflict", message, None),
+                    ListViewWriteFailure::PendingRecovery { count, message } => (
+                        "Interrupted transaction requires recovery",
+                        message,
+                        Some(count),
+                    ),
+                    ListViewWriteFailure::Other(message) => {
+                        ("Could not save LaunchBox list columns", message, None)
+                    }
+                };
+                let rollback_error = self
+                    .as_mut()
+                    .restore_list_view_layout(previous_layout, previous_state);
+                if kind == "Write conflict" {
+                    self.as_mut().set_write_conflict(true);
+                }
+                if let Some(count) = pending_count {
+                    self.as_mut()
+                        .set_pending_recovery_count(saturating_i32(count));
+                }
+                let rollback = rollback_error
+                    .map(|rollback| format!(" Host-state rollback also failed: {rollback}"))
+                    .unwrap_or_default();
+                self.as_mut()
+                    .set_status_message(qstring(format!("{kind}: {message}.{rollback}")));
             }
         }
     }
@@ -25267,6 +25601,7 @@ impl qobject::LibraryController {
             game_sort,
             game_sort_descending,
             list_view,
+            list_view_column_layout,
             name,
             message,
             pending_recovery_count,
@@ -25299,6 +25634,7 @@ impl qobject::LibraryController {
             rust.custom_fields_by_game = custom_fields_by_game;
             rust.game_saves_by_game = game_saves_by_game;
             rust.front_image_paths = front_image_paths;
+            rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
             rust.platform_counts = platform_counts;
             rust.platform_names = platform_names;
@@ -25451,6 +25787,7 @@ impl qobject::LibraryController {
         self.as_mut().set_game_sort(qstring(game_sort.key()));
         self.as_mut().set_game_sort_descending(game_sort_descending);
         self.as_mut().set_list_view(list_view);
+        self.as_mut().refresh_list_view_layout_json();
         self.as_mut().set_include_hidden_games(false);
         self.as_mut().set_include_broken_games(false);
         self.as_mut().set_navigation_filter_kind(QString::default());
@@ -26344,6 +26681,60 @@ mod tests {
         assert!(updated.contains("<SortBy>Title</SortBy>"));
         assert!(updated.contains("<SortByDesc>false</SortByDesc>"));
         assert!(updated.contains("<Theme>Fixture Theme</Theme>"));
+        assert_eq!(
+            fs::read(platform_path).expect("read unchanged platform"),
+            original_platform
+        );
+    }
+
+    #[test]
+    fn list_column_writer_preserves_stable_indexes_and_updates_both_settings_atomically() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        let platforms = data.join("Platforms");
+        fs::create_dir_all(&platforms).expect("create platform directory");
+        let settings_path = data.join("Settings.xml");
+        let platform_path = platforms.join("Fixture Console.xml");
+        let original_settings = include_bytes!("../../../fixtures/launchbox/Data/Settings.xml");
+        let original_platform =
+            include_bytes!("../../../fixtures/launchbox/Data/Platforms/Fixture Console.xml");
+        fs::write(&settings_path, original_settings).expect("write settings fixture");
+        fs::write(&platform_path, original_platform).expect("write platform fixture");
+
+        let mut layout = ListViewColumnLayout::default();
+        let play_count = layout
+            .ordered_columns
+            .iter()
+            .position(|name| name == "Play Count")
+            .expect("Play Count column");
+        let play_count = layout.ordered_columns.remove(play_count);
+        layout.ordered_columns.insert(1, play_count);
+        layout.visible_column_indexes.retain(|index| *index != 3);
+        let written =
+            write_list_view_column_settings(directory.path().to_path_buf(), layout.clone())
+                .unwrap_or_else(|error| match error {
+                    ListViewWriteFailure::Conflict(message)
+                    | ListViewWriteFailure::Other(message)
+                    | ListViewWriteFailure::PendingRecovery { message, .. } => {
+                        panic!("write list-column settings: {message}")
+                    }
+                });
+
+        assert_eq!(
+            fs::read(&written.backup).expect("read exact backup"),
+            original_settings
+        );
+        let updated = LaunchBoxDataIndex::load(directory.path()).expect("load updated library");
+        let typed = updated.settings().expect("typed updated settings");
+        assert_eq!(
+            typed.get("ListViewOrderedColumnPriorities"),
+            Some(layout.ordered_setting().as_str())
+        );
+        assert_eq!(
+            typed.get("ListViewVisibleColumnIndexPriorities"),
+            Some(layout.visible_indexes_setting().as_str())
+        );
+        assert_eq!(typed.get_bool("ListView"), Some(false));
         assert_eq!(
             fs::read(platform_path).expect("read unchanged platform"),
             original_platform

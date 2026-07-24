@@ -973,7 +973,7 @@ mod tests {
 
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         let settings = index.settings().expect("LaunchBox settings");
-        assert_eq!(settings.entries.len(), 15);
+        assert_eq!(settings.entries.len(), 17);
         assert_eq!(settings.get("Theme"), Some("Fixture Theme"));
         assert_eq!(settings.get_bool("DebugLog"), Some(false));
         assert_eq!(settings.get_bool("UseStartupScreen"), Some(true));
@@ -997,6 +997,18 @@ mod tests {
         assert_eq!(settings.get("SortBy"), Some("Title"));
         assert_eq!(settings.get_bool("SortByDesc"), Some(false));
         assert_eq!(settings.get_bool("ListView"), Some(false));
+        assert_eq!(
+            settings.get("ListViewOrderedColumnPriorities"),
+            Some(
+                "Badges,Title,Platform,Developer,Publisher,Release Date,Rating,Genre,Series,Region,Play Mode,Version,Status,Source,Last Played,Added,Modified,Play Count,Favorite,Completed,Broken,Portable,Hide,Star Rating,Community Star Rating,Community Star Rating Count,Alternate Names,Wikipedia URL,Max Players,Release Type,Video URL,Installed,Application Path,Launchbox Database ID,Play Time"
+            )
+        );
+        assert_eq!(
+            settings.get("ListViewVisibleColumnIndexPriorities"),
+            Some(
+                "33,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,34"
+            )
+        );
         assert_eq!(settings.get("EmptyValue"), Some(""));
         assert_eq!(settings.image_type_settings.len(), 1);
 

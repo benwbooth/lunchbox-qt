@@ -96,6 +96,9 @@ ApplicationWindow {
     property string listCurrentGameRating: ""
     property int listCurrentGamePlayCount: 0
     property real listCurrentGamePlayTimeSeconds: 0
+    property var listCurrentCellValues: ({})
+    property var listColumns: []
+    property var visibleListColumns: []
     readonly property var selectedGameItem:
         gameGrid.currentIndex >= 0 ? gameGrid.currentItem : null
     property bool editSmokeTest: Qt.application.arguments.indexOf("--edit-smoke-test") >= 0
@@ -333,7 +336,61 @@ ApplicationWindow {
         { label: "Status", key: "Status" },
         { label: "Favorite", key: "Favorite" }
     ]
-    readonly property int libraryListTableWidth: 1250
+    readonly property var listViewColumnDefinitions: [
+        { name: "Title", stableIndex: 0, sortKey: "Title" },
+        { name: "Platform", stableIndex: 1, sortKey: "Platform" },
+        { name: "Developer", stableIndex: 2, sortKey: "Developer" },
+        { name: "Publisher", stableIndex: 3, sortKey: "Publisher" },
+        { name: "Release Date", stableIndex: 4, sortKey: "ReleaseDate" },
+        { name: "Rating", stableIndex: 5, sortKey: "" },
+        { name: "Genre", stableIndex: 6, sortKey: "Genre" },
+        { name: "Series", stableIndex: 7, sortKey: "Series" },
+        { name: "Region", stableIndex: 8, sortKey: "" },
+        { name: "Play Mode", stableIndex: 9, sortKey: "" },
+        { name: "Version", stableIndex: 10, sortKey: "" },
+        { name: "Status", stableIndex: 11, sortKey: "Status" },
+        { name: "Source", stableIndex: 12, sortKey: "" },
+        { name: "Last Played", stableIndex: 13, sortKey: "LastPlayed" },
+        { name: "Added", stableIndex: 14, sortKey: "DateAdded" },
+        { name: "Modified", stableIndex: 15, sortKey: "DateModified" },
+        { name: "Play Count", stableIndex: 16, sortKey: "PlayCount" },
+        { name: "Favorite", stableIndex: 17, sortKey: "Favorite" },
+        { name: "Completed", stableIndex: 18, sortKey: "" },
+        { name: "Broken", stableIndex: 19, sortKey: "" },
+        { name: "Portable", stableIndex: 20, sortKey: "" },
+        { name: "Hide", stableIndex: 21, sortKey: "" },
+        { name: "Star Rating", stableIndex: 22, sortKey: "StarRating" },
+        {
+            name: "Community Star Rating",
+            stableIndex: 23,
+            sortKey: "CommunityStarRating"
+        },
+        {
+            name: "Community Star Rating Count",
+            stableIndex: 24,
+            sortKey: ""
+        },
+        { name: "Alternate Names", stableIndex: 25, sortKey: "" },
+        { name: "Wikipedia URL", stableIndex: 26, sortKey: "" },
+        { name: "Max Players", stableIndex: 27, sortKey: "" },
+        { name: "Release Type", stableIndex: 28, sortKey: "" },
+        { name: "Video URL", stableIndex: 29, sortKey: "" },
+        { name: "Installed", stableIndex: 30, sortKey: "" },
+        { name: "Application Path", stableIndex: 31, sortKey: "" },
+        {
+            name: "Launchbox Database ID",
+            stableIndex: 32,
+            sortKey: ""
+        },
+        { name: "Badges", stableIndex: 33, sortKey: "" },
+        { name: "Play Time", stableIndex: 34, sortKey: "PlayTime" }
+    ]
+    readonly property int libraryListTableWidth: {
+        let width = 0
+        for (let index = 0; index < visibleListColumns.length; ++index)
+            width += visibleListColumns[index].width
+        return width
+    }
 
     function platformName(row) { return controller.platform_name_at(row) }
     function platformGameCount(row) { return controller.platform_game_count_at(row) }
@@ -421,6 +478,124 @@ ApplicationWindow {
         gameSortCombo.currentIndex = index
         gameSortDescendingCheck.checked = descending
         return controller.apply_game_sort(key, descending)
+    }
+
+    function listColumnDefinition(name) {
+        for (let index = 0; index < listViewColumnDefinitions.length;
+             ++index) {
+            if (listViewColumnDefinitions[index].name === name)
+                return listViewColumnDefinitions[index]
+        }
+        return null
+    }
+
+    function loadListViewLayout() {
+        if (controller.list_view_layout_json.length === 0)
+            return false
+        let payload
+        try {
+            payload = JSON.parse(controller.list_view_layout_json)
+        } catch (error) {
+            console.error("LIST_VIEW_LAYOUT_JSON_INVALID " + error)
+            return false
+        }
+        if (payload.version !== 1
+                || !Array.isArray(payload.ordered_columns)
+                || payload.ordered_columns.length !== 35
+                || !Array.isArray(payload.visible_column_indexes)
+                || payload.visible_column_indexes.length === 0)
+            return false
+        const visible = {}
+        for (let index = 0; index < payload.visible_column_indexes.length;
+             ++index)
+            visible[payload.visible_column_indexes[index]] = true
+        const columns = []
+        const visibleColumns = []
+        for (let index = 0; index < payload.ordered_columns.length; ++index) {
+            const name = payload.ordered_columns[index]
+            const definition = listColumnDefinition(name)
+            const width = Number(payload.column_widths[name])
+            if (definition === null || !Number.isInteger(width)
+                    || width < 60 || width > 600)
+                return false
+            const column = {
+                name: name,
+                stableIndex: definition.stableIndex,
+                sortKey: definition.sortKey,
+                width: width,
+                visible: visible[definition.stableIndex] === true
+            }
+            columns.push(column)
+            if (column.visible)
+                visibleColumns.push(column)
+        }
+        if (visibleColumns.length === 0)
+            return false
+        listColumns = columns
+        visibleListColumns = visibleColumns
+        return true
+    }
+
+    function listViewColumnWidths() {
+        const widths = {}
+        for (let index = 0; index < listColumns.length; ++index)
+            widths[listColumns[index].name] = listColumns[index].width
+        return widths
+    }
+
+    function applyListViewColumnLayout(columns) {
+        const ordered = []
+        const visibleIndexes = []
+        const widths = {}
+        for (let index = 0; index < columns.length; ++index) {
+            const column = columns[index]
+            ordered.push(column.name)
+            widths[column.name] = Math.round(column.width)
+            if (column.visible)
+                visibleIndexes.push(column.stableIndex)
+        }
+        if (ordered.length !== 35 || visibleIndexes.length === 0)
+            return false
+        return controller.apply_list_view_columns(JSON.stringify({
+            version: 1,
+            ordered_columns: ordered,
+            visible_column_indexes: visibleIndexes,
+            column_widths: widths
+        }))
+    }
+
+    function clickListColumnHeader(name) {
+        for (let index = 0; index < visibleListColumns.length; ++index) {
+            if (visibleListColumns[index].name === name) {
+                const header = gameListHeaderRepeater.itemAt(index)
+                if (header === null || !header.enabled)
+                    return false
+                header["cl" + "ick"]()
+                return true
+            }
+        }
+        return false
+    }
+
+    function listColumnByName(name) {
+        for (let index = 0; index < listColumns.length; ++index) {
+            if (listColumns[index].name === name)
+                return listColumns[index]
+        }
+        return null
+    }
+
+    function customizedListColumnsMatch() {
+        const publisher = listColumnByName("Publisher")
+        const title = listColumnByName("Title")
+        return listColumns.length === 35
+               && visibleListColumns.length === 34
+               && listColumns[0].name === "Badges"
+               && listColumns[1].name === "Play Count"
+               && listColumns[2].name === "Title"
+               && publisher !== null && !publisher.visible
+               && title !== null && title.width === 320
+               && libraryListTableWidth > 4000
     }
 
     function openSelectedGameEditor() {
@@ -573,7 +748,8 @@ ApplicationWindow {
                 width: Math.round(windowWidth),
                 height: Math.round(windowHeight),
                 maximized: maximized
-            }
+            },
+            list_view_column_widths: listViewColumnWidths()
         }))
     }
 
@@ -633,7 +809,9 @@ ApplicationWindow {
                               gameLastPlayedDate, gameDateAdded, gameDateModified,
                               gameCommunityStarRating,
                               gameCommunityStarRatingTotalVotes,
-                              gameInstalledState, rowCount) {
+                              gameInstalledState, gameHidden, gameBroken,
+                              gamePortable, gameVideoUrl, gameDatabaseId,
+                              gameAlternateNames, rowCount) {
         if (!smokeTest || index !== 0)
             return
         const expectedTitle = smokePhase === 0 ? "Fixture Adventure" : "Fixture Racer"
@@ -692,6 +870,15 @@ ApplicationWindow {
               && !gameScummVmAspectCorrection && !gameScummVmFullscreen
               && gameScummVmGameDataFolderPath === ""
               && gameScummVmGameType === ""
+        const extendedListMatches = smokePhase === 0
+            ? !gameHidden && !gameBroken && !gamePortable
+              && gameVideoUrl
+                 === "https://example.invalid/fixture-adventure.mp4"
+              && gameDatabaseId === 1234
+              && gameAlternateNames === "The Fixture Adventure"
+            : !gameHidden && !gameBroken && !gamePortable
+              && gameVideoUrl === "" && gameDatabaseId === 0
+              && gameAlternateNames === ""
         if (gameId !== expectedId || gameTitle !== expectedTitle
                 || gamePlatform !== "Fixture Console"
                 || gameFavorite !== expectedFavorite || gameCompleted !== expectedCompleted
@@ -699,6 +886,7 @@ ApplicationWindow {
                 || gameAdditionalApplicationCount !== expectedAdditionalApplicationCount
                 || !metadataMatches
                 || !launchConfigurationMatches
+                || !extendedListMatches
                 || !statisticsMatch
                 || gameFrontImageUrl.toString() !== ""
                 || rowCount !== expectedRows) {
@@ -825,6 +1013,10 @@ ApplicationWindow {
         function onGame_details_window_maximizedChanged() {
             window.detailsWindowMaximized =
                 controller.game_details_window_maximized
+        }
+
+        function onList_view_layout_jsonChanged() {
+            window.loadListViewLayout()
         }
 
         function onModelAboutToBeReset() {
@@ -989,6 +1181,13 @@ ApplicationWindow {
                     + controller.status_message)
                 Qt.exit(485)
             }
+            return
+        }
+        if (!window.loadListViewLayout()) {
+            console.error("LIST_VIEW_LAYOUT_INITIALIZE_FAILED")
+            if (window.libraryListViewSmokeTest
+                    || window.libraryListViewReloadSmokeTest)
+                Qt.exit(486)
             return
         }
         window.detailsPaneWidth = controller.game_details_pane_width
@@ -1533,7 +1732,8 @@ ApplicationWindow {
                         || gameList.currentIndex !== gameGrid.currentIndex
                         || gameList.currentItem === null
                         || window.listCurrentGameTitle
-                           !== "Fixture Racer") {
+                           !== "Fixture Racer"
+                        || !window.customizedListColumnsMatch()) {
                     console.error(
                         "LIBRARY_LIST_VIEW_RELOAD_BAD_STATE list="
                         + controller.list_view
@@ -1580,7 +1780,33 @@ ApplicationWindow {
                         || window.listCurrentGameGenre !== "Adventure"
                         || window.listCurrentGameRating !== "E"
                         || window.listCurrentGamePlayCount !== 3
-                        || window.listCurrentGamePlayTimeSeconds !== 5400) {
+                        || window.listCurrentGamePlayTimeSeconds !== 5400
+                        || window.listCurrentCellValues["Publisher"]
+                           !== "Fixture Publishing"
+                        || window.listCurrentCellValues["Series"]
+                           !== "Fixture Saga"
+                        || window.listCurrentCellValues["Favorite"] !== "Yes"
+                        || window.listCurrentCellValues["Completed"] !== "No"
+                        || window.listCurrentCellValues["Broken"] !== "No"
+                        || window.listCurrentCellValues["Portable"] !== "No"
+                        || window.listCurrentCellValues["Hide"] !== "No"
+                        || window.listCurrentCellValues["Star Rating"] !== "2.0"
+                        || window.listCurrentCellValues[
+                            "Community Star Rating"] !== "4.25"
+                        || window.listCurrentCellValues[
+                            "Community Star Rating Count"] !== "42"
+                        || window.listCurrentCellValues["Alternate Names"]
+                           !== "The Fixture Adventure"
+                        || window.listCurrentCellValues["Video URL"]
+                           !== "https://example.invalid/fixture-adventure.mp4"
+                        || window.listCurrentCellValues["Installed"]
+                           !== "Installed"
+                        || window.listCurrentCellValues["Application Path"]
+                           !== "Games\\Fixture Adventure\\adventure.rom"
+                        || window.listCurrentCellValues[
+                            "Launchbox Database ID"] !== "1234"
+                        || window.listCurrentCellValues["Play Time"]
+                           !== "1h 30m") {
                     console.error(
                         "LIBRARY_LIST_VIEW_BAD_ROW_BINDINGS selected="
                         + window.selectedGameId
@@ -1589,9 +1815,34 @@ ApplicationWindow {
                     Qt.exit(486)
                     return
                 }
-                playCountHeader.click()
+                listColumnsButton.click()
+                if (!listColumnDialog.visible
+                        || !listColumnDialog.setColumnVisible(
+                            "Publisher", false)
+                        || !listColumnDialog.setColumnWidth("Title", 320)
+                        || !listColumnDialog.moveColumnTo("Play Count", 1)) {
+                    console.error(
+                        "LIBRARY_LIST_VIEW_COLUMN_EDITOR_INTERACTION_FAILED")
+                    Qt.exit(486)
+                    return
+                }
+                listColumnSaveButton.click()
                 window.libraryListViewSmokePhase = 2
             } else if (window.libraryListViewSmokePhase === 2) {
+                if (!window.customizedListColumnsMatch()
+                        || listColumnDialog.visible) {
+                    console.error(
+                        "LIBRARY_LIST_VIEW_BAD_CUSTOMIZED_COLUMNS")
+                    Qt.exit(486)
+                    return
+                }
+                if (!window.clickListColumnHeader("Play Count")) {
+                    console.error("LIBRARY_LIST_VIEW_PLAY_COUNT_HEADER_MISSING")
+                    Qt.exit(486)
+                    return
+                }
+                window.libraryListViewSmokePhase = 3
+            } else if (window.libraryListViewSmokePhase === 3) {
                 if (controller.game_sort !== "PlayCount"
                         || controller.game_sort_descending
                         || !window.filteredIdsMatch(
@@ -1605,9 +1856,13 @@ ApplicationWindow {
                     Qt.exit(486)
                     return
                 }
-                playCountHeader.click()
-                window.libraryListViewSmokePhase = 3
-            } else if (window.libraryListViewSmokePhase === 3) {
+                if (!window.clickListColumnHeader("Play Count")) {
+                    console.error("LIBRARY_LIST_VIEW_PLAY_COUNT_HEADER_MISSING")
+                    Qt.exit(486)
+                    return
+                }
+                window.libraryListViewSmokePhase = 4
+            } else if (window.libraryListViewSmokePhase === 4) {
                 if (controller.game_sort !== "PlayCount"
                         || !controller.game_sort_descending
                         || !window.filteredIdsMatch(
@@ -4653,6 +4908,15 @@ ApplicationWindow {
                                  && !controller.loading && !controller.writing
                         onClicked: window.setLibraryViewMode(true)
                     }
+                    Button {
+                        id: listColumnsButton
+                        text: "Columns…"
+                        visible: controller.list_view
+                        Accessible.name: "Configure game list columns"
+                        enabled: controller.library_path.length > 0
+                                 && !controller.loading && !controller.writing
+                        onClicked: listColumnDialog.prepare()
+                    }
                     Item { Layout.fillWidth: true }
                 }
 
@@ -4740,6 +5004,12 @@ ApplicationWindow {
                             required property double gameCommunityStarRating
                             required property int gameCommunityStarRatingTotalVotes
                             required property int gameInstalledState
+                            required property bool gameHidden
+                            required property bool gameBroken
+                            required property bool gamePortable
+                            required property string gameVideoUrl
+                            required property int gameDatabaseId
+                            required property string gameAlternateNames
 
                             function openEditor() {
                                 gameEditor.edit(
@@ -4804,6 +5074,10 @@ ApplicationWindow {
                                                         gameCommunityStarRating,
                                                         gameCommunityStarRatingTotalVotes,
                                                         gameInstalledState,
+                                                        gameHidden, gameBroken,
+                                                        gamePortable, gameVideoUrl,
+                                                        gameDatabaseId,
+                                                        gameAlternateNames,
                                                         gameGrid.count)
                                 verifyEdit()
                             }
@@ -5027,105 +5301,30 @@ ApplicationWindow {
                                         width: parent.width
                                         height: 42
 
-                                        Button {
-                                            width: 70
-                                            height: parent.height
-                                            text: "State"
-                                            Accessible.name:
-                                                "Sort list by favorite state"
-                                            onClicked:
-                                                window.applyListColumnSort(
-                                                    "Favorite")
-                                        }
-                                        Button {
-                                            width: 260
-                                            height: parent.height
-                                            text: "Title"
-                                                  + window.sortIndicator("Title")
-                                            Accessible.name:
-                                                "Sort list by title"
-                                            onClicked:
-                                                window.applyListColumnSort(
-                                                    "Title")
-                                        }
-                                        Button {
-                                            width: 150
-                                            height: parent.height
-                                            text: "Platform"
-                                                  + window.sortIndicator(
-                                                      "Platform")
-                                            Accessible.name:
-                                                "Sort list by platform"
-                                            onClicked:
-                                                window.applyListColumnSort(
-                                                    "Platform")
-                                        }
-                                        Button {
-                                            width: 180
-                                            height: parent.height
-                                            text: "Developer"
-                                                  + window.sortIndicator(
-                                                      "Developer")
-                                            Accessible.name:
-                                                "Sort list by developer"
-                                            onClicked:
-                                                window.applyListColumnSort(
-                                                    "Developer")
-                                        }
-                                        Button {
-                                            width: 120
-                                            height: parent.height
-                                            text: "Release Date"
-                                                  + window.sortIndicator(
-                                                      "ReleaseDate")
-                                            Accessible.name:
-                                                "Sort list by release date"
-                                            onClicked:
-                                                window.applyListColumnSort(
-                                                    "ReleaseDate")
-                                        }
-                                        Button {
-                                            width: 150
-                                            height: parent.height
-                                            text: "Genre"
-                                                  + window.sortIndicator(
-                                                      "Genre")
-                                            Accessible.name:
-                                                "Sort list by genre"
-                                            onClicked:
-                                                window.applyListColumnSort(
-                                                    "Genre")
-                                        }
-                                        Button {
-                                            width: 90
-                                            height: parent.height
-                                            text: "Rating"
-                                            enabled: false
-                                        }
-                                        Button {
-                                            id: playCountHeader
-                                            width: 110
-                                            height: parent.height
-                                            text: "Play Count"
-                                                  + window.sortIndicator(
-                                                      "PlayCount")
-                                            Accessible.name:
-                                                "Sort list by play count"
-                                            onClicked:
-                                                window.applyListColumnSort(
-                                                    "PlayCount")
-                                        }
-                                        Button {
-                                            width: 120
-                                            height: parent.height
-                                            text: "Play Time"
-                                                  + window.sortIndicator(
-                                                      "PlayTime")
-                                            Accessible.name:
-                                                "Sort list by play time"
-                                            onClicked:
-                                                window.applyListColumnSort(
-                                                    "PlayTime")
+                                        Repeater {
+                                            id: gameListHeaderRepeater
+                                            model:
+                                                window.visibleListColumns
+
+                                            delegate: Button {
+                                                required property var modelData
+                                                width: modelData.width
+                                                height: gameListHeader.height
+                                                text: modelData.name
+                                                      + window.sortIndicator(
+                                                          modelData.sortKey)
+                                                enabled:
+                                                    modelData.sortKey.length > 0
+                                                Accessible.name:
+                                                    enabled
+                                                    ? "Sort list by "
+                                                      + modelData.name
+                                                    : modelData.name
+                                                      + " column"
+                                                onClicked:
+                                                    window.applyListColumnSort(
+                                                        modelData.sortKey)
+                                            }
                                         }
                                     }
 
@@ -5157,6 +5356,7 @@ ApplicationWindow {
                                         }
 
                                         delegate: Rectangle {
+                                            id: listGameRow
                                             required property int index
                                             required property string gameId
                                             required property string gameTitle
@@ -5164,11 +5364,141 @@ ApplicationWindow {
                                             required property bool gameFavorite
                                             required property bool gameCompleted
                                             required property string gameDeveloper
+                                            required property string gamePublisher
                                             required property string gameReleaseDate
                                             required property string gameGenre
                                             required property string gameRating
+                                            required property string gameSeries
+                                            required property string gameRegion
+                                            required property string gamePlayMode
+                                            required property string gameVersion
+                                            required property string gameStatus
+                                            required property string gameSource
+                                            required property string gameLastPlayedDate
+                                            required property string gameDateAdded
+                                            required property string gameDateModified
                                             required property int gamePlayCount
+                                            required property int gameStarRating
+                                            required property double gameCommunityStarRating
+                                            required property int gameCommunityStarRatingTotalVotes
+                                            required property string gameAlternateNames
+                                            required property string gameWikipediaUrl
+                                            required property int gameMaxPlayers
+                                            required property string gameReleaseType
+                                            required property string gameVideoUrl
+                                            required property int gameInstalledState
+                                            required property string gameApplicationPath
+                                            required property int gameDatabaseId
+                                            required property bool gameHidden
+                                            required property bool gameBroken
+                                            required property bool gamePortable
                                             required property double gamePlayTimeSeconds
+
+                                            function yesNo(value) {
+                                                return value ? "Yes" : "No"
+                                            }
+
+                                            function cellText(name) {
+                                                switch (name) {
+                                                case "Badges":
+                                                    return (gameFavorite
+                                                            ? "★ " : "")
+                                                           + (gameCompleted
+                                                              ? "✓ " : "")
+                                                           + (gameBroken
+                                                              ? "⚠ " : "")
+                                                           + (gameHidden
+                                                              ? "◌ " : "")
+                                                           + (gamePortable
+                                                              ? "P" : "")
+                                                case "Title":
+                                                    return gameTitle
+                                                case "Platform":
+                                                    return gamePlatform
+                                                case "Developer":
+                                                    return gameDeveloper
+                                                case "Publisher":
+                                                    return gamePublisher
+                                                case "Release Date":
+                                                    return gameReleaseDate
+                                                case "Rating":
+                                                    return gameRating
+                                                case "Genre":
+                                                    return gameGenre
+                                                case "Series":
+                                                    return gameSeries
+                                                case "Region":
+                                                    return gameRegion
+                                                case "Play Mode":
+                                                    return gamePlayMode
+                                                case "Version":
+                                                    return gameVersion
+                                                case "Status":
+                                                    return gameStatus
+                                                case "Source":
+                                                    return gameSource
+                                                case "Last Played":
+                                                    return gameLastPlayedDate
+                                                case "Added":
+                                                    return gameDateAdded
+                                                case "Modified":
+                                                    return gameDateModified
+                                                case "Play Count":
+                                                    return String(gamePlayCount)
+                                                case "Favorite":
+                                                    return yesNo(gameFavorite)
+                                                case "Completed":
+                                                    return yesNo(gameCompleted)
+                                                case "Broken":
+                                                    return yesNo(gameBroken)
+                                                case "Portable":
+                                                    return yesNo(gamePortable)
+                                                case "Hide":
+                                                    return yesNo(gameHidden)
+                                                case "Star Rating":
+                                                    return gameStarRating > 0
+                                                           ? (gameStarRating
+                                                              / 2).toFixed(1)
+                                                           : ""
+                                                case "Community Star Rating":
+                                                    return gameCommunityStarRating
+                                                           > 0
+                                                           ? Number(
+                                                               gameCommunityStarRating)
+                                                             .toFixed(2)
+                                                           : ""
+                                                case "Community Star Rating Count":
+                                                    return String(
+                                                        gameCommunityStarRatingTotalVotes)
+                                                case "Alternate Names":
+                                                    return gameAlternateNames
+                                                case "Wikipedia URL":
+                                                    return gameWikipediaUrl
+                                                case "Max Players":
+                                                    return gameMaxPlayers > 0
+                                                           ? String(gameMaxPlayers)
+                                                           : ""
+                                                case "Release Type":
+                                                    return gameReleaseType
+                                                case "Video URL":
+                                                    return gameVideoUrl
+                                                case "Installed":
+                                                    return window
+                                                        .installedStateText(
+                                                            gameInstalledState)
+                                                case "Application Path":
+                                                    return gameApplicationPath
+                                                case "Launchbox Database ID":
+                                                    return gameDatabaseId > 0
+                                                           ? String(gameDatabaseId)
+                                                           : ""
+                                                case "Play Time":
+                                                    return window.formatPlayTime(
+                                                        gamePlayTimeSeconds)
+                                                default:
+                                                    return ""
+                                                }
+                                            }
 
                                             function publishSmokeBindings() {
                                                 if (!ListView.isCurrentItem)
@@ -5192,6 +5522,20 @@ ApplicationWindow {
                                                 window
                                                     .listCurrentGamePlayTimeSeconds =
                                                     gamePlayTimeSeconds
+                                                const cells = {}
+                                                for (let column = 0;
+                                                     column < window
+                                                              .listViewColumnDefinitions
+                                                              .length;
+                                                     ++column) {
+                                                    const name = window
+                                                        .listViewColumnDefinitions[
+                                                            column].name
+                                                    cells[name] =
+                                                        cellText(name)
+                                                }
+                                                window.listCurrentCellValues =
+                                                    cells
                                             }
 
                                             Component.onCompleted:
@@ -5212,103 +5556,41 @@ ApplicationWindow {
                                             Row {
                                                 anchors.fill: parent
 
-                                                Label {
-                                                    width: 70
-                                                    height: parent.height
-                                                    leftPadding: 12
-                                                    text: (gameFavorite
-                                                           ? "★" : "")
-                                                          + (gameCompleted
-                                                             ? "  ✓" : "")
-                                                    color: gameFavorite
-                                                           ? "#e3b341"
-                                                           : "#8b949e"
-                                                    verticalAlignment:
-                                                        Text.AlignVCenter
-                                                }
-                                                Label {
-                                                    width: 260
-                                                    height: parent.height
-                                                    leftPadding: 12
-                                                    rightPadding: 12
-                                                    text: gameTitle
-                                                    color: "white"
-                                                    font.bold:
-                                                        gameList.currentIndex
-                                                        === index
-                                                    elide: Text.ElideRight
-                                                    verticalAlignment:
-                                                        Text.AlignVCenter
-                                                }
-                                                Label {
-                                                    width: 150
-                                                    height: parent.height
-                                                    leftPadding: 12
-                                                    rightPadding: 12
-                                                    text: gamePlatform
-                                                    color: "#c4cfdb"
-                                                    elide: Text.ElideRight
-                                                    verticalAlignment:
-                                                        Text.AlignVCenter
-                                                }
-                                                Label {
-                                                    width: 180
-                                                    height: parent.height
-                                                    leftPadding: 12
-                                                    rightPadding: 12
-                                                    text: gameDeveloper
-                                                    color: "#c4cfdb"
-                                                    elide: Text.ElideRight
-                                                    verticalAlignment:
-                                                        Text.AlignVCenter
-                                                }
-                                                Label {
-                                                    width: 120
-                                                    height: parent.height
-                                                    leftPadding: 12
-                                                    text: gameReleaseDate
-                                                    color: "#c4cfdb"
-                                                    verticalAlignment:
-                                                        Text.AlignVCenter
-                                                }
-                                                Label {
-                                                    width: 150
-                                                    height: parent.height
-                                                    leftPadding: 12
-                                                    rightPadding: 12
-                                                    text: gameGenre
-                                                    color: "#c4cfdb"
-                                                    elide: Text.ElideRight
-                                                    verticalAlignment:
-                                                        Text.AlignVCenter
-                                                }
-                                                Label {
-                                                    width: 90
-                                                    height: parent.height
-                                                    leftPadding: 12
-                                                    text: gameRating
-                                                    color: "#c4cfdb"
-                                                    verticalAlignment:
-                                                        Text.AlignVCenter
-                                                }
-                                                Label {
-                                                    width: 110
-                                                    height: parent.height
-                                                    leftPadding: 12
-                                                    text: gamePlayCount
-                                                    color: "#c4cfdb"
-                                                    verticalAlignment:
-                                                        Text.AlignVCenter
-                                                }
-                                                Label {
-                                                    width: 120
-                                                    height: parent.height
-                                                    leftPadding: 12
-                                                    text: window.formatPlayTime(
-                                                              gamePlayTimeSeconds)
-                                                    color: "#c4cfdb"
-                                                    verticalAlignment:
-                                                        Text.AlignVCenter
+                                                Repeater {
+                                                    model:
+                                                        window.visibleListColumns
+
+                                                    delegate: Label {
+                                                        required property
+                                                            var modelData
+                                                        width: modelData.width
+                                                        height:
+                                                            listGameRow.height
+                                                        leftPadding: 12
+                                                        rightPadding: 12
+                                                        text:
+                                                            listGameRow.cellText(
+                                                                modelData.name)
+                                                        color:
+                                                            modelData.name
+                                                            === "Badges"
+                                                            && gameFavorite
+                                                            ? "#e3b341"
+                                                            : modelData.name
+                                                              === "Title"
+                                                              ? "white"
+                                                              : "#c4cfdb"
+                                                        font.bold:
+                                                            modelData.name
+                                                            === "Title"
+                                                            && gameList
+                                                               .currentIndex
+                                                               === listGameRow
+                                                                   .index
+                                                        elide: Text.ElideRight
+                                                        verticalAlignment:
+                                                            Text.AlignVCenter
+                                                    }
                                                 }
                                             }
 
@@ -5362,13 +5644,256 @@ ApplicationWindow {
                         active: visible
                         sourceComponent: gameDetailsPaneComponent
                         onWidthChanged: {
-                            if (active && width >= 300) {
+                            if (active && width >= 300
+                                    && gameContentSplit.resizing) {
                                 window.detailsPaneWidth = width
                                 window.scheduleGameDetailsLayoutSave()
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+
+    Dialog {
+        id: listColumnDialog
+        parent: Overlay.overlay
+        modal: true
+        title: "Game List Columns"
+        width: Math.min(window.width - 80, 720)
+        height: Math.min(window.height - 80, 680)
+        x: Math.round((window.width - width) / 2)
+        y: Math.round((window.height - height) / 2)
+        closePolicy: Popup.CloseOnEscape
+
+        property var workingColumns: []
+        property string validationMessage: ""
+
+        function cloneColumns(columns) {
+            const cloned = []
+            for (let index = 0; index < columns.length; ++index) {
+                const column = columns[index]
+                cloned.push({
+                    name: column.name,
+                    stableIndex: column.stableIndex,
+                    sortKey: column.sortKey,
+                    width: column.width,
+                    visible: column.visible
+                })
+            }
+            return cloned
+        }
+
+        function prepare() {
+            validationMessage = ""
+            workingColumns = cloneColumns(window.listColumns)
+            open()
+        }
+
+        function replaceColumn(index, visible, width) {
+            if (index < 0 || index >= workingColumns.length)
+                return false
+            const replacement = cloneColumns(workingColumns)
+            replacement[index].visible = visible
+            replacement[index].width = Math.round(width)
+            workingColumns = replacement
+            validationMessage = ""
+            return true
+        }
+
+        function columnIndex(name) {
+            for (let index = 0; index < workingColumns.length; ++index) {
+                if (workingColumns[index].name === name)
+                    return index
+            }
+            return -1
+        }
+
+        function setColumnVisible(name, visible) {
+            const index = columnIndex(name)
+            return index >= 0
+                   && replaceColumn(index, visible,
+                                    workingColumns[index].width)
+        }
+
+        function setColumnWidth(name, width) {
+            const index = columnIndex(name)
+            return index >= 0
+                   && replaceColumn(index,
+                                    workingColumns[index].visible, width)
+        }
+
+        function moveColumn(index, offset) {
+            const target = index + offset
+            if (index < 0 || target < 0
+                    || index >= workingColumns.length
+                    || target >= workingColumns.length)
+                return false
+            const replacement = cloneColumns(workingColumns)
+            const moved = replacement[index]
+            replacement.splice(index, 1)
+            replacement.splice(target, 0, moved)
+            workingColumns = replacement
+            validationMessage = ""
+            listColumnEditorList.currentIndex = target
+            listColumnEditorList.positionViewAtIndex(
+                        target, ListView.Contain)
+            return true
+        }
+
+        function moveColumnNamed(name, offset) {
+            const index = columnIndex(name)
+            return index >= 0 && moveColumn(index, offset)
+        }
+
+        function moveColumnTo(name, target) {
+            let index = columnIndex(name)
+            if (index < 0 || target < 0 || target >= workingColumns.length)
+                return false
+            while (index > target) {
+                if (!moveColumn(index, -1))
+                    return false
+                --index
+            }
+            while (index < target) {
+                if (!moveColumn(index, 1))
+                    return false
+                ++index
+            }
+            return true
+        }
+
+        function saveColumns() {
+            let visibleCount = 0
+            for (let index = 0; index < workingColumns.length; ++index) {
+                if (workingColumns[index].visible)
+                    ++visibleCount
+            }
+            if (visibleCount === 0) {
+                validationMessage = "At least one column must remain visible."
+                return false
+            }
+            if (!window.applyListViewColumnLayout(workingColumns)) {
+                validationMessage = controller.status_message
+                return false
+            }
+            close()
+            return true
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 8
+
+            Label {
+                Layout.fillWidth: true
+                text: "Choose visible columns, their order, and this computer's pixel widths. LaunchBox-compatible order and visibility are stored in Settings.xml."
+                color: "#aeb8c5"
+                wrapMode: Text.Wrap
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                color: "#151a20"
+                border.color: "#30363d"
+                radius: 5
+
+                ListView {
+                    id: listColumnEditorList
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    clip: true
+                    model: listColumnDialog.workingColumns
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar {}
+
+                    delegate: Rectangle {
+                        required property int index
+                        required property var modelData
+                        width: listColumnEditorList.width
+                        height: 48
+                        color: index % 2 === 0 ? "#1c232b" : "#181e25"
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            spacing: 8
+
+                            CheckBox {
+                                checked: modelData.visible
+                                Accessible.name:
+                                    "Show " + modelData.name + " column"
+                                onToggled:
+                                    listColumnDialog.replaceColumn(
+                                        index, checked, modelData.width)
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.name
+                                color: "white"
+                                elide: Text.ElideRight
+                            }
+                            Label {
+                                text: "Width"
+                                color: "#8b949e"
+                            }
+                            SpinBox {
+                                from: 60
+                                to: 600
+                                value: modelData.width
+                                editable: true
+                                Accessible.name:
+                                    modelData.name + " column width"
+                                onValueModified:
+                                    listColumnDialog.replaceColumn(
+                                        index, modelData.visible, value)
+                            }
+                            Button {
+                                text: "↑"
+                                enabled: index > 0
+                                Accessible.name:
+                                    "Move " + modelData.name + " up"
+                                onClicked:
+                                    listColumnDialog.moveColumn(index, -1)
+                            }
+                            Button {
+                                text: "↓"
+                                enabled:
+                                    index
+                                    < listColumnDialog.workingColumns.length
+                                      - 1
+                                Accessible.name:
+                                    "Move " + modelData.name + " down"
+                                onClicked:
+                                    listColumnDialog.moveColumn(index, 1)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                visible: listColumnDialog.validationMessage.length > 0
+                text: listColumnDialog.validationMessage
+                color: "#ff9b9b"
+                wrapMode: Text.Wrap
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "Cancel"
+                onClicked: listColumnDialog.reject()
+            }
+            Button {
+                id: listColumnSaveButton
+                text: "Save"
+                highlighted: true
+                Accessible.name: "Save game list columns"
+                onClicked: listColumnDialog.saveColumns()
             }
         }
     }

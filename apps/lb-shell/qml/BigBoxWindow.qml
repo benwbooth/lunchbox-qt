@@ -276,7 +276,9 @@ ApplicationWindow {
                               gameLastPlayedDate, gameDateAdded, gameDateModified,
                               gameCommunityStarRating,
                               gameCommunityStarRatingTotalVotes,
-                              gameInstalledState, gameFrontImageUrl,
+                              gameInstalledState, gameHidden, gameBroken,
+                              gamePortable, gameVideoUrl, gameDatabaseId,
+                              gameAlternateNames, gameFrontImageUrl,
                               rowCount) {
         if (!smokeTest || index !== 0)
             return
@@ -301,12 +303,22 @@ ApplicationWindow {
               && gameCommunityStarRating === 0
               && gameCommunityStarRatingTotalVotes === 0
               && gameInstalledState === -1
+        const extendedListMatches = smokePhase === 0
+            ? !gameHidden && !gameBroken && !gamePortable
+              && gameVideoUrl
+                 === "https://example.invalid/fixture-adventure.mp4"
+              && gameDatabaseId === 1234
+              && gameAlternateNames === "The Fixture Adventure"
+            : !gameHidden && !gameBroken && !gamePortable
+              && gameVideoUrl === "" && gameDatabaseId === 0
+              && gameAlternateNames === ""
         if (gameId !== expectedId || gameTitle !== expectedTitle
                 || gamePlatform !== "Fixture Console"
                 || gameFavorite !== expectedFavorite || gameCompleted !== expectedCompleted
                 || gamePlayCount !== expectedPlayCount || gameStarRating !== expectedStarRating
                 || gameAdditionalApplicationCount !== expectedAdditionalApplicationCount
                 || !statisticsMatch
+                || !extendedListMatches
                 || gameFrontImageUrl.toString() !== ""
                 || rowCount !== expectedRows) {
             console.error("MODEL_ROLE_SMOKE_FAILED id=" + gameId
@@ -1404,6 +1416,12 @@ ApplicationWindow {
                     required property real gameCommunityStarRating
                     required property int gameCommunityStarRatingTotalVotes
                     required property int gameInstalledState
+                    required property bool gameHidden
+                    required property bool gameBroken
+                    required property bool gamePortable
+                    required property string gameVideoUrl
+                    required property int gameDatabaseId
+                    required property string gameAlternateNames
                     required property url gameFrontImageUrl
                     Component.onCompleted: window.verifyModelRoles(
                                                index, gameId, gameTitle, gamePlatform,
@@ -1416,6 +1434,10 @@ ApplicationWindow {
                                                gameCommunityStarRating,
                                                gameCommunityStarRatingTotalVotes,
                                                gameInstalledState,
+                                               gameHidden, gameBroken,
+                                               gamePortable, gameVideoUrl,
+                                               gameDatabaseId,
+                                               gameAlternateNames,
                                                gameFrontImageUrl,
                                                gameList.count)
                     width: 370

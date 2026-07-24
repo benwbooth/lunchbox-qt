@@ -1,4 +1,6 @@
+use lb_domain::LAUNCHBOX_LIST_VIEW_COLUMNS;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,6 +15,8 @@ pub const MIN_GAME_DETAILS_WINDOW_WIDTH: u32 = 320;
 pub const MAX_GAME_DETAILS_WINDOW_WIDTH: u32 = 7_680;
 pub const MIN_GAME_DETAILS_WINDOW_HEIGHT: u32 = 320;
 pub const MAX_GAME_DETAILS_WINDOW_HEIGHT: u32 = 4_320;
+pub const MIN_LIST_VIEW_COLUMN_WIDTH: u32 = 60;
+pub const MAX_LIST_VIEW_COLUMN_WIDTH: u32 = 600;
 const MIN_WINDOW_POSITION: i32 = -100_000;
 const MAX_WINDOW_POSITION: i32 = 100_000;
 
@@ -27,6 +31,8 @@ pub struct LaunchBoxUiState {
     pub game_details_popped_out: bool,
     pub game_details_pane_width: u32,
     pub game_details_window: GameDetailsWindowState,
+    #[serde(default = "default_list_view_column_widths")]
+    pub list_view_column_widths: BTreeMap<String, u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -53,8 +59,52 @@ impl Default for LaunchBoxUiState {
                 height: 640,
                 maximized: false,
             },
+            list_view_column_widths: default_list_view_column_widths(),
         }
     }
+}
+
+pub fn default_list_view_column_widths() -> BTreeMap<String, u32> {
+    [
+        ("Title", 260),
+        ("Platform", 150),
+        ("Developer", 180),
+        ("Publisher", 180),
+        ("Release Date", 120),
+        ("Rating", 90),
+        ("Genre", 150),
+        ("Series", 150),
+        ("Region", 100),
+        ("Play Mode", 120),
+        ("Version", 100),
+        ("Status", 120),
+        ("Source", 120),
+        ("Last Played", 140),
+        ("Added", 140),
+        ("Modified", 140),
+        ("Play Count", 110),
+        ("Favorite", 95),
+        ("Completed", 110),
+        ("Broken", 90),
+        ("Portable", 95),
+        ("Hide", 80),
+        ("Star Rating", 110),
+        ("Community Star Rating", 170),
+        ("Community Star Rating Count", 190),
+        ("Alternate Names", 220),
+        ("Wikipedia URL", 260),
+        ("Max Players", 110),
+        ("Release Type", 120),
+        ("Video URL", 260),
+        ("Installed", 95),
+        ("Application Path", 300),
+        ("Launchbox Database ID", 180),
+        ("Badges", 90),
+        ("Play Time", 120),
+    ]
+    .into_iter()
+    .map(|(name, width)| (name.to_string(), width))
+    .collect()
 }
 
 impl LaunchBoxUiState {
@@ -158,6 +208,33 @@ impl LaunchBoxUiState {
             if !(MIN_WINDOW_POSITION..=MAX_WINDOW_POSITION).contains(&value) {
                 return Err(LaunchBoxUiStateError::InvalidPosition { field, value });
             }
+        }
+        if self.list_view_column_widths.len() != LAUNCHBOX_LIST_VIEW_COLUMNS.len() {
+            return Err(LaunchBoxUiStateError::InvalidListColumnWidthCount {
+                actual: self.list_view_column_widths.len(),
+            });
+        }
+        for (name, _) in LAUNCHBOX_LIST_VIEW_COLUMNS {
+            let Some(width) = self.list_view_column_widths.get(name) else {
+                return Err(LaunchBoxUiStateError::MissingListColumnWidth {
+                    name: name.to_string(),
+                });
+            };
+            if !(MIN_LIST_VIEW_COLUMN_WIDTH..=MAX_LIST_VIEW_COLUMN_WIDTH).contains(width) {
+                return Err(LaunchBoxUiStateError::InvalidListColumnWidth {
+                    name: name.to_string(),
+                    value: *width,
+                    minimum: MIN_LIST_VIEW_COLUMN_WIDTH,
+                    maximum: MAX_LIST_VIEW_COLUMN_WIDTH,
+                });
+            }
+        }
+        if let Some(name) = self.list_view_column_widths.keys().find(|name| {
+            !LAUNCHBOX_LIST_VIEW_COLUMNS
+                .iter()
+                .any(|(known, _)| known == name)
+        }) {
+            return Err(LaunchBoxUiStateError::UnknownListColumnWidth { name: name.clone() });
         }
         Ok(())
     }
@@ -356,6 +433,21 @@ pub enum LaunchBoxUiStateError {
     },
     #[error("{field} position {value} is outside the supported desktop coordinate range")]
     InvalidPosition { field: &'static str, value: i32 },
+    #[error("LaunchBox list layout has {actual} column widths instead of the required 35")]
+    InvalidListColumnWidthCount { actual: usize },
+    #[error("LaunchBox list layout is missing a width for {name}")]
+    MissingListColumnWidth { name: String },
+    #[error("LaunchBox list layout contains a width for unknown column {name}")]
+    UnknownListColumnWidth { name: String },
+    #[error(
+        "LaunchBox list column {name} width {value} is outside the supported {minimum}..={maximum} range"
+    )]
+    InvalidListColumnWidth {
+        name: String,
+        value: u32,
+        minimum: u32,
+        maximum: u32,
+    },
     #[error("could not allocate a unique UI state temporary beside {path}")]
     UniqueTemporaryExhausted { path: PathBuf },
 }
@@ -373,6 +465,9 @@ mod tests {
         assert_eq!(state.game_details_pane_width, 360);
         assert_eq!(state.game_details_window.width, 480);
         assert_eq!(state.game_details_window.height, 640);
+        assert_eq!(state.list_view_column_widths.len(), 35);
+        assert_eq!(state.list_view_column_widths.get("Badges"), Some(&90));
+        assert_eq!(state.list_view_column_widths.get("Title"), Some(&260));
     }
 
     #[test]
@@ -391,6 +486,7 @@ mod tests {
             height: 900,
             maximized: true,
         };
+        state.list_view_column_widths.insert("Title".into(), 333);
         state.save_atomic(&path).expect("replacement save");
 
         assert_eq!(LaunchBoxUiState::load(&path).expect("reload"), state);
@@ -424,6 +520,16 @@ mod tests {
                 field: "game_details_window.width",
                 ..
             })
+        ));
+
+        let mut state = LaunchBoxUiState::default();
+        state
+            .list_view_column_widths
+            .insert("Title".into(), MIN_LIST_VIEW_COLUMN_WIDTH - 1);
+        assert!(matches!(
+            state.validate(),
+            Err(LaunchBoxUiStateError::InvalidListColumnWidth { name, .. })
+                if name == "Title"
         ));
 
         fs::write(

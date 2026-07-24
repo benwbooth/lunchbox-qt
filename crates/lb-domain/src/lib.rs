@@ -3,8 +3,10 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 mod catalog;
+mod list_view;
 
 pub use catalog::*;
+pub use list_view::*;
 
 /// LaunchBox persists this ID when a game is explicitly configured not to use
 /// an emulator. It is distinct from a missing `<Emulator>` field, which allows
