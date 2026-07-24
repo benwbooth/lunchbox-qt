@@ -305,6 +305,7 @@ library_filter_root=$(mktemp -d)
 launchbox_order_root=$(mktemp -d)
 bigbox_order_root=$(mktemp -d)
 launchbox_list_root=$(mktemp -d)
+launchbox_box_size_root=$(mktemp -d)
 crud_root=$(mktemp -d)
 additional_application_crud_root=$(mktemp -d)
 additional_application_default_root=$(mktemp -d)
@@ -341,7 +342,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 
 cp -a fixtures/launchbox/. "$library_filter_root/"
 library_filter_platform="$library_filter_root/Data/Platforms/Fixture Console.xml"
@@ -550,6 +551,83 @@ cmp "$list_ui_state.after-list-view-smoke" "$list_ui_state"
 cmp "$list_platform.before-list-view-smoke" "$list_platform"
 
 echo "LaunchBox model-backed grid/list switching, all 35 original columns, configurable order/visibility/width, stable-ID selection, rendered rows, compatible atomic Settings.xml persistence, platform-native UI state, and new-process restoration validated."
+
+cp -a fixtures/launchbox/. "$launchbox_box_size_root/"
+box_size_platform="$launchbox_box_size_root/Data/Platforms/Fixture Console.xml"
+box_size_settings="$launchbox_box_size_root/Data/Settings.xml"
+box_size_screenshot="$launchbox_box_size_root/launchbox-box-size.png"
+cp "$box_size_platform" "$box_size_platform.before-box-size-smoke"
+cp "$box_size_settings" "$box_size_settings.before-box-size-smoke"
+
+box_size_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$launchbox_box_size_root" \
+    --library-box-size-smoke-test \
+    --library-box-size-screenshot "$box_size_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$box_size_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'LIBRARY_BOX_SIZE_SMOKE_COMPLETE reload=0 rows=3 selected=fixture-adventure size=0.31 cell=397x616' \
+  <<< "$box_size_output"; then
+  printf '%s\n' "$box_size_output" >&2
+  echo "LaunchBox did not validate its real box-size slider and resized grid." >&2
+  exit 1
+fi
+if [[ ! -s "$box_size_screenshot" ]] \
+  || [[ $(wc -c < "$box_size_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$box_size_screenshot" | tr -d ' \n') \
+    != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$box_size_output" >&2
+  echo "LaunchBox did not render a valid resized-grid PNG." >&2
+  exit 1
+fi
+if ! rg -q '<NextBoxSize>0.31</NextBoxSize>' "$box_size_settings"; then
+  printf '%s\n' "$box_size_output" >&2
+  echo "LaunchBox did not persist the compatible NextBoxSize value." >&2
+  exit 1
+fi
+mapfile -t box_size_backups < <(
+  find "$launchbox_box_size_root" -type f \
+    -name 'Settings.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#box_size_backups[@]} -ne 1 ]] \
+  || ! cmp -s "$box_size_settings.before-box-size-smoke" \
+       "${box_size_backups[0]}"; then
+  printf '%s\n' "$box_size_output" >&2
+  echo "LaunchBox did not retain one exact pre-change Settings.xml backup." >&2
+  exit 1
+fi
+cmp "$box_size_platform.before-box-size-smoke" "$box_size_platform"
+cp "$box_size_settings" "$box_size_settings.after-box-size-smoke"
+
+box_size_reload_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$launchbox_box_size_root" \
+    --library-box-size-reload-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$box_size_reload_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'LIBRARY_BOX_SIZE_SMOKE_COMPLETE reload=1 rows=3 selected=fixture-adventure size=0.31 cell=397x616' \
+  <<< "$box_size_reload_output"; then
+  printf '%s\n' "$box_size_reload_output" >&2
+  echo "LaunchBox did not restore box size in a fresh process." >&2
+  exit 1
+fi
+cmp "$box_size_settings.after-box-size-smoke" "$box_size_settings"
+cmp "$box_size_platform.before-box-size-smoke" "$box_size_platform"
+if [[ $(find "$launchbox_box_size_root" -type f \
+  -name 'Settings.xml.lbport-transaction-backup-*' | wc -l) -ne 1 ]]; then
+  echo "Box-size reload unexpectedly wrote another Settings.xml backup." >&2
+  exit 1
+fi
+
+echo "LaunchBox 13.27 box-size range, real slider interaction, responsive grid rendering, exact-backup atomic persistence, stable selection, and new-process restoration validated."
 
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"

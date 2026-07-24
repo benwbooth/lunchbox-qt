@@ -48,6 +48,22 @@ ApplicationWindow {
     property bool libraryListViewScreenshotRequested: false
     property string libraryListViewScreenshotPath:
         argumentValue("--library-list-view-screenshot")
+    property bool libraryBoxSizeSmokeTest:
+        Qt.application.arguments.indexOf("--library-box-size-smoke-test") >= 0
+    property bool libraryBoxSizeReloadSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--library-box-size-reload-smoke-test") >= 0
+    property int libraryBoxSizeSmokePhase: 0
+    property bool libraryBoxSizeSmokeFinished: false
+    property bool libraryBoxSizeScreenshotRequested: false
+    property string libraryBoxSizeScreenshotPath:
+        argumentValue("--library-box-size-screenshot")
+    property real boxSize: 0.17214286
+    property real pendingBoxSize: 0.17214286
+    readonly property int boxCellWidth:
+        Math.max(1, Math.round(window.width * window.boxSize))
+    readonly property int boxCellHeight:
+        Math.max(1, Math.round(window.boxCellWidth / 0.645))
     property bool loadSmokeTest: Qt.application.arguments.indexOf("--load-smoke-test") >= 0
     property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
     property bool mediaSmokeFinished: false
@@ -463,6 +479,18 @@ ApplicationWindow {
         return true
     }
 
+    function queueBoxSize(value) {
+        const bounded = Math.max(0.05, Math.min(0.50, value))
+        const snapped = Math.round(bounded * 1000) / 1000
+        pendingBoxSize = snapped
+        boxSize = snapped
+        boxSizeSaveTimer.restart()
+    }
+
+    function adjustBoxSize(delta) {
+        queueBoxSize(window.boxSize + delta)
+    }
+
     function sortIndicator(key) {
         if (controller.game_sort !== key)
             return ""
@@ -632,6 +660,43 @@ ApplicationWindow {
                     "LIBRARY_LIST_VIEW_SCREENSHOT_SAVE_FAILED path="
                     + libraryListViewScreenshotPath)
                 Qt.exit(486)
+                return
+            }
+            complete()
+        })
+    }
+
+    function finishLibraryBoxSizeSmoke(reload) {
+        function complete() {
+            if (!controller.report_library_box_size_smoke_success(
+                    reload, selectedGameId,
+                    gameGrid.cellWidth, gameGrid.cellHeight)) {
+                console.error(
+                    "LIBRARY_BOX_SIZE_CONTROLLER_REJECTED reload="
+                    + (reload ? 1 : 0)
+                    + " selected=" + selectedGameId
+                    + " size=" + controller.box_size
+                    + " cell=" + gameGrid.cellWidth
+                    + "x" + gameGrid.cellHeight)
+                Qt.exit(487)
+                return
+            }
+            libraryBoxSizeSmokeFinished = true
+            Qt.quit()
+        }
+        if (reload || libraryBoxSizeScreenshotPath.length === 0) {
+            complete()
+            return
+        }
+        if (libraryBoxSizeScreenshotRequested)
+            return
+        libraryBoxSizeScreenshotRequested = true
+        launchBoxContent.grabToImage(function(result) {
+            if (!result.saveToFile(libraryBoxSizeScreenshotPath)) {
+                console.error(
+                    "LIBRARY_BOX_SIZE_SCREENSHOT_SAVE_FAILED path="
+                    + libraryBoxSizeScreenshotPath)
+                Qt.exit(487)
                 return
             }
             complete()
@@ -1019,6 +1084,12 @@ ApplicationWindow {
             window.loadListViewLayout()
         }
 
+        function onBox_sizeChanged() {
+            window.boxSize = controller.box_size
+            if (!boxSizeSaveTimer.running)
+                window.pendingBoxSize = controller.box_size
+        }
+
         function onModelAboutToBeReset() {
             window.beginGameSelectionReset()
         }
@@ -1170,6 +1241,8 @@ ApplicationWindow {
 
     Component.onCompleted: {
         controller.configure_frontend(false)
+        window.boxSize = controller.box_size
+        window.pendingBoxSize = controller.box_size
         const usePersistedUiState = !window.isSmokeRun()
                                   || argumentValue("--ui-state-file").length > 0
         if (usePersistedUiState
@@ -1220,6 +1293,19 @@ ApplicationWindow {
         onTriggered: window.persistGameDetailsLayout(
                          controller.show_game_details,
                          controller.game_details_popped_out)
+    }
+
+    Timer {
+        id: boxSizeSaveTimer
+        interval: 200
+        onTriggered: {
+            if (controller.writing) {
+                restart()
+                return
+            }
+            if (!controller.apply_box_size(window.pendingBoxSize))
+                window.boxSize = controller.box_size
+        }
     }
 
     Timer {
@@ -1897,6 +1983,153 @@ ApplicationWindow {
                 + " rows=" + gameList.count
                 + " status=" + controller.status_message)
             Qt.exit(486)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: (window.libraryBoxSizeSmokeTest
+                  || window.libraryBoxSizeReloadSmokeTest)
+                 && !window.libraryBoxSizeSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.library_path.length === 0
+                    || gameGrid.count !== 3)
+                return
+
+            const expectedSize = 0.31
+            const sizeMatches =
+                Math.abs(controller.box_size - expectedSize) < 0.00001
+                && Math.abs(window.boxSize - expectedSize) < 0.00001
+                && Math.abs(boxSizeSlider.value - expectedSize) < 0.00001
+            const controlsMatch = boxSizeSlider.visible
+                && boxSizeSlider.enabled
+                && boxSizeDecreaseButton.visible
+                && boxSizeDecreaseButton.enabled
+                && boxSizeIncreaseButton.visible
+                && boxSizeIncreaseButton.enabled
+                && boxSizeSlider.from === 0.05
+                && boxSizeSlider.to === 0.50
+                && boxSizeSlider.stepSize === 0.001
+            const resizedGridMatches = gameGrid.visible
+                && !gameListPane.visible
+                && gameGrid.cellWidth === window.boxCellWidth
+                && gameGrid.cellHeight === window.boxCellHeight
+                && gameGrid.cellWidth >= 350
+                && gameGrid.cellWidth <= 450
+                && gameGrid.cellHeight >= 500
+                && gameGrid.cellHeight <= 700
+
+            if (window.libraryBoxSizeReloadSmokeTest) {
+                window.restoreGameSelection("fixture-adventure")
+                if (!sizeMatches || !controlsMatch
+                        || !resizedGridMatches
+                        || window.selectedGameId !== "fixture-adventure") {
+                    console.error(
+                        "LIBRARY_BOX_SIZE_RELOAD_BAD_STATE size="
+                        + controller.box_size
+                        + " slider=" + boxSizeSlider.value
+                        + " selected=" + window.selectedGameId
+                        + " cell=" + gameGrid.cellWidth
+                        + "x" + gameGrid.cellHeight)
+                    Qt.exit(487)
+                    return
+                }
+                window.finishLibraryBoxSizeSmoke(true)
+                return
+            }
+
+            if (window.libraryBoxSizeSmokePhase === 0) {
+                const defaultSize = 0.17214286
+                if (controller.list_view || !gameGrid.visible
+                        || gameListPane.visible
+                        || Math.abs(controller.box_size - defaultSize)
+                           >= 0.00001
+                        || Math.abs(boxSizeSlider.value - defaultSize)
+                           >= 0.00001
+                        || !controlsMatch
+                        || gameGrid.cellWidth < 200
+                        || gameGrid.cellWidth > 240
+                        || gameGrid.cellHeight < 320
+                        || gameGrid.cellHeight > 370) {
+                    console.error(
+                        "LIBRARY_BOX_SIZE_BAD_DEFAULT size="
+                        + controller.box_size
+                        + " slider=" + boxSizeSlider.value
+                        + " cell=" + gameGrid.cellWidth
+                        + "x" + gameGrid.cellHeight)
+                    Qt.exit(487)
+                    return
+                }
+                window.restoreGameSelection("fixture-adventure")
+                window.boxSize = 0.05
+                boxSizeSlider.value = 0.05
+                window.libraryBoxSizeSmokePhase = 1
+            } else if (window.libraryBoxSizeSmokePhase === 1) {
+                if (gameGrid.currentItem === null)
+                    return
+                if (gameGrid.cellWidth !== 64
+                        || gameGrid.cellHeight !== 99
+                        || gameGrid.currentItem.width <= 0
+                        || gameGrid.currentItem.height <= 0
+                        || (gameGrid.currentItem.width >= 150
+                            && gameGrid.currentItem.height >= 230)
+                        || boxSizeDecreaseButton.enabled
+                        || !boxSizeIncreaseButton.enabled) {
+                    console.error(
+                        "LIBRARY_BOX_SIZE_BAD_COMPACT_GRID cell="
+                        + gameGrid.cellWidth
+                        + "x" + gameGrid.cellHeight
+                        + " tile=" + gameGrid.currentItem.width
+                        + "x" + gameGrid.currentItem.height
+                        + " compact="
+                        + (gameGrid.currentItem.width < 150
+                           || gameGrid.currentItem.height < 230))
+                    Qt.exit(487)
+                    return
+                }
+                boxSizeSlider.value = expectedSize
+                boxSizeSlider.moved()
+                window.libraryBoxSizeSmokePhase = 2
+            } else if (window.libraryBoxSizeSmokePhase === 2) {
+                if (!sizeMatches)
+                    return
+                if (!controlsMatch || !resizedGridMatches
+                        || window.selectedGameId !== "fixture-adventure"
+                        || gameGrid.currentIndex
+                           !== controller.row_for_game_id(
+                               "fixture-adventure")) {
+                    console.error(
+                        "LIBRARY_BOX_SIZE_BAD_RESIZED_GRID size="
+                        + controller.box_size
+                        + " slider=" + boxSizeSlider.value
+                        + " selected=" + window.selectedGameId
+                        + " cell=" + gameGrid.cellWidth
+                        + "x" + gameGrid.cellHeight)
+                    Qt.exit(487)
+                    return
+                }
+                window.finishLibraryBoxSizeSmoke(false)
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: (window.libraryBoxSizeSmokeTest
+                  || window.libraryBoxSizeReloadSmokeTest)
+                 && !window.libraryBoxSizeSmokeFinished
+        onTriggered: {
+            console.error(
+                "LIBRARY_BOX_SIZE_SMOKE_TIMEOUT phase="
+                + window.libraryBoxSizeSmokePhase
+                + " size=" + controller.box_size
+                + " slider=" + boxSizeSlider.value
+                + " cell=" + gameGrid.cellWidth
+                + "x" + gameGrid.cellHeight
+                + " status=" + controller.status_message)
+            Qt.exit(487)
         }
     }
 
@@ -4177,6 +4410,7 @@ ApplicationWindow {
     }
 
     SplitView {
+        id: launchBoxContent
         anchors.fill: parent
 
         Rectangle {
@@ -4920,6 +5154,73 @@ ApplicationWindow {
                     Item { Layout.fillWidth: true }
                 }
 
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label {
+                        text: "Box size"
+                        color: "#aeb8c5"
+                        font.bold: true
+                        opacity: controller.list_view ? 0.45 : 1.0
+                    }
+                    Button {
+                        id: boxSizeDecreaseButton
+                        text: "−"
+                        Layout.preferredWidth: 34
+                        Accessible.name: "Decrease box size"
+                        opacity: controller.list_view ? 0.45 : 1.0
+                        enabled: !controller.list_view
+                                 && controller.library_path.length > 0
+                                 && !controller.loading
+                                 && window.boxSize > 0.05
+                        onClicked: window.adjustBoxSize(-0.01)
+                    }
+                    Slider {
+                        id: boxSizeSlider
+                        Layout.minimumWidth: 140
+                        Layout.preferredWidth: 220
+                        from: 0.05
+                        to: 0.50
+                        stepSize: 0.001
+                        snapMode: Slider.SnapAlways
+                        value: window.boxSize
+                        Accessible.name: "Box size"
+                        Accessible.description:
+                            "Adjust the size of game boxes in grid view"
+                        opacity: controller.list_view ? 0.45 : 1.0
+                        enabled: !controller.list_view
+                                 && controller.library_path.length > 0
+                                 && !controller.loading
+                        onMoved: window.queueBoxSize(value)
+                    }
+                    Button {
+                        id: boxSizeIncreaseButton
+                        text: "+"
+                        Layout.preferredWidth: 34
+                        Accessible.name: "Increase box size"
+                        opacity: controller.list_view ? 0.45 : 1.0
+                        enabled: !controller.list_view
+                                 && controller.library_path.length > 0
+                                 && !controller.loading
+                                 && window.boxSize < 0.50
+                        onClicked: window.adjustBoxSize(0.01)
+                    }
+                    Label {
+                        text: Math.round(window.boxSize * 100) + "%"
+                        color: "#8b949e"
+                        opacity: controller.list_view ? 0.45 : 1.0
+                        Layout.minimumWidth: 32
+                    }
+                    Label {
+                        text: controller.list_view
+                              ? "Available in grid view"
+                              : "Scales with the window"
+                        color: "#7d8590"
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+
                 Label {
                     Layout.fillWidth: true
                     text: controller.library_path.length > 0
@@ -4946,8 +5247,8 @@ ApplicationWindow {
                             visible: !controller.list_view
                             clip: true
                             focus: visible
-                            cellWidth: 230
-                            cellHeight: 340
+                            cellWidth: window.boxCellWidth
+                            cellHeight: window.boxCellHeight
                             model: controller
                             onCurrentIndexChanged: {
                                 if (gameList.currentIndex !== currentIndex)
@@ -4958,6 +5259,7 @@ ApplicationWindow {
                                         controller.game_id_at(currentIndex)
                             }
                             delegate: Rectangle {
+                            id: gameTile
                             required property int index
                             required property string gameTitle
                             required property string gameId
@@ -5097,8 +5399,10 @@ ApplicationWindow {
                                 if (window.editSmokePhase > 0)
                                     verifyEdit()
                             }
-                            width: gameGrid.cellWidth - 12
-                            height: gameGrid.cellHeight - 12
+                            readonly property bool compactTile:
+                                width < 150 || height < 230
+                            width: Math.max(1, gameGrid.cellWidth - 12)
+                            height: Math.max(1, gameGrid.cellHeight - 12)
                             radius: 6
                             color: gameGrid.currentIndex === index ? "#27384d"
                                    : gameMouse.containsMouse ? "#29313c" : "#20262e"
@@ -5109,14 +5413,23 @@ ApplicationWindow {
 
                             ColumnLayout {
                                 anchors.fill: parent
-                                anchors.margins: 12
-                                anchors.topMargin: 48
-                                anchors.bottomMargin: 48
+                                anchors.margins: Math.min(
+                                                     12,
+                                                     Math.max(3, parent.width * 0.08))
+                                anchors.topMargin:
+                                    parent.compactTile ? anchors.margins : 48
+                                anchors.bottomMargin:
+                                    parent.compactTile ? anchors.margins : 48
                                 spacing: 7
                                 Item {
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
-                                    Layout.minimumHeight: 150
+                                    Layout.minimumHeight: Math.min(
+                                                              150,
+                                                              Math.max(
+                                                                  24,
+                                                                  parent.height
+                                                                  * 0.55))
 
                                     Rectangle {
                                         anchors.fill: parent
@@ -5128,7 +5441,8 @@ ApplicationWindow {
                                             width: parent.width - 24
                                             text: gameTitle
                                             color: "#7d8590"
-                                            font.pixelSize: 16
+                                            font.pixelSize: gameTile.compactTile
+                                                            ? 10 : 16
                                             font.bold: true
                                             horizontalAlignment: Text.AlignHCenter
                                             wrapMode: Text.Wrap
@@ -5182,7 +5496,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     text: gameTitle
                                     color: "white"
-                                    font.pixelSize: 16
+                                    font.pixelSize: gameTile.compactTile ? 10 : 16
                                     font.bold: true
                                     wrapMode: Text.Wrap
                                     maximumLineCount: 2
@@ -5194,6 +5508,7 @@ ApplicationWindow {
                                           + (gameFavorite ? "  ★" : "")
                                           + (gameCompleted ? "  ✓" : "")
                                     color: "#8b949e"
+                                    visible: !gameTile.compactTile
                                     elide: Text.ElideRight
                                 }
                             }
@@ -5219,6 +5534,7 @@ ApplicationWindow {
                                 anchors.margins: 8
                                 z: 2
                                 text: controller.launching ? "Launching…" : "Play"
+                                visible: !parent.compactTile
                                 enabled: controller.library_path.length > 0
                                          && !controller.loading && !controller.writing
                                          && !controller.launching
@@ -5232,7 +5548,8 @@ ApplicationWindow {
                                 anchors.margins: 8
                                 z: 2
                                 text: "Launch With…"
-                                visible: gameAdditionalApplicationCount > 0
+                                visible: !parent.compactTile
+                                         && gameAdditionalApplicationCount > 0
                                 enabled: controller.library_path.length > 0
                                          && !controller.loading && !controller.writing
                                          && !controller.launching
@@ -5248,6 +5565,7 @@ ApplicationWindow {
                                 anchors.margins: 8
                                 z: 2
                                 text: "Apps (" + gameAdditionalApplicationCount + ")"
+                                visible: !parent.compactTile
                                 enabled: controller.library_path.length > 0
                                          && !controller.loading && !controller.writing
                                          && !controller.launching
@@ -5262,7 +5580,7 @@ ApplicationWindow {
                                 anchors.margins: 8
                                 z: 2
                                 text: "Saves (" + gameSaveCount + ")"
-                                visible: gameSaveCount > 0
+                                visible: !parent.compactTile && gameSaveCount > 0
                                 enabled: controller.library_path.length > 0
                                          && !controller.loading && !controller.writing
                                          && !controller.launching

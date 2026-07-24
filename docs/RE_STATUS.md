@@ -451,6 +451,22 @@ Other recovered structural evidence:
 The full paths and names are captured in
 [`analysis/static-inventory.json`](../analysis/static-inventory.json).
 
+The desktop box-size contract is recoverable despite protected implementation
+bodies. `ILaunchBoxMainViewModel.BoxSize` is a mutable `double`; concrete
+settings retain legacy `BoxSize` and modern single-precision `NextBoxSize`.
+The untouched 13.27 installation stores `NextBoxSize` as `0.17214286`, while
+the older real installation stores a different in-range user value, proving
+that it is persisted state rather than a compile-time constant. The 13.27
+stock `LBThemes/Default/Views/ControlsView.xaml` binds its slider two-way to
+`BoxSize` with minimum 0.05, maximum 0.50, `SmallChange` 0.001, and
+`LargeChange` 0.01; it dims/disables the control in list view and wires value,
+drag-start, and drag-complete events. The stock boxes view passes
+`BoxChildSize` to its virtualizing tile panel, and settings retain
+`NextBoxAspectRatio` 0.645. The protected `BoxChildSize` body itself is a
+default-return stub in stored IL, so the port explicitly treats the normalized
+value, recovered range/steps/aspect, and interaction state as authoritative
+while keeping the exact internal WPF pixel formula an oracle boundary.
+
 The real 13.24 rows establish the exact alternate-name shape as `GameID`,
 `Name`, and optional `Region`. Because that installation contains no
 `CustomField` rows, custom-field persistence is not attributed to the older

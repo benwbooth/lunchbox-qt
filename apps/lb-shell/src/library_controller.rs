@@ -33,6 +33,7 @@ pub mod qobject {
         #[qproperty(bool, game_sort_descending)]
         #[qproperty(bool, list_view)]
         #[qproperty(QString, list_view_layout_json)]
+        #[qproperty(f64, box_size)]
         #[qproperty(bool, include_hidden_games)]
         #[qproperty(bool, include_broken_games)]
         #[qproperty(bool, loading)]
@@ -386,6 +387,9 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn apply_box_size(self: Pin<&mut LibraryController>, box_size: f64) -> bool;
+
+        #[qinvokable]
         fn select_random_game(self: Pin<&mut LibraryController>, avoid_game_id: QString) -> i32;
 
         #[qinvokable]
@@ -725,6 +729,15 @@ pub mod qobject {
             self: &LibraryController,
             reloaded: bool,
             selected_game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_library_box_size_smoke_success(
+            self: &LibraryController,
+            reloaded: bool,
+            selected_game_id: QString,
+            cell_width: f64,
+            cell_height: f64,
         ) -> bool;
 
         #[qinvokable]
@@ -1068,11 +1081,12 @@ use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QUrl, QVariant,
 };
 use lb_domain::{
-    AdditionalApplication, AdditionalApplicationEdit, AlternateName, CustomField, Emulator,
-    EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game, GameLaunchConfiguration,
-    GameMetadata, GameSave, GameSaveMetadataEdit, ListViewColumnLayout, Mount, NavigationMetadata,
-    ParentRelationship, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
-    PlaylistDocument, PlaylistFilter, PlaylistGame, UNASSIGNED_EMULATOR_ID,
+    AdditionalApplication, AdditionalApplicationEdit, AlternateName, BoxSize, CustomField,
+    Emulator, EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game,
+    GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit, ListViewColumnLayout,
+    Mount, NavigationMetadata, ParentRelationship, PlatformCategory, PlatformDefinition,
+    PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
+    UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -1349,6 +1363,7 @@ pub struct LibraryControllerRust {
     game_sort_descending: bool,
     list_view: bool,
     list_view_layout_json: QString,
+    box_size: f64,
     include_hidden_games: bool,
     include_broken_games: bool,
     loading: bool,
@@ -1573,6 +1588,7 @@ struct LoadedLibrary {
     game_sort_descending: bool,
     list_view: bool,
     list_view_column_layout: ListViewColumnLayout,
+    box_size: BoxSize,
 }
 
 struct LibraryReplacement {
@@ -1598,6 +1614,7 @@ struct LibraryReplacement {
     game_sort_descending: bool,
     list_view: bool,
     list_view_column_layout: ListViewColumnLayout,
+    box_size: BoxSize,
     name: String,
     message: String,
     pending_recovery_count: usize,
@@ -1666,6 +1683,7 @@ impl LoadedLibrary {
                 game_sort_descending: false,
                 list_view: false,
                 list_view_column_layout: ListViewColumnLayout::default(),
+                box_size: BoxSize::default(),
             });
         }
 
@@ -1674,6 +1692,7 @@ impl LoadedLibrary {
         let (game_sort, game_sort_descending) = game_sort_from_settings(data.settings());
         let list_view = list_view_from_settings(data.settings());
         let list_view_column_layout = ListViewColumnLayout::from_settings(data.settings());
+        let box_size = BoxSize::from_settings(data.settings());
         let launchbox_launch_screen_policy =
             FrontendLaunchScreenPolicy::from_settings(data.settings())
                 .map_err(|error| error.to_string())?;
@@ -1775,6 +1794,7 @@ impl LoadedLibrary {
             game_sort_descending,
             list_view,
             list_view_column_layout,
+            box_size,
         })
     }
 }
@@ -2107,6 +2127,16 @@ impl ListViewLayoutPayload {
 }
 
 enum ListViewWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Other(String),
+}
+
+struct BoxSizeWriteSuccess {
+    backup: PathBuf,
+}
+
+enum BoxSizeWriteFailure {
     Conflict(String),
     PendingRecovery { count: usize, message: String },
     Other(String),
@@ -4454,6 +4484,36 @@ fn write_list_view_column_settings(
             )
         })?;
     Ok(ListViewWriteSuccess { backup })
+}
+
+fn write_box_size_setting(
+    root: PathBuf,
+    box_size: BoxSize,
+) -> Result<BoxSizeWriteSuccess, BoxSizeWriteFailure> {
+    let settings_path = root.join("Data").join("Settings.xml");
+    let mut settings = AuxiliaryDocument::load(&settings_path)
+        .map_err(|error| BoxSizeWriteFailure::Other(error.to_string()))?;
+    settings
+        .set_single_record_field("Settings", "NextBoxSize", &box_size.setting_value())
+        .map_err(|error| BoxSizeWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_box_size_transaction_error)?;
+    transaction
+        .stage_auxiliary(&settings)
+        .map_err(classify_box_size_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_box_size_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == settings_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            BoxSizeWriteFailure::Other("box-size transaction reported no Settings.xml write".into())
+        })?;
+    Ok(BoxSizeWriteSuccess { backup })
 }
 
 fn write_game(
@@ -14533,6 +14593,27 @@ fn classify_list_view_transaction_error(error: TransactionError) -> ListViewWrit
     }
 }
 
+fn classify_box_size_transaction_error(error: TransactionError) -> BoxSizeWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::SourceConflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            BoxSizeWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            BoxSizeWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            BoxSizeWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => BoxSizeWriteFailure::Other(message),
+    }
+}
+
 fn classify_platform_transaction_error(error: TransactionError) -> PlatformWriteFailure {
     let message = error.to_string();
     match error {
@@ -14693,6 +14774,9 @@ fn path_mapping_key(mappings: &HostPathMappings, index: i32) -> Option<PathMappi
 impl qobject::LibraryController {
     pub fn configure_frontend(mut self: Pin<&mut Self>, big_box: bool) {
         self.as_mut().set_frontend_is_big_box(big_box);
+        if !big_box && *self.as_ref().box_size() == 0.0 {
+            self.as_mut().set_box_size(BoxSize::default().value());
+        }
         if !big_box && !self.as_ref().rust().ui_state_initialized {
             let state = LaunchBoxUiState::default();
             self.as_mut().apply_launchbox_ui_state(state);
@@ -15093,6 +15177,7 @@ impl qobject::LibraryController {
                     game_sort_descending: false,
                     list_view: false,
                     list_view_column_layout: ListViewColumnLayout::default(),
+                    box_size: BoxSize::default(),
                     name: "Fixture Console".into(),
                     message: "Embedded compatibility fixture".into(),
                     pending_recovery_count: 0,
@@ -15547,6 +15632,58 @@ impl qobject::LibraryController {
                 .unwrap_or_default();
             self.as_mut().set_status_message(qstring(format!(
                 "Could not start list-column settings writer: {error}.{rollback}"
+            )));
+            return false;
+        }
+        true
+    }
+
+    pub fn apply_box_size(mut self: Pin<&mut Self>, box_size: f64) -> bool {
+        let box_size = match BoxSize::new(box_size) {
+            Ok(box_size) => box_size,
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not apply box size: {error}")));
+                return false;
+            }
+        };
+        let previous = *self.as_ref().box_size();
+        if previous == box_size.value() {
+            return true;
+        }
+        let launchbox_root = self.as_ref().rust().launchbox_root.clone();
+        if launchbox_root.is_some() && !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+        self.as_mut().set_box_size(box_size.value());
+        let Some(root) = launchbox_root else {
+            self.as_mut()
+                .set_status_message(qstring("Applied box size for this session."));
+            return true;
+        };
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Saving LaunchBox box size in the background..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-box-size-settings-write".to_string())
+            .spawn(move || {
+                let result = write_box_size_setting(root, box_size);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_box_size_write(generation, previous, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_box_size(previous);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start box-size settings writer: {error}"
             )));
             return false;
         }
@@ -18295,6 +18432,40 @@ impl qobject::LibraryController {
                 ordered_ids.len(),
                 selected_game_id,
                 self.game_sort(),
+            );
+        }
+        success
+    }
+
+    pub fn report_library_box_size_smoke_success(
+        &self,
+        reloaded: bool,
+        selected_game_id: QString,
+        cell_width: f64,
+        cell_height: f64,
+    ) -> bool {
+        let selected_game_id = selected_game_id.to_string();
+        let box_size = *self.box_size();
+        let aspect_ratio = cell_width / cell_height;
+        let rust = self.rust();
+        let success = rust.games.len() == 3
+            && !*self.list_view()
+            && (box_size - 0.31).abs() < 0.000_01
+            && selected_game_id == "fixture-adventure"
+            && (350.0..=450.0).contains(&cell_width)
+            && (500.0..=700.0).contains(&cell_height)
+            && (aspect_ratio - 0.645).abs() < 0.002
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "LIBRARY_BOX_SIZE_SMOKE_COMPLETE reload={} rows={} selected={} size={box_size:.2} cell={}x{}",
+                i32::from(reloaded),
+                rust.games.len(),
+                selected_game_id,
+                cell_width.round() as i64,
+                cell_height.round() as i64,
             );
         }
         success
@@ -22062,6 +22233,7 @@ impl qobject::LibraryController {
                     game_sort_descending: loaded.game_sort_descending,
                     list_view: loaded.list_view,
                     list_view_column_layout: loaded.list_view_column_layout,
+                    box_size: loaded.box_size,
                     name: loaded.name,
                     message: loaded.message,
                     pending_recovery_count: loaded.pending_recovery_count,
@@ -22340,6 +22512,48 @@ impl qobject::LibraryController {
                     .unwrap_or_default();
                 self.as_mut()
                     .set_status_message(qstring(format!("{kind}: {message}.{rollback}")));
+            }
+        }
+    }
+
+    fn finish_box_size_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        previous: f64,
+        result: Result<BoxSizeWriteSuccess, BoxSizeWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(written) => {
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved LaunchBox box size. Exact backup: {}",
+                    written.backup.display()
+                )));
+            }
+            Err(BoxSizeWriteFailure::Conflict(message)) => {
+                self.as_mut().set_box_size(previous);
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(BoxSizeWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut().set_box_size(previous);
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(BoxSizeWriteFailure::Other(message)) => {
+                self.as_mut().set_box_size(previous);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save LaunchBox box size: {message}"
+                )));
             }
         }
     }
@@ -25602,6 +25816,7 @@ impl qobject::LibraryController {
             game_sort_descending,
             list_view,
             list_view_column_layout,
+            box_size,
             name,
             message,
             pending_recovery_count,
@@ -25788,6 +26003,7 @@ impl qobject::LibraryController {
         self.as_mut().set_game_sort_descending(game_sort_descending);
         self.as_mut().set_list_view(list_view);
         self.as_mut().refresh_list_view_layout_json();
+        self.as_mut().set_box_size(box_size.value());
         self.as_mut().set_include_hidden_games(false);
         self.as_mut().set_include_broken_games(false);
         self.as_mut().set_navigation_filter_kind(QString::default());
@@ -26734,6 +26950,46 @@ mod tests {
             typed.get("ListViewVisibleColumnIndexPriorities"),
             Some(layout.visible_indexes_setting().as_str())
         );
+        assert_eq!(typed.get_bool("ListView"), Some(false));
+        assert_eq!(
+            fs::read(platform_path).expect("read unchanged platform"),
+            original_platform
+        );
+    }
+
+    #[test]
+    fn box_size_writer_atomically_updates_only_launchbox_settings() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        let platforms = data.join("Platforms");
+        fs::create_dir_all(&platforms).expect("create platform directory");
+        let settings_path = data.join("Settings.xml");
+        let platform_path = platforms.join("Fixture Console.xml");
+        let original_settings = include_bytes!("../../../fixtures/launchbox/Data/Settings.xml");
+        let original_platform =
+            include_bytes!("../../../fixtures/launchbox/Data/Platforms/Fixture Console.xml");
+        fs::write(&settings_path, original_settings).expect("write settings fixture");
+        fs::write(&platform_path, original_platform).expect("write platform fixture");
+
+        let written = write_box_size_setting(
+            directory.path().to_path_buf(),
+            BoxSize::new(0.31).expect("valid box size"),
+        )
+        .unwrap_or_else(|error| match error {
+            BoxSizeWriteFailure::Conflict(message)
+            | BoxSizeWriteFailure::Other(message)
+            | BoxSizeWriteFailure::PendingRecovery { message, .. } => {
+                panic!("write NextBoxSize setting: {message}")
+            }
+        });
+
+        assert_eq!(
+            fs::read(&written.backup).expect("read exact backup"),
+            original_settings
+        );
+        let updated = LaunchBoxDataIndex::load(directory.path()).expect("load updated library");
+        let typed = updated.settings().expect("typed updated settings");
+        assert_eq!(typed.get("NextBoxSize"), Some("0.31"));
         assert_eq!(typed.get_bool("ListView"), Some(false));
         assert_eq!(
             fs::read(platform_path).expect("read unchanged platform"),

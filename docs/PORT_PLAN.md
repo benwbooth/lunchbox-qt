@@ -256,6 +256,17 @@ offscreen processes prove invalid-key refusal, exact PlayCount ordering,
 single/multi-result random behavior, Settings.xml backup/persistence, and
 byte-identical platform XML. Dynamic/custom-field arrangement, group headings,
 suggestions, and random play remain open.
+The current `DESK-001` vertical now covers both persisted view modes, every
+recovered 13.27 list column, and box sizing. The original `ListView`, column
+order, and stable visibility indexes use recoverable shared settings writes;
+host-specific widths use platform-native UI state. The grid loads the typed
+normalized `NextBoxSize`, exposes the stock 0.05–0.50/0.001 slider contract
+with 0.01 buttons, and derives cells from Qt logical window units so the same
+setting survives Linux, Windows, standard and Retina macOS scaling. Real
+offscreen controls prove stable selection, responsive rendering, exact
+settings backups, byte-identical platform XML, and fresh-process restoration.
+Native Windows and Intel/Apple Silicon macOS Qt interaction remains an explicit
+real-host release gate.
 The first `MED-004` vertical now reads configured front-image folders through
 the shared cross-platform resolver and renders real game artwork in both
 frontends through a native file-URL model role. Type, region, and numeric-image

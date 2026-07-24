@@ -205,8 +205,15 @@ bounded pixel widths. The original `Settings.xml` `ListView`,
 `ListViewVisibleColumnIndexPriorities` values are loaded and transactionally
 persisted with their stable WPF indexes, while machine-specific widths remain
 in the port's platform-native UI state. A new process restores both documents
-on Linux, Windows, Intel macOS, and Apple Silicon. Box-size controls remain
-later `DESK-001` work.
+on Linux, Windows, Intel macOS, and Apple Silicon. The same grid now loads and
+transactionally persists LaunchBox 13.27's normalized `NextBoxSize` value. Its
+real Qt slider uses the recovered 0.05–0.50 range, 0.001 step, and 0.01 button
+change, dims in list view, retains stable selection, and computes responsive
+box cells from the logical Qt window size rather than host-specific physical
+pixels. Compact tiles collapse action chrome safely at the low end. A compiled
+two-process scenario drives the real slider, renders the resized grid, proves
+one exact settings backup and byte-identical platform XML, and restores the
+value without another write.
 Existing-platform game additions generate UUIDs and use targeted Qt row
 insertion. Deletion freshly scans every modeled platform, playlist, navigation,
 clone, save, controller, and blacklist reference and refuses orphaning; an

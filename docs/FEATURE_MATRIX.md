@@ -33,8 +33,11 @@ stable-ID selection. It loads and atomically persists the original `ListView`
 setting, exposes query-backed sortable headers, and renders all 35 recovered
 13.27 columns. The original stable column order and visibility indexes persist
 transactionally in shared `Settings.xml`; bounded per-host widths persist in
-platform-native UI state, and a real Columns dialog edits all three. Box-size
-controls remain open. A source-indexed
+platform-native UI state, and a real Columns dialog edits all three. The grid
+also implements the recovered normalized `NextBoxSize` contract with a real
+0.05–0.50 Qt slider, 0.001 steps, 0.01 buttons, list-view dimming, responsive
+logical-window sizing, atomic exact-backup persistence, and fresh-process
+restoration. A source-indexed
 transactional editor also implements the
 three-field alternate-name and name/value custom-field subset of `LIB-003`.
 The dialog-driven portable platform create/edit/delete, recovered platform

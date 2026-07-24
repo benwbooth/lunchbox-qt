@@ -2,9 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 
+mod box_size;
 mod catalog;
 mod list_view;
 
+pub use box_size::*;
 pub use catalog::*;
 pub use list_view::*;
 
