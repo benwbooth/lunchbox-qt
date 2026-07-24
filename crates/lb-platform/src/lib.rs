@@ -5,6 +5,7 @@ mod media;
 mod path;
 mod path_settings;
 mod scummvm;
+mod ui_state;
 
 pub use archive::{
     ArchiveCreationError, ArchiveExtractionError, ArchiveExtractor, LaunchResourceLease,
@@ -25,6 +26,12 @@ pub use path_settings::{
     WindowsUncMapping, HOST_PATH_MAPPINGS_VERSION,
 };
 pub use scummvm::ScummVmPlanError;
+pub use ui_state::{
+    default_launchbox_ui_state_path, GameDetailsWindowState, LaunchBoxUiState,
+    LaunchBoxUiStateError, LAUNCHBOX_UI_STATE_VERSION, MAX_GAME_DETAILS_PANE_WIDTH,
+    MAX_GAME_DETAILS_WINDOW_HEIGHT, MAX_GAME_DETAILS_WINDOW_WIDTH, MIN_GAME_DETAILS_PANE_WIDTH,
+    MIN_GAME_DETAILS_WINDOW_HEIGHT, MIN_GAME_DETAILS_WINDOW_WIDTH,
+};
 
 use lb_domain::{
     is_unassigned_emulator_id, AdditionalApplication, Emulator, EmulatorConfiguration,

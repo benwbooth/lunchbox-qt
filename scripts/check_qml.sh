@@ -165,6 +165,87 @@ cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
 
 echo "LaunchBox stable-ID selection, resizable game details, metadata actions, play statistics, community rating, and rendered artwork validated without library writes."
 
+game_details_ui_state="$test_config_root/game-details-ui-state.json"
+expected_game_details_ui_state="$test_config_root/expected-game-details-ui-state.json"
+game_details_layout_screenshot="$test_config_root/launchbox-popped-out-game-details.png"
+cat > "$expected_game_details_ui_state" <<'EOF'
+{
+  "version": 1,
+  "show_game_details": true,
+  "game_details_popped_out": true,
+  "game_details_pane_width": 420,
+  "game_details_window": {
+    "x": 140,
+    "y": 100,
+    "width": 640,
+    "height": 560,
+    "maximized": false
+  }
+}
+EOF
+game_details_layout_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$media_root" \
+    --game-details-layout-smoke-test \
+    --game-details-layout-screenshot "$game_details_layout_screenshot" \
+    --ui-state-file "$game_details_ui_state" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_details_layout_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_DETAILS_LAYOUT_SMOKE_COMPLETE reload=0 pane_width=420 window=140,100,640,560 popped_out=1' \
+  <<< "$game_details_layout_output"; then
+  printf '%s\n' "$game_details_layout_output" >&2
+  echo "LaunchBox did not validate dock, hide, and pop-out transitions." >&2
+  exit 1
+fi
+if ! cmp -s "$expected_game_details_ui_state" "$game_details_ui_state"; then
+  printf '%s\n' "$game_details_layout_output" >&2
+  diff -u "$expected_game_details_ui_state" "$game_details_ui_state" >&2 || true
+  echo "LaunchBox persisted the wrong host-specific details layout." >&2
+  exit 1
+fi
+if [[ ! -s "$game_details_layout_screenshot" ]] \
+  || [[ $(wc -c < "$game_details_layout_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$game_details_layout_screenshot" | tr -d ' \n') \
+    != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$game_details_layout_output" >&2
+  echo "LaunchBox did not render a valid popped-out details PNG." >&2
+  exit 1
+fi
+game_details_layout_reload_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$media_root" \
+    --game-details-layout-reload-smoke-test \
+    --ui-state-file "$game_details_ui_state" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_details_layout_reload_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_DETAILS_LAYOUT_SMOKE_COMPLETE reload=1 pane_width=420 window=140,100,640,560 popped_out=1' \
+  <<< "$game_details_layout_reload_output"; then
+  printf '%s\n' "$game_details_layout_reload_output" >&2
+  echo "LaunchBox did not restore the persisted details window in a new process." >&2
+  exit 1
+fi
+if ! cmp -s "$expected_game_details_ui_state" "$game_details_ui_state"; then
+  echo "LaunchBox changed its host-specific details state during reload." >&2
+  exit 1
+fi
+if find "$test_config_root" -maxdepth 1 -type f \
+  -name '.game-details-ui-state.json.lbport-*.tmp' -print -quit | rg -q .; then
+  echo "LaunchBox left an atomic UI-state temporary behind." >&2
+  exit 1
+fi
+cmp "$media_platform.before-media-smoke" "$media_platform"
+cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
+
+echo "LaunchBox dock, hide, pop-out, popup geometry, atomic host-state persistence, and new-process restoration validated without shared-library writes."
+
 bigbox_navigation_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
     --windowed --library "$workspace_root/fixtures/launchbox" \

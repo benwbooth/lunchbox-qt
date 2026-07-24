@@ -114,9 +114,19 @@ editing, insertion, and removal; when a game is filtered out the first visible
 row is selected deterministically. The pane renders front artwork, descriptive
 metadata, notes, installed/favorite/completed state, play statistics, local and
 community ratings, and the existing Play, Edit, Launch With, Apps, Saves, and
-Wikipedia actions. Its offscreen interaction smoke exercises retained
-selection, filtered-out fallback, restoration, native artwork decoding, and a
-real rendered PNG without writing library XML or settings.
+Wikipedia actions. **Details** hides or shows it, and **Pop Out/Dock** moves the
+same live view into a native Qt window. Dock width, visibility, popup state,
+normal geometry, and maximized state are atomically persisted outside the
+portable library. Defaults are
+`$XDG_CONFIG_HOME/launchbox-port/ui-state.json` on Linux (falling back to
+`~/.config`), `~/Library/Application Support/LaunchBox Port/ui-state.json` on
+macOS, and `%APPDATA%\LaunchBox Port\ui-state.json` on Windows;
+`--ui-state-file` selects an explicit test or portable location. One offscreen
+interaction exercises retained selection, filtered-out fallback, restoration,
+native artwork decoding, and a real rendered PNG. A second two-process scenario
+exercises hide, dock, pop out, native popup rendering, exact state-file bytes,
+shutdown preservation, and fresh-process restoration without writing library
+XML or settings.
 
 Both frontends also use one typed, read-only library-filter contract. It
 combines text and platform/category/playlist navigation with favorite,

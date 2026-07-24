@@ -106,10 +106,29 @@ pub mod qobject {
         #[qproperty(QString, last_launch_target_id)]
         #[qproperty(QString, path_mapping_settings_path)]
         #[qproperty(i32, path_mapping_count)]
+        #[qproperty(QString, ui_state_settings_path)]
+        #[qproperty(bool, ui_state_ready)]
+        #[qproperty(bool, show_game_details)]
+        #[qproperty(bool, game_details_popped_out)]
+        #[qproperty(f64, game_details_pane_width)]
+        #[qproperty(i32, game_details_window_x)]
+        #[qproperty(i32, game_details_window_y)]
+        #[qproperty(i32, game_details_window_width)]
+        #[qproperty(i32, game_details_window_height)]
+        #[qproperty(bool, game_details_window_maximized)]
         type LibraryController = super::LibraryControllerRust;
 
         #[qinvokable]
         fn initialize_host_path_mappings(self: Pin<&mut LibraryController>) -> bool;
+
+        #[qinvokable]
+        fn initialize_launchbox_ui_state(self: Pin<&mut LibraryController>) -> bool;
+
+        #[qinvokable]
+        fn save_game_details_layout(
+            self: Pin<&mut LibraryController>,
+            request_payload: QString,
+        ) -> bool;
 
         #[qinvokable]
         fn configure_frontend(self: Pin<&mut LibraryController>, big_box: bool);
@@ -675,6 +694,12 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_game_details_layout_smoke_success(
+            self: &LibraryController,
+            reloaded: bool,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_library_filter_smoke_success(self: &LibraryController) -> bool;
 
         #[qinvokable]
@@ -1089,15 +1114,16 @@ use lb_integrations::xemu_bios::{
 };
 use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
 use lb_platform::{
-    default_host_path_mappings_path, default_platform_folders, execute_launch_sequence_controlled,
-    index_front_images, navigation_document_file_name, platform_document_file_name,
-    portable_storage_name, prepare_game_launch_sequence_with_mounts_context_and_resolver,
+    default_host_path_mappings_path, default_launchbox_ui_state_path, default_platform_folders,
+    execute_launch_sequence_controlled, index_front_images, navigation_document_file_name,
+    platform_document_file_name, portable_storage_name,
+    prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     select_emulator_for_game, ArchiveExtractor, FrontendLaunchScreenPolicy,
-    FrontendPauseScreenPolicy, HostPathMappings, HostPathResolver, LaunchContext,
-    LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence,
-    LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy,
-    LaunchTarget,
+    FrontendPauseScreenPolicy, GameDetailsWindowState, HostPathMappings, HostPathResolver,
+    LaunchBoxUiState, LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver,
+    LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport,
+    LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
@@ -1367,6 +1393,16 @@ pub struct LibraryControllerRust {
     last_launch_target_id: QString,
     path_mapping_settings_path: QString,
     path_mapping_count: i32,
+    ui_state_settings_path: QString,
+    ui_state_ready: bool,
+    show_game_details: bool,
+    game_details_popped_out: bool,
+    game_details_pane_width: f64,
+    game_details_window_x: i32,
+    game_details_window_y: i32,
+    game_details_window_width: i32,
+    game_details_window_height: i32,
+    game_details_window_maximized: bool,
     games: Vec<Game>,
     game_sources: Vec<PathBuf>,
     additional_applications_by_game: BTreeMap<String, Vec<AdditionalApplication>>,
@@ -1411,6 +1447,9 @@ pub struct LibraryControllerRust {
     path_mappings: HostPathMappings,
     path_mappings_initialized: bool,
     path_resolver: HostPathResolver,
+    ui_state_file: Option<PathBuf>,
+    ui_state: LaunchBoxUiState,
+    ui_state_initialized: bool,
     request_generation: u64,
     random_selection_counter: u64,
     model_reset_notifications: u64,
@@ -14379,24 +14418,35 @@ fn path_resolver_from_command_line(
     Ok(resolver)
 }
 
-fn path_mapping_settings_path_from_command_line() -> Result<PathBuf, String> {
+fn explicit_path_from_command_line(flag: &str) -> Result<Option<PathBuf>, String> {
     let mut arguments = std::env::args_os();
     let mut explicit_path = None;
     while let Some(argument) = arguments.next() {
-        if argument == "--path-mappings-file" {
+        if argument == flag {
             let path = arguments
                 .next()
-                .ok_or_else(|| "--path-mappings-file requires a file path".to_string())?;
+                .ok_or_else(|| format!("{flag} requires a file path"))?;
             if path.is_empty() {
-                return Err("--path-mappings-file requires a non-empty file path".to_string());
+                return Err(format!("{flag} requires a non-empty file path"));
             }
             if explicit_path.replace(PathBuf::from(path)).is_some() {
-                return Err("--path-mappings-file may only be supplied once".to_string());
+                return Err(format!("{flag} may only be supplied once"));
             }
         }
     }
-    explicit_path.map_or_else(
+    Ok(explicit_path)
+}
+
+fn path_mapping_settings_path_from_command_line() -> Result<PathBuf, String> {
+    explicit_path_from_command_line("--path-mappings-file")?.map_or_else(
         || default_host_path_mappings_path().map_err(|error| error.to_string()),
+        Ok,
+    )
+}
+
+fn ui_state_settings_path_from_command_line() -> Result<PathBuf, String> {
+    explicit_path_from_command_line("--ui-state-file")?.map_or_else(
+        || default_launchbox_ui_state_path().map_err(|error| error.to_string()),
         Ok,
     )
 }
@@ -14407,6 +14457,12 @@ fn load_host_path_mappings() -> Result<(PathBuf, HostPathMappings, HostPathResol
     let resolver = mappings.resolver().map_err(|error| error.to_string())?;
     let resolver = path_resolver_from_command_line(resolver)?;
     Ok((path, mappings, resolver))
+}
+
+fn load_launchbox_ui_state() -> Result<(PathBuf, LaunchBoxUiState), String> {
+    let path = ui_state_settings_path_from_command_line()?;
+    let state = LaunchBoxUiState::load_or_default(&path).map_err(|error| error.to_string())?;
+    Ok((path, state))
 }
 
 enum PathMappingKey {
@@ -14432,7 +14488,89 @@ fn path_mapping_key(mappings: &HostPathMappings, index: i32) -> Option<PathMappi
 impl qobject::LibraryController {
     pub fn configure_frontend(mut self: Pin<&mut Self>, big_box: bool) {
         self.as_mut().set_frontend_is_big_box(big_box);
+        if !big_box && !self.as_ref().rust().ui_state_initialized {
+            let state = LaunchBoxUiState::default();
+            self.as_mut().apply_launchbox_ui_state(state);
+        }
         self.as_mut().refresh_frontend_launch_screen_policy();
+    }
+
+    fn apply_launchbox_ui_state(mut self: Pin<&mut Self>, state: LaunchBoxUiState) {
+        self.as_mut().set_show_game_details(state.show_game_details);
+        self.as_mut()
+            .set_game_details_popped_out(state.game_details_popped_out);
+        self.as_mut()
+            .set_game_details_pane_width(f64::from(state.game_details_pane_width));
+        self.as_mut()
+            .set_game_details_window_x(state.game_details_window.x);
+        self.as_mut()
+            .set_game_details_window_y(state.game_details_window.y);
+        self.as_mut().set_game_details_window_width(
+            i32::try_from(state.game_details_window.width).unwrap_or(i32::MAX),
+        );
+        self.as_mut().set_game_details_window_height(
+            i32::try_from(state.game_details_window.height).unwrap_or(i32::MAX),
+        );
+        self.as_mut()
+            .set_game_details_window_maximized(state.game_details_window.maximized);
+        self.as_mut().rust_mut().ui_state = state;
+    }
+
+    pub fn initialize_launchbox_ui_state(mut self: Pin<&mut Self>) -> bool {
+        if self.as_ref().rust().ui_state_initialized {
+            return true;
+        }
+        match load_launchbox_ui_state() {
+            Ok((path, state)) => {
+                self.as_mut().rust_mut().ui_state_file = Some(path.clone());
+                self.as_mut().apply_launchbox_ui_state(state);
+                self.as_mut().rust_mut().ui_state_initialized = true;
+                self.as_mut()
+                    .set_ui_state_settings_path(qstring(path.to_string_lossy()));
+                self.as_mut().set_ui_state_ready(true);
+                true
+            }
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not load LaunchBox desktop layout: {error}"
+                )));
+                false
+            }
+        }
+    }
+
+    pub fn save_game_details_layout(mut self: Pin<&mut Self>, request_payload: QString) -> bool {
+        if !self.as_mut().initialize_launchbox_ui_state() {
+            return false;
+        }
+        let state = match serde_json::from_str::<LaunchBoxUiState>(&request_payload.to_string()) {
+            Ok(state) => state,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not decode LaunchBox desktop layout: {error}"
+                )));
+                return false;
+            }
+        };
+        if let Err(error) = state.validate() {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not save LaunchBox desktop layout: {error}"
+            )));
+            return false;
+        }
+        let Some(path) = self.as_ref().rust().ui_state_file.clone() else {
+            self.as_mut()
+                .set_status_message(qstring("The LaunchBox desktop layout path is unavailable."));
+            return false;
+        };
+        if let Err(error) = state.save_atomic(&path) {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not save LaunchBox desktop layout: {error}"
+            )));
+            return false;
+        }
+        self.as_mut().apply_launchbox_ui_state(state);
+        true
     }
 
     fn refresh_frontend_launch_screen_policy(mut self: Pin<&mut Self>) {
@@ -17644,6 +17782,60 @@ impl qobject::LibraryController {
                     .game_saves_by_game
                     .get(&game.id)
                     .map_or(0, Vec::len),
+            );
+        }
+        success
+    }
+
+    pub fn report_game_details_layout_smoke_success(&self, reloaded: bool) -> bool {
+        let expected = LaunchBoxUiState {
+            version: lb_platform::LAUNCHBOX_UI_STATE_VERSION,
+            show_game_details: true,
+            game_details_popped_out: true,
+            game_details_pane_width: 420,
+            game_details_window: GameDetailsWindowState {
+                x: 140,
+                y: 100,
+                width: 640,
+                height: 560,
+                maximized: false,
+            },
+        };
+        let loaded = self
+            .rust()
+            .ui_state_file
+            .as_deref()
+            .and_then(|path| LaunchBoxUiState::load(path).ok());
+        let success = *self.ui_state_ready()
+            && self.rust().ui_state == expected
+            && loaded.as_ref() == Some(&expected)
+            && *self.show_game_details()
+            && *self.game_details_popped_out()
+            && *self.game_details_pane_width() == 420.0
+            && *self.game_details_window_x() == 140
+            && *self.game_details_window_y() == 100
+            && *self.game_details_window_width() == 640
+            && *self.game_details_window_height() == 560
+            && !*self.game_details_window_maximized();
+        if success {
+            eprintln!(
+                "GAME_DETAILS_LAYOUT_SMOKE_COMPLETE reload={} pane_width=420 window=140,100,640,560 popped_out=1",
+                i32::from(reloaded)
+            );
+        } else {
+            eprintln!(
+                "GAME_DETAILS_LAYOUT_SMOKE_REJECTED reload={} ready={} show={} popped_out={} pane_width={} window={},{},{},{} maximized={} file={:?} loaded={loaded:?}",
+                i32::from(reloaded),
+                self.ui_state_ready(),
+                self.show_game_details(),
+                self.game_details_popped_out(),
+                self.game_details_pane_width(),
+                self.game_details_window_x(),
+                self.game_details_window_y(),
+                self.game_details_window_width(),
+                self.game_details_window_height(),
+                self.game_details_window_maximized(),
+                self.rust().ui_state_file,
             );
         }
         success

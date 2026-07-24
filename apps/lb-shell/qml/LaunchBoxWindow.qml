@@ -16,6 +16,13 @@ ApplicationWindow {
            ? controller.library_name + " — LaunchBox Port"
            : "LaunchBox Port"
     color: "#14171c"
+    onClosing: {
+        window.applicationClosing = true
+        gameDetailsLayoutSaveTimer.stop()
+        window.persistGameDetailsLayout(
+                    controller.show_game_details,
+                    controller.game_details_popped_out)
+    }
 
     property string selectedPlatform: ""
     property string selectedNavigationKind: "all"
@@ -38,6 +45,18 @@ ApplicationWindow {
         Qt.application.arguments.indexOf("--game-details-smoke-test") >= 0
     property int gameDetailsSmokePhase: 0
     property bool gameDetailsSmokeFinished: false
+    property bool gameDetailsLayoutSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--game-details-layout-smoke-test") >= 0
+    property bool gameDetailsLayoutReloadSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--game-details-layout-reload-smoke-test") >= 0
+    property int gameDetailsLayoutSmokePhase: 0
+    property bool gameDetailsLayoutSmokeFinished: false
+    property bool applicationClosing: false
+    property bool gameDetailsLayoutScreenshotRequested: false
+    property string gameDetailsLayoutScreenshotPath:
+        argumentValue("--game-details-layout-screenshot")
     property bool gameDetailsScreenshotRequested: false
     property string gameDetailsScreenshotPath:
         argumentValue("--game-details-screenshot")
@@ -50,6 +69,12 @@ ApplicationWindow {
     property string gameDetailsPlayTimeText: ""
     property string gameDetailsCommunityRatingText: ""
     property bool gameDetailsLaunchWithVisible: false
+    property real detailsPaneWidth: 360
+    property int detailsWindowNormalX: 120
+    property int detailsWindowNormalY: 80
+    property int detailsWindowNormalWidth: 480
+    property int detailsWindowNormalHeight: 640
+    property bool detailsWindowMaximized: false
     property string selectedGameId: ""
     property bool gameSelectionResetPending: false
     readonly property var selectedGameItem:
@@ -415,6 +440,51 @@ ApplicationWindow {
         return "Unknown"
     }
 
+    function persistGameDetailsLayout(showDetails, poppedOut) {
+        if (!controller.ui_state_ready)
+            return false
+        return saveGameDetailsLayout(
+                    showDetails, poppedOut, detailsPaneWidth,
+                    detailsWindowNormalX, detailsWindowNormalY,
+                    detailsWindowNormalWidth, detailsWindowNormalHeight,
+                    detailsWindowMaximized)
+    }
+
+    function saveGameDetailsLayout(showDetails, poppedOut, paneWidth,
+                                   windowX, windowY, windowWidth,
+                                   windowHeight, maximized) {
+        return controller.save_game_details_layout(JSON.stringify({
+            version: 1,
+            show_game_details: showDetails,
+            game_details_popped_out: poppedOut,
+            game_details_pane_width: Math.round(paneWidth),
+            game_details_window: {
+                x: Math.round(windowX),
+                y: Math.round(windowY),
+                width: Math.round(windowWidth),
+                height: Math.round(windowHeight),
+                maximized: maximized
+            }
+        }))
+    }
+
+    function setGameDetailsVisible(visible) {
+        return persistGameDetailsLayout(
+                    visible, controller.game_details_popped_out)
+    }
+
+    function setGameDetailsPoppedOut(poppedOut) {
+        return persistGameDetailsLayout(
+                    controller.show_game_details, poppedOut)
+    }
+
+    function scheduleGameDetailsLayoutSave() {
+        if (controller.ui_state_ready
+                && !window.gameDetailsLayoutSmokeTest
+                && !window.gameDetailsLayoutReloadSmokeTest)
+            gameDetailsLayoutSaveTimer.restart()
+    }
+
     function finishGameDetailsSmoke() {
         if (!gameDetailsLoader.item
                 || !controller.report_game_details_smoke_success(
@@ -604,12 +674,49 @@ ApplicationWindow {
                ? Qt.application.arguments[index + 1] : ""
     }
 
+    function isSmokeRun() {
+        for (let index = 0; index < Qt.application.arguments.length; ++index) {
+            const argument = Qt.application.arguments[index]
+            if (argument === "--smoke-test"
+                    || argument.endsWith("-smoke-test"))
+                return true
+        }
+        return false
+    }
+
     LibraryController {
         id: controller
     }
 
     Connections {
         target: controller
+
+        function onGame_details_pane_widthChanged() {
+            window.detailsPaneWidth = controller.game_details_pane_width
+        }
+
+        function onGame_details_window_xChanged() {
+            window.detailsWindowNormalX = controller.game_details_window_x
+        }
+
+        function onGame_details_window_yChanged() {
+            window.detailsWindowNormalY = controller.game_details_window_y
+        }
+
+        function onGame_details_window_widthChanged() {
+            window.detailsWindowNormalWidth =
+                controller.game_details_window_width
+        }
+
+        function onGame_details_window_heightChanged() {
+            window.detailsWindowNormalHeight =
+                controller.game_details_window_height
+        }
+
+        function onGame_details_window_maximizedChanged() {
+            window.detailsWindowMaximized =
+                controller.game_details_window_maximized
+        }
 
         function onModelAboutToBeReset() {
             window.beginGameSelectionReset()
@@ -762,6 +869,28 @@ ApplicationWindow {
 
     Component.onCompleted: {
         controller.configure_frontend(false)
+        const usePersistedUiState = !window.isSmokeRun()
+                                  || argumentValue("--ui-state-file").length > 0
+        if (usePersistedUiState
+                && !controller.initialize_launchbox_ui_state()) {
+            if (gameDetailsLayoutSmokeTest
+                    || gameDetailsLayoutReloadSmokeTest) {
+                console.error(
+                    "GAME_DETAILS_LAYOUT_SMOKE_INITIALIZE_FAILED status="
+                    + controller.status_message)
+                Qt.exit(485)
+            }
+            return
+        }
+        window.detailsPaneWidth = controller.game_details_pane_width
+        window.detailsWindowNormalX = controller.game_details_window_x
+        window.detailsWindowNormalY = controller.game_details_window_y
+        window.detailsWindowNormalWidth =
+            controller.game_details_window_width
+        window.detailsWindowNormalHeight =
+            controller.game_details_window_height
+        window.detailsWindowMaximized =
+            controller.game_details_window_maximized
         if (!controller.initialize_host_path_mappings()) {
             if (pathMappingSmokeTest) {
                 console.error("PATH_MAPPING_SMOKE_INITIALIZE_FAILED status="
@@ -775,6 +904,175 @@ ApplicationWindow {
             controller.load_library(library)
         else
             controller.load_fixture()
+    }
+
+    Timer {
+        id: gameDetailsLayoutSaveTimer
+        interval: 300
+        onTriggered: window.persistGameDetailsLayout(
+                         controller.show_game_details,
+                         controller.game_details_popped_out)
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameDetailsLayoutSmokeTest
+                 && !window.gameDetailsLayoutSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0
+                    || !controller.ui_state_ready)
+                return
+            if (window.gameDetailsLayoutSmokePhase === 0) {
+                if (!gameDetailsLoader.item)
+                    return
+                window.setAttributeFilters("any", "none", true, true)
+                window.restoreGameSelection("fixture-adventure")
+                if (!window.saveGameDetailsLayout(
+                        false, false, 360, 120, 80, 480, 640, false)) {
+                    console.error(
+                        "GAME_DETAILS_LAYOUT_SMOKE_HIDE_SAVE_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(486)
+                    return
+                }
+                window.gameDetailsLayoutSmokePhase = 1
+            } else if (window.gameDetailsLayoutSmokePhase === 1) {
+                if (controller.show_game_details
+                        || controller.game_details_popped_out
+                        || gameDetailsLoader.active
+                        || gameDetailsLoader.visible
+                        || gameDetailsWindow.visible)
+                    return
+                if (!window.saveGameDetailsLayout(
+                        true, false, 420, 140, 100, 640, 560, false)) {
+                    console.error(
+                        "GAME_DETAILS_LAYOUT_SMOKE_DOCK_SAVE_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(487)
+                    return
+                }
+                window.gameDetailsLayoutSmokePhase = 2
+            } else if (window.gameDetailsLayoutSmokePhase === 2) {
+                if (!gameDetailsLoader.active || !gameDetailsLoader.visible
+                        || !gameDetailsLoader.item
+                        || window.selectedGameId !== "fixture-adventure"
+                        || window.gameDetailsTitleText
+                           !== "Fixture Adventure"
+                        || window.gameDetailsCoverStatus !== Image.Ready
+                        || Math.abs(gameDetailsLoader.width - 420) > 2)
+                    return
+                if (!window.saveGameDetailsLayout(
+                        true, true, 420, 140, 100, 640, 560, false)) {
+                    console.error(
+                        "GAME_DETAILS_LAYOUT_SMOKE_POP_OUT_SAVE_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(488)
+                    return
+                }
+                window.gameDetailsLayoutSmokePhase = 3
+            } else if (window.gameDetailsLayoutSmokePhase === 3) {
+                if (!controller.show_game_details
+                        || !controller.game_details_popped_out
+                        || gameDetailsLoader.active
+                        || gameDetailsLoader.visible
+                        || !gameDetailsWindow.visible
+                        || !gameDetailsPopupLoader.item
+                        || window.gameDetailsTitleText
+                           !== "Fixture Adventure"
+                        || window.gameDetailsCoverStatus !== Image.Ready
+                        || gameDetailsWindow.x !== 140
+                        || gameDetailsWindow.y !== 100
+                        || gameDetailsWindow.width !== 640
+                        || gameDetailsWindow.height !== 560)
+                    return
+                if (window.gameDetailsLayoutScreenshotRequested)
+                    return
+                window.gameDetailsLayoutScreenshotRequested = true
+                const finish = function() {
+                    if (!controller.report_game_details_layout_smoke_success(
+                            false)) {
+                        console.error(
+                            "GAME_DETAILS_LAYOUT_SMOKE_CONTROLLER_REJECTED")
+                        Qt.exit(489)
+                        return
+                    }
+                    window.gameDetailsLayoutSmokeFinished = true
+                    Qt.quit()
+                }
+                if (window.gameDetailsLayoutScreenshotPath.length === 0) {
+                    finish()
+                    return
+                }
+                gameDetailsPopupLoader.grabToImage(function(result) {
+                    if (!result.saveToFile(
+                            window.gameDetailsLayoutScreenshotPath)) {
+                        console.error(
+                            "GAME_DETAILS_LAYOUT_SCREENSHOT_SAVE_FAILED path="
+                            + window.gameDetailsLayoutScreenshotPath)
+                        Qt.exit(490)
+                        return
+                    }
+                    finish()
+                })
+            }
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameDetailsLayoutReloadSmokeTest
+                 && !window.gameDetailsLayoutSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0
+                    || !controller.ui_state_ready
+                    || !controller.show_game_details
+                    || !controller.game_details_popped_out
+                    || gameDetailsLoader.active
+                    || gameDetailsLoader.visible
+                    || !gameDetailsWindow.visible
+                    || !gameDetailsPopupLoader.item
+                    || window.gameDetailsTitleText !== "Fixture Adventure"
+                    || window.gameDetailsCoverStatus !== Image.Ready
+                    || gameDetailsWindow.x !== 140
+                    || gameDetailsWindow.y !== 100
+                    || gameDetailsWindow.width !== 640
+                    || gameDetailsWindow.height !== 560)
+                return
+            if (!controller.report_game_details_layout_smoke_success(true)) {
+                console.error(
+                    "GAME_DETAILS_LAYOUT_RELOAD_SMOKE_CONTROLLER_REJECTED")
+                Qt.exit(491)
+                return
+            }
+            window.gameDetailsLayoutSmokeFinished = true
+            Qt.quit()
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: (window.gameDetailsLayoutSmokeTest
+                  || window.gameDetailsLayoutReloadSmokeTest)
+                 && !window.gameDetailsLayoutSmokeFinished
+        onTriggered: {
+            console.error(
+                "GAME_DETAILS_LAYOUT_SMOKE_TIMEOUT phase="
+                + window.gameDetailsLayoutSmokePhase
+                + " ready=" + controller.ui_state_ready
+                + " show=" + controller.show_game_details
+                + " popped=" + controller.game_details_popped_out
+                + " dockedActive=" + gameDetailsLoader.active
+                + " popupVisible=" + gameDetailsWindow.visible
+                + " title=" + window.gameDetailsTitleText
+                + " imageStatus=" + window.gameDetailsCoverStatus
+                + " popup=" + gameDetailsWindow.x + ","
+                + gameDetailsWindow.y + "," + gameDetailsWindow.width
+                + "," + gameDetailsWindow.height
+                + " status=" + controller.status_message)
+            Qt.exit(492)
+        }
     }
 
     Timer {
@@ -3356,6 +3654,20 @@ ApplicationWindow {
                 text: "Host Paths…"
                 onClicked: pathMappingsDialog.open()
             }
+            Button {
+                text: checked ? "Details ✓" : "Details"
+                checkable: true
+                checked: controller.show_game_details
+                enabled: controller.ui_state_ready
+                onClicked: window.setGameDetailsVisible(checked)
+            }
+            Button {
+                text: controller.game_details_popped_out ? "Dock" : "Pop Out"
+                enabled: controller.ui_state_ready
+                         && controller.show_game_details
+                onClicked: window.setGameDetailsPoppedOut(
+                               !controller.game_details_popped_out)
+            }
             BusyIndicator {
                 running: controller.loading || controller.writing || controller.launching
                 visible: running
@@ -4416,13 +4728,90 @@ ApplicationWindow {
 
                     Loader {
                         id: gameDetailsLoader
-                        SplitView.preferredWidth: 360
+                        SplitView.preferredWidth: window.detailsPaneWidth
                         SplitView.minimumWidth: 300
-                        SplitView.maximumWidth: 520
+                        SplitView.maximumWidth: 1600
+                        visible: controller.show_game_details
+                                 && !controller.game_details_popped_out
+                        active: visible
                         sourceComponent: gameDetailsPaneComponent
+                        onWidthChanged: {
+                            if (active && width >= 300) {
+                                window.detailsPaneWidth = width
+                                window.scheduleGameDetailsLayoutSave()
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    Window {
+        id: gameDetailsWindow
+        transientParent: window
+        title: window.gameDetailsTitleText.length > 0
+               ? window.gameDetailsTitleText + " — Game Details"
+               : "Game Details"
+        color: "#171c23"
+        minimumWidth: 320
+        minimumHeight: 320
+        x: window.detailsWindowNormalX
+        y: window.detailsWindowNormalY
+        width: window.detailsWindowNormalWidth
+        height: window.detailsWindowNormalHeight
+        visibility: !controller.show_game_details
+                    || !controller.game_details_popped_out
+                    ? Window.Hidden
+                    : controller.game_details_window_maximized
+                      ? Window.Maximized : Window.Windowed
+
+        onClosing: function(close) {
+            if (window.applicationClosing
+                    || window.gameDetailsLayoutSmokeFinished) {
+                close.accepted = true
+                return
+            }
+            close.accepted = false
+            window.setGameDetailsPoppedOut(false)
+        }
+        onXChanged: {
+            if (visibility === Window.Windowed) {
+                window.detailsWindowNormalX = x
+                window.scheduleGameDetailsLayoutSave()
+            }
+        }
+        onYChanged: {
+            if (visibility === Window.Windowed) {
+                window.detailsWindowNormalY = y
+                window.scheduleGameDetailsLayoutSave()
+            }
+        }
+        onWidthChanged: {
+            if (visibility === Window.Windowed && width >= minimumWidth) {
+                window.detailsWindowNormalWidth = width
+                window.scheduleGameDetailsLayoutSave()
+            }
+        }
+        onHeightChanged: {
+            if (visibility === Window.Windowed && height >= minimumHeight) {
+                window.detailsWindowNormalHeight = height
+                window.scheduleGameDetailsLayoutSave()
+            }
+        }
+        onVisibilityChanged: {
+            if (visibility === Window.Maximized)
+                window.detailsWindowMaximized = true
+            else if (visibility === Window.Windowed)
+                window.detailsWindowMaximized = false
+            window.scheduleGameDetailsLayoutSave()
+        }
+
+        Loader {
+            id: gameDetailsPopupLoader
+            anchors.fill: parent
+            active: gameDetailsWindow.visible
+            sourceComponent: gameDetailsPaneComponent
         }
     }
 

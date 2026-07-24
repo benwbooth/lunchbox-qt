@@ -265,16 +265,22 @@ decode/render scenario cover the portable pipeline. Native Windows and macOS
 Qt rendering are still explicit real-host gates, and all media mutation,
 download, video/audio/manual, alternate-image, cleanup, and migration work
 remains open.
-The first `DESK-002` vertical adds a resizable LaunchBox selected-game details
-pane over the shared virtualized model. Its stable-ID selection contract
-survives filter and sort resets, edits, insertion, and removal, with a defined
-first-visible fallback when the prior game disappears. Artwork, descriptive
-metadata, notes, installed/favorite/completed state, play statistics, local and
-community ratings, and the existing game actions are live. A real offscreen
-interaction verifies the selection transitions and native image path, renders
-a PNG, and proves the fixture platform/settings documents stay byte-identical.
-Pop-out details, view-state persistence, details customization, videos, and
-native Windows/macOS Qt interaction remain open.
+The first two `DESK-002` verticals add a resizable LaunchBox selected-game
+details pane over the shared virtualized model plus hide/show and native
+pop-out/dock behavior. Its stable-ID selection contract survives filter and
+sort resets, edits, insertion, and removal, with a defined first-visible
+fallback when the prior game disappears. Artwork, descriptive metadata, notes,
+installed/favorite/completed state, play statistics, local and community
+ratings, and the existing game actions are live in either host. A versioned
+port-owned state document stores dock width, visibility, popup state, normal
+geometry, and maximized state in the native Linux, Windows, or macOS
+configuration location, never in shared LaunchBox XML. Real offscreen
+interactions verify selection transitions, native image paths, dock/hide/pop
+transitions, a rendered native popup, atomic exact state bytes, shutdown
+preservation, and restoration in a fresh process while fixture
+platform/settings documents stay byte-identical. Details customization,
+videos, multi-display geometry recovery, and native Windows/macOS Qt
+interaction remain open.
 Transactional title
 editing has expanded into 18 descriptive fields through a versioned typed
 payload; it recomputes sort/search membership, removes explicitly cleared
