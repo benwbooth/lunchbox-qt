@@ -209,8 +209,18 @@ GitHub's byte count and SHA-256 digest. Linux installs a stable executable
 safe archive boundary, bundle permissions are retained, and install, update,
 repair, stale-owned-file cleanup, registration, and removal use the same
 recoverable ownership contract while retaining user configuration and BIOS
-files. Other managed emulators, dependencies, cores, and automatic update
-policy remain open. A
+files. RetroArch is the fourth managed provider: Windows and Linux use the
+exact stable frontend-and-cores pair, while Intel and Apple Silicon use the
+official universal Metal app. Its mapping editor also freezes all 56 LaunchBox
+13.27 platform/core suggestions and safely inventories only installed native
+Windows `.dll`, Linux `.so`, or macOS `.dylib` cores through bounded
+`retroarch.cfg` and reviewed portable/host locations. Choosing an installed
+core replaces only the semantic `-L`/`--libretro` argument, preserves unrelated
+flags, and saves through the existing recoverable `Emulators.xml` transaction.
+Discovery is read-only and refuses symlinked configuration/directories and
+unsafe or ambiguous entries. Other managed emulators, dependencies,
+individual-core acquisition/update/removal, BigBox core selection, netplay,
+and automatic update policy remain open. A
 configured PCSX2 entry also exposes a read-only BIOS audit using the complete
 recovered 13.27 group of 73 filename-and-MD5 alternatives. It resolves
 `portable.ini` and `inis/PCSX2.ini` or the host-native PCSX2 configuration root,

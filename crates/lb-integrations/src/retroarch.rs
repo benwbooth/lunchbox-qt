@@ -232,23 +232,36 @@ pub fn discover_retroarch_saves(
 
 pub fn retroarch_core_name(command_line: &str) -> Option<String> {
     let arguments = split_windows_command_line(command_line);
-    arguments.windows(2).rev().find_map(|pair| {
-        if !pair[0].eq_ignore_ascii_case("-l") {
-            return None;
-        }
-        let normalized = pair[1].replace('\\', "/");
-        let file_name = normalized.rsplit('/').next()?;
-        let stem = file_name
-            .rsplit_once('.')
-            .filter(|(_, extension)| {
-                ["dll", "so", "dylib"]
-                    .iter()
-                    .any(|candidate| extension.eq_ignore_ascii_case(candidate))
-            })
-            .map(|(stem, _)| stem)
-            .unwrap_or(file_name);
-        (!stem.trim().is_empty()).then(|| stem.to_string())
-    })
+    arguments
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, argument)| {
+            let value = if argument.eq_ignore_ascii_case("-l")
+                || argument.eq_ignore_ascii_case("--libretro")
+            {
+                arguments.get(index + 1)?
+            } else if argument
+                .get(.."--libretro=".len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("--libretro="))
+            {
+                argument.get("--libretro=".len()..)?
+            } else {
+                return None;
+            };
+            let normalized = value.replace('\\', "/");
+            let file_name = normalized.rsplit('/').next()?;
+            let stem = file_name
+                .rsplit_once('.')
+                .filter(|(_, extension)| {
+                    ["dll", "so", "dylib"]
+                        .iter()
+                        .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+                })
+                .map(|(stem, _)| stem)
+                .unwrap_or(file_name);
+            (!stem.trim().is_empty()).then(|| stem.to_string())
+        })
 }
 
 pub fn is_retroarch_emulator(title: &str, application_path: &Path) -> bool {
@@ -875,6 +888,14 @@ mod tests {
         assert_eq!(
             retroarch_core_name("-L cores/parallel_n64_libretro.dylib").as_deref(),
             Some("parallel_n64_libretro")
+        );
+        assert_eq!(
+            retroarch_core_name("--libretro=cores/genesis_plus_gx_libretro.so").as_deref(),
+            Some("genesis_plus_gx_libretro")
+        );
+        assert_eq!(
+            retroarch_core_name("--libretro cores/mgba_libretro.dll").as_deref(),
+            Some("mgba_libretro")
         );
         assert!(is_retroarch_emulator(
             "Custom RetroArch",

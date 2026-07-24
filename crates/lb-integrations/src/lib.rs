@@ -13,6 +13,7 @@ pub mod pcsx2;
 pub mod pcsx2_bios;
 pub mod retroarch;
 pub mod retroarch_bios;
+pub mod retroarch_cores;
 pub mod retroarch_lifecycle;
 pub mod xemu;
 pub mod xemu_bios;

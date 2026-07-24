@@ -132,6 +132,12 @@ ApplicationWindow {
     property string emulatorCrudAddedId: ""
     property int emulatorCrudInitialRevision: -1
     property bool emulatorCrudSmokeFinished: false
+    property bool retroarchCoreEditorSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--retroarch-core-editor-smoke-test") >= 0
+    property int retroarchCoreEditorSmokePhase: 0
+    property int retroarchCoreEditorInitialRevision: -1
+    property bool retroarchCoreEditorSmokeFinished: false
     property bool emulatorDiscoverySmokeTest:
         Qt.application.arguments.indexOf("--emulator-discovery-smoke-test") >= 0
     property int emulatorDiscoverySmokePhase: 0
@@ -1884,6 +1890,72 @@ ApplicationWindow {
                           + window.emulatorCrudSmokePhase
                           + " status=" + controller.status_message)
             Qt.exit(35)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.retroarchCoreEditorSmokeTest
+                 && !window.retroarchCoreEditorSmokeFinished
+        onTriggered: {
+            const emulatorId = "fixture-emulator"
+            if (window.retroarchCoreEditorSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0) {
+                window.retroarchCoreEditorInitialRevision =
+                    controller.emulator_revision
+                window.retroarchCoreEditorSmokePhase = 1
+                emulatorEditor.smokeRetroArchCore(emulatorId)
+            } else if (window.retroarchCoreEditorSmokePhase === 1
+                       && !controller.writing
+                       && controller.emulator_revision
+                          === window.retroarchCoreEditorInitialRevision + 1) {
+                const serialized =
+                    controller.emulator_edit_payload(emulatorId)
+                const payload = serialized.length > 0
+                              ? JSON.parse(serialized) : null
+                const mapping = payload === null
+                              || payload.platforms.length !== 1
+                              ? null : payload.platforms[0]
+                const core = mapping === null ? ""
+                           : controller.retroarch_core_from_command_line(
+                                 mapping.command_line)
+                if (mapping === null
+                        || mapping.platform
+                           !== "Super Nintendo Entertainment System"
+                        || core !== "snes9x_libretro"
+                        || mapping.command_line.indexOf(
+                               "--platform fixture") < 0) {
+                    console.error(
+                        "RETROARCH_CORE_EDITOR_SMOKE_NOT_PERSISTED payload="
+                        + serialized)
+                    Qt.exit(58)
+                    return
+                }
+                if (!controller.report_retroarch_core_editor_smoke_success(
+                        emulatorId,
+                        window.retroarchCoreEditorInitialRevision)) {
+                    console.error(
+                        "RETROARCH_CORE_EDITOR_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(58)
+                    return
+                }
+                window.retroarchCoreEditorSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.retroarchCoreEditorSmokeTest
+                 && !window.retroarchCoreEditorSmokeFinished
+        onTriggered: {
+            console.error("RETROARCH_CORE_EDITOR_SMOKE_TIMEOUT phase="
+                          + window.retroarchCoreEditorSmokePhase
+                          + " status=" + controller.status_message)
+            Qt.exit(58)
         }
     }
 
@@ -6126,6 +6198,7 @@ ApplicationWindow {
         property bool createMode: false
         property string originalId: ""
         property var draft: null
+        property var retroarchCoreInventory: null
 
         ListModel { id: emulatorPlatformEditorModel }
 
@@ -6152,6 +6225,86 @@ ApplicationWindow {
             if (draft === null)
                 return ["Platform default"]
             return ["Platform default"].concat(draft.available_platforms)
+        }
+
+        function reloadRetroArchCores() {
+            if (draft === null) {
+                retroarchCoreInventory = null
+                return
+            }
+            const serialized = controller.retroarch_core_options(
+                                 emulatorTitleField.text,
+                                 emulatorApplicationPathField.text)
+            if (serialized.length === 0) {
+                retroarchCoreInventory = null
+                return
+            }
+            const inventory = JSON.parse(serialized)
+            retroarchCoreInventory = inventory.applicable ? inventory : null
+        }
+
+        function retroarchSuggestion(platform) {
+            if (retroarchCoreInventory === null)
+                return null
+            for (let index = 0;
+                    index < retroarchCoreInventory.suggestions.length; ++index) {
+                const suggestion = retroarchCoreInventory.suggestions[index]
+                if (suggestion.platform.toLowerCase() === platform.toLowerCase())
+                    return suggestion
+            }
+            return null
+        }
+
+        function retroarchCoreOption(name) {
+            if (retroarchCoreInventory === null)
+                return null
+            for (let index = 0;
+                    index < retroarchCoreInventory.cores.length; ++index) {
+                const core = retroarchCoreInventory.cores[index]
+                if (core.name.toLowerCase() === name.toLowerCase())
+                    return core
+            }
+            return null
+        }
+
+        function retroarchCoreChoices(platform, currentCore) {
+            if (retroarchCoreInventory === null)
+                return ["Custom / missing core"]
+            const choices = ["Custom / missing core"]
+            const suggestion = retroarchSuggestion(platform)
+            if (suggestion !== null && suggestion.available)
+                choices.push(suggestion.core)
+            for (let index = 0;
+                    index < retroarchCoreInventory.cores.length; ++index) {
+                const name = retroarchCoreInventory.cores[index].name
+                if (suggestion === null
+                        || name.toLowerCase() !== suggestion.core.toLowerCase())
+                    choices.push(name)
+            }
+            return choices
+        }
+
+        function retroarchCoreChoiceIndex(choices, currentCore) {
+            for (let index = 1; index < choices.length; ++index) {
+                if (choices[index].toLowerCase() === currentCore.toLowerCase())
+                    return index
+            }
+            return 0
+        }
+
+        function applyRetroArchCore(mappingIndex, coreName) {
+            const core = retroarchCoreOption(coreName)
+            if (core === null)
+                return
+            const mapping = emulatorPlatformEditorModel.get(mappingIndex)
+            const changed = controller.retroarch_command_line_for_core(
+                                mapping.commandLine, core.command_path)
+            if (changed.length === 0)
+                return
+            emulatorPlatformEditorModel.setProperty(
+                        mappingIndex, "commandLine", changed)
+            emulatorPlatformEditorModel.setProperty(
+                        mappingIndex, "currentCore", core.name)
         }
 
         function loadPayload(serialized, creating) {
@@ -6209,6 +6362,7 @@ ApplicationWindow {
                 storedText(emulator.save_state_auto_hotkey_script)
             emulatorSwapDiscsAutoHotkeyScript.text =
                 storedText(emulator.swap_discs_auto_hotkey_script)
+            reloadRetroArchCores()
             emulatorPlatformEditorModel.clear()
             for (let index = 0; index < draft.platforms.length; ++index) {
                 const mapping = draft.platforms[index]
@@ -6217,6 +6371,8 @@ ApplicationWindow {
                                  ? -1 : mapping.source_index,
                     platformName: mapping.platform,
                     commandLine: storedText(mapping.command_line),
+                    currentCore: controller.retroarch_core_from_command_line(
+                                     storedText(mapping.command_line)),
                     isDefault: mapping.default,
                     autoExtractMode: mapping.auto_extract === null
                                      ? 0 : (mapping.auto_extract ? 1 : 2),
@@ -6333,6 +6489,7 @@ ApplicationWindow {
                 sourceIndex: -1,
                 platformName: platform,
                 commandLine: "",
+                currentCore: "",
                 isDefault: false,
                 autoExtractMode: 0,
                 m3uEnabled: false
@@ -6373,6 +6530,39 @@ ApplicationWindow {
             Qt.callLater(function() { emulatorEditor.accept() })
         }
 
+        function smokeRetroArchCore(emulatorId) {
+            prepareEdit(emulatorId)
+            const inventory = retroarchCoreInventory
+            let mapping = emulatorPlatformEditorModel.count === 1
+                        ? emulatorPlatformEditorModel.get(0) : null
+            const suggestion = mapping === null ? null
+                             : retroarchSuggestion(mapping.platformName)
+            if (inventory === null || inventory.error !== null
+                    || inventory.cores.length !== 2
+                    || inventory.unsafe_entry_count !== 1
+                    || mapping === null
+                    || suggestion === null
+                    || suggestion.core !== "snes9x_libretro"
+                    || !suggestion.recommended || !suggestion.available) {
+                console.error(
+                    "RETROARCH_CORE_EDITOR_SMOKE_BAD_INVENTORY inventory="
+                    + JSON.stringify(inventory))
+                Qt.exit(58)
+                return
+            }
+            applyRetroArchCore(0, suggestion.core)
+            mapping = emulatorPlatformEditorModel.get(0)
+            if (mapping.currentCore !== "snes9x_libretro"
+                    || mapping.commandLine.indexOf("--platform fixture") < 0) {
+                console.error(
+                    "RETROARCH_CORE_EDITOR_SMOKE_BAD_COMMAND command="
+                    + mapping.commandLine)
+                Qt.exit(58)
+                return
+            }
+            Qt.callLater(function() { emulatorEditor.accept() })
+        }
+
         onAccepted: {
             const payload = editPayload()
             if (createMode)
@@ -6410,12 +6600,17 @@ ApplicationWindow {
                         readOnly: true
                     }
                     Label { text: "Title" }
-                    TextField { id: emulatorTitleField; Layout.fillWidth: true }
+                    TextField {
+                        id: emulatorTitleField
+                        Layout.fillWidth: true
+                        onEditingFinished: emulatorEditor.reloadRetroArchCores()
+                    }
                     Label { text: "Application path" }
                     TextField {
                         id: emulatorApplicationPathField
                         Layout.fillWidth: true
                         placeholderText: "Stored LaunchBox executable path"
+                        onEditingFinished: emulatorEditor.reloadRetroArchCores()
                     }
                     Label { text: "Command line" }
                     TextField {
@@ -6568,6 +6763,95 @@ ApplicationWindow {
                     Layout.preferredHeight: 1
                     color: "#30363d"
                 }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: emulatorEditor.retroarchCoreInventory !== null
+                    spacing: 5
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label {
+                            text: "RetroArch cores"
+                            font.pixelSize: 18
+                            font.bold: true
+                        }
+                        Item { Layout.fillWidth: true }
+                        Button {
+                            text: "Refresh"
+                            onClicked: emulatorEditor.reloadRetroArchCores()
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: {
+                            const inventory =
+                                emulatorEditor.retroarchCoreInventory
+                            if (inventory === null)
+                                return ""
+                            if (inventory.error !== null)
+                                return inventory.error
+                            return inventory.cores.length + " native "
+                                   + inventory.host_platform
+                                   + " core"
+                                   + (inventory.cores.length === 1 ? "" : "s")
+                                   + " available"
+                        }
+                        color: emulatorEditor.retroarchCoreInventory !== null
+                               && emulatorEditor.retroarchCoreInventory.error !== null
+                               ? "#f85149" : "#3fb950"
+                        wrapMode: Text.Wrap
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: emulatorEditor.retroarchCoreInventory !== null
+                                 && emulatorEditor.retroarchCoreInventory.error === null
+                        text: {
+                            const inventory =
+                                emulatorEditor.retroarchCoreInventory
+                            if (inventory === null)
+                                return ""
+                            const source = inventory.configuration_path === null
+                                           ? "automatic locations"
+                                           : inventory.configuration_path
+                            const directory = inventory.core_directory === null
+                                              ? "no core directory found"
+                                              : inventory.core_directory
+                            return "Configuration: " + source
+                                   + " · Cores: " + directory
+                        }
+                        color: "#7d8590"
+                        font.pixelSize: 11
+                        elide: Text.ElideMiddle
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: emulatorEditor.retroarchCoreInventory !== null
+                                 && emulatorEditor.retroarchCoreInventory
+                                                      .unsafe_entry_count > 0
+                        text: emulatorEditor.retroarchCoreInventory === null
+                              ? ""
+                              : emulatorEditor.retroarchCoreInventory
+                                                 .unsafe_entry_count
+                                + " symbolic-link or unsafe core "
+                                + (emulatorEditor.retroarchCoreInventory
+                                                    .unsafe_entry_count === 1
+                                   ? "entry was" : "entries were")
+                                + " refused."
+                        color: "#d29922"
+                        wrapMode: Text.Wrap
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "The inventory is read-only. Choosing a core only updates this platform mapping's -L/--libretro argument."
+                        color: "#7fbfff"
+                        wrapMode: Text.Wrap
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    visible: emulatorEditor.retroarchCoreInventory !== null
+                    color: "#30363d"
+                }
                 Label { text: "Platform mappings"; font.pixelSize: 18; font.bold: true }
                 Label {
                     Layout.fillWidth: true
@@ -6582,6 +6866,7 @@ ApplicationWindow {
                         required property int sourceIndex
                         required property string platformName
                         required property string commandLine
+                        required property string currentCore
                         required property bool isDefault
                         required property int autoExtractMode
                         required property bool m3uEnabled
@@ -6603,8 +6888,14 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 text: commandLine
                                 placeholderText: "Per-platform command line"
-                                onTextEdited: emulatorPlatformEditorModel.setProperty(
-                                                  index, "commandLine", text)
+                                onTextEdited: {
+                                    emulatorPlatformEditorModel.setProperty(
+                                                index, "commandLine", text)
+                                    emulatorPlatformEditorModel.setProperty(
+                                        index, "currentCore",
+                                        controller.retroarch_core_from_command_line(
+                                            text))
+                                }
                             }
                             ComboBox {
                                 Layout.preferredWidth: 135
@@ -6616,6 +6907,60 @@ ApplicationWindow {
                             Button {
                                 text: "Remove"
                                 onClicked: emulatorPlatformEditorModel.remove(index)
+                            }
+                        }
+                        RowLayout {
+                            visible: emulatorEditor.retroarchCoreInventory !== null
+                            Label { text: "Core" }
+                            ComboBox {
+                                id: retroarchCoreCombo
+                                Layout.preferredWidth: 260
+                                model: emulatorEditor.retroarchCoreChoices(
+                                           platformName, currentCore)
+                                currentIndex:
+                                    emulatorEditor.retroarchCoreChoiceIndex(
+                                        model, currentCore)
+                                onActivated: {
+                                    if (currentIndex > 0)
+                                        emulatorEditor.applyRetroArchCore(
+                                            index, model[currentIndex])
+                                }
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: {
+                                    const suggestion =
+                                        emulatorEditor.retroarchSuggestion(
+                                            platformName)
+                                    if (suggestion === null)
+                                        return "No LaunchBox 13.27 suggestion"
+                                    return "13.27 suggestion: "
+                                           + suggestion.core
+                                           + (suggestion.recommended
+                                              ? " · recommended" : "")
+                                           + (suggestion.available
+                                              ? "" : " · not installed")
+                                }
+                                color: "#7fbfff"
+                                elide: Text.ElideRight
+                            }
+                            Button {
+                                text: "Use suggestion"
+                                visible: {
+                                    const suggestion =
+                                        emulatorEditor.retroarchSuggestion(
+                                            platformName)
+                                    return suggestion !== null
+                                           && suggestion.available
+                                }
+                                onClicked: {
+                                    const suggestion =
+                                        emulatorEditor.retroarchSuggestion(
+                                            platformName)
+                                    if (suggestion !== null)
+                                        emulatorEditor.applyRetroArchCore(
+                                            index, suggestion.core)
+                                }
                             }
                         }
                         RowLayout {

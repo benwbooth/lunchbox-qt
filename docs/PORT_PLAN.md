@@ -300,9 +300,14 @@ root, signature resources, permissions, and six exact MoltenVK framework
 symlinks are preserved as transaction-owned paths. Install, update, repair,
 stale-path cleanup, registration, and reference-gated removal remain
 shell-free and never execute a downloaded artifact. Further emulator
-providers, dependency policy, user-driven core selection, netplay, automatic
-update policy, and native Windows/macOS runtime validation remain open
-under `RUN-003`. The first three `RUN-004` adapters audit the complete recovered
+providers, dependency policy, automatic update policy, and native
+Windows/macOS runtime validation remain open under `RUN-003`. The first
+`RUN-016` subset freezes all 56 LaunchBox 13.27 platform/core suggestions,
+safely inventories only installed native Windows `.dll`, Linux `.so`, or macOS
+`.dylib` cores through configured and reviewed portable/host locations, and
+lets the complete Qt emulator editor replace one semantic core argument without
+discarding unrelated flags. Individual-core acquisition/update/removal,
+BigBox selection, and netplay remain open. The first three `RUN-004` adapters audit the complete recovered
 PCSX2 BIOS group of 73 alternatives, Xemu's three required boot-ROM/HDD/
 flash-BIOS groups, and RetroArch's complete 630-row/103-core requirement
 resource without executing an emulator or mutating configuration or firmware.

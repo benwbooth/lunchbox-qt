@@ -183,6 +183,26 @@ pub mod qobject {
         fn emulator_edit_payload(self: &LibraryController, emulator_id: QString) -> QString;
 
         #[qinvokable]
+        fn retroarch_core_options(
+            self: &LibraryController,
+            emulator_title: QString,
+            application_path: QString,
+        ) -> QString;
+
+        #[qinvokable]
+        fn retroarch_core_from_command_line(
+            self: &LibraryController,
+            command_line: QString,
+        ) -> QString;
+
+        #[qinvokable]
+        fn retroarch_command_line_for_core(
+            self: &LibraryController,
+            command_line: QString,
+            core_command_path: QString,
+        ) -> QString;
+
+        #[qinvokable]
         fn scan_installed_emulators(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
@@ -737,6 +757,13 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_retroarch_core_editor_smoke_success(
+            self: &LibraryController,
+            emulator_id: QString,
+            initial_revision: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_emulator_discovery_smoke_success(
             self: &LibraryController,
             candidate_index: i32,
@@ -986,11 +1013,16 @@ use lb_integrations::pcsx2::{
 use lb_integrations::pcsx2_bios::{audit_pcsx2_bios, BiosFileState, Pcsx2BiosAudit};
 use lb_integrations::retroarch::{
     discover_retroarch_saves, inspect_saturn_save_set, is_retroarch_emulator,
-    is_saturn_companion_path, retroarch_save_signature, saturn_group_id, RetroArchContent,
+    is_saturn_companion_path, retroarch_core_name, retroarch_save_signature, saturn_group_id,
+    RetroArchContent,
 };
 use lb_integrations::retroarch_bios::{
     audit_retroarch_bios, default_retroarch_configuration_paths, RetroArchBiosAudit,
     RetroArchBiosTarget,
+};
+use lb_integrations::retroarch_cores::{
+    command_line_with_retroarch_core, default_retroarch_core_directories, inspect_retroarch_cores,
+    retroarch_core_catalog, RetroArchCoreInventory, RetroArchCorePlatform,
 };
 use lb_integrations::retroarch_lifecycle::{
     download_retroarch_artifact, fetch_latest_retroarch_release, frontend_artifact,
@@ -2158,6 +2190,7 @@ const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
+const RETROARCH_CORE_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 3;
 const EMULATOR_RELEASE_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_MANAGED_REMOVE_PAYLOAD_VERSION: u32 = 1;
@@ -2273,6 +2306,38 @@ struct EmulatorEditPayload {
     emulator: Emulator,
     platforms: Vec<EmulatorPlatformEditPayload>,
     available_platforms: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct RetroArchCoreOptionPayload {
+    name: String,
+    path: String,
+    command_path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct RetroArchCoreSuggestionPayload {
+    platform: String,
+    core: String,
+    recommended: bool,
+    available: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+struct RetroArchCoreOptionsPayload {
+    version: u32,
+    applicable: bool,
+    ready: bool,
+    host_platform: Option<&'static str>,
+    application_path: Option<String>,
+    configuration_path: Option<String>,
+    core_directory: Option<String>,
+    searched_directories: Vec<String>,
+    unsafe_entry_count: usize,
+    cores: Vec<RetroArchCoreOptionPayload>,
+    suggestions: Vec<RetroArchCoreSuggestionPayload>,
+    error: Option<String>,
+    read_only_check: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]
@@ -9584,6 +9649,139 @@ fn configured_retroarch_bios_targets(
                 })
         })
         .collect()
+}
+
+fn retroarch_core_options_payload(
+    launchbox_root: Option<&Path>,
+    resolver: &HostPathResolver,
+    emulator_title: &str,
+    stored_application_path: &str,
+    platform_names: &[String],
+) -> RetroArchCoreOptionsPayload {
+    let normalized_application_path = stored_application_path.replace('\\', "/");
+    let applicable = is_retroarch_emulator(
+        emulator_title,
+        Path::new(normalized_application_path.as_str()),
+    );
+    let mut payload = RetroArchCoreOptionsPayload {
+        version: RETROARCH_CORE_PAYLOAD_VERSION,
+        applicable,
+        ready: false,
+        host_platform: RetroArchCorePlatform::current().map(retroarch_core_platform_name),
+        application_path: None,
+        configuration_path: None,
+        core_directory: None,
+        searched_directories: Vec::new(),
+        unsafe_entry_count: 0,
+        cores: Vec::new(),
+        suggestions: Vec::new(),
+        error: None,
+        read_only_check: true,
+    };
+    if !applicable {
+        return payload;
+    }
+
+    let catalog = match retroarch_core_catalog() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            payload.error = Some(error.to_string());
+            return payload;
+        }
+    };
+    let Some(root) = launchbox_root else {
+        payload.error = Some("Load a LaunchBox directory to inspect RetroArch cores.".into());
+        return payload;
+    };
+    if stored_application_path.trim().is_empty() {
+        payload.error = Some("RetroArch has no configured application path.".into());
+        return payload;
+    }
+    let application_path = match resolver.resolve(root, stored_application_path) {
+        Ok(path) => path,
+        Err(error) => {
+            payload.error = Some(format!(
+                "RetroArch application path cannot be resolved on this host: {error}"
+            ));
+            return payload;
+        }
+    };
+    payload.application_path = Some(application_path.to_string_lossy().into_owned());
+    let Some(platform) = RetroArchCorePlatform::current() else {
+        payload.error = Some("RetroArch core discovery is unsupported on this host.".into());
+        return payload;
+    };
+    let configurations = default_retroarch_configuration_paths(&application_path);
+    let fallbacks = default_retroarch_core_directories(&application_path, platform);
+    let inventory = match inspect_retroarch_cores(
+        &application_path,
+        &configurations,
+        &fallbacks,
+        resolver,
+        platform,
+    ) {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            payload.error = Some(error.to_string());
+            return payload;
+        }
+    };
+    populate_retroarch_core_inventory(&mut payload, inventory);
+    payload.suggestions = catalog
+        .into_iter()
+        .filter(|entry| {
+            platform_names
+                .iter()
+                .any(|platform| platform.eq_ignore_ascii_case(&entry.platform))
+        })
+        .map(|entry| RetroArchCoreSuggestionPayload {
+            available: payload
+                .cores
+                .iter()
+                .any(|core| core.name.eq_ignore_ascii_case(&entry.core)),
+            platform: entry.platform,
+            core: entry.core,
+            recommended: entry.recommended,
+        })
+        .collect();
+    payload.ready = !payload.cores.is_empty();
+    payload
+}
+
+fn populate_retroarch_core_inventory(
+    payload: &mut RetroArchCoreOptionsPayload,
+    inventory: RetroArchCoreInventory,
+) {
+    payload.application_path = Some(inventory.application_path.to_string_lossy().into_owned());
+    payload.configuration_path = inventory
+        .configuration_path
+        .map(|path| path.to_string_lossy().into_owned());
+    payload.core_directory = inventory
+        .core_directory
+        .map(|path| path.to_string_lossy().into_owned());
+    payload.searched_directories = inventory
+        .searched_directories
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    payload.unsafe_entry_count = inventory.unsafe_entry_count;
+    payload.cores = inventory
+        .cores
+        .into_iter()
+        .map(|core| RetroArchCoreOptionPayload {
+            name: core.name,
+            path: core.path.to_string_lossy().into_owned(),
+            command_path: core.command_path,
+        })
+        .collect();
+}
+
+const fn retroarch_core_platform_name(platform: RetroArchCorePlatform) -> &'static str {
+    match platform {
+        RetroArchCorePlatform::Windows => "windows",
+        RetroArchCorePlatform::Linux => "linux",
+        RetroArchCorePlatform::Macos => "macos",
+    }
 }
 
 fn load_emulator_edit_payload(
@@ -17793,6 +17991,72 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_retroarch_core_editor_smoke_success(
+        &self,
+        emulator_id: QString,
+        initial_revision: i32,
+    ) -> bool {
+        let emulator_id = emulator_id.to_string();
+        let rust = self.rust();
+        let emulator = rust
+            .emulator_configuration
+            .as_ref()
+            .and_then(|configuration| {
+                configuration
+                    .emulators
+                    .iter()
+                    .find(|emulator| emulator.id == emulator_id)
+            });
+        let mapping = rust
+            .emulator_configuration
+            .as_ref()
+            .and_then(|configuration| {
+                configuration.platforms.iter().find(|mapping| {
+                    mapping.emulator_id == emulator_id
+                        && mapping.platform == "Super Nintendo Entertainment System"
+                })
+            });
+        let inventory = emulator.map(|emulator| {
+            retroarch_core_options_payload(
+                rust.launchbox_root.as_deref(),
+                &rust.path_resolver,
+                &emulator.title,
+                &emulator.application_path,
+                &rust.platform_names,
+            )
+        });
+        let success = emulator.is_some_and(|emulator| emulator.title == "RetroArch")
+            && mapping
+                .and_then(|mapping| mapping.command_line.as_deref())
+                .and_then(retroarch_core_name)
+                .as_deref()
+                == Some("snes9x_libretro")
+            && inventory.as_ref().is_some_and(|inventory| {
+                inventory.ready
+                    && inventory.error.is_none()
+                    && inventory.cores.len() == 2
+                    && inventory.unsafe_entry_count == 1
+                    && inventory.suggestions.iter().any(|suggestion| {
+                        suggestion.platform == "Super Nintendo Entertainment System"
+                            && suggestion.core == "snes9x_libretro"
+                            && suggestion.recommended
+                            && suggestion.available
+                    })
+            })
+            && rust.emulator_write_notifications == 1
+            && *self.emulator_revision() == initial_revision.saturating_add(1)
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "RETROARCH_CORE_EDITOR_SMOKE_COMPLETE cores=2 unsafe=1 suggestion=snes9x_libretro revision={}",
+                self.emulator_revision()
+            );
+        }
+        success
+    }
+
     pub fn report_emulator_discovery_smoke_success(
         &self,
         candidate_index: i32,
@@ -20211,6 +20475,51 @@ impl qobject::LibraryController {
                     "Could not prepare emulator editor: {}",
                     describe_emulator_write_failure(&error)
                 );
+                QString::default()
+            }
+        }
+    }
+
+    pub fn retroarch_core_options(
+        &self,
+        emulator_title: QString,
+        application_path: QString,
+    ) -> QString {
+        let payload = retroarch_core_options_payload(
+            self.rust().launchbox_root.as_deref(),
+            &self.rust().path_resolver,
+            &emulator_title.to_string(),
+            &application_path.to_string(),
+            &self.rust().platform_names,
+        );
+        match serde_json::to_string(&payload) {
+            Ok(serialized) => qstring(serialized),
+            Err(error) => {
+                eprintln!("Could not serialize RetroArch core inventory: {error}");
+                QString::default()
+            }
+        }
+    }
+
+    pub fn retroarch_core_from_command_line(&self, command_line: QString) -> QString {
+        retroarch_core_name(&command_line.to_string())
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn retroarch_command_line_for_core(
+        &self,
+        command_line: QString,
+        core_command_path: QString,
+    ) -> QString {
+        let command_line = command_line.to_string();
+        match command_line_with_retroarch_core(
+            (!command_line.trim().is_empty()).then_some(command_line.as_str()),
+            &core_command_path.to_string(),
+        ) {
+            Ok(command_line) => qstring(command_line),
+            Err(error) => {
+                eprintln!("Could not update RetroArch core command line: {error}");
                 QString::default()
             }
         }
@@ -26785,6 +27094,77 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with(".lbport-pcsx2-download-")));
+    }
+
+    #[test]
+    fn retroarch_core_payload_maps_native_inventory_to_1327_platform_suggestions() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let application = directory.path().join("Emulators/RetroArch/retroarch");
+        let cores = application.parent().unwrap().join("cores");
+        fs::create_dir_all(&cores).unwrap();
+        fs::write(&application, b"frontend").unwrap();
+        fs::write(
+            application.parent().unwrap().join("retroarch.cfg"),
+            b"libretro_directory = \"cores\"\n",
+        )
+        .unwrap();
+        let platform = RetroArchCorePlatform::current().expect("supported test host");
+        fs::write(
+            cores.join(format!("snes9x_libretro.{}", platform.extension())),
+            b"snes core",
+        )
+        .unwrap();
+        fs::write(
+            cores.join(format!("genesis_plus_gx_libretro.{}", platform.extension())),
+            b"genesis core",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            cores.join(format!("snes9x_libretro.{}", platform.extension())),
+            cores.join(format!("unsafe_libretro.{}", platform.extension())),
+        )
+        .unwrap();
+
+        let payload = retroarch_core_options_payload(
+            Some(directory.path()),
+            &HostPathResolver::default(),
+            "RetroArch",
+            "Emulators/RetroArch/retroarch",
+            &[
+                "Super Nintendo Entertainment System".into(),
+                "Sega CD".into(),
+                "Fixture Console".into(),
+            ],
+        );
+
+        assert!(payload.applicable);
+        assert!(payload.ready);
+        assert!(payload.error.is_none());
+        assert!(payload.read_only_check);
+        assert_eq!(
+            payload.host_platform,
+            Some(retroarch_core_platform_name(platform))
+        );
+        assert_eq!(payload.cores.len(), 2);
+        assert!(payload.cores.iter().any(|core| {
+            core.name == "snes9x_libretro"
+                && core.command_path == format!("cores/snes9x_libretro.{}", platform.extension())
+        }));
+        assert_eq!(payload.suggestions.len(), 2);
+        assert!(payload.suggestions.iter().any(|suggestion| {
+            suggestion.platform == "Super Nintendo Entertainment System"
+                && suggestion.core == "snes9x_libretro"
+                && suggestion.recommended
+                && suggestion.available
+        }));
+        assert!(payload.suggestions.iter().any(|suggestion| {
+            suggestion.platform == "Sega CD"
+                && suggestion.core == "genesis_plus_gx_libretro"
+                && suggestion.available
+        }));
+        #[cfg(unix)]
+        assert_eq!(payload.unsafe_entry_count, 1);
     }
 
     #[test]

@@ -1,0 +1,57 @@
+platform	core	recommended
+3DO Interactive Multiplayer	opera_libretro	TRUE
+Amstrad CPC	cap32_libretro	TRUE
+Atari 2600	stella_libretro	TRUE
+Atari 5200	a5200_libretro	TRUE
+Atari 7800	prosystem_libretro	TRUE
+Atari Jaguar	virtualjaguar_libretro	FALSE
+Atari Lynx	handy_libretro	TRUE
+Atari ST	hatari_libretro	TRUE
+ColecoVision	gearcoleco_libretro	TRUE
+Commodore 128	vice_x128_libretro	TRUE
+Commodore 64	vice_x64_libretro	TRUE
+Commodore Amiga	puae_libretro	TRUE
+Commodore PET	vice_xpet_libretro	TRUE
+Commodore Plus 4	vice_xplus4_libretro	TRUE
+Commodore VIC-20	vice_xvic_libretro	TRUE
+GCE Vectrex	vecx_libretro	TRUE
+Magnavox Odyssey 2	o2em_libretro	TRUE
+Mattel Intellivision	freeintv_libretro	TRUE
+Microsoft MSX	fmsx_libretro	TRUE
+NEC PC-FX	mednafen_pcfx_libretro	TRUE
+NEC TurboGrafx-16	mednafen_pce_fast_libretro	TRUE
+NEC TurboGrafx-CD	mednafen_pce_fast_libretro	TRUE
+Nintendo 64	mupen64plus_next_libretro	TRUE
+Nintendo DS	desmume_libretro	TRUE
+Nintendo Entertainment System	nestopia_libretro	TRUE
+Nintendo Famicom Disk System	nestopia_libretro	TRUE
+Nintendo Game & Watch	gw_libretro	TRUE
+Nintendo Game Boy	gambatte_libretro	TRUE
+Nintendo Game Boy Advance	vba_next_libretro	TRUE
+Nintendo Game Boy Color	gambatte_libretro	TRUE
+Nintendo Pokemon Mini	pokemini_libretro	TRUE
+Nintendo Virtual Boy	mednafen_vb_libretro	TRUE
+PC Engine SuperGrafx	mednafen_supergrafx_libretro	TRUE
+Philips CD-i	same_cdi_libretro	TRUE
+Philips Videopac+	o2em_libretro	TRUE
+Sammy Atomiswave	flycast_libretro	TRUE
+Sega 32X	picodrive_libretro	TRUE
+Sega CD	genesis_plus_gx_libretro	TRUE
+Sega Dreamcast	flycast_libretro	TRUE
+Sega Game Gear	genesis_plus_gx_libretro	TRUE
+Sega Genesis	genesis_plus_gx_libretro	TRUE
+Sega Master System	genesis_plus_gx_libretro	TRUE
+Sega Naomi	flycast_libretro	TRUE
+Sega Naomi 2	flycast_libretro	TRUE
+Sega Saturn	yabause_libretro	TRUE
+Sinclair ZX Spectrum	fuse_libretro	FALSE
+Sinclair ZX-81	81_libretro	TRUE
+SNK Neo Geo AES	fbalpha_libretro	TRUE
+SNK Neo Geo MVS	fbalpha_libretro	TRUE
+SNK Neo Geo Pocket	mednafen_ngp_libretro	TRUE
+SNK Neo Geo Pocket Color	mednafen_ngp_libretro	TRUE
+Sony Playstation	swanstation_libretro	TRUE
+Sony PSP	ppsspp_libretro	TRUE
+Super Nintendo Entertainment System	snes9x_libretro	TRUE
+WonderSwan	mednafen_wswan_libretro	TRUE
+WonderSwan Color	mednafen_wswan_libretro	TRUE

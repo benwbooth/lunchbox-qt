@@ -139,6 +139,7 @@ import_root=$(mktemp -d)
 import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
 emulator_crud_root=$(mktemp -d)
+retroarch_core_editor_root=$(mktemp -d)
 emulator_discovery_root=$(mktemp -d)
 emulator_bios_root=$(mktemp -d)
 emulator_install_root=$(mktemp -d)
@@ -155,7 +156,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
 cp "fixtures/launchbox/Data/Platforms/Fixture Console.xml" "$edit_platform"
@@ -2121,6 +2122,95 @@ if find "$emulator_crud_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox dialog-driven full emulator and platform-mapping editing, generated immutable IDs, default handoff, reference gating, lexical Windows paths, unknown XML, exact backups, and binary-directory isolation validated."
+
+cp -R fixtures/launchbox/Data "$retroarch_core_editor_root/Data"
+retroarch_core_editor_document="$retroarch_core_editor_root/Data/Emulators.xml"
+sed -i 's/Fixture Console/Super Nintendo Entertainment System/g' \
+  "$retroarch_core_editor_root/Data/Platforms.xml" \
+  "$retroarch_core_editor_root/Data/Platforms/Fixture Console.xml" \
+  "$retroarch_core_editor_document"
+sed -i \
+  -e 's/<Title>Fixture Emulator<\/Title>/<Title>RetroArch<\/Title>/' \
+  -e 's#<ApplicationPath>Emulators/fixture-emulator</ApplicationPath>#<ApplicationPath>Emulators/RetroArch/retroarch</ApplicationPath>#' \
+  "$retroarch_core_editor_document"
+retroarch_core_directory="$retroarch_core_editor_root/Emulators/RetroArch/cores"
+mkdir -p "$retroarch_core_directory"
+install_process_fixture \
+  "$retroarch_core_editor_root/Emulators/RetroArch/retroarch"
+printf 'libretro_directory = "cores"\n' \
+  > "$retroarch_core_editor_root/Emulators/RetroArch/retroarch.cfg"
+case "$(uname -s)" in
+  Darwin) retroarch_core_extension=dylib ;;
+  MINGW*|MSYS*|CYGWIN*) retroarch_core_extension=dll ;;
+  *) retroarch_core_extension=so ;;
+esac
+printf 'snes core\n' \
+  > "$retroarch_core_directory/snes9x_libretro.$retroarch_core_extension"
+printf 'genesis core\n' \
+  > "$retroarch_core_directory/genesis_plus_gx_libretro.$retroarch_core_extension"
+ln -s "snes9x_libretro.$retroarch_core_extension" \
+  "$retroarch_core_directory/unsafe_libretro.$retroarch_core_extension"
+cp "$retroarch_core_editor_root/Emulators/RetroArch/retroarch" \
+  "$retroarch_core_editor_root/original-retroarch"
+cp "$retroarch_core_editor_root/Emulators/RetroArch/retroarch.cfg" \
+  "$retroarch_core_editor_root/original-retroarch.cfg"
+cp "$retroarch_core_directory/snes9x_libretro.$retroarch_core_extension" \
+  "$retroarch_core_editor_root/original-snes-core"
+cp "$retroarch_core_directory/genesis_plus_gx_libretro.$retroarch_core_extension" \
+  "$retroarch_core_editor_root/original-genesis-core"
+
+retroarch_core_editor_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$retroarch_core_editor_root" \
+    --retroarch-core-editor-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$retroarch_core_editor_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'RETROARCH_CORE_EDITOR_SMOKE_COMPLETE cores=2 unsafe=1 suggestion=snes9x_libretro revision=[0-9]+' \
+  <<< "$retroarch_core_editor_output"; then
+  printf '%s\n' "$retroarch_core_editor_output" >&2
+  echo "LaunchBox did not validate its RetroArch core mapping editor." >&2
+  exit 1
+fi
+expected_retroarch_command="<CommandLine>-L cores/snes9x_libretro.$retroarch_core_extension --platform fixture</CommandLine>"
+if ! rg -q -F "$expected_retroarch_command" \
+  "$retroarch_core_editor_document"; then
+  echo "RetroArch core editor did not persist the selected native core while retaining unrelated arguments." >&2
+  exit 1
+fi
+if ! cmp -s "$retroarch_core_editor_root/original-retroarch" \
+    "$retroarch_core_editor_root/Emulators/RetroArch/retroarch" \
+  || ! cmp -s "$retroarch_core_editor_root/original-retroarch.cfg" \
+    "$retroarch_core_editor_root/Emulators/RetroArch/retroarch.cfg" \
+  || ! cmp -s "$retroarch_core_editor_root/original-snes-core" \
+    "$retroarch_core_directory/snes9x_libretro.$retroarch_core_extension" \
+  || ! cmp -s "$retroarch_core_editor_root/original-genesis-core" \
+    "$retroarch_core_directory/genesis_plus_gx_libretro.$retroarch_core_extension"; then
+  echo "Read-only RetroArch core inventory changed an executable, configuration, or core file." >&2
+  exit 1
+fi
+if [[ ! -L "$retroarch_core_directory/unsafe_libretro.$retroarch_core_extension" ]]; then
+  echo "RetroArch core inventory changed the refused symbolic-link entry." >&2
+  exit 1
+fi
+mapfile -t retroarch_core_editor_backups < <(
+  find "$retroarch_core_editor_root/Data" -maxdepth 1 -type f \
+    -name 'Emulators.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#retroarch_core_editor_backups[@]} -ne 1 ]]; then
+  echo "RetroArch core mapping edit did not retain exactly one XML backup." >&2
+  exit 1
+fi
+if find "$retroarch_core_editor_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful RetroArch core mapping edit left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox RetroArch native core discovery, 13.27 recommendation selection, semantic command-line editing, unsafe-entry refusal, transactional persistence, and read-only core/config behavior validated."
 
 cp -R fixtures/launchbox/Data "$emulator_discovery_root/Data"
 find "$emulator_discovery_root/Data" -type f -name '*.xml' \

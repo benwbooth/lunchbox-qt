@@ -8,6 +8,7 @@ Windows-and-Linux parity verified.
 
 | Area | Current implementation | Verification |
 |---|---|---|
+| RetroArch core selection | First `RUN-016` subset. A checked-in catalog freezes the 56 unique platform/core suggestions in LaunchBox 13.27, including all 54 `Recommended` rows. A bounded read-only scanner identifies the current host's native `.dll`, `.so`, or `.dylib` core libraries from configured `libretro_directory`, application-local `cores`, packaged Linux AppImage home, macOS bundle/Application Support, XDG/home, and Windows application-data locations. The shared resolver handles portable `:\`, native, home-relative, and explicitly mapped Windows values. Configuration and core-directory symlinks are refused; entry symlinks/non-Unicode or unsafe names are omitted and counted; case-insensitive duplicate core names fail closed. The complete emulator mapping editor shows inventory/configuration provenance, ranks an installed 13.27 suggestion first, retains missing/custom mappings, and changes only one semantic `-L`, `--libretro`, or `--libretro=` argument while preserving unrelated arguments | Catalog tests prove 56 unique rows and 54 recommendations. Scanner tests cover native extension filtering, AppImage-home discovery, a modeled macOS app bundle with `.dylib` filtering, relative/absolute command paths, unsafe configuration/directory/entry refusal, and Windows-compatible quoting. Controller coverage proves host inventory-to-platform suggestion mapping. The real offscreen editor workflow discovers two cores, refuses a symlink, applies the installed SNES recommendation, preserves an unrelated flag, transactionally writes exactly one mapping with one exact backup, and byte-compares the executable, configuration, and both cores before and after. The Windows core gate compiles the complete portable catalog/scanner; both Darwin targets compile the dependency-free domain/platform boundary, while native macOS Qt and integration-crate execution remain a real-host gate. Individual core acquisition/update/removal, online updater policy, BigBox selection, and netplay remain open |
 | Reproducible toolchain | Pinned Nix flake with Rust, Qt 6.11.1, QML, CXX-Qt 0.8.1, SQLite, 7-Zip, DOSBox Staging, ScummVM, Linux `appimage-run`, format/lint tools, package definition, and pinned Windows GNU plus Intel/Apple Silicon Darwin Rust targets | `nix develop` reports Qt 6.11.1 and Rust 1.97.1; `sqlite3`, `7z`, `dosbox`, `scummvm`, and Linux `appimage-run` are present. The Linux-hosted Windows core gate compiles the supported cross-platform core. Pure-Rust domain/platform crates compile for both Darwin architectures; native C/C++ Qt, SQLite, and cryptography dependencies still require an Apple SDK/toolchain and real macOS gate |
 | Linux package | Release builds, Qt runtime wrapping, packaged 7-Zip, DOSBox Staging, ScummVM, and `appimage-run`, and both installed executables | `nix flake check`, explicit release-mode tests, wrapper-content assertions for every runtime tool, generated-type QML validation, and offscreen installed-binary smokes |
 | Domain | All 107 `Game` fields observed in 13.24, every persisted field recovered from the concrete 13.27 `GameSave` contract, every other platform-file record, plus playlists, emulators/mappings, navigation metadata, parents, controllers, input bindings, list cache, image types, scalar settings, and validation; persisted path strings remain lossless data rather than becoming host paths | The canonical game field inventory is mechanically compared with the value-free real-install schema; a full 16-field 13.27 save fixture is checked through both platform readers; Windows drive/UNC classification and all persisted-path interpretation are confined to the platform service |
@@ -54,15 +55,18 @@ SHA-256, preserves the native ZIP/app-bundle layout, and retains user firmware
 and configuration. RetroArch selects the exact stable Windows/Linux
 frontend-and-cores pair or universal macOS Metal DMG, distinguishes published
 byte counts from locally computed SHA-256, preserves the signed app layout and
-exact framework links, and uses the same recoverable ownership gates. Other
-emulator providers, dependency policy, user-selected core management, netplay,
-and automatic update policy remain open.
+exact framework links, and uses the same recoverable ownership gates. Its first
+core-selection subset safely inventories native Windows, Linux, and macOS
+cores, applies frozen 13.27 platform suggestions through the complete mapping
+editor, and keeps core/configuration discovery read-only. Other emulator
+providers, dependency policy, individual-core lifecycle, BigBox selection,
+netplay, and automatic update policy remain open.
 The first three `RUN-004` adapters provide complete read-only PCSX2, Xemu, and
 configured-core RetroArch BIOS validation; other emulator BIOS adapters,
 acquisition, configuration changes,
 and firmware mutation remain open.
 
-The workspace currently has 332 passing Rust tests. Both QML frontends and the
+The workspace currently has 340 passing Rust tests. Both QML frontends and the
 shared startup and shutdown overlays are compiled into the native binaries. Their
 `--smoke-test` paths verify all 37
 model roles before and after filtering from three rows to one under Qt's
