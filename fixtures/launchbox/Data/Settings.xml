@@ -12,6 +12,8 @@
     <PauseTheme>Fixture Desktop Pause</PauseTheme>
     <PauseScreenMuting>true</PauseScreenMuting>
     <PauseScreenFading>true</PauseScreenFading>
+    <SortBy>Title</SortBy>
+    <SortByDesc>false</SortByDesc>
     <EmptyValue />
   </Settings>
   <ImageTypeSettings>

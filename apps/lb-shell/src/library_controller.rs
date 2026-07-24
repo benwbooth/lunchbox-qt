@@ -29,6 +29,8 @@ pub mod qobject {
         #[qproperty(QString, platform_filter)]
         #[qproperty(QString, game_state_filter)]
         #[qproperty(QString, missing_media_filter)]
+        #[qproperty(QString, game_sort)]
+        #[qproperty(bool, game_sort_descending)]
         #[qproperty(bool, include_hidden_games)]
         #[qproperty(bool, include_broken_games)]
         #[qproperty(bool, loading)]
@@ -346,6 +348,16 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn apply_game_sort(
+            self: Pin<&mut LibraryController>,
+            sort: QString,
+            descending: bool,
+        ) -> bool;
+
+        #[qinvokable]
+        fn select_random_game(self: Pin<&mut LibraryController>, avoid_game_id: QString) -> i32;
+
+        #[qinvokable]
         fn save_game(
             self: Pin<&mut LibraryController>,
             row: i32,
@@ -648,6 +660,13 @@ pub mod qobject {
 
         #[qinvokable]
         fn report_library_filter_smoke_success(self: &LibraryController) -> bool;
+
+        #[qinvokable]
+        fn report_library_order_smoke_success(
+            self: &LibraryController,
+            random_row: i32,
+            avoided_game_id: QString,
+        ) -> bool;
 
         #[qinvokable]
         fn report_load_smoke_success(
@@ -991,10 +1010,10 @@ use cxx_qt_lib::{
 };
 use lb_domain::{
     AdditionalApplication, AdditionalApplicationEdit, AlternateName, CustomField, Emulator,
-    EmulatorConfiguration, EmulatorPlatform, Game, GameLaunchConfiguration, GameMetadata, GameSave,
-    GameSaveMetadataEdit, Mount, NavigationMetadata, ParentRelationship, PlatformCategory,
-    PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
-    UNASSIGNED_EMULATOR_ID,
+    EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game, GameLaunchConfiguration,
+    GameMetadata, GameSave, GameSaveMetadataEdit, Mount, NavigationMetadata, ParentRelationship,
+    PlatformCategory, PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument,
+    PlaylistFilter, PlaylistGame, UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -1065,7 +1084,8 @@ use lb_platform::{
     LaunchTarget,
 };
 use lb_query::{
-    filter_game_indices, game_matches_filter, GameFilter, GameStateFilter, MissingMediaFilter,
+    compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
+    GameFilter, GameSort, GameStateFilter, MissingMediaFilter,
 };
 use lb_storage::{
     delete_directory_if_revision, delete_regular_files_if_revisions, find_emulator_references,
@@ -1088,7 +1108,7 @@ use std::sync::{
     mpsc::{self, Sender},
     Arc,
 };
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const FIXTURE: &str =
@@ -1234,6 +1254,8 @@ pub struct LibraryControllerRust {
     platform_filter: QString,
     game_state_filter: QString,
     missing_media_filter: QString,
+    game_sort: QString,
+    game_sort_descending: bool,
     include_hidden_games: bool,
     include_broken_games: bool,
     loading: bool,
@@ -1353,6 +1375,7 @@ pub struct LibraryControllerRust {
     path_mappings_initialized: bool,
     path_resolver: HostPathResolver,
     request_generation: u64,
+    random_selection_counter: u64,
     model_reset_notifications: u64,
     data_change_notifications: u64,
     row_insert_notifications: u64,
@@ -1436,6 +1459,8 @@ struct LoadedLibrary {
     big_box_launch_screen_policy: FrontendLaunchScreenPolicy,
     launchbox_pause_screen_policy: FrontendPauseScreenPolicy,
     big_box_pause_screen_policy: FrontendPauseScreenPolicy,
+    game_sort: GameSort,
+    game_sort_descending: bool,
 }
 
 struct LibraryReplacement {
@@ -1456,6 +1481,8 @@ struct LibraryReplacement {
     big_box_launch_screen_policy: FrontendLaunchScreenPolicy,
     launchbox_pause_screen_policy: FrontendPauseScreenPolicy,
     big_box_pause_screen_policy: FrontendPauseScreenPolicy,
+    game_sort: GameSort,
+    game_sort_descending: bool,
     name: String,
     message: String,
     pending_recovery_count: usize,
@@ -1519,10 +1546,13 @@ impl LoadedLibrary {
                 big_box_launch_screen_policy: FrontendLaunchScreenPolicy::default(),
                 launchbox_pause_screen_policy: FrontendPauseScreenPolicy::default(),
                 big_box_pause_screen_policy: FrontendPauseScreenPolicy::default(),
+                game_sort: GameSort::default(),
+                game_sort_descending: false,
             });
         }
 
         let data = LaunchBoxDataIndex::load(&path).map_err(|error| error.to_string())?;
+        let (game_sort, game_sort_descending) = game_sort_from_settings(data.settings());
         let launchbox_launch_screen_policy =
             FrontendLaunchScreenPolicy::from_settings(data.settings())
                 .map_err(|error| error.to_string())?;
@@ -1600,8 +1630,21 @@ impl LoadedLibrary {
             big_box_launch_screen_policy,
             launchbox_pause_screen_policy,
             big_box_pause_screen_policy,
+            game_sort,
+            game_sort_descending,
         })
     }
+}
+
+fn game_sort_from_settings(settings: Option<&FrontendSettings>) -> (GameSort, bool) {
+    let sort = settings
+        .and_then(|settings| settings.get("SortBy"))
+        .and_then(GameSort::from_key)
+        .unwrap_or_default();
+    let descending = settings
+        .and_then(|settings| settings.get_bool("SortByDesc"))
+        .unwrap_or(false);
+    (sort, descending)
 }
 
 fn platform_key(name: &str) -> String {
@@ -1855,6 +1898,16 @@ struct GameWriteSuccess {
     custom_fields: Vec<CustomField>,
     source: PathBuf,
     backup: PathBuf,
+}
+
+struct GameSortWriteSuccess {
+    backup: PathBuf,
+}
+
+enum GameSortWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Other(String),
 }
 
 struct GameAddSuccess {
@@ -4077,6 +4130,46 @@ fn describe_emulator_write_failure(error: &EmulatorWriteFailure) -> String {
         ),
         EmulatorWriteFailure::Other(message) => message.clone(),
     }
+}
+
+fn write_game_sort_settings(
+    root: PathBuf,
+    sort: GameSort,
+    descending: bool,
+) -> Result<GameSortWriteSuccess, GameSortWriteFailure> {
+    let settings_path = root.join("Data").join("Settings.xml");
+    let mut settings = AuxiliaryDocument::load(&settings_path)
+        .map_err(|error| GameSortWriteFailure::Other(error.to_string()))?;
+    settings
+        .set_single_record_field("Settings", "SortBy", sort.key())
+        .map_err(|error| GameSortWriteFailure::Other(error.to_string()))?;
+    settings
+        .set_single_record_field(
+            "Settings",
+            "SortByDesc",
+            if descending { "true" } else { "false" },
+        )
+        .map_err(|error| GameSortWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_game_sort_transaction_error)?;
+    transaction
+        .stage_auxiliary(&settings)
+        .map_err(classify_game_sort_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_game_sort_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == settings_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            GameSortWriteFailure::Other(
+                "sort settings transaction reported no Settings.xml write".into(),
+            )
+        })?;
+    Ok(GameSortWriteSuccess { backup })
 }
 
 fn write_game(
@@ -14114,6 +14207,27 @@ fn classify_transaction_error(error: TransactionError) -> GameWriteFailure {
     }
 }
 
+fn classify_game_sort_transaction_error(error: TransactionError) -> GameSortWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::SourceConflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            GameSortWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            GameSortWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            GameSortWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => GameSortWriteFailure::Other(message),
+    }
+}
+
 fn classify_platform_transaction_error(error: TransactionError) -> PlatformWriteFailure {
     let message = error.to_string();
     match error {
@@ -14553,6 +14667,8 @@ impl qobject::LibraryController {
                     big_box_launch_screen_policy: FrontendLaunchScreenPolicy::default(),
                     launchbox_pause_screen_policy: FrontendPauseScreenPolicy::default(),
                     big_box_pause_screen_policy: FrontendPauseScreenPolicy::default(),
+                    game_sort: GameSort::default(),
+                    game_sort_descending: false,
                     name: "Fixture Console".into(),
                     message: "Embedded compatibility fixture".into(),
                     pending_recovery_count: 0,
@@ -14836,6 +14952,90 @@ impl qobject::LibraryController {
         self.as_mut().set_include_broken_games(include_broken);
         self.as_mut().refresh_filtered_games();
         true
+    }
+
+    pub fn apply_game_sort(mut self: Pin<&mut Self>, sort: QString, descending: bool) -> bool {
+        let requested = sort.to_string();
+        let Some(sort) = GameSort::from_key(&requested) else {
+            self.as_mut()
+                .set_status_message(qstring(format!("Unknown game sort: {requested}")));
+            return false;
+        };
+        let launchbox_root = self.as_ref().rust().launchbox_root.clone();
+        if launchbox_root.is_some() && self.as_ref().library_operation_active() {
+            self.as_mut()
+                .set_status_message(qstring("Wait for the current library operation to finish."));
+            return false;
+        }
+
+        self.as_mut().set_game_sort(qstring(sort.key()));
+        self.as_mut().set_game_sort_descending(descending);
+        self.as_mut().refresh_filtered_games();
+        if let Some(root) = launchbox_root {
+            let generation = self.as_ref().rust().request_generation;
+            self.as_mut().set_writing(true);
+            self.as_mut()
+                .set_status_message(qstring("Saving Arrange By settings in the background..."));
+            let qt_thread = self.as_ref().qt_thread();
+            let spawn_result = std::thread::Builder::new()
+                .name("launchbox-sort-settings-write".to_string())
+                .spawn(move || {
+                    let result = write_game_sort_settings(root, sort, descending);
+                    qt_thread
+                        .queue(move |mut controller| {
+                            controller
+                                .as_mut()
+                                .finish_game_sort_write(generation, result);
+                        })
+                        .ok();
+                });
+            if let Err(error) = spawn_result {
+                self.as_mut().set_writing(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not start Arrange By settings writer: {error}"
+                )));
+            }
+        }
+        true
+    }
+
+    pub fn select_random_game(mut self: Pin<&mut Self>, avoid_game_id: QString) -> i32 {
+        let avoid_game_id = avoid_game_id.to_string();
+        let counter = self
+            .as_ref()
+            .rust()
+            .random_selection_counter
+            .wrapping_add(1);
+        self.as_mut().rust_mut().random_selection_counter = counter;
+        let clock_entropy = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs().rotate_left(17) ^ u64::from(duration.subsec_nanos()))
+            .unwrap_or_default();
+        let row = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            select_random_filtered_row(
+                &rust.games,
+                &rust.filtered_indices,
+                (!avoid_game_id.is_empty()).then_some(avoid_game_id.as_str()),
+                clock_entropy ^ counter.wrapping_mul(0x9e37_79b9_7f4a_7c15),
+            )
+        };
+        let Some(row) = row else {
+            self.as_mut().set_status_message(qstring(
+                "No visible game is available for random selection.",
+            ));
+            return -1;
+        };
+        let title = self
+            .as_ref()
+            .filtered_game(saturating_i32(row))
+            .map(|game| game.title.clone());
+        if let Some(title) = title {
+            self.as_mut()
+                .set_status_message(qstring(format!("Random selection: {title}")));
+        }
+        saturating_i32(row)
     }
 
     pub fn save_game(mut self: Pin<&mut Self>, row: i32, game_id: QString, edit_payload: QString) {
@@ -17288,6 +17488,30 @@ impl qobject::LibraryController {
                 rust.games.len(),
                 rust.filtered_indices.len(),
                 rust.model_reset_notifications
+            );
+        }
+        success
+    }
+
+    pub fn report_library_order_smoke_success(
+        &self,
+        random_row: i32,
+        avoided_game_id: QString,
+    ) -> bool {
+        let avoided_game_id = avoided_game_id.to_string();
+        let random_game_id = self.game_id_at(random_row).to_string();
+        let rust = self.rust();
+        let success = rust.games.len() == 3
+            && self.game_sort().to_string() == GameSort::PlayCount.key()
+            && *self.game_sort_descending()
+            && random_row >= 0
+            && random_game_id != avoided_game_id
+            && rust.model_reset_notifications >= 3;
+        if success {
+            eprintln!(
+                "LIBRARY_ORDER_SMOKE_COMPLETE games={} sort={} descending=true random_row={random_row}",
+                rust.games.len(),
+                self.game_sort(),
             );
         }
         success
@@ -21002,6 +21226,8 @@ impl qobject::LibraryController {
                     big_box_launch_screen_policy: loaded.big_box_launch_screen_policy,
                     launchbox_pause_screen_policy: loaded.launchbox_pause_screen_policy,
                     big_box_pause_screen_policy: loaded.big_box_pause_screen_policy,
+                    game_sort: loaded.game_sort,
+                    game_sort_descending: loaded.game_sort_descending,
                     name: loaded.name,
                     message: loaded.message,
                     pending_recovery_count: loaded.pending_recovery_count,
@@ -21137,6 +21363,44 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_game_sort_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<GameSortWriteSuccess, GameSortWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(written) => {
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved Arrange By settings. Exact backup: {}",
+                    written.backup.display()
+                )));
+            }
+            Err(GameSortWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(GameSortWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(GameSortWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save Arrange By settings: {message}"
+                )));
+            }
+        }
+    }
+
     fn finish_game_write(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -21181,9 +21445,9 @@ impl qobject::LibraryController {
                 let metadata_changed =
                     GameMetadata::from(&self.as_ref().rust().games[actual_index])
                         != GameMetadata::from(&game);
-                let filter_membership_changed = {
+                let query_result_may_change = {
                     let filter = self.as_ref().current_filter();
-                    game_filter_membership_changed(
+                    game_query_result_may_change(
                         &self.as_ref().rust().games[actual_index],
                         &game,
                         &filter,
@@ -21211,7 +21475,7 @@ impl qobject::LibraryController {
                     backup.display()
                 )));
 
-                if metadata_changed || filter_membership_changed {
+                if metadata_changed || query_result_may_change {
                     self.as_mut().refresh_filtered_games();
                 } else if let Some(filtered_row) = filtered_row {
                     let row = saturating_i32(filtered_row);
@@ -21754,16 +22018,16 @@ impl qobject::LibraryController {
                         };
                         let play_count_changed =
                             self.as_ref().rust().games[actual_index].play_count != game.play_count;
-                        let filter_membership_changed = {
+                        let query_result_may_change = {
                             let filter = self.as_ref().current_filter();
-                            game_filter_membership_changed(
+                            game_query_result_may_change(
                                 &self.as_ref().rust().games[actual_index],
                                 &game,
                                 &filter,
                             )
                         };
                         self.as_mut().rust_mut().games[actual_index] = *game;
-                        if filter_membership_changed {
+                        if query_result_may_change {
                             self.as_mut().refresh_filtered_games();
                         } else if play_count_changed {
                             let filtered_row = self
@@ -24280,15 +24544,13 @@ impl qobject::LibraryController {
                 return None;
             }
         }
-        let key = game.display_sort_title().to_lowercase();
         Some(
             self.rust()
                 .filtered_indices
                 .iter()
                 .position(|actual| {
                     let existing = &self.rust().games[*actual];
-                    let existing_key = existing.display_sort_title().to_lowercase();
-                    key < existing_key || (key == existing_key && game.id < existing.id)
+                    compare_games(game, existing, &filter).is_lt()
                 })
                 .unwrap_or(self.rust().filtered_indices.len()),
         )
@@ -24305,6 +24567,8 @@ impl qobject::LibraryController {
                 .unwrap_or_default(),
             missing_media: MissingMediaFilter::from_key(&self.missing_media_filter().to_string())
                 .unwrap_or_default(),
+            sort: GameSort::from_key(&self.game_sort().to_string()).unwrap_or_default(),
+            sort_descending: *self.game_sort_descending(),
         }
     }
 
@@ -24379,6 +24643,8 @@ impl qobject::LibraryController {
             big_box_launch_screen_policy,
             launchbox_pause_screen_policy,
             big_box_pause_screen_policy,
+            game_sort,
+            game_sort_descending,
             name,
             message,
             pending_recovery_count,
@@ -24392,7 +24658,12 @@ impl qobject::LibraryController {
         let navigation_entry_count = saturating_i32(navigation_entries.len());
         let big_box_navigation_entries = build_big_box_navigation_entries(&navigation_entries);
         let big_box_navigation_entry_count = saturating_i32(big_box_navigation_entries.len());
-        let filtered_indices = filter_game_indices(&games, &GameFilter::default());
+        let initial_filter = GameFilter {
+            sort: game_sort,
+            sort_descending: game_sort_descending,
+            ..GameFilter::default()
+        };
+        let filtered_indices = filter_game_indices(&games, &initial_filter);
         let filtered_count = saturating_i32(filtered_indices.len());
         self.as_mut().begin_reset_model();
         {
@@ -24416,6 +24687,7 @@ impl qobject::LibraryController {
             rust.playlist_game_ids = playlist_game_ids;
             rust.category_filter = None;
             rust.playlist_filter = None;
+            rust.random_selection_counter = 0;
             rust.library_root = library_root;
             rust.launchbox_root = launchbox_root;
             rust.emulator_configuration = emulator_configuration;
@@ -24551,6 +24823,8 @@ impl qobject::LibraryController {
         self.as_mut().set_platform_filter(QString::default());
         self.as_mut().set_game_state_filter(qstring("any"));
         self.as_mut().set_missing_media_filter(qstring("none"));
+        self.as_mut().set_game_sort(qstring(game_sort.key()));
+        self.as_mut().set_game_sort_descending(game_sort_descending);
         self.as_mut().set_include_hidden_games(false);
         self.as_mut().set_include_broken_games(false);
         self.as_mut().set_navigation_filter_kind(QString::default());
@@ -25258,10 +25532,6 @@ fn saturating_i32(value: usize) -> i32 {
     value.try_into().unwrap_or(i32::MAX)
 }
 
-fn game_filter_membership_changed(previous: &Game, next: &Game, filter: &GameFilter) -> bool {
-    game_matches_filter(previous, filter) != game_matches_filter(next, filter)
-}
-
 fn duration_millis_i32(value: Duration) -> i32 {
     i32::try_from(value.as_millis()).unwrap_or(i32::MAX)
 }
@@ -25317,6 +25587,74 @@ mod tests {
     }
 
     #[test]
+    fn launchbox_sort_settings_are_typed_with_safe_defaults() {
+        let settings = FrontendSettings {
+            entries: vec![
+                lb_domain::SettingEntry {
+                    key: "SortBy".into(),
+                    value: "LastPlayed".into(),
+                },
+                lb_domain::SettingEntry {
+                    key: "SortByDesc".into(),
+                    value: "true".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            game_sort_from_settings(Some(&settings)),
+            (GameSort::LastPlayed, true)
+        );
+
+        let unknown = FrontendSettings {
+            entries: vec![
+                lb_domain::SettingEntry {
+                    key: "SortBy".into(),
+                    value: "FuturePluginField".into(),
+                },
+                lb_domain::SettingEntry {
+                    key: "SortByDesc".into(),
+                    value: "not-a-bool".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            game_sort_from_settings(Some(&unknown)),
+            (GameSort::Title, false)
+        );
+        assert_eq!(game_sort_from_settings(None), (GameSort::Title, false));
+    }
+
+    #[test]
+    fn arrange_by_writer_atomically_updates_only_launchbox_settings() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data directory");
+        let settings_path = data.join("Settings.xml");
+        let original = include_bytes!("../../../fixtures/launchbox/Data/Settings.xml");
+        fs::write(&settings_path, original).expect("write settings fixture");
+
+        let written =
+            write_game_sort_settings(directory.path().to_path_buf(), GameSort::PlayCount, true)
+                .unwrap_or_else(|error| match error {
+                    GameSortWriteFailure::Conflict(message)
+                    | GameSortWriteFailure::Other(message)
+                    | GameSortWriteFailure::PendingRecovery { message, .. } => {
+                        panic!("write Arrange By settings: {message}")
+                    }
+                });
+        assert_eq!(
+            fs::read(&written.backup).expect("read exact backup"),
+            original
+        );
+        let updated = fs::read_to_string(settings_path).expect("read updated settings");
+        assert!(updated.contains("<SortBy>PlayCount</SortBy>"));
+        assert!(updated.contains("<SortByDesc>true</SortByDesc>"));
+        assert!(updated.contains("<Theme>Fixture Theme</Theme>"));
+    }
+
+    #[test]
     fn state_edits_and_first_play_recompute_active_filter_membership() {
         let mut previous = Game {
             id: "fixture".into(),
@@ -25327,7 +25665,7 @@ mod tests {
         };
         let mut next = previous.clone();
         next.favorite = false;
-        assert!(game_filter_membership_changed(
+        assert!(game_query_result_may_change(
             &previous,
             &next,
             &GameFilter {
@@ -25335,7 +25673,7 @@ mod tests {
                 ..GameFilter::default()
             }
         ));
-        assert!(!game_filter_membership_changed(
+        assert!(!game_query_result_may_change(
             &previous,
             &next,
             &GameFilter::default()
@@ -25345,7 +25683,7 @@ mod tests {
         next = previous.clone();
         next.play_count = 1;
         next.last_played_date = Some("2026-07-23T12:00:00-07:00".into());
-        assert!(game_filter_membership_changed(
+        assert!(game_query_result_may_change(
             &previous,
             &next,
             &GameFilter {
@@ -25353,7 +25691,7 @@ mod tests {
                 ..GameFilter::default()
             }
         ));
-        assert!(game_filter_membership_changed(
+        assert!(game_query_result_may_change(
             &previous,
             &next,
             &GameFilter {

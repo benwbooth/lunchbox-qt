@@ -3,6 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Nixpkgs unstable dropped Intel macOS in 26.11. Keep that still-supported
+    # host on the 26.05 Darwin branch while Apple Silicon follows unstable.
+    nixpkgs-intel-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -14,14 +17,16 @@
     {
       self,
       nixpkgs,
+      nixpkgs-intel-darwin,
       flake-utils,
       rust-overlay,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
+        nixpkgsForSystem = if system == "x86_64-darwin" then nixpkgs-intel-darwin else nixpkgs;
         overlays = [ (import rust-overlay) ];
-        pkgs = import nixpkgs { inherit system overlays; };
+        pkgs = import nixpkgsForSystem { inherit system overlays; };
         lib = pkgs.lib;
 
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
@@ -189,6 +194,7 @@
 
           FLAKE_INPUTS = builtins.concatStringsSep ":" [
             "${nixpkgs}"
+            "${nixpkgs-intel-darwin}"
             "${rust-overlay}"
             "${flake-utils}"
           ];

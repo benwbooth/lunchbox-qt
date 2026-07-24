@@ -38,6 +38,10 @@ The Linux-hosted Darwin checks cover the dependency-free portable Rust
 boundary for both Intel and Apple Silicon. They do not substitute for native
 Qt application-bundle, launch, input, focus, media, and multi-display tests on
 real macOS hosts; those are explicit release gates in the port plan.
+The flake exposes packages and development shells for both Darwin
+architectures. Because nixpkgs unstable no longer evaluates Intel macOS, that
+one system uses the last supported `nixpkgs-26.05-darwin` branch; Apple Silicon
+and both Linux architectures continue to follow unstable.
 
 Read an existing installation without modifying it:
 
@@ -147,9 +151,20 @@ one transaction. The same payload transactionally adds, edits, or removes
 ordered alternate names and custom fields and edits the ordinary, DOSBox, and
 legacy ScummVM launch fields. Persisted paths remain lexical
 LaunchBox strings in QML, the domain, and storage; only `lb-platform` maps them
-to native paths at launch. Descriptive metadata participates in search; metadata changes
-recompute stable sort and search membership while state-only changes use
-targeted role notifications.
+to native paths at launch. Descriptive metadata participates in search;
+metadata changes recompute stable sort and search membership while state-only
+changes use targeted role notifications. The shared query layer also implements
+the recovered `Settings.xml` `SortBy` and `SortByDesc` contract for title/sort
+title, platform, release and library dates, last played, play count/time,
+local/community rating, developer, publisher, genre, series, status, and
+favorite state. Missing primary values remain last in either direction and
+title/ID tie-breaks are deterministic. LaunchBox exposes inline Arrange By and
+Random Game controls; BigBox exposes the same ordering in its keyboard-
+navigable drawer plus a button and `R` shortcut. Changes use the existing
+transactional settings writer with an exact backup. Random selection operates
+on the visible model and avoids the current game when possible. This is
+platform-neutral Rust/Qt behavior shared unchanged by Linux, Windows, Intel
+macOS, and Apple Silicon.
 Existing-platform game additions generate UUIDs and use targeted Qt row
 insertion. Deletion freshly scans every modeled platform, playlist, navigation,
 clone, save, controller, and blacklist reference and refuses orphaning; an

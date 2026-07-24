@@ -21,6 +21,11 @@ ApplicationWindow {
         Qt.application.arguments.indexOf("--library-filter-smoke-test") >= 0
     property int libraryFilterSmokePhase: 0
     property bool libraryFilterSmokeFinished: false
+    property bool libraryOrderSmokeTest:
+        Qt.application.arguments.indexOf("--library-order-smoke-test") >= 0
+    property int libraryOrderSmokePhase: 0
+    property int libraryOrderSmokeRandomRow: -1
+    property bool libraryOrderSmokeFinished: false
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
     property bool launchLifecycleSmokeTest:
         Qt.application.arguments.indexOf("--launch-lifecycle-smoke-test") >= 0
@@ -96,6 +101,25 @@ ApplicationWindow {
         { label: "Missing screenshot", key: "screenshot-image" },
         { label: "Missing video", key: "video" }
     ]
+    readonly property var gameSortChoices: [
+        { label: "Title", key: "Title" },
+        { label: "Sort title", key: "SortTitle" },
+        { label: "Platform", key: "Platform" },
+        { label: "Release date", key: "ReleaseDate" },
+        { label: "Date added", key: "DateAdded" },
+        { label: "Date modified", key: "DateModified" },
+        { label: "Last played", key: "LastPlayed" },
+        { label: "Play count", key: "PlayCount" },
+        { label: "Play time", key: "PlayTime" },
+        { label: "Star rating", key: "StarRating" },
+        { label: "Community rating", key: "CommunityStarRating" },
+        { label: "Developer", key: "Developer" },
+        { label: "Publisher", key: "Publisher" },
+        { label: "Genre", key: "Genre" },
+        { label: "Series", key: "Series" },
+        { label: "Status", key: "Status" },
+        { label: "Favorite", key: "Favorite" }
+    ]
 
     function launchSelection() {
         if (gameList.currentIndex >= 0 && !controller.loading && !controller.writing
@@ -152,6 +176,37 @@ ApplicationWindow {
         bigBoxIncludeHiddenCheck.checked = includeHidden
         bigBoxIncludeBrokenCheck.checked = includeBroken
         return applyAttributeFilters()
+    }
+
+    function applyCurrentSort() {
+        const selectedId = gameList.currentIndex >= 0
+                           ? controller.game_id_at(gameList.currentIndex) : ""
+        const applied = controller.apply_game_sort(
+                            bigBoxSortCombo.currentValue,
+                            bigBoxSortDescendingCheck.checked)
+        if (applied) {
+            const selectedRow = selectedId.length > 0
+                              ? controller.row_for_game_id(selectedId) : -1
+            gameList.currentIndex = selectedRow >= 0
+                                  ? selectedRow
+                                  : (gameList.count > 0 ? 0 : -1)
+            if (gameList.currentIndex >= 0)
+                gameList.positionViewAtIndex(
+                            gameList.currentIndex, ListView.Contain)
+        }
+        return applied
+    }
+
+    function selectRandomGame() {
+        const currentId = gameList.currentIndex >= 0
+                        ? controller.game_id_at(gameList.currentIndex) : ""
+        const row = controller.select_random_game(currentId)
+        if (row >= 0) {
+            gameList.currentIndex = row
+            gameList.positionViewAtIndex(row, ListView.Center)
+            gameList.forceActiveFocus()
+        }
+        return row
     }
 
     function filteredIdsMatch(expected) {
@@ -276,6 +331,17 @@ ApplicationWindow {
                               controller.missing_media_filter)
             if (index >= 0)
                 bigBoxMissingMediaFilterCombo.currentIndex = index
+        }
+
+        function onGame_sortChanged() {
+            const index = window.filterChoiceIndex(
+                              window.gameSortChoices, controller.game_sort)
+            if (index >= 0)
+                bigBoxSortCombo.currentIndex = index
+        }
+
+        function onGame_sort_descendingChanged() {
+            bigBoxSortDescendingCheck.checked = controller.game_sort_descending
         }
 
         function onInclude_hidden_gamesChanged() {
@@ -502,6 +568,101 @@ ApplicationWindow {
                           + " filtered=" + controller.filtered_count
                           + " status=" + controller.status_message)
             Qt.exit(31)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.libraryOrderSmokeTest
+                 && !window.libraryOrderSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.library_path.length === 0)
+                return
+            if (window.libraryOrderSmokePhase === 0) {
+                if (controller.game_sort !== "Title"
+                        || controller.game_sort_descending
+                        || !window.filteredIdsMatch(
+                            ["fixture-adventure", "fixture-puzzle",
+                             "fixture-racer"])) {
+                    console.error(
+                        "BIGBOX_LIBRARY_ORDER_SMOKE_BAD_PERSISTED_DEFAULT")
+                    Qt.exit(32)
+                    return
+                }
+                if (!controller.apply_game_sort("PlayCount", true)) {
+                    console.error("BIGBOX_LIBRARY_ORDER_SMOKE_SORT_REJECTED")
+                    Qt.exit(32)
+                    return
+                }
+                window.libraryOrderSmokePhase = 1
+            } else if (window.libraryOrderSmokePhase === 1) {
+                if (!window.filteredIdsMatch(
+                            ["fixture-racer", "fixture-adventure",
+                             "fixture-puzzle"])
+                        || controller.game_sort !== "PlayCount"
+                        || !controller.game_sort_descending) {
+                    console.error(
+                        "BIGBOX_LIBRARY_ORDER_SMOKE_BAD_PLAY_COUNT_ORDER")
+                    Qt.exit(32)
+                    return
+                }
+                if (controller.apply_game_sort("UnknownSort", false)
+                        || controller.game_sort !== "PlayCount"
+                        || !controller.game_sort_descending) {
+                    console.error(
+                        "BIGBOX_LIBRARY_ORDER_SMOKE_ACCEPTED_UNKNOWN")
+                    Qt.exit(32)
+                    return
+                }
+                window.libraryOrderSmokeRandomRow =
+                    controller.select_random_game("fixture-racer")
+                if (window.libraryOrderSmokeRandomRow < 1
+                        || controller.game_id_at(
+                            window.libraryOrderSmokeRandomRow)
+                           === "fixture-racer") {
+                    console.error(
+                        "BIGBOX_LIBRARY_ORDER_SMOKE_RANDOM_DID_NOT_AVOID")
+                    Qt.exit(32)
+                    return
+                }
+                controller.apply_filters("Fixture Racer", "")
+                window.libraryOrderSmokePhase = 2
+            } else if (window.libraryOrderSmokePhase === 2) {
+                if (!window.filteredIdsMatch(["fixture-racer"])
+                        || controller.select_random_game("fixture-racer") !== 0) {
+                    console.error("BIGBOX_LIBRARY_ORDER_SMOKE_BAD_SINGLE_RANDOM")
+                    Qt.exit(32)
+                    return
+                }
+                controller.apply_filters("", "")
+                window.libraryOrderSmokePhase = 3
+            } else if (window.libraryOrderSmokePhase === 3) {
+                if (!window.filteredIdsMatch(
+                            ["fixture-racer", "fixture-adventure",
+                             "fixture-puzzle"])
+                        || !controller.report_library_order_smoke_success(
+                            window.libraryOrderSmokeRandomRow,
+                            "fixture-racer")) {
+                    console.error("BIGBOX_LIBRARY_ORDER_SMOKE_BAD_FINAL_STATE")
+                    Qt.exit(32)
+                    return
+                }
+                window.libraryOrderSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 10000
+        running: window.libraryOrderSmokeTest
+                 && !window.libraryOrderSmokeFinished
+        onTriggered: {
+            console.error("BIGBOX_LIBRARY_ORDER_SMOKE_TIMEOUT phase="
+                          + window.libraryOrderSmokePhase)
+            Qt.exit(32)
         }
     }
 
@@ -988,9 +1149,9 @@ ApplicationWindow {
         }
 
         contentItem: ColumnLayout {
-            spacing: 18
+            spacing: 10
             anchors.fill: parent
-            anchors.margins: 28
+            anchors.margins: 24
 
             Label {
                 Layout.fillWidth: true
@@ -1037,6 +1198,35 @@ ApplicationWindow {
                 currentIndex: 0
                 font.pixelSize: 18
                 KeyNavigation.up: bigBoxStateFilterCombo
+                KeyNavigation.down: bigBoxSortCombo
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: "Arrange by"
+                color: "#b8c5d6"
+                font.pixelSize: 16
+                font.bold: true
+            }
+            ComboBox {
+                id: bigBoxSortCombo
+                Layout.fillWidth: true
+                Accessible.name: "BigBox arrange games by"
+                model: window.gameSortChoices
+                textRole: "label"
+                valueRole: "key"
+                currentIndex: 0
+                font.pixelSize: 18
+                KeyNavigation.up: bigBoxMissingMediaFilterCombo
+                KeyNavigation.down: bigBoxSortDescendingCheck
+            }
+            CheckBox {
+                id: bigBoxSortDescendingCheck
+                Layout.fillWidth: true
+                text: "Descending"
+                Accessible.name: "BigBox sort games descending"
+                font.pixelSize: 18
+                KeyNavigation.up: bigBoxSortCombo
                 KeyNavigation.down: bigBoxIncludeHiddenCheck
             }
 
@@ -1046,7 +1236,7 @@ ApplicationWindow {
                 text: "Show hidden games"
                 Accessible.name: "Include hidden games"
                 font.pixelSize: 18
-                KeyNavigation.up: bigBoxMissingMediaFilterCombo
+                KeyNavigation.up: bigBoxSortDescendingCheck
                 KeyNavigation.down: bigBoxIncludeBrokenCheck
             }
             CheckBox {
@@ -1070,7 +1260,8 @@ ApplicationWindow {
                 KeyNavigation.up: bigBoxIncludeBrokenCheck
                 KeyNavigation.down: clearBigBoxFiltersButton
                 onClicked: {
-                    if (window.applyAttributeFilters())
+                    if (window.applyAttributeFilters()
+                            && window.applyCurrentSort())
                         attributeFilterDrawer.close()
                 }
             }
@@ -1242,6 +1433,12 @@ ApplicationWindow {
                 enabled: !controller.loading && !controller.writing
                 onClicked: window.openAttributeFilters()
             }
+            Button {
+                text: "RANDOM"
+                enabled: controller.filtered_count > 0
+                         && !controller.loading && !controller.writing
+                onClicked: window.selectRandomGame()
+            }
             Label {
                 Layout.fillWidth: true
                 text: gameList.count > 0
@@ -1264,7 +1461,7 @@ ApplicationWindow {
             Label {
                 text: controller.launching
                       ? "LAUNCHING…"
-                      : "↑ / TAB  BROWSE     G  GAME FILTERS     ← →  GAMES     ENTER  PLAY"
+                      : "↑ / TAB  BROWSE     G  FILTERS     R  RANDOM     ← →  GAMES     ENTER  PLAY"
                 color: "#9badc4"
                 font.pixelSize: 18
             }
@@ -1383,6 +1580,13 @@ ApplicationWindow {
     Shortcut {
         sequence: "G"
         onActivated: window.openAttributeFilters()
+    }
+
+    Shortcut {
+        sequence: "R"
+        enabled: !attributeFilterDrawer.opened && !navigationDrawer.opened
+                 && controller.filtered_count > 0
+        onActivated: window.selectRandomGame()
     }
 
     Shortcut {

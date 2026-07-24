@@ -1,4 +1,78 @@
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use lb_domain::Game;
+use std::cmp::Ordering;
+
+/// Stable LaunchBox `Settings.xml` values used by the desktop Arrange By
+/// control. The enum deliberately lives in the platform-neutral query crate so
+/// neither QML shell nor any host OS gets a second sorting implementation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GameSort {
+    #[default]
+    Title,
+    SortTitle,
+    Platform,
+    ReleaseDate,
+    DateAdded,
+    DateModified,
+    LastPlayed,
+    PlayCount,
+    PlayTime,
+    StarRating,
+    CommunityStarRating,
+    Developer,
+    Publisher,
+    Genre,
+    Series,
+    Status,
+    Favorite,
+}
+
+impl GameSort {
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "" | "Title" => Some(Self::Title),
+            "SortTitle" => Some(Self::SortTitle),
+            "Platform" => Some(Self::Platform),
+            "ReleaseDate" => Some(Self::ReleaseDate),
+            "DateAdded" => Some(Self::DateAdded),
+            "DateModified" => Some(Self::DateModified),
+            "LastPlayed" => Some(Self::LastPlayed),
+            "PlayCount" => Some(Self::PlayCount),
+            "PlayTime" => Some(Self::PlayTime),
+            "StarRating" => Some(Self::StarRating),
+            "CommunityStarRating" => Some(Self::CommunityStarRating),
+            "Developer" => Some(Self::Developer),
+            "Publisher" => Some(Self::Publisher),
+            "Genre" => Some(Self::Genre),
+            "Series" => Some(Self::Series),
+            "Status" => Some(Self::Status),
+            "Favorite" => Some(Self::Favorite),
+            _ => None,
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Title => "Title",
+            Self::SortTitle => "SortTitle",
+            Self::Platform => "Platform",
+            Self::ReleaseDate => "ReleaseDate",
+            Self::DateAdded => "DateAdded",
+            Self::DateModified => "DateModified",
+            Self::LastPlayed => "LastPlayed",
+            Self::PlayCount => "PlayCount",
+            Self::PlayTime => "PlayTime",
+            Self::StarRating => "StarRating",
+            Self::CommunityStarRating => "CommunityStarRating",
+            Self::Developer => "Developer",
+            Self::Publisher => "Publisher",
+            Self::Genre => "Genre",
+            Self::Series => "Series",
+            Self::Status => "Status",
+            Self::Favorite => "Favorite",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum GameStateFilter {
@@ -179,6 +253,8 @@ pub struct GameFilter {
     pub include_broken: bool,
     pub state: GameStateFilter,
     pub missing_media: MissingMediaFilter,
+    pub sort: GameSort,
+    pub sort_descending: bool,
 }
 
 pub fn filter_games<'a>(games: &'a [Game], filter: &GameFilter) -> Vec<&'a Game> {
@@ -212,15 +288,182 @@ pub fn filter_game_indices(games: &[Game], filter: &GameFilter) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter(|(_, game)| game_matches_filter(game, filter))
-        .map(|(index, game)| (index, game.display_sort_title().to_lowercase()))
+        .map(|(index, game)| {
+            (
+                index,
+                game_sort_value(game, filter.sort),
+                normalized_text(game.display_sort_title()),
+            )
+        })
         .collect();
 
     matches.sort_by(|left, right| {
-        left.1
-            .cmp(&right.1)
+        compare_sort_values(&left.1, &right.1, filter.sort_descending)
+            .then_with(|| left.2.cmp(&right.2))
             .then_with(|| games[left.0].id.cmp(&games[right.0].id))
     });
-    matches.into_iter().map(|(index, _)| index).collect()
+    matches.into_iter().map(|(index, _, _)| index).collect()
+}
+
+/// Uses the same ordering contract as [`filter_game_indices`] for incremental
+/// model insertion. Missing primary values remain last in either direction,
+/// and title/ID tie-breaks always remain ascending and deterministic.
+pub fn compare_games(left: &Game, right: &Game, filter: &GameFilter) -> Ordering {
+    compare_sort_values(
+        &game_sort_value(left, filter.sort),
+        &game_sort_value(right, filter.sort),
+        filter.sort_descending,
+    )
+    .then_with(|| {
+        normalized_text(left.display_sort_title()).cmp(&normalized_text(right.display_sort_title()))
+    })
+    .then_with(|| left.id.cmp(&right.id))
+}
+
+/// Returns true when an in-place record update can add/remove the game or move
+/// it within the active query result.
+pub fn game_query_result_may_change(previous: &Game, next: &Game, filter: &GameFilter) -> bool {
+    if game_matches_filter(previous, filter) != game_matches_filter(next, filter) {
+        return true;
+    }
+    game_sort_value(previous, filter.sort) != game_sort_value(next, filter.sort)
+        || normalized_text(previous.display_sort_title())
+            != normalized_text(next.display_sort_title())
+        || previous.id != next.id
+}
+
+/// Selects a visible model row using caller-provided entropy. Injecting entropy
+/// keeps this pure and fully testable on every supported host. When more than
+/// one valid row exists, the requested current game is excluded.
+pub fn select_random_filtered_row(
+    games: &[Game],
+    filtered_indices: &[usize],
+    avoid_game_id: Option<&str>,
+    entropy: u64,
+) -> Option<usize> {
+    let valid_rows = filtered_indices
+        .iter()
+        .enumerate()
+        .filter_map(|(row, index)| games.get(*index).map(|game| (row, game)))
+        .collect::<Vec<_>>();
+    if valid_rows.is_empty() {
+        return None;
+    }
+    let candidates = if valid_rows.len() > 1 {
+        let without_current = valid_rows
+            .iter()
+            .copied()
+            .filter(|(_, game)| Some(game.id.as_str()) != avoid_game_id)
+            .collect::<Vec<_>>();
+        if without_current.is_empty() {
+            valid_rows
+        } else {
+            without_current
+        }
+    } else {
+        valid_rows
+    };
+    let selected = usize::try_from(entropy % candidates.len() as u64).unwrap_or_default();
+    Some(candidates[selected].0)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum GameSortValue {
+    Missing,
+    Text(String),
+    Signed(i64),
+    Unsigned(u64),
+    Float(f64),
+    Boolean(bool),
+}
+
+fn game_sort_value(game: &Game, sort: GameSort) -> GameSortValue {
+    match sort {
+        GameSort::Title => text_value(Some(game.display_sort_title())),
+        GameSort::SortTitle => text_value(game.sort_title.as_deref()),
+        GameSort::Platform => text_value(Some(&game.platform)),
+        GameSort::ReleaseDate => date_value(game.release_date.as_deref()),
+        GameSort::DateAdded => date_value(Some(&game.date_added)),
+        GameSort::DateModified => date_value(Some(&game.date_modified)),
+        GameSort::LastPlayed => date_value(game.last_played_date.as_deref()),
+        GameSort::PlayCount => GameSortValue::Unsigned(u64::from(game.play_count)),
+        GameSort::PlayTime => GameSortValue::Unsigned(game.play_time_seconds),
+        GameSort::StarRating => {
+            let value = if game.star_rating_float > 0.0 {
+                game.star_rating_float
+            } else {
+                f64::from(game.star_rating)
+            };
+            GameSortValue::Float(value)
+        }
+        GameSort::CommunityStarRating => GameSortValue::Float(game.community_star_rating),
+        GameSort::Developer => text_value(game.developer.as_deref()),
+        GameSort::Publisher => text_value(game.publisher.as_deref()),
+        GameSort::Genre => text_value(game.genre.as_deref()),
+        GameSort::Series => text_value(game.series.as_deref()),
+        GameSort::Status => text_value(game.status.as_deref()),
+        GameSort::Favorite => GameSortValue::Boolean(game.favorite),
+    }
+}
+
+fn text_value(value: Option<&str>) -> GameSortValue {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(normalized_text)
+        .map(GameSortValue::Text)
+        .unwrap_or(GameSortValue::Missing)
+}
+
+fn date_value(value: Option<&str>) -> GameSortValue {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .and_then(parse_timestamp)
+        .map(GameSortValue::Signed)
+        .unwrap_or(GameSortValue::Missing)
+}
+
+fn parse_timestamp(value: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|value| value.timestamp())
+        .ok()
+        .or_else(|| {
+            NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
+                .map(|value| value.and_utc().timestamp())
+                .ok()
+        })
+        .or_else(|| {
+            NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .ok()
+                .and_then(|value| value.and_hms_opt(0, 0, 0))
+                .map(|value| value.and_utc().timestamp())
+        })
+}
+
+fn normalized_text(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn compare_sort_values(left: &GameSortValue, right: &GameSortValue, descending: bool) -> Ordering {
+    match (left, right) {
+        (GameSortValue::Missing, GameSortValue::Missing) => Ordering::Equal,
+        (GameSortValue::Missing, _) => Ordering::Greater,
+        (_, GameSortValue::Missing) => Ordering::Less,
+        _ => {
+            let ordering = match (left, right) {
+                (GameSortValue::Text(left), GameSortValue::Text(right)) => left.cmp(right),
+                (GameSortValue::Signed(left), GameSortValue::Signed(right)) => left.cmp(right),
+                (GameSortValue::Unsigned(left), GameSortValue::Unsigned(right)) => left.cmp(right),
+                (GameSortValue::Float(left), GameSortValue::Float(right)) => left.total_cmp(right),
+                (GameSortValue::Boolean(left), GameSortValue::Boolean(right)) => left.cmp(right),
+                _ => Ordering::Equal,
+            };
+            if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        }
+    }
 }
 
 fn searchable_metadata(game: &Game, needle: &str) -> bool {
@@ -487,5 +730,163 @@ mod tests {
         }
         assert_eq!(GameStateFilter::from_key("favorites"), None);
         assert_eq!(MissingMediaFilter::from_key("box"), None);
+    }
+
+    #[test]
+    fn launchbox_sort_keys_round_trip_and_reject_unknown_values() {
+        for sort in [
+            GameSort::Title,
+            GameSort::SortTitle,
+            GameSort::Platform,
+            GameSort::ReleaseDate,
+            GameSort::DateAdded,
+            GameSort::DateModified,
+            GameSort::LastPlayed,
+            GameSort::PlayCount,
+            GameSort::PlayTime,
+            GameSort::StarRating,
+            GameSort::CommunityStarRating,
+            GameSort::Developer,
+            GameSort::Publisher,
+            GameSort::Genre,
+            GameSort::Series,
+            GameSort::Status,
+            GameSort::Favorite,
+        ] {
+            assert_eq!(GameSort::from_key(sort.key()), Some(sort));
+        }
+        assert_eq!(GameSort::from_key("Random"), None);
+        assert_eq!(GameSort::from_key("title"), None);
+    }
+
+    #[test]
+    fn sorts_every_typed_value_with_stable_title_and_id_ties() {
+        let mut alpha = game("2", "Alpha", "Console");
+        alpha.play_count = 3;
+        alpha.play_time_seconds = 20;
+        alpha.star_rating_float = 4.5;
+        alpha.favorite = true;
+        alpha.developer = Some("Zed".into());
+        alpha.release_date = Some("2020-01-02".into());
+
+        let mut beta = game("1", "Beta", "Arcade");
+        beta.play_count = 1;
+        beta.play_time_seconds = 40;
+        beta.star_rating = 2;
+        beta.developer = Some("Able".into());
+        beta.release_date = Some("2019-01-02T00:00:00Z".into());
+
+        let games = [alpha, beta];
+        let ids = |sort, sort_descending| {
+            filter_game_indices(
+                &games,
+                &GameFilter {
+                    sort,
+                    sort_descending,
+                    ..GameFilter::default()
+                },
+            )
+            .into_iter()
+            .map(|index| games[index].id.as_str())
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(ids(GameSort::Platform, false), ["1", "2"]);
+        assert_eq!(ids(GameSort::Developer, false), ["1", "2"]);
+        assert_eq!(ids(GameSort::ReleaseDate, false), ["1", "2"]);
+        assert_eq!(ids(GameSort::PlayCount, false), ["1", "2"]);
+        assert_eq!(ids(GameSort::PlayTime, false), ["2", "1"]);
+        assert_eq!(ids(GameSort::StarRating, false), ["1", "2"]);
+        assert_eq!(ids(GameSort::Favorite, false), ["1", "2"]);
+        assert_eq!(ids(GameSort::PlayCount, true), ["2", "1"]);
+    }
+
+    #[test]
+    fn date_sort_parses_offsets_and_keeps_missing_or_invalid_values_last() {
+        let mut later_in_local_spelling = game("later", "Later", "Console");
+        later_in_local_spelling.release_date = Some("2024-01-01T01:00:00+01:00".into());
+        let mut earlier_utc = game("earlier", "Earlier", "Console");
+        earlier_utc.release_date = Some("2023-12-31T23:30:00Z".into());
+        let mut missing = game("missing", "Missing", "Console");
+        missing.release_date = None;
+        let mut invalid = game("invalid", "Invalid", "Console");
+        invalid.release_date = Some("not a date".into());
+        let games = [missing, later_in_local_spelling, invalid, earlier_utc];
+
+        for sort_descending in [false, true] {
+            let indices = filter_game_indices(
+                &games,
+                &GameFilter {
+                    sort: GameSort::ReleaseDate,
+                    sort_descending,
+                    ..GameFilter::default()
+                },
+            );
+            let ids = indices
+                .into_iter()
+                .map(|index| games[index].id.as_str())
+                .collect::<Vec<_>>();
+            let expected = if sort_descending {
+                vec!["later", "earlier", "invalid", "missing"]
+            } else {
+                vec!["earlier", "later", "invalid", "missing"]
+            };
+            assert_eq!(ids, expected);
+        }
+    }
+
+    #[test]
+    fn query_change_detection_covers_filter_membership_and_active_sort_values() {
+        let previous = game("id", "Title", "Console");
+        let mut next = previous.clone();
+        next.play_count = 1;
+        assert!(!game_query_result_may_change(
+            &previous,
+            &next,
+            &GameFilter::default()
+        ));
+        assert!(game_query_result_may_change(
+            &previous,
+            &next,
+            &GameFilter {
+                sort: GameSort::PlayCount,
+                ..GameFilter::default()
+            }
+        ));
+        assert!(game_query_result_may_change(
+            &previous,
+            &next,
+            &GameFilter {
+                state: GameStateFilter::NeverPlayed,
+                ..GameFilter::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn random_selection_is_bounded_deterministic_and_avoids_the_current_game() {
+        let games = [
+            game("a", "Alpha", "Console"),
+            game("b", "Beta", "Console"),
+            game("c", "Gamma", "Console"),
+        ];
+        let visible = [2, 0, 1];
+        assert_eq!(
+            select_random_filtered_row(&games, &visible, Some("c"), 0),
+            Some(1)
+        );
+        assert_eq!(
+            select_random_filtered_row(&games, &visible, Some("c"), 1),
+            Some(2)
+        );
+        assert_eq!(
+            select_random_filtered_row(&games, &visible[..1], Some("c"), 99),
+            Some(0)
+        );
+        assert_eq!(select_random_filtered_row(&games, &[], Some("c"), 0), None);
+        assert_eq!(
+            select_random_filtered_row(&games, &[99, 1], Some("b"), 0),
+            Some(1)
+        );
     }
 }

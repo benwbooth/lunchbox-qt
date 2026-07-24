@@ -245,6 +245,17 @@ frontends prove combined state/media filtering, invalid-key refusal, safe
 default visibility, stable ordering, and zero library writes. Editor state
 changes and the first-play statistics transition also recompute active
 membership.
+The first `LIB-013` ordering vertical now loads and atomically persists the
+recovered `SortBy`/`SortByDesc` settings and shares 17 typed sort modes between
+LaunchBox and BigBox. Date values are parsed as timestamps, missing/invalid
+primary values remain last in either direction, and deterministic title/ID
+ties make incremental insertion match full refreshes. Both shells preserve the
+selected game across ordering changes and expose random visible-game selection
+that avoids the current game when alternatives exist. Pure tests and real
+offscreen processes prove invalid-key refusal, exact PlayCount ordering,
+single/multi-result random behavior, Settings.xml backup/persistence, and
+byte-identical platform XML. Dynamic/custom-field arrangement, group headings,
+suggestions, and random play remain open.
 Transactional title
 editing has expanded into 18 descriptive fields through a versioned typed
 payload; it recomputes sort/search membership, removes explicitly cleared

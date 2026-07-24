@@ -25,7 +25,9 @@ storage/session subset of `LIB-012` for main games and selected additional
 applications. It also implements a transactional 18-field descriptive editor
 subset of `LIB-002`, transactional direct/emulator/DOSBox/ScummVM launch-field
 editing subsets of `LIB-001` and `RUN-002`, and a descriptive-metadata search
-subset of `LIB-013`. A source-indexed transactional editor also implements the
+subset of `LIB-013`, now including 17 typed Arrange By modes, atomic
+`SortBy`/`SortByDesc` persistence, and visible-model random selection in both
+frontends. A source-indexed transactional editor also implements the
 three-field alternate-name and name/value custom-field subset of `LIB-003`.
 The dialog-driven portable platform create/edit/delete, recovered platform
 metadata, and source-indexed folder subset of `LIB-006` is also implemented
@@ -174,7 +176,7 @@ parity remain open.
 | LIB-010 | Combined games, versions, and expand/collapse | DM combine, show versions, expand games; port importer combines recovered matching-title/version groups; the manual port subset converts same-platform games to selectable version applications, atomically migrates modeled XML references, and expands launchable versions back to standalone games without moving ROM/media files; collapse and remaining presentation parity stay open |
 | LIB-011 | Favorites, completed/broken/hidden/installed state | PA game state; search/filter menus; BigBox state resources |
 | LIB-012 | Play count, last played, completion, local/community star ratings | PA game/additional-app state; DM reset counters/download ratings; BV rating popup |
-| LIB-013 | Search, sort, arrange, filters, random selection, and suggestions | DM arrange/search/random; DV search/suggestion/filter options |
+| LIB-013 | Search, sort, arrange, filters, random selection, and suggestions | DM arrange/search/random; DV search/suggestion/filter options; the port implements descriptive search plus 17 typed LaunchBox-keyed Arrange By modes with ascending/descending order, missing-last semantics, stable title/ID ties, transactional `Settings.xml` persistence, selection retention across resets, and random visible-game selection that avoids the current game when possible. LaunchBox and BigBox expose shared controller state; suggestions, dynamic/custom-field arrangement, grouped headings, Random-as-an-arrangement, and random play remain open |
 | LIB-014 | Missing-media and state filters | DM missing image/video filters, hidden/broken games; the port composes search and platform/category/playlist navigation with favorite, completion, installation tri-state, played, rated, hidden, and broken predicates plus independent hidden/broken visibility and every persisted missing background/banner/3D box/front box/3D cart/cart/clear-logo/manual/marquee/music/screenshot/video flag. LaunchBox has inline controls and BigBox has a focus-navigable drawer; typed stable keys reject unknown input without changing the active filter, default loading excludes hidden/broken records, editor state changes and first-play statistics recompute membership, and both-shell offscreen coverage proves combined predicates and byte-identical XML |
 | LIB-015 | Bulk edit and audit | DV bulk-edit wizard and audit view |
 | LIB-016 | ROM folder change, consolidation, copying, and media migration | DM path change/consolidate/copy; PA title/media migration |

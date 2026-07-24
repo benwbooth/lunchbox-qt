@@ -121,6 +121,8 @@ echo "BigBox category/platform/playlist navigation and exact membership filterin
 
 edit_root=$(mktemp -d)
 library_filter_root=$(mktemp -d)
+launchbox_order_root=$(mktemp -d)
+bigbox_order_root=$(mktemp -d)
 crud_root=$(mktemp -d)
 additional_application_crud_root=$(mktemp -d)
 additional_application_default_root=$(mktemp -d)
@@ -157,7 +159,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$library_filter_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 
 cp -a fixtures/launchbox/. "$library_filter_root/"
 library_filter_platform="$library_filter_root/Data/Platforms/Fixture Console.xml"
@@ -198,6 +200,46 @@ for shell in launchbox bigbox; do
 done
 
 echo "LaunchBox and BigBox combined state, visibility, and all missing-media filter controls validated without library writes."
+
+cp -a fixtures/launchbox/. "$launchbox_order_root/"
+cp -a fixtures/launchbox/. "$bigbox_order_root/"
+for shell in launchbox bigbox; do
+  if [[ "$shell" == launchbox ]]; then
+    order_root=$launchbox_order_root
+  else
+    order_root=$bigbox_order_root
+  fi
+  order_platform="$order_root/Data/Platforms/Fixture Console.xml"
+  cp "$order_platform" "$order_platform.before-order-smoke"
+  arguments=(
+    --library "$order_root"
+    --library-order-smoke-test
+    --path-mappings-file "$empty_path_mappings"
+  )
+  if [[ "$shell" == bigbox ]]; then
+    arguments+=(--windowed)
+  fi
+  output=$(QT_QPA_PLATFORM=offscreen \
+    "$binary_dir/$shell" "${arguments[@]}" 2>&1) || {
+    printf '%s\n' "$output" >&2
+    exit 1
+  }
+  if ! rg -q \
+    'LIBRARY_ORDER_SMOKE_COMPLETE games=3 sort=PlayCount descending=true random_row=' \
+    <<< "$output"; then
+    printf '%s\n' "$output" >&2
+    echo "$shell did not validate typed sorting and random selection." >&2
+    exit 1
+  fi
+  if ! rg -q '<SortBy>PlayCount</SortBy>' "$order_root/Data/Settings.xml" \
+    || ! rg -q '<SortByDesc>true</SortByDesc>' "$order_root/Data/Settings.xml"; then
+    echo "$shell did not persist its LaunchBox-compatible Arrange By settings." >&2
+    exit 1
+  fi
+  cmp "$order_platform.before-order-smoke" "$order_platform"
+done
+
+echo "LaunchBox and BigBox typed Arrange By, atomic Settings.xml persistence, stable ordering, and random selection validated."
 
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
