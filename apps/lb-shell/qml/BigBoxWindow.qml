@@ -17,6 +17,10 @@ ApplicationWindow {
     property bool smokeTest: Qt.application.arguments.indexOf("--smoke-test") >= 0
     property bool navigationSmokeTest:
         Qt.application.arguments.indexOf("--navigation-smoke-test") >= 0
+    property bool libraryFilterSmokeTest:
+        Qt.application.arguments.indexOf("--library-filter-smoke-test") >= 0
+    property int libraryFilterSmokePhase: 0
+    property bool libraryFilterSmokeFinished: false
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
     property bool launchLifecycleSmokeTest:
         Qt.application.arguments.indexOf("--launch-lifecycle-smoke-test") >= 0
@@ -60,6 +64,38 @@ ApplicationWindow {
     }
     property string launchSmokeAdditionalApplicationId:
         argumentValue("--launch-additional-application-id")
+    readonly property var gameStateFilterChoices: [
+        { label: "Any state", key: "any" },
+        { label: "Favorites", key: "favorite" },
+        { label: "Not favorite", key: "not-favorite" },
+        { label: "Completed", key: "completed" },
+        { label: "Not completed", key: "not-completed" },
+        { label: "Installed", key: "installed" },
+        { label: "Not installed", key: "not-installed" },
+        { label: "Installation unknown", key: "installation-unknown" },
+        { label: "Played", key: "played" },
+        { label: "Never played", key: "never-played" },
+        { label: "Rated", key: "rated" },
+        { label: "Unrated", key: "unrated" },
+        { label: "Hidden only", key: "hidden" },
+        { label: "Broken only", key: "broken" }
+    ]
+    readonly property var missingMediaFilterChoices: [
+        { label: "Any media status", key: "none" },
+        { label: "Missing any media", key: "any" },
+        { label: "Missing background", key: "background-image" },
+        { label: "Missing banner", key: "banner-image" },
+        { label: "Missing 3D box", key: "box-3d-image" },
+        { label: "Missing front box", key: "box-front-image" },
+        { label: "Missing 3D cart", key: "cart-3d-image" },
+        { label: "Missing cart", key: "cart-image" },
+        { label: "Missing clear logo", key: "clear-logo-image" },
+        { label: "Missing manual", key: "manual" },
+        { label: "Missing marquee", key: "marquee-image" },
+        { label: "Missing music", key: "music" },
+        { label: "Missing screenshot", key: "screenshot-image" },
+        { label: "Missing video", key: "video" }
+    ]
 
     function launchSelection() {
         if (gameList.currentIndex >= 0 && !controller.loading && !controller.writing
@@ -79,6 +115,53 @@ ApplicationWindow {
                           gameList.currentIndex, gameId)
         if (gameId.length > 0 && count > 0)
             launchWithDialog.prepare(gameList.currentIndex, gameId, count)
+    }
+
+    function filterChoiceIndex(choices, key) {
+        for (let index = 0; index < choices.length; ++index) {
+            if (choices[index].key === key)
+                return index
+        }
+        return -1
+    }
+
+    function openAttributeFilters() {
+        attributeFilterDrawer.open()
+        bigBoxStateFilterCombo.forceActiveFocus()
+    }
+
+    function applyAttributeFilters() {
+        const applied = controller.apply_game_attribute_filters(
+                          bigBoxStateFilterCombo.currentValue,
+                          bigBoxMissingMediaFilterCombo.currentValue,
+                          bigBoxIncludeHiddenCheck.checked,
+                          bigBoxIncludeBrokenCheck.checked)
+        if (applied) {
+            gameList.currentIndex = gameList.count > 0 ? 0 : -1
+            gameList.positionViewAtBeginning()
+        }
+        return applied
+    }
+
+    function setAttributeFilters(stateKey, missingMediaKey,
+                                 includeHidden, includeBroken) {
+        bigBoxStateFilterCombo.currentIndex =
+            filterChoiceIndex(gameStateFilterChoices, stateKey)
+        bigBoxMissingMediaFilterCombo.currentIndex =
+            filterChoiceIndex(missingMediaFilterChoices, missingMediaKey)
+        bigBoxIncludeHiddenCheck.checked = includeHidden
+        bigBoxIncludeBrokenCheck.checked = includeBroken
+        return applyAttributeFilters()
+    }
+
+    function filteredIdsMatch(expected) {
+        if (controller.filtered_count !== expected.length)
+            return false
+        for (let index = 0; index < expected.length; ++index) {
+            if (controller.game_id_at(index) !== expected[index])
+                return false
+        }
+        return true
     }
 
     function bigBoxNavigationIndex(kind, key) {
@@ -178,6 +261,30 @@ ApplicationWindow {
 
     Connections {
         target: controller
+
+        function onGame_state_filterChanged() {
+            const index = window.filterChoiceIndex(
+                              window.gameStateFilterChoices,
+                              controller.game_state_filter)
+            if (index >= 0)
+                bigBoxStateFilterCombo.currentIndex = index
+        }
+
+        function onMissing_media_filterChanged() {
+            const index = window.filterChoiceIndex(
+                              window.missingMediaFilterChoices,
+                              controller.missing_media_filter)
+            if (index >= 0)
+                bigBoxMissingMediaFilterCombo.currentIndex = index
+        }
+
+        function onInclude_hidden_gamesChanged() {
+            bigBoxIncludeHiddenCheck.checked = controller.include_hidden_games
+        }
+
+        function onInclude_broken_gamesChanged() {
+            bigBoxIncludeBrokenCheck.checked = controller.include_broken_games
+        }
 
         function onStartup_screen_activeChanged() {
             if (window.launchLifecycleSmokeTest
@@ -282,6 +389,120 @@ ApplicationWindow {
         else
             controller.load_fixture()
         gameList.forceActiveFocus()
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.libraryFilterSmokeTest
+                 && !window.libraryFilterSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0)
+                return
+            if (window.libraryFilterSmokePhase === 0) {
+                if (!window.filteredIdsMatch(["fixture-adventure"])) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_BAD_DEFAULT")
+                    Qt.exit(31)
+                    return
+                }
+                window.libraryFilterSmokePhase = 1
+                window.openAttributeFilters()
+            } else if (window.libraryFilterSmokePhase === 1
+                       && attributeFilterDrawer.opened) {
+                window.libraryFilterSmokePhase = 2
+                window.setAttributeFilters("any", "none", true, false)
+            } else if (window.libraryFilterSmokePhase === 2) {
+                if (!window.filteredIdsMatch(
+                            ["fixture-adventure", "fixture-puzzle"])) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_BAD_HIDDEN_INCLUDE")
+                    Qt.exit(31)
+                    return
+                }
+                window.libraryFilterSmokePhase = 3
+                window.setAttributeFilters("any", "none", true, true)
+            } else if (window.libraryFilterSmokePhase === 3) {
+                if (!window.filteredIdsMatch(
+                            ["fixture-adventure", "fixture-puzzle",
+                             "fixture-racer"])) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_BAD_ALL_INCLUDE")
+                    Qt.exit(31)
+                    return
+                }
+                window.libraryFilterSmokePhase = 4
+                window.setAttributeFilters("completed", "video", true, true)
+            } else if (window.libraryFilterSmokePhase === 4) {
+                if (!window.filteredIdsMatch(["fixture-racer"])) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_BAD_COMBINED")
+                    Qt.exit(31)
+                    return
+                }
+                window.libraryFilterSmokePhase = 5
+                window.setAttributeFilters("any", "any", true, true)
+            } else if (window.libraryFilterSmokePhase === 5) {
+                if (!window.filteredIdsMatch(
+                            ["fixture-adventure", "fixture-racer"])) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_BAD_MISSING_ANY")
+                    Qt.exit(31)
+                    return
+                }
+                window.libraryFilterSmokePhase = 6
+                window.setAttributeFilters("any", "banner-image", true, true)
+            } else if (window.libraryFilterSmokePhase === 6) {
+                if (!window.filteredIdsMatch(["fixture-adventure"])) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_BAD_MISSING_TYPE")
+                    Qt.exit(31)
+                    return
+                }
+                window.libraryFilterSmokePhase = 7
+                window.setAttributeFilters("hidden", "none", false, false)
+            } else if (window.libraryFilterSmokePhase === 7) {
+                if (!window.filteredIdsMatch(["fixture-puzzle"])) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_BAD_HIDDEN_ONLY")
+                    Qt.exit(31)
+                    return
+                }
+                window.libraryFilterSmokePhase = 8
+                window.setAttributeFilters("broken", "none", false, false)
+            } else if (window.libraryFilterSmokePhase === 8) {
+                if (!window.filteredIdsMatch(["fixture-racer"])) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_BAD_BROKEN_ONLY")
+                    Qt.exit(31)
+                    return
+                }
+                if (controller.apply_game_attribute_filters(
+                            "unknown-state", "none", false, false)) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_ACCEPTED_UNKNOWN")
+                    Qt.exit(31)
+                    return
+                }
+                window.libraryFilterSmokePhase = 9
+                window.setAttributeFilters("any", "none", false, false)
+            } else if (window.libraryFilterSmokePhase === 9) {
+                if (!window.filteredIdsMatch(["fixture-adventure"])
+                        || !controller.report_library_filter_smoke_success()) {
+                    console.error("BIGBOX_LIBRARY_FILTER_SMOKE_BAD_FINAL_STATE")
+                    Qt.exit(31)
+                    return
+                }
+                attributeFilterDrawer.close()
+                window.libraryFilterSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 10000
+        running: window.libraryFilterSmokeTest
+                 && !window.libraryFilterSmokeFinished
+        onTriggered: {
+            console.error("BIGBOX_LIBRARY_FILTER_SMOKE_TIMEOUT phase="
+                          + window.libraryFilterSmokePhase
+                          + " drawer=" + attributeFilterDrawer.opened
+                          + " filtered=" + controller.filtered_count
+                          + " status=" + controller.status_message)
+            Qt.exit(31)
+        }
     }
 
     Timer {
@@ -750,6 +971,140 @@ ApplicationWindow {
         }
     }
 
+    Drawer {
+        id: attributeFilterDrawer
+        width: Math.min(window.width * 0.42, 500)
+        height: window.height
+        edge: Qt.RightEdge
+        modal: true
+        closePolicy: Popup.CloseOnPressOutside
+        onOpened: bigBoxStateFilterCombo.forceActiveFocus()
+        onClosed: gameList.forceActiveFocus()
+
+        background: Rectangle {
+            color: "#101824"
+            border.color: "#8b6fd6"
+            border.width: 2
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 18
+            anchors.fill: parent
+            anchors.margins: 28
+
+            Label {
+                Layout.fillWidth: true
+                text: "GAME FILTERS"
+                color: "#b69cff"
+                font.pixelSize: 26
+                font.bold: true
+                font.letterSpacing: 2
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: "State"
+                color: "#b8c5d6"
+                font.pixelSize: 16
+                font.bold: true
+            }
+            ComboBox {
+                id: bigBoxStateFilterCombo
+                Layout.fillWidth: true
+                Accessible.name: "BigBox game state filter"
+                model: window.gameStateFilterChoices
+                textRole: "label"
+                valueRole: "key"
+                currentIndex: 0
+                font.pixelSize: 18
+                KeyNavigation.down: bigBoxMissingMediaFilterCombo
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: "Missing media"
+                color: "#b8c5d6"
+                font.pixelSize: 16
+                font.bold: true
+            }
+            ComboBox {
+                id: bigBoxMissingMediaFilterCombo
+                Layout.fillWidth: true
+                Accessible.name: "BigBox missing media filter"
+                model: window.missingMediaFilterChoices
+                textRole: "label"
+                valueRole: "key"
+                currentIndex: 0
+                font.pixelSize: 18
+                KeyNavigation.up: bigBoxStateFilterCombo
+                KeyNavigation.down: bigBoxIncludeHiddenCheck
+            }
+
+            CheckBox {
+                id: bigBoxIncludeHiddenCheck
+                Layout.fillWidth: true
+                text: "Show hidden games"
+                Accessible.name: "Include hidden games"
+                font.pixelSize: 18
+                KeyNavigation.up: bigBoxMissingMediaFilterCombo
+                KeyNavigation.down: bigBoxIncludeBrokenCheck
+            }
+            CheckBox {
+                id: bigBoxIncludeBrokenCheck
+                Layout.fillWidth: true
+                text: "Show broken games"
+                Accessible.name: "Include broken games"
+                font.pixelSize: 18
+                KeyNavigation.up: bigBoxIncludeHiddenCheck
+                KeyNavigation.down: applyBigBoxFiltersButton
+            }
+
+            Item { Layout.fillHeight: true }
+
+            Button {
+                id: applyBigBoxFiltersButton
+                Layout.fillWidth: true
+                text: "APPLY"
+                Accessible.name: "Apply game filters"
+                font.pixelSize: 18
+                KeyNavigation.up: bigBoxIncludeBrokenCheck
+                KeyNavigation.down: clearBigBoxFiltersButton
+                onClicked: {
+                    if (window.applyAttributeFilters())
+                        attributeFilterDrawer.close()
+                }
+            }
+            Button {
+                id: clearBigBoxFiltersButton
+                Layout.fillWidth: true
+                text: "CLEAR"
+                Accessible.name: "Clear game filters"
+                font.pixelSize: 18
+                KeyNavigation.up: applyBigBoxFiltersButton
+                KeyNavigation.down: closeBigBoxFiltersButton
+                onClicked: {
+                    window.setAttributeFilters("any", "none", false, false)
+                    attributeFilterDrawer.close()
+                }
+            }
+            Button {
+                id: closeBigBoxFiltersButton
+                Layout.fillWidth: true
+                text: "CLOSE"
+                font.pixelSize: 18
+                KeyNavigation.up: clearBigBoxFiltersButton
+                onClicked: attributeFilterDrawer.close()
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: "↑ ↓  SELECT     ENTER  APPLY     ESC  CLOSE"
+                color: "#9badc4"
+                font.pixelSize: 14
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 48
@@ -878,9 +1233,14 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             Button {
-                text: "FILTERS: " + window.activeNavigationName.toUpperCase()
+                text: "BROWSE: " + window.activeNavigationName.toUpperCase()
                 enabled: !controller.loading && !controller.writing
                 onClicked: window.openNavigation()
+            }
+            Button {
+                text: "GAME FILTERS"
+                enabled: !controller.loading && !controller.writing
+                onClicked: window.openAttributeFilters()
             }
             Label {
                 Layout.fillWidth: true
@@ -904,7 +1264,7 @@ ApplicationWindow {
             Label {
                 text: controller.launching
                       ? "LAUNCHING…"
-                      : "↑ / TAB  FILTERS     ← →  BROWSE     ENTER  PLAY     ESC  EXIT"
+                      : "↑ / TAB  BROWSE     G  GAME FILTERS     ← →  GAMES     ENTER  PLAY"
                 color: "#9badc4"
                 font.pixelSize: 18
             }
@@ -1021,9 +1381,17 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "G"
+        onActivated: window.openAttributeFilters()
+    }
+
+    Shortcut {
         sequence: "Esc"
         onActivated: {
-            if (navigationDrawer.opened) {
+            if (attributeFilterDrawer.opened) {
+                attributeFilterDrawer.close()
+                gameList.forceActiveFocus()
+            } else if (navigationDrawer.opened) {
                 navigationDrawer.close()
                 gameList.forceActiveFocus()
             } else {

@@ -27,10 +27,17 @@ load the embedded synthetic fixture unless `--library` is supplied.
 nix develop
 cargo test --workspace --all-targets
 ./scripts/check_windows_core.sh
+cargo check --target x86_64-apple-darwin -p lb-domain -p lb-query -p lb-platform
+cargo check --target aarch64-apple-darwin -p lb-domain -p lb-query -p lb-platform
 cargo build -p lb-shell && ./scripts/check_qml.sh
 cargo run -p lb-shell --bin launchbox
 cargo run -p lb-shell --bin bigbox -- --windowed
 ```
+
+The Linux-hosted Darwin checks cover the dependency-free portable Rust
+boundary for both Intel and Apple Silicon. They do not substitute for native
+Qt application-bundle, launch, input, focus, media, and multi-display tests on
+real macOS hosts; those are explicit release gates in the port plan.
 
 Read an existing installation without modifying it:
 
@@ -85,6 +92,17 @@ the application path, command line, emulator selection, and DOSBox/ScummVM
 settings in one transaction. A fresh Linux process then
 reloads that edit and executes the stored Windows-separated relative path with
 the exact expanded argument vector.
+
+Both frontends also use one typed, read-only library-filter contract. It
+combines text and platform/category/playlist navigation with favorite,
+completion, installation tri-state, played/rated, hidden, and broken state;
+independent hidden/broken inclusion; and all 12 persisted LaunchBox
+missing-media flags. LaunchBox presents inline selectors and toggles, while
+BigBox presents a focus-navigable game-filter drawer. Hidden and broken games
+remain excluded by default, unknown filter keys cannot change active state,
+editor state changes and first-play statistics recompute active membership,
+and the offscreen suite proves combined predicates and byte-identical library
+XML in both applications.
 
 Validated launch sequences also carry an effective startup-screen policy.
 An explicit per-game override wins over the selected emulator's defaults;

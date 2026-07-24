@@ -27,6 +27,10 @@ pub mod qobject {
         #[qproperty(QString, status_message)]
         #[qproperty(QString, search_text)]
         #[qproperty(QString, platform_filter)]
+        #[qproperty(QString, game_state_filter)]
+        #[qproperty(QString, missing_media_filter)]
+        #[qproperty(bool, include_hidden_games)]
+        #[qproperty(bool, include_broken_games)]
         #[qproperty(bool, loading)]
         #[qproperty(bool, import_scanning)]
         #[qproperty(bool, emulator_discovery_scanning)]
@@ -333,6 +337,15 @@ pub mod qobject {
         );
 
         #[qinvokable]
+        fn apply_game_attribute_filters(
+            self: Pin<&mut LibraryController>,
+            state_filter: QString,
+            missing_media_filter: QString,
+            include_hidden: bool,
+            include_broken: bool,
+        ) -> bool;
+
+        #[qinvokable]
         fn save_game(
             self: Pin<&mut LibraryController>,
             row: i32,
@@ -632,6 +645,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn report_model_smoke_success(self: &LibraryController, rows: i32);
+
+        #[qinvokable]
+        fn report_library_filter_smoke_success(self: &LibraryController) -> bool;
 
         #[qinvokable]
         fn report_load_smoke_success(
@@ -1048,7 +1064,9 @@ use lb_platform::{
     LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy,
     LaunchTarget,
 };
-use lb_query::{filter_game_indices, GameFilter};
+use lb_query::{
+    filter_game_indices, game_matches_filter, GameFilter, GameStateFilter, MissingMediaFilter,
+};
 use lb_storage::{
     delete_directory_if_revision, delete_regular_files_if_revisions, find_emulator_references,
     find_game_references, find_platform_references, pending_transaction_manifests,
@@ -1214,6 +1232,10 @@ pub struct LibraryControllerRust {
     status_message: QString,
     search_text: QString,
     platform_filter: QString,
+    game_state_filter: QString,
+    missing_media_filter: QString,
+    include_hidden_games: bool,
+    include_broken_games: bool,
     loading: bool,
     import_scanning: bool,
     emulator_discovery_scanning: bool,
@@ -14784,6 +14806,38 @@ impl qobject::LibraryController {
         self.as_mut().refresh_filtered_games();
     }
 
+    pub fn apply_game_attribute_filters(
+        mut self: Pin<&mut Self>,
+        state_filter: QString,
+        missing_media_filter: QString,
+        include_hidden: bool,
+        include_broken: bool,
+    ) -> bool {
+        let state_filter = state_filter.to_string();
+        let Some(state_filter) = GameStateFilter::from_key(&state_filter) else {
+            self.as_mut().set_status_message(qstring(format!(
+                "Unknown game-state filter: {state_filter}"
+            )));
+            return false;
+        };
+        let missing_media_filter = missing_media_filter.to_string();
+        let Some(missing_media_filter) = MissingMediaFilter::from_key(&missing_media_filter) else {
+            self.as_mut().set_status_message(qstring(format!(
+                "Unknown missing-media filter: {missing_media_filter}"
+            )));
+            return false;
+        };
+
+        self.as_mut()
+            .set_game_state_filter(qstring(state_filter.key()));
+        self.as_mut()
+            .set_missing_media_filter(qstring(missing_media_filter.key()));
+        self.as_mut().set_include_hidden_games(include_hidden);
+        self.as_mut().set_include_broken_games(include_broken);
+        self.as_mut().refresh_filtered_games();
+        true
+    }
+
     pub fn save_game(mut self: Pin<&mut Self>, row: i32, game_id: QString, edit_payload: QString) {
         if self.as_ref().library_operation_active() {
             self.as_mut()
@@ -17213,6 +17267,30 @@ impl qobject::LibraryController {
 
     pub fn report_model_smoke_success(&self, rows: i32) {
         eprintln!("MODEL_ROLE_SMOKE_COMPLETE rows={rows}");
+    }
+
+    pub fn report_library_filter_smoke_success(&self) -> bool {
+        let rust = self.rust();
+        let success = rust.games.len() == 3
+            && rust.filtered_indices.len() == 1
+            && rust
+                .filtered_indices
+                .first()
+                .is_some_and(|index| rust.games[*index].id == "fixture-adventure")
+            && self.game_state_filter().to_string() == "any"
+            && self.missing_media_filter().to_string() == "none"
+            && !*self.include_hidden_games()
+            && !*self.include_broken_games()
+            && rust.model_reset_notifications >= 9;
+        if success {
+            eprintln!(
+                "LIBRARY_FILTER_SMOKE_COMPLETE games={} visible={} resets={}",
+                rust.games.len(),
+                rust.filtered_indices.len(),
+                rust.model_reset_notifications
+            );
+        }
+        success
     }
 
     pub fn report_load_smoke_success(&self, games: i32, platforms: i32, heartbeats: i32) {
@@ -21103,6 +21181,14 @@ impl qobject::LibraryController {
                 let metadata_changed =
                     GameMetadata::from(&self.as_ref().rust().games[actual_index])
                         != GameMetadata::from(&game);
+                let filter_membership_changed = {
+                    let filter = self.as_ref().current_filter();
+                    game_filter_membership_changed(
+                        &self.as_ref().rust().games[actual_index],
+                        &game,
+                        &filter,
+                    )
+                };
                 let game_id = game.id.clone();
                 {
                     let mut rust = self.as_mut().rust_mut();
@@ -21125,7 +21211,7 @@ impl qobject::LibraryController {
                     backup.display()
                 )));
 
-                if metadata_changed {
+                if metadata_changed || filter_membership_changed {
                     self.as_mut().refresh_filtered_games();
                 } else if let Some(filtered_row) = filtered_row {
                     let row = saturating_i32(filtered_row);
@@ -21668,8 +21754,18 @@ impl qobject::LibraryController {
                         };
                         let play_count_changed =
                             self.as_ref().rust().games[actual_index].play_count != game.play_count;
+                        let filter_membership_changed = {
+                            let filter = self.as_ref().current_filter();
+                            game_filter_membership_changed(
+                                &self.as_ref().rust().games[actual_index],
+                                &game,
+                                &filter,
+                            )
+                        };
                         self.as_mut().rust_mut().games[actual_index] = *game;
-                        if play_count_changed {
+                        if filter_membership_changed {
+                            self.as_mut().refresh_filtered_games();
+                        } else if play_count_changed {
                             let filtered_row = self
                                 .as_ref()
                                 .rust()
@@ -24203,7 +24299,12 @@ impl qobject::LibraryController {
         GameFilter {
             text: self.search_text().to_string(),
             platform: (!platform.is_empty()).then_some(platform),
-            ..GameFilter::default()
+            include_hidden: *self.include_hidden_games(),
+            include_broken: *self.include_broken_games(),
+            state: GameStateFilter::from_key(&self.game_state_filter().to_string())
+                .unwrap_or_default(),
+            missing_media: MissingMediaFilter::from_key(&self.missing_media_filter().to_string())
+                .unwrap_or_default(),
         }
     }
 
@@ -24291,7 +24392,8 @@ impl qobject::LibraryController {
         let navigation_entry_count = saturating_i32(navigation_entries.len());
         let big_box_navigation_entries = build_big_box_navigation_entries(&navigation_entries);
         let big_box_navigation_entry_count = saturating_i32(big_box_navigation_entries.len());
-        let filtered_indices = (0..games.len()).collect();
+        let filtered_indices = filter_game_indices(&games, &GameFilter::default());
+        let filtered_count = saturating_i32(filtered_indices.len());
         self.as_mut().begin_reset_model();
         {
             let mut rust = self.as_mut().rust_mut();
@@ -24397,7 +24499,7 @@ impl qobject::LibraryController {
         self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_game_count(game_count);
-        self.as_mut().set_filtered_count(game_count);
+        self.as_mut().set_filtered_count(filtered_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
         self.as_mut()
             .set_navigation_entry_count(navigation_entry_count);
@@ -24447,23 +24549,21 @@ impl qobject::LibraryController {
         self.as_mut().set_launch_session_active(false);
         self.as_mut().set_search_text(QString::default());
         self.as_mut().set_platform_filter(QString::default());
+        self.as_mut().set_game_state_filter(qstring("any"));
+        self.as_mut().set_missing_media_filter(qstring("none"));
+        self.as_mut().set_include_hidden_games(false);
+        self.as_mut().set_include_broken_games(false);
         self.as_mut().set_navigation_filter_kind(QString::default());
         self.as_mut().set_navigation_filter_key(QString::default());
     }
 
     fn refresh_filtered_games(mut self: Pin<&mut Self>) {
-        let search_text = self.as_ref().search_text().to_string();
-        let platform = self.as_ref().platform_filter().to_string();
+        let filter = self.as_ref().current_filter();
         let category_filter = self.as_ref().rust().category_filter.clone();
         let playlist_filter = self.as_ref().rust().playlist_filter.clone();
         let indices = {
             let this = self.as_ref();
             let rust = this.rust();
-            let filter = GameFilter {
-                text: search_text,
-                platform: (!platform.is_empty()).then_some(platform),
-                ..GameFilter::default()
-            };
             let mut indices = filter_game_indices(&rust.games, &filter);
             if let Some(category) = category_filter.as_deref() {
                 if let Some(ids) = rust.category_game_ids.get(category) {
@@ -25158,6 +25258,10 @@ fn saturating_i32(value: usize) -> i32 {
     value.try_into().unwrap_or(i32::MAX)
 }
 
+fn game_filter_membership_changed(previous: &Game, next: &Game, filter: &GameFilter) -> bool {
+    game_matches_filter(previous, filter) != game_matches_filter(next, filter)
+}
+
 fn duration_millis_i32(value: Duration) -> i32 {
     i32::try_from(value.as_millis()).unwrap_or(i32::MAX)
 }
@@ -25209,6 +25313,53 @@ mod tests {
         assert!(matches!(
             failure,
             GameWriteFailure::PendingRecovery { count: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn state_edits_and_first_play_recompute_active_filter_membership() {
+        let mut previous = Game {
+            id: "fixture".into(),
+            title: "Fixture".into(),
+            platform: "Console".into(),
+            favorite: true,
+            ..Game::default()
+        };
+        let mut next = previous.clone();
+        next.favorite = false;
+        assert!(game_filter_membership_changed(
+            &previous,
+            &next,
+            &GameFilter {
+                state: GameStateFilter::Favorite,
+                ..GameFilter::default()
+            }
+        ));
+        assert!(!game_filter_membership_changed(
+            &previous,
+            &next,
+            &GameFilter::default()
+        ));
+
+        previous.favorite = false;
+        next = previous.clone();
+        next.play_count = 1;
+        next.last_played_date = Some("2026-07-23T12:00:00-07:00".into());
+        assert!(game_filter_membership_changed(
+            &previous,
+            &next,
+            &GameFilter {
+                state: GameStateFilter::NeverPlayed,
+                ..GameFilter::default()
+            }
+        ));
+        assert!(game_filter_membership_changed(
+            &previous,
+            &next,
+            &GameFilter {
+                state: GameStateFilter::Played,
+                ..GameFilter::default()
+            }
         ));
     }
 

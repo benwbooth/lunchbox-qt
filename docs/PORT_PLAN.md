@@ -32,7 +32,7 @@ clear provenance and tests derived from observed behavior and public contracts.
    +----------+----------+----------+----------+
                          |
            per-platform service adapters
-             Windows             Linux
+        Windows          Linux          macOS
 ```
 
 Suggested Cargo workspace boundaries:
@@ -47,7 +47,7 @@ Suggested Cargo workspace boundaries:
 | `lb-launcher` | Launch plans, emulator mappings, archives, mounts, scripts/hooks, startup/pause, saves, process supervision |
 | `lb-integrations` | Achievements, high scores, OBS, LEDBlinky, cloud, emulator adapters, updater |
 | `lb-extensions` | Versioned plugin protocol, out-of-process .NET compatibility host where feasible, theme manifest/model |
-| `lb-platform` | Trait definitions plus Windows and Linux process/window/input/tray/notification/power implementations |
+| `lb-platform` | Trait definitions plus Windows, Linux, and macOS process/window/input/tray/notification/power implementations |
 | `lb-ui-bridge` | CXX-Qt `QObject`s, models, properties, signals, async command/result bridges |
 | `launchbox` | Desktop QML application and desktop-specific presentation state |
 | `bigbox` | Full-screen QML application, navigation state machine, attract/screensaver/marquee behavior |
@@ -131,7 +131,7 @@ Deliverables:
 - backup/restore and settings.
 
 Exit gate: a user can import, organize, close/reopen, and launch a small fixture
-library on both Windows and Linux, with golden file and UI scenario parity.
+library on Windows, Linux, and macOS, with golden file and UI scenario parity.
 
 ### Phase 3: metadata, media, and importer breadth
 
@@ -144,8 +144,8 @@ Deliverables:
   Android export workflows;
 - audit, bulk edit, ROM scans, consolidation, and migration tools.
 
-Exit gate: all `IMP-*` and `MED-*` scenarios pass on both platforms or carry an
-explicit external-service blocker with an approved substitute.
+Exit gate: all `IMP-*` and `MED-*` scenarios pass on all three platforms or
+carry an explicit external-service blocker with an approved substitute.
 
 ### Phase 4: launch orchestration parity
 
@@ -157,10 +157,13 @@ Deliverables:
 - cross-platform action hooks replacing AutoHotkey, plus a Windows AutoHotkey
   compatibility adapter;
 - save management and emulator-specific adapters;
-- Linux window/process/input implementations for X11 and Wayland.
+- Linux window/process/input implementations for X11 and Wayland;
+- macOS application-bundle, process, focus, input, and multi-display
+  implementations without depending on a Unix-shell compatibility layer.
 
 Exit gate: a locked emulator/game matrix verifies exact arguments, lifecycle,
-cleanup, focus restoration, controller behavior, and saves on Windows/Linux.
+cleanup, focus restoration, controller behavior, and saves on Windows, Linux,
+and macOS.
 
 ### Phase 5: BigBox
 
@@ -174,7 +177,8 @@ Deliverables:
 - performance work for very large libraries and media-heavy views.
 
 Exit gate: every `BB-*` scenario passes with keyboard and at least two gamepad
-families, at 1080p and 4K, in X11/Wayland and Windows multi-monitor runs.
+families, at 1080p and 4K, in X11/Wayland, Windows, and macOS multi-monitor
+runs.
 
 ### Phase 6: integrations and extension ecosystem
 
@@ -198,7 +202,8 @@ Deliverables:
   service contracts;
 - accessibility, localization, keyboard-only, gamepad-only, offline, corrupt
   data, and interruption tests;
-- package/sign/install/uninstall/update flows for Linux and Windows;
+- package/sign/install/uninstall/update flows for Linux, Windows, and macOS,
+  including a universal or separately verified Intel/Apple-silicon app bundle;
 - licensing, trademark, privacy, and third-party asset review;
 - migration/rollback tooling and user documentation.
 
@@ -217,6 +222,7 @@ these fields, never entered manually:
 | `implemented` | New Rust/Qt path exists and has unit/integration tests |
 | `windows_verified` | Scenario matches the Windows oracle |
 | `linux_verified` | Native Linux scenario passes |
+| `macos_verified` | Native macOS scenario passes on Intel and Apple Silicon, or on one architecture plus an explicitly reviewed universal-binary gate |
 | `cross_platform_verified` | Data exchanged between OSes remains compatible |
 
 Completion is earned only when all reachable scenarios are verified or placed
@@ -231,6 +237,15 @@ multi-document transactions, golden semantic-diff/failure coverage, and the
 37-role `QAbstractListModel` now pass. Pending recovery, write-conflict UX,
 safe rollback, and the first transactional desktop game-state edit also pass a
 temporary-library Qt smoke with a targeted `dataChanged`. Transactional title
+editing now composes with the first complete persisted-status `LIB-014`
+filtering path: 13 game-state predicates, independent hidden/broken inclusion,
+and all 12 missing-media flags live in `lb-query`, while LaunchBox exposes
+inline controls and BigBox exposes a focus-navigable drawer. Both real
+frontends prove combined state/media filtering, invalid-key refusal, safe
+default visibility, stable ordering, and zero library writes. Editor state
+changes and the first-play statistics transition also recompute active
+membership.
+Transactional title
 editing has expanded into 18 descriptive fields through a versioned typed
 payload; it recomputes sort/search membership, removes explicitly cleared
 optional elements, and is checked through the real dialog in a two-backup

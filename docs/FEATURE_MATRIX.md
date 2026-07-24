@@ -46,6 +46,13 @@ and detach-to-root deletion all pass real-dialog and storage gates. Unique-name
 and ID rename remain gated by the getter-only 13.27 contract. The `BB-002`
 subset now provides keyboard-first category/platform/playlist navigation,
 exact membership filtering, active-filter state, and `HideInBigBox` handling.
+The persisted-status `LIB-014` subset is implemented in both frontends. One
+shared typed query composes search and navigation with 13 explicit game-state
+predicates, independent hidden/broken inclusion, and every one of the 12
+LaunchBox missing-media flags. LaunchBox exposes inline controls; BigBox uses
+a focus-navigable full-screen drawer. Unknown filter keys are rejected
+atomically, default loading excludes hidden and broken games, and filtering is
+read-only.
 The filesystem-safe `RUN-001` configuration subset is implemented: a LaunchBox
 manager creates, edits, and deletes emulator definitions and source-indexed
 per-platform mappings through a typed, lossless `Emulators.xml` transaction.
@@ -168,7 +175,7 @@ parity remain open.
 | LIB-011 | Favorites, completed/broken/hidden/installed state | PA game state; search/filter menus; BigBox state resources |
 | LIB-012 | Play count, last played, completion, local/community star ratings | PA game/additional-app state; DM reset counters/download ratings; BV rating popup |
 | LIB-013 | Search, sort, arrange, filters, random selection, and suggestions | DM arrange/search/random; DV search/suggestion/filter options |
-| LIB-014 | Missing-media and state filters | DM missing image/video filters, hidden/broken games |
+| LIB-014 | Missing-media and state filters | DM missing image/video filters, hidden/broken games; the port composes search and platform/category/playlist navigation with favorite, completion, installation tri-state, played, rated, hidden, and broken predicates plus independent hidden/broken visibility and every persisted missing background/banner/3D box/front box/3D cart/cart/clear-logo/manual/marquee/music/screenshot/video flag. LaunchBox has inline controls and BigBox has a focus-navigable drawer; typed stable keys reject unknown input without changing the active filter, default loading excludes hidden/broken records, editor state changes and first-play statistics recompute membership, and both-shell offscreen coverage proves combined predicates and byte-identical XML |
 | LIB-015 | Bulk edit and audit | DV bulk-edit wizard and audit view |
 | LIB-016 | ROM folder change, consolidation, copying, and media migration | DM path change/consolidate/copy; PA title/media migration |
 | LIB-017 | XML-compatible library documents and SQLite local database/cache | PA data manager/platform documents; `LocalDb` EF Core SQLite assembly |
