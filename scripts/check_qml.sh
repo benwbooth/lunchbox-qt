@@ -132,6 +132,39 @@ done
 
 echo "LaunchBox and BigBox native-path front artwork indexing, URL delivery, decoding, and rendering validated without library writes."
 
+game_details_settings="$media_root/Data/Settings.xml"
+game_details_screenshot="$media_root/launchbox-game-details.png"
+cp "$game_details_settings" "$game_details_settings.before-game-details-smoke"
+game_details_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$media_root" \
+    --game-details-smoke-test \
+    --game-details-screenshot "$game_details_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_details_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_DETAILS_SMOKE_COMPLETE id=fixture-adventure play_count=3 play_time=5400 community_rating=4.25 applications=1 saves=1' \
+  <<< "$game_details_output"; then
+  printf '%s\n' "$game_details_output" >&2
+  echo "LaunchBox did not validate the selected-game details pane." >&2
+  exit 1
+fi
+if [[ ! -s "$game_details_screenshot" ]] \
+  || [[ $(wc -c < "$game_details_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$game_details_screenshot" | tr -d ' \n') \
+    != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$game_details_output" >&2
+  echo "LaunchBox did not render a valid selected-game details PNG." >&2
+  exit 1
+fi
+cmp "$media_platform.before-media-smoke" "$media_platform"
+cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
+
+echo "LaunchBox stable-ID selection, resizable game details, metadata actions, play statistics, community rating, and rendered artwork validated without library writes."
+
 bigbox_navigation_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
     --windowed --library "$workspace_root/fixtures/launchbox" \

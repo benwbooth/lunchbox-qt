@@ -272,7 +272,11 @@ ApplicationWindow {
 
     function verifyModelRoles(index, gameId, gameTitle, gamePlatform, gameFavorite,
                               gameCompleted, gamePlayCount, gameStarRating,
-                              gameAdditionalApplicationCount, gameFrontImageUrl,
+                              gameAdditionalApplicationCount, gamePlayTimeSeconds,
+                              gameLastPlayedDate, gameDateAdded, gameDateModified,
+                              gameCommunityStarRating,
+                              gameCommunityStarRatingTotalVotes,
+                              gameInstalledState, gameFrontImageUrl,
                               rowCount) {
         if (!smokeTest || index !== 0)
             return
@@ -284,11 +288,25 @@ ApplicationWindow {
         const expectedStarRating = smokePhase === 0 ? 4 : 5
         const expectedRows = smokePhase === 0 ? 3 : 1
         const expectedAdditionalApplicationCount = smokePhase === 0 ? 1 : 0
+        const statisticsMatch = smokePhase === 0
+            ? gamePlayTimeSeconds === 5400
+              && gameLastPlayedDate === "2026-07-22T10:00:00-07:00"
+              && gameDateAdded === "2026-07-22T08:00:00-07:00"
+              && gameDateModified === "2026-07-22T09:00:00-07:00"
+              && gameCommunityStarRating === 4.25
+              && gameCommunityStarRatingTotalVotes === 42
+              && gameInstalledState === 1
+            : gamePlayTimeSeconds === 14400 && gameLastPlayedDate === ""
+              && gameDateAdded === "" && gameDateModified === ""
+              && gameCommunityStarRating === 0
+              && gameCommunityStarRatingTotalVotes === 0
+              && gameInstalledState === -1
         if (gameId !== expectedId || gameTitle !== expectedTitle
                 || gamePlatform !== "Fixture Console"
                 || gameFavorite !== expectedFavorite || gameCompleted !== expectedCompleted
                 || gamePlayCount !== expectedPlayCount || gameStarRating !== expectedStarRating
                 || gameAdditionalApplicationCount !== expectedAdditionalApplicationCount
+                || !statisticsMatch
                 || gameFrontImageUrl.toString() !== ""
                 || rowCount !== expectedRows) {
             console.error("MODEL_ROLE_SMOKE_FAILED id=" + gameId
@@ -1379,12 +1397,25 @@ ApplicationWindow {
                     required property int gamePlayCount
                     required property int gameStarRating
                     required property int gameAdditionalApplicationCount
+                    required property real gamePlayTimeSeconds
+                    required property string gameLastPlayedDate
+                    required property string gameDateAdded
+                    required property string gameDateModified
+                    required property real gameCommunityStarRating
+                    required property int gameCommunityStarRatingTotalVotes
+                    required property int gameInstalledState
                     required property url gameFrontImageUrl
                     Component.onCompleted: window.verifyModelRoles(
                                                index, gameId, gameTitle, gamePlatform,
                                                gameFavorite, gameCompleted, gamePlayCount,
                                                gameStarRating,
                                                gameAdditionalApplicationCount,
+                                               gamePlayTimeSeconds,
+                                               gameLastPlayedDate, gameDateAdded,
+                                               gameDateModified,
+                                               gameCommunityStarRating,
+                                               gameCommunityStarRatingTotalVotes,
+                                               gameInstalledState,
                                                gameFrontImageUrl,
                                                gameList.count)
                     width: 370

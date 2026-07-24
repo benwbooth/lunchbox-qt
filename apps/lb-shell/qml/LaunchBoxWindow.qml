@@ -34,6 +34,26 @@ ApplicationWindow {
     property bool loadSmokeTest: Qt.application.arguments.indexOf("--load-smoke-test") >= 0
     property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
     property bool mediaSmokeFinished: false
+    property bool gameDetailsSmokeTest:
+        Qt.application.arguments.indexOf("--game-details-smoke-test") >= 0
+    property int gameDetailsSmokePhase: 0
+    property bool gameDetailsSmokeFinished: false
+    property bool gameDetailsScreenshotRequested: false
+    property string gameDetailsScreenshotPath:
+        argumentValue("--game-details-screenshot")
+    property int gameDetailsCoverStatus: Image.Null
+    property url gameDetailsCoverSource
+    property string gameDetailsTitleText: ""
+    property string gameDetailsSubtitleText: ""
+    property string gameDetailsNotesText: ""
+    property string gameDetailsPlayCountText: ""
+    property string gameDetailsPlayTimeText: ""
+    property string gameDetailsCommunityRatingText: ""
+    property bool gameDetailsLaunchWithVisible: false
+    property string selectedGameId: ""
+    property bool gameSelectionResetPending: false
+    readonly property var selectedGameItem:
+        gameGrid.currentIndex >= 0 ? gameGrid.currentItem : null
     property bool editSmokeTest: Qt.application.arguments.indexOf("--edit-smoke-test") >= 0
     property bool crudSmokeTest: Qt.application.arguments.indexOf("--crud-smoke-test") >= 0
     property bool platformCrudSmokeTest:
@@ -289,6 +309,38 @@ ApplicationWindow {
         return -1
     }
 
+    function currentGameId() {
+        return gameGrid.currentIndex >= 0
+               ? controller.game_id_at(gameGrid.currentIndex) : ""
+    }
+
+    function restoreGameSelection(preferredId) {
+        if (gameGrid.count <= 0) {
+            gameGrid.currentIndex = -1
+            selectedGameId = ""
+            return
+        }
+        const retainedId = preferredId && preferredId.length > 0
+                         ? preferredId : selectedGameId
+        const retainedRow = retainedId.length > 0
+                          ? controller.row_for_game_id(retainedId) : -1
+        const row = retainedRow >= 0 ? retainedRow : 0
+        gameGrid.currentIndex = row
+        selectedGameId = controller.game_id_at(row)
+        gameGrid.positionViewAtIndex(row, GridView.Contain)
+    }
+
+    function beginGameSelectionReset() {
+        gameSelectionResetPending = true
+    }
+
+    function finishGameSelectionReset() {
+        Qt.callLater(function() {
+            restoreGameSelection(selectedGameId)
+            gameSelectionResetPending = false
+        })
+    }
+
     function applyCurrentFilter() {
         if (selectedNavigationKind === "category")
             controller.apply_category_filter(searchField.text, selectedNavigationKey)
@@ -307,11 +359,12 @@ ApplicationWindow {
     }
 
     function applyAttributeFilters() {
-        return controller.apply_game_attribute_filters(
+        const applied = controller.apply_game_attribute_filters(
                     stateFilterCombo.currentValue,
                     missingMediaFilterCombo.currentValue,
                     includeHiddenCheck.checked,
                     includeBrokenCheck.checked)
+        return applied
     }
 
     function setAttributeFilters(stateKey, missingMediaKey,
@@ -326,34 +379,53 @@ ApplicationWindow {
     }
 
     function applyCurrentSort() {
-        const selectedId = gameGrid.currentIndex >= 0
-                           ? controller.game_id_at(gameGrid.currentIndex) : ""
-        const applied = controller.apply_game_sort(
-                            gameSortCombo.currentValue,
-                            gameSortDescendingCheck.checked)
-        if (applied) {
-            const selectedRow = selectedId.length > 0
-                              ? controller.row_for_game_id(selectedId) : -1
-            gameGrid.currentIndex = selectedRow >= 0
-                                  ? selectedRow
-                                  : (gameGrid.count > 0 ? 0 : -1)
-            if (gameGrid.currentIndex >= 0)
-                gameGrid.positionViewAtIndex(
-                            gameGrid.currentIndex, GridView.Contain)
-        }
-        return applied
+        return controller.apply_game_sort(
+                    gameSortCombo.currentValue,
+                    gameSortDescendingCheck.checked)
     }
 
     function selectRandomGame() {
-        const currentId = gameGrid.currentIndex >= 0
-                        ? controller.game_id_at(gameGrid.currentIndex) : ""
+        const currentId = currentGameId()
         const row = controller.select_random_game(currentId)
         if (row >= 0) {
             gameGrid.currentIndex = row
+            selectedGameId = controller.game_id_at(row)
             gameGrid.positionViewAtIndex(row, GridView.Center)
             gameGrid.forceActiveFocus()
         }
         return row
+    }
+
+    function formatPlayTime(seconds) {
+        const totalSeconds = Math.max(0, Math.floor(Number(seconds)))
+        if (totalSeconds === 0)
+            return "Not played"
+        const hours = Math.floor(totalSeconds / 3600)
+        const minutes = Math.floor((totalSeconds % 3600) / 60)
+        if (hours > 0)
+            return hours + "h " + minutes + "m"
+        return Math.max(1, minutes) + "m"
+    }
+
+    function installedStateText(state) {
+        if (state === 1)
+            return "Installed"
+        if (state === 0)
+            return "Not installed"
+        return "Unknown"
+    }
+
+    function finishGameDetailsSmoke() {
+        if (!gameDetailsLoader.item
+                || !controller.report_game_details_smoke_success(
+                    gameGrid.currentIndex, selectedGameId,
+                    gameDetailsCoverSource.toString())) {
+            console.error("GAME_DETAILS_SMOKE_CONTROLLER_REJECTED")
+            Qt.exit(481)
+            return
+        }
+        gameDetailsSmokeFinished = true
+        Qt.quit()
     }
 
     function filteredIdsMatch(expected) {
@@ -378,7 +450,11 @@ ApplicationWindow {
                               gameDosBoxConfigurationPath, gameUseScummVm,
                               gameScummVmAspectCorrection, gameScummVmFullscreen,
                               gameScummVmGameDataFolderPath, gameScummVmGameType,
-                              gameFrontImageUrl, rowCount) {
+                              gameFrontImageUrl, gamePlayTimeSeconds,
+                              gameLastPlayedDate, gameDateAdded, gameDateModified,
+                              gameCommunityStarRating,
+                              gameCommunityStarRatingTotalVotes,
+                              gameInstalledState, rowCount) {
         if (!smokeTest || index !== 0)
             return
         const expectedTitle = smokePhase === 0 ? "Fixture Adventure" : "Fixture Racer"
@@ -389,6 +465,19 @@ ApplicationWindow {
         const expectedStarRating = smokePhase === 0 ? 4 : 5
         const expectedRows = smokePhase === 0 ? 3 : 1
         const expectedAdditionalApplicationCount = smokePhase === 0 ? 1 : 0
+        const statisticsMatch = smokePhase === 0
+            ? gamePlayTimeSeconds === 5400
+              && gameLastPlayedDate === "2026-07-22T10:00:00-07:00"
+              && gameDateAdded === "2026-07-22T08:00:00-07:00"
+              && gameDateModified === "2026-07-22T09:00:00-07:00"
+              && gameCommunityStarRating === 4.25
+              && gameCommunityStarRatingTotalVotes === 42
+              && gameInstalledState === 1
+            : gamePlayTimeSeconds === 14400 && gameLastPlayedDate === ""
+              && gameDateAdded === "" && gameDateModified === ""
+              && gameCommunityStarRating === 0
+              && gameCommunityStarRatingTotalVotes === 0
+              && gameInstalledState === -1
         const metadataMatches = smokePhase === 0
             ? gameSortTitle === "Adventure, Fixture"
               && gameNotes === "A synthetic adventure used to verify LaunchBox XML compatibility."
@@ -431,6 +520,7 @@ ApplicationWindow {
                 || gameAdditionalApplicationCount !== expectedAdditionalApplicationCount
                 || !metadataMatches
                 || !launchConfigurationMatches
+                || !statisticsMatch
                 || gameFrontImageUrl.toString() !== ""
                 || rowCount !== expectedRows) {
             console.error("MODEL_ROLE_SMOKE_FAILED id=" + gameId
@@ -442,6 +532,8 @@ ApplicationWindow {
                           + " genre=" + gameGenre
                           + " applicationPath=" + gameApplicationPath
                           + " emulator=" + gameEmulatorId
+                          + " playTime=" + gamePlayTimeSeconds
+                          + " installed=" + gameInstalledState
                           + " additionalApps=" + gameAdditionalApplicationCount
                           + " rows=" + rowCount)
             Qt.exit(4)
@@ -518,6 +610,30 @@ ApplicationWindow {
 
     Connections {
         target: controller
+
+        function onModelAboutToBeReset() {
+            window.beginGameSelectionReset()
+        }
+
+        function onModelReset() {
+            window.finishGameSelectionReset()
+        }
+
+        function onRowsAboutToBeInserted() {
+            window.beginGameSelectionReset()
+        }
+
+        function onRowsInserted() {
+            window.finishGameSelectionReset()
+        }
+
+        function onRowsAboutToBeRemoved() {
+            window.beginGameSelectionReset()
+        }
+
+        function onRowsRemoved() {
+            window.finishGameSelectionReset()
+        }
 
         function onGame_state_filterChanged() {
             const index = window.filterChoiceIndex(
@@ -668,6 +784,114 @@ ApplicationWindow {
             console.error("MEDIA_SMOKE_TIMEOUT images="
                           + controller.front_image_count)
             Qt.exit(45)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameDetailsSmokeTest
+                 && !window.gameDetailsSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0
+                    || !gameDetailsLoader.item)
+                return
+            if (window.gameDetailsSmokePhase === 0) {
+                window.setAttributeFilters("any", "none", true, true)
+                window.restoreGameSelection("fixture-adventure")
+                window.gameDetailsSmokePhase = 1
+            } else if (window.gameDetailsSmokePhase === 1) {
+                if (window.selectedGameId !== "fixture-adventure"
+                        || window.gameDetailsCoverStatus !== Image.Ready)
+                    return
+                searchField.text = "Fixture Adventure"
+                window.gameDetailsSmokePhase = 2
+            } else if (window.gameDetailsSmokePhase === 2) {
+                if (controller.filtered_count !== 1
+                        || window.selectedGameId !== "fixture-adventure")
+                    return
+                searchField.text = ""
+                window.gameDetailsSmokePhase = 3
+            } else if (window.gameDetailsSmokePhase === 3) {
+                if (controller.filtered_count !== 3
+                        || window.selectedGameId !== "fixture-adventure")
+                    return
+                searchField.text = "Fixture Racer"
+                window.gameDetailsSmokePhase = 4
+            } else if (window.gameDetailsSmokePhase === 4) {
+                if (controller.filtered_count !== 1
+                        || window.selectedGameId !== "fixture-racer"
+                        || window.gameDetailsTitleText !== "Fixture Racer")
+                    return
+                searchField.text = ""
+                window.restoreGameSelection("fixture-adventure")
+                window.gameDetailsSmokePhase = 5
+            } else if (window.gameDetailsSmokePhase === 5) {
+                const detailsMatch =
+                    controller.filtered_count === 3
+                    && window.selectedGameId === "fixture-adventure"
+                    && controller.game_id_at(gameGrid.currentIndex)
+                       === "fixture-adventure"
+                    && gameDetailsLoader.width >= 300
+                    && window.gameDetailsTitleText === "Fixture Adventure"
+                    && window.gameDetailsSubtitleText
+                       === "Fixture Console  •  1.2"
+                    && window.gameDetailsNotesText
+                       === "A synthetic adventure used to verify LaunchBox XML compatibility."
+                    && window.gameDetailsPlayCountText === "3"
+                    && window.gameDetailsPlayTimeText === "1h 30m"
+                    && window.gameDetailsCommunityRatingText
+                       === "4.25 / 5  (42 votes)"
+                    && window.gameDetailsLaunchWithVisible
+                    && window.gameDetailsCoverStatus === Image.Ready
+                if (!detailsMatch) {
+                    console.error(
+                        "GAME_DETAILS_SMOKE_BAD_BINDINGS id="
+                        + window.selectedGameId
+                        + " title=" + window.gameDetailsTitleText
+                        + " subtitle=" + window.gameDetailsSubtitleText
+                        + " sessions=" + window.gameDetailsPlayCountText
+                        + " playTime=" + window.gameDetailsPlayTimeText
+                        + " community="
+                        + window.gameDetailsCommunityRatingText
+                        + " width=" + gameDetailsLoader.width
+                        + " imageStatus=" + window.gameDetailsCoverStatus)
+                    Qt.exit(482)
+                    return
+                }
+                if (window.gameDetailsScreenshotRequested)
+                    return
+                window.gameDetailsScreenshotRequested = true
+                if (window.gameDetailsScreenshotPath.length === 0) {
+                    window.finishGameDetailsSmoke()
+                    return
+                }
+                gameDetailsLoader.grabToImage(function(result) {
+                    if (!result.saveToFile(
+                            window.gameDetailsScreenshotPath)) {
+                        console.error(
+                            "GAME_DETAILS_SCREENSHOT_SAVE_FAILED path="
+                            + window.gameDetailsScreenshotPath)
+                        Qt.exit(483)
+                        return
+                    }
+                    window.finishGameDetailsSmoke()
+                })
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.gameDetailsSmokeTest
+                 && !window.gameDetailsSmokeFinished
+        onTriggered: {
+            console.error("GAME_DETAILS_SMOKE_TIMEOUT phase="
+                          + window.gameDetailsSmokePhase
+                          + " id=" + window.selectedGameId
+                          + " count=" + controller.filtered_count
+                          + " status=" + controller.status_message)
+            Qt.exit(484)
         }
     }
 
@@ -3309,6 +3533,400 @@ ApplicationWindow {
                             window.applyCurrentFilter()
                         }
                     }
+
+                    Component {
+                        id: gameDetailsPaneComponent
+
+                        Rectangle {
+                            id: gameDetailsPane
+                            anchors.fill: parent
+                            color: "#171c23"
+                            border.color: "#303844"
+                            border.width: 1
+                            property var game: window.selectedGameItem
+
+                            Label {
+                                anchors.centerIn: parent
+                                width: parent.width - 40
+                                visible: gameDetailsPane.game === null
+                                text: controller.loading
+                                      ? "Loading game details…"
+                                      : "Select a game to see its details."
+                                color: "#7d8590"
+                                font.pixelSize: 16
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.Wrap
+                            }
+
+                            ScrollView {
+                                id: gameDetailsScroll
+                                anchors.fill: parent
+                                anchors.margins: 14
+                                visible: gameDetailsPane.game !== null
+                                clip: true
+                                contentWidth: availableWidth
+
+                                ColumnLayout {
+                                    width: gameDetailsScroll.availableWidth
+                                    spacing: 10
+
+                                    Item {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 285
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            radius: 6
+                                            color: "#0f141b"
+                                            visible: detailsCoverImage.status !== Image.Ready
+                                            Label {
+                                                anchors.centerIn: parent
+                                                width: parent.width - 30
+                                                text: gameDetailsPane.game
+                                                      ? gameDetailsPane.game.gameTitle : ""
+                                                color: "#66788d"
+                                                font.pixelSize: 22
+                                                font.bold: true
+                                                horizontalAlignment: Text.AlignHCenter
+                                                wrapMode: Text.Wrap
+                                            }
+                                        }
+                                        Image {
+                                            id: detailsCoverImage
+                                            anchors.fill: parent
+                                            source: gameDetailsPane.game
+                                                    ? gameDetailsPane.game.gameFrontImageUrl : ""
+                                            asynchronous: true
+                                            cache: true
+                                            fillMode: Image.PreserveAspectFit
+                                            sourceSize.width: 480
+                                            sourceSize.height: 640
+                                            onSourceChanged:
+                                                window.gameDetailsCoverSource = source
+                                            onStatusChanged:
+                                                window.gameDetailsCoverStatus = status
+                                        }
+                                    }
+
+                                    Label {
+                                        id: detailsTitleLabel
+                                        Layout.fillWidth: true
+                                        text: gameDetailsPane.game
+                                              ? gameDetailsPane.game.gameTitle : ""
+                                        color: "white"
+                                        font.pixelSize: 24
+                                        font.bold: true
+                                        wrapMode: Text.Wrap
+                                        onTextChanged:
+                                            window.gameDetailsTitleText = text
+                                    }
+                                    Label {
+                                        id: detailsSubtitleLabel
+                                        Layout.fillWidth: true
+                                        text: {
+                                            if (!gameDetailsPane.game)
+                                                return ""
+                                            const version =
+                                                gameDetailsPane.game.gameVersion
+                                            return gameDetailsPane.game.gamePlatform
+                                                   + (version.length > 0
+                                                      ? "  •  " + version : "")
+                                        }
+                                        color: "#8fbce8"
+                                        font.pixelSize: 14
+                                        elide: Text.ElideRight
+                                        onTextChanged:
+                                            window.gameDetailsSubtitleText = text
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: {
+                                            if (!gameDetailsPane.game)
+                                                return ""
+                                            const flags = []
+                                            if (gameDetailsPane.game.gameFavorite)
+                                                flags.push("★ Favorite")
+                                            if (gameDetailsPane.game.gameCompleted)
+                                                flags.push("✓ Completed")
+                                            flags.push(window.installedStateText(
+                                                           gameDetailsPane.game
+                                                           .gameInstalledState))
+                                            return flags.join("   ")
+                                        }
+                                        color: "#e3b341"
+                                        font.bold: true
+                                        wrapMode: Text.Wrap
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Button {
+                                            Layout.fillWidth: true
+                                            text: controller.launching
+                                                  ? "Launching…" : "Play"
+                                            enabled: gameDetailsPane.game
+                                                     && controller.library_path.length > 0
+                                                     && !controller.loading
+                                                     && !controller.writing
+                                                     && !controller.launching
+                                                     && !controller.launch_session_active
+                                                     && controller.pending_recovery_count === 0
+                                            onClicked: controller.launch_game(
+                                                           gameDetailsPane.game.index,
+                                                           gameDetailsPane.game.gameId)
+                                        }
+                                        Button {
+                                            Layout.fillWidth: true
+                                            text: "Edit"
+                                            enabled: gameDetailsPane.game
+                                                     && controller.library_path.length > 0
+                                                     && !controller.loading
+                                                     && !controller.writing
+                                                     && !controller.launching
+                                                     && !controller.write_conflict
+                                                     && controller.pending_recovery_count === 0
+                                            onClicked: gameDetailsPane.game.openEditor()
+                                        }
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Button {
+                                            id: detailsLaunchWithButton
+                                            Layout.fillWidth: true
+                                            text: "Launch With…"
+                                            visible: gameDetailsPane.game
+                                                     && gameDetailsPane.game
+                                                        .gameAdditionalApplicationCount > 0
+                                            onVisibleChanged:
+                                                window.gameDetailsLaunchWithVisible =
+                                                    visible
+                                            enabled: visible && !controller.loading
+                                                     && !controller.writing
+                                                     && !controller.launching
+                                                     && !controller.launch_session_active
+                                            onClicked: launchWithDialog.prepare(
+                                                           gameDetailsPane.game.index,
+                                                           gameDetailsPane.game.gameId,
+                                                           gameDetailsPane.game.gameTitle,
+                                                           gameDetailsPane.game
+                                                           .gameAdditionalApplicationCount)
+                                        }
+                                        Button {
+                                            Layout.fillWidth: true
+                                            text: gameDetailsPane.game
+                                                  ? "Apps ("
+                                                    + gameDetailsPane.game
+                                                      .gameAdditionalApplicationCount
+                                                    + ")" : "Apps"
+                                            enabled: gameDetailsPane.game
+                                                     && controller.library_path.length > 0
+                                                     && !controller.loading
+                                                     && !controller.writing
+                                                     && !controller.launching
+                                                     && !controller.write_conflict
+                                                     && controller.pending_recovery_count === 0
+                                            onClicked: additionalApplicationManager.prepare(
+                                                           gameDetailsPane.game.index,
+                                                           gameDetailsPane.game.gameId,
+                                                           gameDetailsPane.game.gameTitle)
+                                        }
+                                        Button {
+                                            Layout.fillWidth: true
+                                            text: gameDetailsPane.game
+                                                  ? "Saves ("
+                                                    + gameDetailsPane.game.gameSaveCount
+                                                    + ")" : "Saves"
+                                            visible: gameDetailsPane.game
+                                                     && gameDetailsPane.game.gameSaveCount > 0
+                                            enabled: visible && !controller.loading
+                                                     && !controller.writing
+                                                     && !controller.launching
+                                                     && !controller.write_conflict
+                                                     && controller.pending_recovery_count === 0
+                                            onClicked: gameSaveManager.prepare(
+                                                           gameDetailsPane.game.index,
+                                                           gameDetailsPane.game.gameId,
+                                                           gameDetailsPane.game.gameTitle)
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 1
+                                        color: "#303844"
+                                    }
+                                    Label {
+                                        text: "PLAY STATISTICS"
+                                        color: "#7fbfff"
+                                        font.bold: true
+                                        font.pixelSize: 12
+                                        font.letterSpacing: 1
+                                    }
+                                    GridLayout {
+                                        Layout.fillWidth: true
+                                        columns: 2
+                                        columnSpacing: 12
+                                        rowSpacing: 5
+
+                                        Label { text: "Sessions"; color: "#8b949e" }
+                                        Label {
+                                            id: detailsPlayCountLabel
+                                            Layout.fillWidth: true
+                                            text: gameDetailsPane.game
+                                                  ? String(gameDetailsPane.game.gamePlayCount)
+                                                  : "0"
+                                            color: "#d7e1ec"
+                                            onTextChanged:
+                                                window.gameDetailsPlayCountText = text
+                                        }
+                                        Label { text: "Play time"; color: "#8b949e" }
+                                        Label {
+                                            id: detailsPlayTimeLabel
+                                            Layout.fillWidth: true
+                                            text: gameDetailsPane.game
+                                                  ? window.formatPlayTime(
+                                                        gameDetailsPane.game
+                                                        .gamePlayTimeSeconds)
+                                                  : "Not played"
+                                            color: "#d7e1ec"
+                                            onTextChanged:
+                                                window.gameDetailsPlayTimeText = text
+                                        }
+                                        Label { text: "Last played"; color: "#8b949e" }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: gameDetailsPane.game
+                                                  && gameDetailsPane.game
+                                                     .gameLastPlayedDate.length > 0
+                                                  ? gameDetailsPane.game.gameLastPlayedDate
+                                                  : "Never"
+                                            color: "#d7e1ec"
+                                            elide: Text.ElideRight
+                                        }
+                                        Label { text: "My rating"; color: "#8b949e" }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: gameDetailsPane.game
+                                                  && gameDetailsPane.game.gameStarRating > 0
+                                                  ? gameDetailsPane.game.gameStarRating
+                                                    + " / 5" : "Not rated"
+                                            color: "#d7e1ec"
+                                        }
+                                        Label { text: "Community"; color: "#8b949e" }
+                                        Label {
+                                            id: detailsCommunityRatingLabel
+                                            Layout.fillWidth: true
+                                            text: gameDetailsPane.game
+                                                  && gameDetailsPane.game
+                                                     .gameCommunityStarRating > 0
+                                                  ? gameDetailsPane.game
+                                                    .gameCommunityStarRating.toFixed(2)
+                                                    + " / 5  ("
+                                                    + gameDetailsPane.game
+                                                      .gameCommunityStarRatingTotalVotes
+                                                    + " votes)"
+                                                  : "Not rated"
+                                            color: "#d7e1ec"
+                                            onTextChanged:
+                                                window.gameDetailsCommunityRatingText =
+                                                    text
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 1
+                                        color: "#303844"
+                                    }
+                                    Label {
+                                        text: "GAME DETAILS"
+                                        color: "#7fbfff"
+                                        font.bold: true
+                                        font.pixelSize: 12
+                                        font.letterSpacing: 1
+                                    }
+                                    Repeater {
+                                        model: gameDetailsPane.game ? [
+                                            { label: "Developer",
+                                              value: gameDetailsPane.game.gameDeveloper },
+                                            { label: "Publisher",
+                                              value: gameDetailsPane.game.gamePublisher },
+                                            { label: "Released",
+                                              value: gameDetailsPane.game.gameReleaseDate },
+                                            { label: "Genre",
+                                              value: gameDetailsPane.game.gameGenre },
+                                            { label: "Series",
+                                              value: gameDetailsPane.game.gameSeries },
+                                            { label: "Region",
+                                              value: gameDetailsPane.game.gameRegion },
+                                            { label: "Play mode",
+                                              value: gameDetailsPane.game.gamePlayMode },
+                                            { label: "Players",
+                                              value: gameDetailsPane.game.gameMaxPlayers > 0
+                                                     ? String(gameDetailsPane.game
+                                                              .gameMaxPlayers) : "" },
+                                            { label: "Rating",
+                                              value: gameDetailsPane.game.gameRating },
+                                            { label: "Status",
+                                              value: gameDetailsPane.game.gameStatus },
+                                            { label: "Source",
+                                              value: gameDetailsPane.game.gameSource },
+                                            { label: "Added",
+                                              value: gameDetailsPane.game.gameDateAdded },
+                                            { label: "Modified",
+                                              value: gameDetailsPane.game.gameDateModified }
+                                        ] : []
+                                        delegate: RowLayout {
+                                            required property var modelData
+                                            Layout.fillWidth: true
+                                            visible: modelData.value.length > 0
+                                            Label {
+                                                Layout.preferredWidth: 82
+                                                text: modelData.label
+                                                color: "#8b949e"
+                                            }
+                                            Label {
+                                                Layout.fillWidth: true
+                                                text: modelData.value
+                                                color: "#d7e1ec"
+                                                wrapMode: Text.Wrap
+                                            }
+                                        }
+                                    }
+
+                                    Label {
+                                        text: "NOTES"
+                                        visible: detailsNotesLabel.text.length > 0
+                                        color: "#7fbfff"
+                                        font.bold: true
+                                        font.pixelSize: 12
+                                        font.letterSpacing: 1
+                                    }
+                                    Label {
+                                        id: detailsNotesLabel
+                                        Layout.fillWidth: true
+                                        text: gameDetailsPane.game
+                                              ? gameDetailsPane.game.gameNotes : ""
+                                        visible: text.length > 0
+                                        color: "#c7d1dc"
+                                        wrapMode: Text.Wrap
+                                        textFormat: Text.PlainText
+                                        onTextChanged:
+                                            window.gameDetailsNotesText = text
+                                    }
+                                    Button {
+                                        text: "Open Wikipedia"
+                                        visible: gameDetailsPane.game
+                                                 && gameDetailsPane.game
+                                                    .gameWikipediaUrl.length > 0
+                                        onClicked: Qt.openUrlExternally(
+                                                       gameDetailsPane.game
+                                                       .gameWikipediaUrl)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -3364,6 +3982,7 @@ ApplicationWindow {
                                  && controller.pending_recovery_count === 0
                         onClicked: addGameDialog.prepare()
                     }
+
                 }
 
                 RowLayout {
@@ -3466,292 +4085,341 @@ ApplicationWindow {
                     font.pixelSize: 12
                 }
 
-                GridView {
-                    id: gameGrid
+                SplitView {
+                    id: gameContentSplit
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    clip: true
-                    cellWidth: 230
-                    cellHeight: 340
-                    model: controller
-                    delegate: Rectangle {
-                        required property int index
-                        required property string gameTitle
-                        required property string gameId
-                        required property string gamePlatform
-                        required property bool gameFavorite
-                        required property bool gameCompleted
-                        required property int gamePlayCount
-                        required property int gameStarRating
-                        required property int gameAdditionalApplicationCount
-                        required property int gameSaveCount
-                        required property string gameSortTitle
-                        required property string gameNotes
-                        required property string gameDeveloper
-                        required property string gameGenre
-                        required property int gameMaxPlayers
-                        required property string gamePlayMode
-                        required property string gameProgress
-                        required property string gamePublisher
-                        required property string gameRating
-                        required property string gameRegion
-                        required property string gameReleaseDate
-                        required property string gameReleaseType
-                        required property string gameSeries
-                        required property string gameSource
-                        required property string gameStatus
-                        required property string gameVersion
-                        required property string gameWikipediaUrl
-                        required property string gameApplicationPath
-                        required property string gameCommandLine
-                        required property string gameEmulatorId
-                        required property bool gameUseDosBox
-                        required property string gameCustomDosBoxVersionPath
-                        required property string gameDosBoxConfigurationPath
-                        required property bool gameUseScummVm
-                        required property bool gameScummVmAspectCorrection
-                        required property bool gameScummVmFullscreen
-                        required property string gameScummVmGameDataFolderPath
-                        required property string gameScummVmGameType
-                        required property url gameFrontImageUrl
+                    orientation: Qt.Horizontal
 
-                        function verifyEdit() {
-                            window.verifyEditState(index, gameId, gameTitle, gameSortTitle,
-                                                   gameNotes, gameDeveloper, gameGenre,
-                                                   gameMaxPlayers, gamePlayMode, gameProgress,
-                                                   gamePublisher, gameRating, gameRegion,
-                                                   gameReleaseDate, gameReleaseType, gameSeries,
-                                                   gameSource, gameStatus, gameVersion,
-                                                   gameWikipediaUrl, gameFavorite,
-                                                   gameCompleted, gameStarRating,
-                                                   gameApplicationPath, gameCommandLine,
-                                                   gameEmulatorId, gameUseDosBox,
-                                                   gameCustomDosBoxVersionPath,
-                                                   gameDosBoxConfigurationPath,
-                                                   gameUseScummVm,
-                                                   gameScummVmAspectCorrection,
-                                                   gameScummVmFullscreen,
-                                                   gameScummVmGameDataFolderPath,
-                                                   gameScummVmGameType)
+                    GridView {
+                        id: gameGrid
+                        SplitView.fillWidth: true
+                        SplitView.minimumWidth: 420
+                        clip: true
+                        focus: true
+                        cellWidth: 230
+                        cellHeight: 340
+                        model: controller
+                        onCurrentIndexChanged: {
+                            if (!window.gameSelectionResetPending
+                                    && currentIndex >= 0)
+                                window.selectedGameId =
+                                    controller.game_id_at(currentIndex)
                         }
+                        delegate: Rectangle {
+                            required property int index
+                            required property string gameTitle
+                            required property string gameId
+                            required property string gamePlatform
+                            required property bool gameFavorite
+                            required property bool gameCompleted
+                            required property int gamePlayCount
+                            required property int gameStarRating
+                            required property int gameAdditionalApplicationCount
+                            required property int gameSaveCount
+                            required property string gameSortTitle
+                            required property string gameNotes
+                            required property string gameDeveloper
+                            required property string gameGenre
+                            required property int gameMaxPlayers
+                            required property string gamePlayMode
+                            required property string gameProgress
+                            required property string gamePublisher
+                            required property string gameRating
+                            required property string gameRegion
+                            required property string gameReleaseDate
+                            required property string gameReleaseType
+                            required property string gameSeries
+                            required property string gameSource
+                            required property string gameStatus
+                            required property string gameVersion
+                            required property string gameWikipediaUrl
+                            required property string gameApplicationPath
+                            required property string gameCommandLine
+                            required property string gameEmulatorId
+                            required property bool gameUseDosBox
+                            required property string gameCustomDosBoxVersionPath
+                            required property string gameDosBoxConfigurationPath
+                            required property bool gameUseScummVm
+                            required property bool gameScummVmAspectCorrection
+                            required property bool gameScummVmFullscreen
+                            required property string gameScummVmGameDataFolderPath
+                            required property string gameScummVmGameType
+                            required property url gameFrontImageUrl
+                            required property double gamePlayTimeSeconds
+                            required property string gameLastPlayedDate
+                            required property string gameDateAdded
+                            required property string gameDateModified
+                            required property double gameCommunityStarRating
+                            required property int gameCommunityStarRatingTotalVotes
+                            required property int gameInstalledState
 
-                        Component.onCompleted: {
-                            window.verifyModelRoles(index, gameId, gameTitle, gamePlatform,
-                                                    gameFavorite, gameCompleted, gamePlayCount,
-                                                    gameStarRating,
-                                                    gameAdditionalApplicationCount,
-                                                    gameSortTitle, gameNotes, gameDeveloper,
-                                                    gameGenre, gameMaxPlayers, gamePlayMode,
-                                                    gameProgress, gamePublisher, gameRating,
-                                                    gameRegion, gameReleaseDate, gameReleaseType,
-                                                    gameSeries, gameSource, gameStatus, gameVersion,
-                                                    gameWikipediaUrl, gameApplicationPath,
-                                                    gameCommandLine, gameEmulatorId,
-                                                    gameUseDosBox,
-                                                    gameCustomDosBoxVersionPath,
-                                                    gameDosBoxConfigurationPath,
-                                                    gameUseScummVm,
-                                                    gameScummVmAspectCorrection,
-                                                    gameScummVmFullscreen,
-                                                    gameScummVmGameDataFolderPath,
-                                                    gameScummVmGameType,
-                                                    gameFrontImageUrl,
-                                                    gameGrid.count)
-                            verifyEdit()
-                        }
-                        onGameTitleChanged: {
-                            if (window.editSmokePhase > 0)
-                                verifyEdit()
-                        }
-                        onGameFavoriteChanged: {
-                            if (window.editSmokePhase > 0)
-                                verifyEdit()
-                        }
-                        onGameCompletedChanged: {
-                            if (window.editSmokePhase > 0)
-                                verifyEdit()
-                        }
-                        onGameStarRatingChanged: {
-                            if (window.editSmokePhase > 0)
-                                verifyEdit()
-                        }
-                        width: gameGrid.cellWidth - 12
-                        height: gameGrid.cellHeight - 12
-                        radius: 6
-                        color: gameMouse.containsMouse ? "#29313c" : "#20262e"
-                        border.color: gameFavorite ? "#e3b341" : "#30363d"
-                        border.width: gameFavorite ? 2 : 1
+                            function openEditor() {
+                                gameEditor.edit(
+                                    index, gameId, gameTitle, gameSortTitle, gameNotes,
+                                    gameDeveloper, gameGenre, gameMaxPlayers, gamePlayMode,
+                                    gameProgress, gamePublisher, gameRating, gameRegion,
+                                    gameReleaseDate, gameReleaseType, gameSeries, gameSource,
+                                    gameStatus, gameVersion, gameWikipediaUrl, gameFavorite,
+                                    gameCompleted, gameStarRating, gameApplicationPath,
+                                    gameCommandLine, gameEmulatorId, gameUseDosBox,
+                                    gameCustomDosBoxVersionPath,
+                                    gameDosBoxConfigurationPath, gameUseScummVm,
+                                    gameScummVmAspectCorrection, gameScummVmFullscreen,
+                                    gameScummVmGameDataFolderPath, gameScummVmGameType)
+                            }
 
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 12
-                            anchors.topMargin: 48
-                            anchors.bottomMargin: 48
-                            spacing: 7
-                            Item {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                Layout.minimumHeight: 150
+                            function verifyEdit() {
+                                window.verifyEditState(index, gameId, gameTitle, gameSortTitle,
+                                                       gameNotes, gameDeveloper, gameGenre,
+                                                       gameMaxPlayers, gamePlayMode, gameProgress,
+                                                       gamePublisher, gameRating, gameRegion,
+                                                       gameReleaseDate, gameReleaseType, gameSeries,
+                                                       gameSource, gameStatus, gameVersion,
+                                                       gameWikipediaUrl, gameFavorite,
+                                                       gameCompleted, gameStarRating,
+                                                       gameApplicationPath, gameCommandLine,
+                                                       gameEmulatorId, gameUseDosBox,
+                                                       gameCustomDosBoxVersionPath,
+                                                       gameDosBoxConfigurationPath,
+                                                       gameUseScummVm,
+                                                       gameScummVmAspectCorrection,
+                                                       gameScummVmFullscreen,
+                                                       gameScummVmGameDataFolderPath,
+                                                       gameScummVmGameType)
+                            }
 
-                                Rectangle {
-                                    anchors.fill: parent
-                                    radius: 4
-                                    color: "#151a20"
-                                    visible: coverImage.status !== Image.Ready
-                                    Label {
-                                        anchors.centerIn: parent
-                                        width: parent.width - 24
-                                        text: gameTitle
-                                        color: "#7d8590"
-                                        font.pixelSize: 16
-                                        font.bold: true
-                                        horizontalAlignment: Text.AlignHCenter
-                                        wrapMode: Text.Wrap
+                            Component.onCompleted: {
+                                window.verifyModelRoles(index, gameId, gameTitle, gamePlatform,
+                                                        gameFavorite, gameCompleted, gamePlayCount,
+                                                        gameStarRating,
+                                                        gameAdditionalApplicationCount,
+                                                        gameSortTitle, gameNotes, gameDeveloper,
+                                                        gameGenre, gameMaxPlayers, gamePlayMode,
+                                                        gameProgress, gamePublisher, gameRating,
+                                                        gameRegion, gameReleaseDate, gameReleaseType,
+                                                        gameSeries, gameSource, gameStatus, gameVersion,
+                                                        gameWikipediaUrl, gameApplicationPath,
+                                                        gameCommandLine, gameEmulatorId,
+                                                        gameUseDosBox,
+                                                        gameCustomDosBoxVersionPath,
+                                                        gameDosBoxConfigurationPath,
+                                                        gameUseScummVm,
+                                                        gameScummVmAspectCorrection,
+                                                        gameScummVmFullscreen,
+                                                        gameScummVmGameDataFolderPath,
+                                                        gameScummVmGameType,
+                                                        gameFrontImageUrl,
+                                                        gamePlayTimeSeconds,
+                                                        gameLastPlayedDate,
+                                                        gameDateAdded,
+                                                        gameDateModified,
+                                                        gameCommunityStarRating,
+                                                        gameCommunityStarRatingTotalVotes,
+                                                        gameInstalledState,
+                                                        gameGrid.count)
+                                verifyEdit()
+                            }
+                            onGameTitleChanged: {
+                                if (window.editSmokePhase > 0)
+                                    verifyEdit()
+                            }
+                            onGameFavoriteChanged: {
+                                if (window.editSmokePhase > 0)
+                                    verifyEdit()
+                            }
+                            onGameCompletedChanged: {
+                                if (window.editSmokePhase > 0)
+                                    verifyEdit()
+                            }
+                            onGameStarRatingChanged: {
+                                if (window.editSmokePhase > 0)
+                                    verifyEdit()
+                            }
+                            width: gameGrid.cellWidth - 12
+                            height: gameGrid.cellHeight - 12
+                            radius: 6
+                            color: gameGrid.currentIndex === index ? "#27384d"
+                                   : gameMouse.containsMouse ? "#29313c" : "#20262e"
+                            border.color: gameGrid.currentIndex === index ? "#58a6ff"
+                                          : gameFavorite ? "#e3b341" : "#30363d"
+                            border.width: gameGrid.currentIndex === index
+                                          || gameFavorite ? 2 : 1
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 12
+                                anchors.topMargin: 48
+                                anchors.bottomMargin: 48
+                                spacing: 7
+                                Item {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    Layout.minimumHeight: 150
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: 4
+                                        color: "#151a20"
+                                        visible: coverImage.status !== Image.Ready
+                                        Label {
+                                            anchors.centerIn: parent
+                                            width: parent.width - 24
+                                            text: gameTitle
+                                            color: "#7d8590"
+                                            font.pixelSize: 16
+                                            font.bold: true
+                                            horizontalAlignment: Text.AlignHCenter
+                                            wrapMode: Text.Wrap
+                                        }
+                                    }
+                                    Image {
+                                        id: coverImage
+                                        anchors.fill: parent
+                                        source: gameFrontImageUrl
+                                        asynchronous: true
+                                        cache: true
+                                        fillMode: Image.PreserveAspectFit
+                                        sourceSize.width: 360
+                                        sourceSize.height: 480
+                                        onStatusChanged: {
+                                            if (!window.mediaSmokeTest
+                                                    || window.mediaSmokeFinished
+                                                    || index !== 0
+                                                    || status !== Image.Ready)
+                                                return
+                                            const sourceText = source.toString()
+                                            const localPath =
+                                                controller.local_path_from_url(
+                                                    sourceText)
+                                            if (gameId !== "fixture-adventure"
+                                                    || controller.front_image_count !== 1
+                                                    || localPath.indexOf(
+                                                        "Fixture Adventure-01.svg") < 0) {
+                                                console.error(
+                                                    "MEDIA_SMOKE_BAD_ART id=" + gameId
+                                                    + " images="
+                                                    + controller.front_image_count
+                                                    + " source=" + sourceText
+                                                    + " local=" + localPath)
+                                                Qt.exit(46)
+                                                return
+                                            }
+                                            if (!controller.report_media_smoke_success(
+                                                    index, sourceText)) {
+                                                console.error(
+                                                    "MEDIA_SMOKE_CONTROLLER_REJECTED")
+                                                Qt.exit(47)
+                                                return
+                                            }
+                                            window.mediaSmokeFinished = true
+                                            Qt.quit()
+                                        }
                                     }
                                 }
-                                Image {
-                                    id: coverImage
-                                    anchors.fill: parent
-                                    source: gameFrontImageUrl
-                                    asynchronous: true
-                                    cache: true
-                                    fillMode: Image.PreserveAspectFit
-                                    sourceSize.width: 360
-                                    sourceSize.height: 480
-                                    onStatusChanged: {
-                                        if (!window.mediaSmokeTest
-                                                || window.mediaSmokeFinished
-                                                || index !== 0
-                                                || status !== Image.Ready)
-                                            return
-                                        const sourceText = source.toString()
-                                        const localPath =
-                                            controller.local_path_from_url(
-                                                sourceText)
-                                        if (gameId !== "fixture-adventure"
-                                                || controller.front_image_count !== 1
-                                                || localPath.indexOf(
-                                                    "Fixture Adventure-01.svg") < 0) {
-                                            console.error(
-                                                "MEDIA_SMOKE_BAD_ART id=" + gameId
-                                                + " images="
-                                                + controller.front_image_count
-                                                + " source=" + sourceText
-                                                + " local=" + localPath)
-                                            Qt.exit(46)
-                                            return
-                                        }
-                                        if (!controller.report_media_smoke_success(
-                                                index, sourceText)) {
-                                            console.error(
-                                                "MEDIA_SMOKE_CONTROLLER_REJECTED")
-                                            Qt.exit(47)
-                                            return
-                                        }
-                                        window.mediaSmokeFinished = true
-                                        Qt.quit()
-                                    }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: gameTitle
+                                    color: "white"
+                                    font.pixelSize: 16
+                                    font.bold: true
+                                    wrapMode: Text.Wrap
+                                    maximumLineCount: 2
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: gamePlatform
+                                          + (gameFavorite ? "  ★" : "")
+                                          + (gameCompleted ? "  ✓" : "")
+                                    color: "#8b949e"
+                                    elide: Text.ElideRight
                                 }
                             }
-                            Label {
-                                Layout.fillWidth: true
-                                text: gameTitle
-                                color: "white"
-                                font.pixelSize: 16
-                                font.bold: true
-                                wrapMode: Text.Wrap
-                                maximumLineCount: 2
-                                elide: Text.ElideRight
+                            MouseArea {
+                                id: gameMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: controller.library_path.length > 0
+                                         && !controller.loading && !controller.writing
+                                         && !controller.launching
+                                         && !controller.write_conflict
+                                         && controller.pending_recovery_count === 0
+                                onClicked: {
+                                    gameGrid.currentIndex = index
+                                    window.selectedGameId = gameId
+                                    gameGrid.forceActiveFocus()
+                                }
+                                onDoubleClicked: openEditor()
                             }
-                            Label {
-                                Layout.fillWidth: true
-                                text: gamePlatform
-                                      + (gameFavorite ? "  ★" : "")
-                                      + (gameCompleted ? "  ✓" : "")
-                                color: "#8b949e"
-                                elide: Text.ElideRight
+                            Button {
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 8
+                                z: 2
+                                text: controller.launching ? "Launching…" : "Play"
+                                enabled: controller.library_path.length > 0
+                                         && !controller.loading && !controller.writing
+                                         && !controller.launching
+                                         && !controller.launch_session_active
+                                         && controller.pending_recovery_count === 0
+                                onClicked: controller.launch_game(index, gameId)
+                            }
+                            Button {
+                                anchors.left: parent.left
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 8
+                                z: 2
+                                text: "Launch With…"
+                                visible: gameAdditionalApplicationCount > 0
+                                enabled: controller.library_path.length > 0
+                                         && !controller.loading && !controller.writing
+                                         && !controller.launching
+                                         && !controller.launch_session_active
+                                         && controller.pending_recovery_count === 0
+                                onClicked: launchWithDialog.prepare(
+                                               index, gameId, gameTitle,
+                                               gameAdditionalApplicationCount)
+                            }
+                            Button {
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.margins: 8
+                                z: 2
+                                text: "Apps (" + gameAdditionalApplicationCount + ")"
+                                enabled: controller.library_path.length > 0
+                                         && !controller.loading && !controller.writing
+                                         && !controller.launching
+                                         && controller.pending_recovery_count === 0
+                                         && !controller.write_conflict
+                                onClicked: additionalApplicationManager.prepare(
+                                               index, gameId, gameTitle)
+                            }
+                            Button {
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.margins: 8
+                                z: 2
+                                text: "Saves (" + gameSaveCount + ")"
+                                visible: gameSaveCount > 0
+                                enabled: controller.library_path.length > 0
+                                         && !controller.loading && !controller.writing
+                                         && !controller.launching
+                                         && controller.pending_recovery_count === 0
+                                         && !controller.write_conflict
+                                onClicked: gameSaveManager.prepare(
+                                               index, gameId, gameTitle)
                             }
                         }
-                        MouseArea {
-                            id: gameMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            enabled: controller.library_path.length > 0
-                                     && !controller.loading && !controller.writing
-                                     && !controller.launching
-                                     && !controller.write_conflict
-                                     && controller.pending_recovery_count === 0
-                            onDoubleClicked: gameEditor.edit(
-                                index, gameId, gameTitle, gameSortTitle, gameNotes,
-                                gameDeveloper, gameGenre, gameMaxPlayers, gamePlayMode,
-                                gameProgress, gamePublisher, gameRating, gameRegion,
-                                gameReleaseDate, gameReleaseType, gameSeries, gameSource,
-                                gameStatus, gameVersion, gameWikipediaUrl, gameFavorite,
-                                gameCompleted, gameStarRating, gameApplicationPath,
-                                gameCommandLine, gameEmulatorId, gameUseDosBox,
-                                gameCustomDosBoxVersionPath,
-                                gameDosBoxConfigurationPath, gameUseScummVm,
-                                gameScummVmAspectCorrection, gameScummVmFullscreen,
-                                gameScummVmGameDataFolderPath, gameScummVmGameType)
-                        }
-                        Button {
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            anchors.margins: 8
-                            z: 2
-                            text: controller.launching ? "Launching…" : "Play"
-                            enabled: controller.library_path.length > 0
-                                     && !controller.loading && !controller.writing
-                                     && !controller.launching
-                                     && !controller.launch_session_active
-                                     && controller.pending_recovery_count === 0
-                            onClicked: controller.launch_game(index, gameId)
-                        }
-                        Button {
-                            anchors.left: parent.left
-                            anchors.bottom: parent.bottom
-                            anchors.margins: 8
-                            z: 2
-                            text: "Launch With…"
-                            visible: gameAdditionalApplicationCount > 0
-                            enabled: controller.library_path.length > 0
-                                     && !controller.loading && !controller.writing
-                                     && !controller.launching
-                                     && !controller.launch_session_active
-                                     && controller.pending_recovery_count === 0
-                            onClicked: launchWithDialog.prepare(
-                                           index, gameId, gameTitle,
-                                           gameAdditionalApplicationCount)
-                        }
-                        Button {
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: 8
-                            z: 2
-                            text: "Apps (" + gameAdditionalApplicationCount + ")"
-                            enabled: controller.library_path.length > 0
-                                     && !controller.loading && !controller.writing
-                                     && !controller.launching
-                                     && controller.pending_recovery_count === 0
-                                     && !controller.write_conflict
-                            onClicked: additionalApplicationManager.prepare(
-                                           index, gameId, gameTitle)
-                        }
-                        Button {
-                            anchors.left: parent.left
-                            anchors.top: parent.top
-                            anchors.margins: 8
-                            z: 2
-                            text: "Saves (" + gameSaveCount + ")"
-                            visible: gameSaveCount > 0
-                            enabled: controller.library_path.length > 0
-                                     && !controller.loading && !controller.writing
-                                     && !controller.launching
-                                     && controller.pending_recovery_count === 0
-                                     && !controller.write_conflict
-                            onClicked: gameSaveManager.prepare(
-                                           index, gameId, gameTitle)
-                        }
+
+                    }
+
+                    Loader {
+                        id: gameDetailsLoader
+                        SplitView.preferredWidth: 360
+                        SplitView.minimumWidth: 300
+                        SplitView.maximumWidth: 520
+                        sourceComponent: gameDetailsPaneComponent
                     }
                 }
             }

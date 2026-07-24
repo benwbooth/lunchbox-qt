@@ -82,11 +82,11 @@ cargo run -p lb-shell --bin launchbox -- \
 
 Library parsing runs on a Rust worker thread and returns through CXX-Qt's queued
 Qt-thread bridge. QML consumes the controller as a real `QAbstractListModel`
-with 38 named identity, state, descriptive-metadata, launch-configuration,
-additional-application, game-save, and front-image roles; it does not receive a whole-library
-JSON snapshot. `check_qml.sh` validates generated type metadata, then runs both
-binaries offscreen and proves all 38 roles survive a model-resetting filter
-operation. It also edits a
+with 45 named identity, state, descriptive-metadata, launch-configuration,
+additional-application, game-save, front-image, and play-statistics roles; it
+does not receive a whole-library JSON snapshot. `check_qml.sh` validates
+generated type metadata, then runs both binaries offscreen and proves all 45
+roles survive a model-resetting filter operation. It also edits a
 temporary fixture library through the Qt shell and checks the targeted model
 notification for a state-only edit, descriptive-metadata search refresh, exact
 backup chain, optional-element removal, resulting XML, and unknown-field
@@ -103,9 +103,20 @@ the persisted front-image-type and region priorities, LaunchBox's observed
 filename normalization and numeric image ordering, then exposes only a native
 `file:` URL through the model. Portable backslash paths and explicitly mapped
 Windows drive/UNC paths cross the shared host resolver; QML contains no host
-path rules. Symlinks, deep nesting, non-regular files, oversized files, and
-unbounded directories fail closed. The offscreen suite requires both frontends
-to decode and render a real SVG fixture without changing any library file.
+path rules or construction. Symlinks, deep nesting, non-regular files,
+oversized files, and unbounded directories fail closed. The offscreen suite
+requires both frontends to decode and render a real SVG fixture without
+changing any library file.
+
+LaunchBox also has a resizable selected-game details pane backed directly by
+that role model. Stable game IDs preserve selection through filtering, sorting,
+editing, insertion, and removal; when a game is filtered out the first visible
+row is selected deterministically. The pane renders front artwork, descriptive
+metadata, notes, installed/favorite/completed state, play statistics, local and
+community ratings, and the existing Play, Edit, Launch With, Apps, Saves, and
+Wikipedia actions. Its offscreen interaction smoke exercises retained
+selection, filtered-out fallback, restoration, native artwork decoding, and a
+real rendered PNG without writing library XML or settings.
 
 Both frontends also use one typed, read-only library-filter contract. It
 combines text and platform/category/playlist navigation with favorite,

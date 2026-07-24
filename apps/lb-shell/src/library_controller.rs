@@ -667,6 +667,14 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_game_details_smoke_success(
+            self: &LibraryController,
+            row: i32,
+            game_id: QString,
+            image_url: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_library_filter_smoke_success(self: &LibraryController) -> bool;
 
         #[qinvokable]
@@ -1163,8 +1171,15 @@ const GAME_SCUMM_VM_GAME_DATA_FOLDER_PATH_ROLE: i32 = 291;
 const GAME_SCUMM_VM_GAME_TYPE_ROLE: i32 = 292;
 const GAME_SAVE_COUNT_ROLE: i32 = 293;
 const GAME_FRONT_IMAGE_URL_ROLE: i32 = 294;
+const GAME_PLAY_TIME_SECONDS_ROLE: i32 = 295;
+const GAME_LAST_PLAYED_DATE_ROLE: i32 = 296;
+const GAME_DATE_ADDED_ROLE: i32 = 297;
+const GAME_DATE_MODIFIED_ROLE: i32 = 298;
+const GAME_COMMUNITY_STAR_RATING_ROLE: i32 = 299;
+const GAME_COMMUNITY_STAR_RATING_TOTAL_VOTES_ROLE: i32 = 300;
+const GAME_INSTALLED_STATE_ROLE: i32 = 301;
 
-const GAME_ROLES: [(i32, &str); 38] = [
+const GAME_ROLES: [(i32, &str); 45] = [
     (GAME_ID_ROLE, "gameId"),
     (GAME_TITLE_ROLE, "gameTitle"),
     (GAME_PLATFORM_ROLE, "gamePlatform"),
@@ -1218,6 +1233,16 @@ const GAME_ROLES: [(i32, &str); 38] = [
     (GAME_SCUMM_VM_GAME_TYPE_ROLE, "gameScummVmGameType"),
     (GAME_SAVE_COUNT_ROLE, "gameSaveCount"),
     (GAME_FRONT_IMAGE_URL_ROLE, "gameFrontImageUrl"),
+    (GAME_PLAY_TIME_SECONDS_ROLE, "gamePlayTimeSeconds"),
+    (GAME_LAST_PLAYED_DATE_ROLE, "gameLastPlayedDate"),
+    (GAME_DATE_ADDED_ROLE, "gameDateAdded"),
+    (GAME_DATE_MODIFIED_ROLE, "gameDateModified"),
+    (GAME_COMMUNITY_STAR_RATING_ROLE, "gameCommunityStarRating"),
+    (
+        GAME_COMMUNITY_STAR_RATING_TOTAL_VOTES_ROLE,
+        "gameCommunityStarRatingTotalVotes",
+    ),
+    (GAME_INSTALLED_STATE_ROLE, "gameInstalledState"),
 ];
 
 const EDITABLE_GAME_ROLES: [i32; 32] = [
@@ -17534,6 +17559,96 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_game_details_smoke_success(
+        &self,
+        row: i32,
+        game_id: QString,
+        image_url: QString,
+    ) -> bool {
+        let Some(game) = self.filtered_game(row) else {
+            eprintln!(
+                "GAME_DETAILS_SMOKE_REJECTED row={row} reason=missing-filtered-game argument_id={:?}",
+                game_id.to_string()
+            );
+            return false;
+        };
+        let game_id = game_id.to_string();
+        let Some(expected_image) = self.rust().front_image_paths.get(&game.id) else {
+            eprintln!(
+                "GAME_DETAILS_SMOKE_REJECTED row={row} reason=missing-front-image argument_id={game_id:?} model_id={:?}",
+                game.id
+            );
+            return false;
+        };
+        let url = QUrl::from_user_input(&image_url, &QString::default());
+        let Some(local_file) = url.to_local_file() else {
+            eprintln!(
+                "GAME_DETAILS_SMOKE_REJECTED row={row} reason=non-local-image argument_id={game_id:?} model_id={:?} image_url={:?}",
+                game.id,
+                image_url.to_string()
+            );
+            return false;
+        };
+        let local_file = PathBuf::from(local_file.to_string());
+        let image_is_safe = fs::symlink_metadata(&local_file)
+            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink());
+        let success = game.id == "fixture-adventure"
+            && game_id == game.id
+            && game.platform == "Fixture Console"
+            && game.notes.as_deref()
+                == Some("A synthetic adventure used to verify LaunchBox XML compatibility.")
+            && game.developer.as_deref() == Some("Fixture Labs")
+            && game.publisher.as_deref() == Some("Fixture Publishing")
+            && game.play_count == 3
+            && game.play_time_seconds == 5_400
+            && game.last_played_date.as_deref() == Some("2026-07-22T10:00:00-07:00")
+            && game.community_star_rating == 4.25
+            && game.community_star_rating_total_votes == 42
+            && game.installed == Some(true)
+            && self
+                .rust()
+                .additional_applications_by_game
+                .get(&game.id)
+                .is_some_and(|applications| applications.len() == 1)
+            && self
+                .rust()
+                .game_saves_by_game
+                .get(&game.id)
+                .is_some_and(|saves| saves.len() == 1)
+            && local_file == *expected_image
+            && image_is_safe;
+        if success {
+            eprintln!(
+                "GAME_DETAILS_SMOKE_COMPLETE id={} play_count={} play_time={} community_rating={:.2} applications=1 saves=1",
+                game.id,
+                game.play_count,
+                game.play_time_seconds,
+                game.community_star_rating,
+            );
+        } else {
+            eprintln!(
+                "GAME_DETAILS_SMOKE_REJECTED row={row} argument_id={game_id:?} model_id={:?} platform={:?} play_count={} play_time={} last_played={:?} community_rating={} community_votes={} installed={:?} applications={} saves={} image={local_file:?} expected_image={expected_image:?} image_safe={image_is_safe}",
+                game.id,
+                game.platform,
+                game.play_count,
+                game.play_time_seconds,
+                game.last_played_date,
+                game.community_star_rating,
+                game.community_star_rating_total_votes,
+                game.installed,
+                self.rust()
+                    .additional_applications_by_game
+                    .get(&game.id)
+                    .map_or(0, Vec::len),
+                self.rust()
+                    .game_saves_by_game
+                    .get(&game.id)
+                    .map_or(0, Vec::len),
+            );
+        }
+        success
+    }
+
     pub fn report_library_filter_smoke_success(&self) -> bool {
         let rust = self.rust();
         let success = rust.games.len() == 3
@@ -19161,6 +19276,21 @@ impl qobject::LibraryController {
                     QVariant::from(&QUrl::from_local_file(&qstring(path.to_string_lossy())))
                 })
                 .unwrap_or_else(|| QVariant::from(&QUrl::default())),
+            GAME_PLAY_TIME_SECONDS_ROLE => QVariant::from(&(game.play_time_seconds as f64)),
+            GAME_LAST_PLAYED_DATE_ROLE => QVariant::from(&qstring(
+                game.last_played_date.as_deref().unwrap_or_default(),
+            )),
+            GAME_DATE_ADDED_ROLE => QVariant::from(&qstring(&game.date_added)),
+            GAME_DATE_MODIFIED_ROLE => QVariant::from(&qstring(&game.date_modified)),
+            GAME_COMMUNITY_STAR_RATING_ROLE => QVariant::from(&game.community_star_rating),
+            GAME_COMMUNITY_STAR_RATING_TOTAL_VOTES_ROLE => QVariant::from(&saturating_i32(
+                game.community_star_rating_total_votes as usize,
+            )),
+            GAME_INSTALLED_STATE_ROLE => QVariant::from(&match game.installed {
+                Some(true) => 1,
+                Some(false) => 0,
+                None => -1,
+            }),
             GAME_SORT_TITLE_ROLE => {
                 QVariant::from(&qstring(game.sort_title.as_deref().unwrap_or_default()))
             }
@@ -22090,8 +22220,13 @@ impl qobject::LibraryController {
                             ));
                             return;
                         };
-                        let play_count_changed =
-                            self.as_ref().rust().games[actual_index].play_count != game.play_count;
+                        let statistics_changed = {
+                            let controller = self.as_ref();
+                            let previous = &controller.rust().games[actual_index];
+                            previous.play_count != game.play_count
+                                || previous.play_time_seconds != game.play_time_seconds
+                                || previous.last_played_date != game.last_played_date
+                        };
                         let query_result_may_change = {
                             let filter = self.as_ref().current_filter();
                             game_query_result_may_change(
@@ -22103,7 +22238,7 @@ impl qobject::LibraryController {
                         self.as_mut().rust_mut().games[actual_index] = *game;
                         if query_result_may_change {
                             self.as_mut().refresh_filtered_games();
-                        } else if play_count_changed {
+                        } else if statistics_changed {
                             let filtered_row = self
                                 .as_ref()
                                 .rust()
@@ -22116,6 +22251,8 @@ impl qobject::LibraryController {
                                     self.as_ref().model_index(saturating_i32(row), 0, &parent);
                                 let mut roles = QList::<i32>::default();
                                 roles.append(GAME_PLAY_COUNT_ROLE);
+                                roles.append(GAME_PLAY_TIME_SECONDS_ROLE);
+                                roles.append(GAME_LAST_PLAYED_DATE_ROLE);
                                 self.as_mut().rust_mut().data_change_notifications = self
                                     .as_ref()
                                     .rust()
