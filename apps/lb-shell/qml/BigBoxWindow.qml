@@ -26,6 +26,14 @@ ApplicationWindow {
     property bool gameDetailsMediaScreenshotRequested: false
     property string gameDetailsMediaScreenshotPath:
         argumentValue("--bigbox-game-details-media-screenshot")
+    property bool imageViewerSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-image-viewer-smoke-test") >= 0
+    property int imageViewerSmokePhase: 0
+    property bool imageViewerSmokeFinished: false
+    property bool imageViewerScreenshotRequested: false
+    property string imageViewerScreenshotPath:
+        argumentValue("--bigbox-image-viewer-screenshot")
     property bool navigationSmokeTest:
         Qt.application.arguments.indexOf("--navigation-smoke-test") >= 0
     property bool libraryFilterSmokeTest:
@@ -88,6 +96,12 @@ ApplicationWindow {
     property int selectedBigBoxGameStarRating: 0
     property real selectedBigBoxGamePlayTimeSeconds: 0
     property real selectedBigBoxGameCommunityRating: 0
+    readonly property int selectedBigBoxGameImageCount: {
+        const revision = controller.game_media_revision
+        return selectedBigBoxGameId.length > 0
+            ? controller.game_image_count_for_game(
+                  selectedBigBoxGameId) : 0
+    }
     property string launchSmokeGameId: {
         const requested = argumentValue("--launch-game-id")
         return requested.length > 0 ? requested : "fixture-racer"
@@ -161,6 +175,16 @@ ApplicationWindow {
             return false
         bigBoxGameDetails.open()
         return true
+    }
+
+    function openGameImages(preferredMediaIndex) {
+        if (selectedBigBoxGameId.length === 0 || controller.loading
+                || controller.writing
+                || controller.game_image_count_for_game(
+                    selectedBigBoxGameId) === 0)
+            return false
+        return bigBoxImageViewer.openForGame(
+                    selectedBigBoxGameId, preferredMediaIndex)
     }
 
     function formatPlayTime(seconds) {
@@ -691,6 +715,164 @@ ApplicationWindow {
                 + " playback=" + bigBoxGameDetails.mediaPlaybackState
                 + " status=" + controller.status_message)
             Qt.exit(511)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.imageViewerSmokeTest
+                 && !window.imageViewerSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0
+                    || window.selectedBigBoxGameId.length === 0)
+                return
+            if (window.imageViewerSmokePhase === 0) {
+                const row = controller.row_for_game_id("fixture-adventure")
+                if (row < 0)
+                    return
+                gameList.currentIndex = row
+                gameList.positionViewAtIndex(row, ListView.Center)
+                if (window.selectedBigBoxGameId !== "fixture-adventure")
+                    return
+                bigBoxGameDetailsButton.clicked()
+                window.imageViewerSmokePhase = 1
+            } else if (window.imageViewerSmokePhase === 1) {
+                if (!bigBoxGameDetails.opened
+                        || bigBoxGameDetails.mediaCount !== 4)
+                    return
+                if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(0)) {
+                    console.error(
+                        "BIGBOX_IMAGE_VIEWER_IMAGE_THUMBNAIL_MISSING")
+                    Qt.exit(512)
+                    return
+                }
+                window.imageViewerSmokePhase = 2
+            } else if (window.imageViewerSmokePhase === 2) {
+                if (bigBoxGameDetails.selectedMediaIndex !== 0
+                        || bigBoxGameDetails.selectedMediaKind !== "image"
+                        || bigBoxGameDetails.mediaImageStatus !== Image.Ready)
+                    return
+                bigBoxViewImageButton.clicked()
+                window.imageViewerSmokePhase = 3
+            } else if (window.imageViewerSmokePhase === 3) {
+                if (!bigBoxImageViewer.opened
+                        || bigBoxImageViewer.gameId
+                           !== "fixture-adventure"
+                        || bigBoxImageViewer.imageCount !== 3
+                        || bigBoxImageViewer.selectedImageIndex !== 0
+                        || bigBoxImageViewer.selectedMediaIndex !== 0
+                        || bigBoxImageViewer.selectedMediaType
+                           !== "Box - Front"
+                        || bigBoxImageViewer.imageStatus !== Image.Ready
+                        || bigBoxImageViewer.zoomFactor !== 1)
+                    return
+                bigBoxImageZoomInButton.clicked()
+                bigBoxImageZoomInButton.clicked()
+                window.imageViewerSmokePhase = 4
+            } else if (window.imageViewerSmokePhase === 4) {
+                if (bigBoxImageViewer.zoomFactor !== 1.5
+                        || bigBoxImageViewer.panLimitY <= 0)
+                    return
+                bigBoxImagePanDownButton.clicked()
+                window.imageViewerSmokePhase = 5
+            } else if (window.imageViewerSmokePhase === 5) {
+                if (bigBoxImageViewer.panY >= 0)
+                    return
+                if (window.imageViewerScreenshotRequested)
+                    return
+                window.imageViewerScreenshotRequested = true
+                const continueWithNextImage = function() {
+                    bigBoxImageNextButton.clicked()
+                    window.imageViewerSmokePhase = 6
+                }
+                if (window.imageViewerScreenshotPath.length === 0) {
+                    continueWithNextImage()
+                    return
+                }
+                bigBoxImageViewerContent.grabToImage(function(result) {
+                    if (!result.saveToFile(
+                            window.imageViewerScreenshotPath)) {
+                        console.error(
+                            "BIGBOX_IMAGE_VIEWER_SCREENSHOT_SAVE_FAILED path="
+                            + window.imageViewerScreenshotPath)
+                        Qt.exit(513)
+                        return
+                    }
+                    continueWithNextImage()
+                })
+            } else if (window.imageViewerSmokePhase === 6) {
+                if (bigBoxImageViewer.selectedImageIndex !== 1
+                        || bigBoxImageViewer.selectedMediaIndex !== 1
+                        || bigBoxImageViewer.selectedMediaType
+                           !== "Screenshot - Gameplay"
+                        || bigBoxImageViewer.imageStatus !== Image.Ready
+                        || bigBoxImageViewer.zoomFactor !== 1
+                        || bigBoxImageViewer.panX !== 0
+                        || bigBoxImageViewer.panY !== 0)
+                    return
+                bigBoxImageZoomInButton.clicked()
+                window.imageViewerSmokePhase = 7
+            } else if (window.imageViewerSmokePhase === 7) {
+                if (bigBoxImageViewer.zoomFactor !== 1.25)
+                    return
+                bigBoxImageFitButton.clicked()
+                window.imageViewerSmokePhase = 8
+            } else if (window.imageViewerSmokePhase === 8) {
+                if (bigBoxImageViewer.zoomFactor !== 1
+                        || bigBoxImageViewer.panX !== 0
+                        || bigBoxImageViewer.panY !== 0)
+                    return
+                bigBoxImageViewerBackButton.clicked()
+                window.imageViewerSmokePhase = 9
+            } else if (window.imageViewerSmokePhase === 9) {
+                if (bigBoxImageViewer.opened
+                        || !bigBoxGameDetails.opened)
+                    return
+                bigBoxGameDetailsBackButton.clicked()
+                window.imageViewerSmokePhase = 10
+            } else if (window.imageViewerSmokePhase === 10) {
+                if (bigBoxImageViewer.opened
+                        || bigBoxGameDetails.opened)
+                    return
+                if (!controller
+                        .report_big_box_image_viewer_smoke_success(
+                        "fixture-adventure", 0, 1,
+                        controller.game_media_url_at(
+                            "fixture-adventure", 0).toString(),
+                        controller.game_media_url_at(
+                            "fixture-adventure", 1).toString())) {
+                    console.error(
+                        "BIGBOX_IMAGE_VIEWER_SMOKE_CONTROLLER_REJECTED")
+                    Qt.exit(514)
+                    return
+                }
+                window.imageViewerSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.imageViewerSmokeTest
+                 && !window.imageViewerSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_IMAGE_VIEWER_SMOKE_TIMEOUT phase="
+                + window.imageViewerSmokePhase
+                + " id=" + window.selectedBigBoxGameId
+                + " details=" + bigBoxGameDetails.opened
+                + " viewer=" + bigBoxImageViewer.opened
+                + " images=" + bigBoxImageViewer.imageCount
+                + " selected=" + bigBoxImageViewer.selectedImageIndex
+                + " media=" + bigBoxImageViewer.selectedMediaIndex
+                + " imageStatus=" + bigBoxImageViewer.imageStatus
+                + " zoom=" + bigBoxImageViewer.zoomFactor
+                + " pan=" + bigBoxImageViewer.panX
+                + "," + bigBoxImageViewer.panY
+                + " status=" + controller.status_message)
+            Qt.exit(515)
         }
     }
 
@@ -1814,6 +1996,14 @@ ApplicationWindow {
                          && !controller.loading && !controller.writing
                 onClicked: window.openGameDetails()
             }
+            Button {
+                id: bigBoxImagesButton
+                text: "IMAGES"
+                enabled: window.selectedBigBoxGameId.length > 0
+                         && window.selectedBigBoxGameImageCount > 0
+                         && !controller.loading && !controller.writing
+                onClicked: window.openGameImages(-1)
+            }
             Label {
                 Layout.fillWidth: true
                 text: gameList.count > 0
@@ -1836,7 +2026,7 @@ ApplicationWindow {
             Label {
                 text: controller.launching
                       ? "LAUNCHING…"
-                      : "D  DETAILS     ← →  GAMES     ENTER  PLAY"
+                      : "D  DETAILS     I  IMAGES     ← →  GAMES     ENTER  PLAY"
                 color: "#9badc4"
                 font.pixelSize: 18
             }
@@ -2107,6 +2297,7 @@ ApplicationWindow {
                             AudioOutput {
                                 id: bigBoxMediaAudio
                                 muted: window.gameDetailsMediaSmokeTest
+                                       || window.imageViewerSmokeTest
                             }
 
                             MediaPlayer {
@@ -2303,6 +2494,18 @@ ApplicationWindow {
                                 onClicked:
                                     bigBoxGameDetails
                                     .selectPreviousMedia()
+                            }
+                            Button {
+                                id: bigBoxViewImageButton
+                                Layout.fillWidth: true
+                                visible:
+                                    bigBoxGameDetails.selectedMediaKind
+                                    === "image"
+                                text: "VIEW IMAGE"
+                                onClicked:
+                                    window.openGameImages(
+                                        bigBoxGameDetails
+                                        .selectedMediaIndex)
                             }
                             Button {
                                 id: bigBoxMediaPlayPauseButton
@@ -2525,6 +2728,433 @@ ApplicationWindow {
         }
     }
 
+    Popup {
+        id: bigBoxImageViewer
+        x: 0
+        y: 0
+        width: window.width
+        height: window.height
+        padding: 0
+        modal: true
+        dim: false
+        focus: true
+        closePolicy: Popup.NoAutoClose
+        property string gameId: ""
+        readonly property int mediaRevision: controller.game_media_revision
+        readonly property int imageCount: {
+            const revision = mediaRevision
+            return gameId.length > 0
+                ? controller.game_image_count_for_game(gameId) : 0
+        }
+        property int selectedImageIndex: -1
+        readonly property int selectedMediaIndex:
+            selectedImageIndex >= 0
+            ? controller.game_image_media_index_at(
+                  gameId, selectedImageIndex) : -1
+        readonly property string selectedMediaType:
+            selectedMediaIndex >= 0
+            ? controller.game_media_type_at(
+                  gameId, selectedMediaIndex) : ""
+        readonly property url selectedMediaSource:
+            selectedMediaIndex >= 0
+            ? controller.game_media_url_at(
+                  gameId, selectedMediaIndex) : ""
+        readonly property int imageStatus: bigBoxFullscreenImage.status
+        readonly property real minimumZoom: 1.0
+        readonly property real maximumZoom: 4.0
+        readonly property real zoomStep: 0.25
+        property real zoomFactor: minimumZoom
+        property real panX: 0
+        property real panY: 0
+        readonly property real panLimitX:
+            Math.max(0, (bigBoxFullscreenImage.paintedWidth
+                         * zoomFactor - bigBoxImageViewport.width) / 2)
+        readonly property real panLimitY:
+            Math.max(0, (bigBoxFullscreenImage.paintedHeight
+                         * zoomFactor - bigBoxImageViewport.height) / 2)
+
+        function clamp(value, minimum, maximum) {
+            return Math.min(maximum, Math.max(minimum, value))
+        }
+
+        function resetView() {
+            zoomFactor = minimumZoom
+            panX = 0
+            panY = 0
+        }
+
+        function clampPan() {
+            panX = clamp(panX, -panLimitX, panLimitX)
+            panY = clamp(panY, -panLimitY, panLimitY)
+        }
+
+        function setZoom(value) {
+            zoomFactor = clamp(value, minimumZoom, maximumZoom)
+            if (zoomFactor <= minimumZoom) {
+                panX = 0
+                panY = 0
+            } else {
+                clampPan()
+            }
+            return zoomFactor
+        }
+
+        function panBy(horizontal, vertical) {
+            if (zoomFactor <= minimumZoom)
+                return false
+            panX = clamp(panX + horizontal, -panLimitX, panLimitX)
+            panY = clamp(panY + vertical, -panLimitY, panLimitY)
+            return true
+        }
+
+        function selectImage(index) {
+            if (index < 0 || index >= imageCount)
+                return false
+            selectedImageIndex = index
+            resetView()
+            return true
+        }
+
+        function selectPreviousImage() {
+            if (imageCount === 0)
+                return false
+            return selectImage(
+                selectedImageIndex <= 0
+                ? imageCount - 1 : selectedImageIndex - 1)
+        }
+
+        function selectNextImage() {
+            if (imageCount === 0)
+                return false
+            return selectImage(
+                selectedImageIndex < 0
+                || selectedImageIndex + 1 >= imageCount
+                ? 0 : selectedImageIndex + 1)
+        }
+
+        function imageIndexForMedia(mediaIndex) {
+            if (mediaIndex < 0)
+                return -1
+            for (let index = 0; index < imageCount; ++index) {
+                if (controller.game_image_media_index_at(
+                        gameId, index) === mediaIndex)
+                    return index
+            }
+            return -1
+        }
+
+        function openForGame(requestedGameId, preferredMediaIndex) {
+            if (requestedGameId.length === 0
+                    || controller.game_image_count_for_game(
+                        requestedGameId) === 0)
+                return false
+            gameId = requestedGameId
+            const preferredImageIndex =
+                imageIndexForMedia(preferredMediaIndex)
+            selectedImageIndex =
+                preferredImageIndex >= 0 ? preferredImageIndex : 0
+            resetView()
+            bigBoxMediaPlayer.stop()
+            open()
+            return true
+        }
+
+        onOpened: Qt.callLater(function() {
+            bigBoxImageViewerContent.forceActiveFocus()
+        })
+        onClosed: {
+            resetView()
+            if (bigBoxGameDetails.opened)
+                bigBoxGameDetailsContent.forceActiveFocus()
+            else
+                gameList.forceActiveFocus()
+        }
+        onImageCountChanged: {
+            if (opened && (selectedImageIndex < 0
+                           || selectedImageIndex >= imageCount)) {
+                if (imageCount > 0)
+                    selectImage(0)
+                else
+                    close()
+            }
+        }
+        onPanLimitXChanged: clampPan()
+        onPanLimitYChanged: clampPan()
+
+        background: Rectangle {
+            color: "#030508"
+        }
+
+        contentItem: FocusScope {
+            id: bigBoxImageViewerContent
+            focus: true
+            Keys.priority: Keys.BeforeItem
+            Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Escape
+                        || event.key === Qt.Key_Back) {
+                    bigBoxImageViewer.close()
+                } else if (event.key === Qt.Key_PageUp) {
+                    bigBoxImageViewer.selectPreviousImage()
+                } else if (event.key === Qt.Key_PageDown
+                           || event.key === Qt.Key_Return
+                           || event.key === Qt.Key_Enter) {
+                    bigBoxImageViewer.selectNextImage()
+                } else if (event.key === Qt.Key_Left) {
+                    if (bigBoxImageViewer.zoomFactor
+                            > bigBoxImageViewer.minimumZoom)
+                        bigBoxImageViewer.panBy(64, 0)
+                    else
+                        bigBoxImageViewer.selectPreviousImage()
+                } else if (event.key === Qt.Key_Right) {
+                    if (bigBoxImageViewer.zoomFactor
+                            > bigBoxImageViewer.minimumZoom)
+                        bigBoxImageViewer.panBy(-64, 0)
+                    else
+                        bigBoxImageViewer.selectNextImage()
+                } else if (event.key === Qt.Key_Up) {
+                    bigBoxImageViewer.panBy(0, 64)
+                } else if (event.key === Qt.Key_Down) {
+                    bigBoxImageViewer.panBy(0, -64)
+                } else if (event.key === Qt.Key_Plus
+                           || event.key === Qt.Key_Equal) {
+                    bigBoxImageViewer.setZoom(
+                        bigBoxImageViewer.zoomFactor
+                        + bigBoxImageViewer.zoomStep)
+                } else if (event.key === Qt.Key_Minus) {
+                    bigBoxImageViewer.setZoom(
+                        bigBoxImageViewer.zoomFactor
+                        - bigBoxImageViewer.zoomStep)
+                } else if (event.key === Qt.Key_0) {
+                    bigBoxImageViewer.resetView()
+                } else {
+                    return
+                }
+                event.accepted = true
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 24
+                spacing: 14
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 14
+
+                    Button {
+                        id: bigBoxImageViewerBackButton
+                        text: "‹  BACK"
+                        onClicked: bigBoxImageViewer.close()
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+                        Label {
+                            Layout.fillWidth: true
+                            text: window.selectedBigBoxGameTitle
+                            color: "#ffffff"
+                            font.pixelSize: 28
+                            font.bold: true
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: bigBoxImageViewer.selectedMediaType
+                            color: "#67b3ff"
+                            font.pixelSize: 16
+                            font.bold: true
+                            font.letterSpacing: 1
+                            elide: Text.ElideRight
+                        }
+                    }
+                    Label {
+                        text: bigBoxImageViewer.imageCount > 0
+                              ? (bigBoxImageViewer.selectedImageIndex + 1)
+                                + " / " + bigBoxImageViewer.imageCount
+                              : "NO IMAGES"
+                        color: "#c7d5e5"
+                        font.pixelSize: 18
+                        font.bold: true
+                    }
+                }
+
+                Rectangle {
+                    id: bigBoxImageViewport
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    color: "#080a0e"
+                    border.color: "#26384d"
+                    border.width: 1
+                    clip: true
+
+                    Item {
+                        id: bigBoxImageLayer
+                        x: bigBoxImageViewer.panX
+                        y: bigBoxImageViewer.panY
+                        width: bigBoxImageViewport.width
+                        height: bigBoxImageViewport.height
+
+                        Image {
+                            id: bigBoxFullscreenImage
+                            anchors.fill: parent
+                            source: bigBoxImageViewer.opened
+                                    ? bigBoxImageViewer
+                                      .selectedMediaSource : ""
+                            asynchronous: true
+                            cache: true
+                            smooth: true
+                            mipmap: true
+                            fillMode: Image.PreserveAspectFit
+                            transformOrigin: Item.Center
+                            scale: bigBoxImageViewer.zoomFactor
+                        }
+                    }
+
+                    MouseArea {
+                        id: bigBoxImageDragArea
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton
+                        property real lastX: 0
+                        property real lastY: 0
+                        onPressed: function(mouse) {
+                            lastX = mouse.x
+                            lastY = mouse.y
+                        }
+                        onPositionChanged: function(mouse) {
+                            if (!pressed
+                                    || bigBoxImageViewer.zoomFactor
+                                       <= bigBoxImageViewer.minimumZoom)
+                                return
+                            bigBoxImageViewer.panBy(
+                                mouse.x - lastX, mouse.y - lastY)
+                            lastX = mouse.x
+                            lastY = mouse.y
+                        }
+                        onDoubleClicked: {
+                            if (bigBoxImageViewer.zoomFactor
+                                    > bigBoxImageViewer.minimumZoom)
+                                bigBoxImageViewer.resetView()
+                            else
+                                bigBoxImageViewer.setZoom(2)
+                        }
+                        onWheel: function(wheel) {
+                            bigBoxImageViewer.setZoom(
+                                bigBoxImageViewer.zoomFactor
+                                + (wheel.angleDelta.y >= 0
+                                   ? bigBoxImageViewer.zoomStep
+                                   : -bigBoxImageViewer.zoomStep))
+                            wheel.accepted = true
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Button {
+                        id: bigBoxImagePreviousButton
+                        text: "‹  PREVIOUS IMAGE"
+                        enabled: bigBoxImageViewer.imageCount > 1
+                        onClicked:
+                            bigBoxImageViewer.selectPreviousImage()
+                    }
+                    Button {
+                        id: bigBoxImageNextButton
+                        text: "NEXT IMAGE  ›"
+                        enabled: bigBoxImageViewer.imageCount > 1
+                        onClicked: bigBoxImageViewer.selectNextImage()
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        text: "ENTER / PAGE  SWITCH    DRAG / ARROWS  PAN"
+                        color: "#7f93aa"
+                        font.pixelSize: 12
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
+                        clip: true
+                    }
+                    Button {
+                        id: bigBoxImageZoomOutButton
+                        Layout.minimumWidth: 44
+                        Layout.preferredWidth: 44
+                        Layout.maximumWidth: 44
+                        text: "−"
+                        enabled: bigBoxImageViewer.zoomFactor
+                                 > bigBoxImageViewer.minimumZoom
+                        onClicked:
+                            bigBoxImageViewer.setZoom(
+                                bigBoxImageViewer.zoomFactor
+                                - bigBoxImageViewer.zoomStep)
+                    }
+                    Button {
+                        id: bigBoxImageFitButton
+                        Layout.minimumWidth: 96
+                        Layout.preferredWidth: 96
+                        Layout.maximumWidth: 96
+                        text: Math.round(
+                                  bigBoxImageViewer.zoomFactor * 100)
+                              + "%  FIT"
+                        enabled: bigBoxImageViewer.zoomFactor
+                                 > bigBoxImageViewer.minimumZoom
+                        onClicked: bigBoxImageViewer.resetView()
+                    }
+                    Button {
+                        id: bigBoxImageZoomInButton
+                        Layout.minimumWidth: 44
+                        Layout.preferredWidth: 44
+                        Layout.maximumWidth: 44
+                        text: "+"
+                        enabled: bigBoxImageViewer.zoomFactor
+                                 < bigBoxImageViewer.maximumZoom
+                        onClicked:
+                            bigBoxImageViewer.setZoom(
+                                bigBoxImageViewer.zoomFactor
+                                + bigBoxImageViewer.zoomStep)
+                    }
+                    Button {
+                        Layout.minimumWidth: 44
+                        Layout.preferredWidth: 44
+                        Layout.maximumWidth: 44
+                        text: "←"
+                        enabled: bigBoxImageViewer.zoomFactor
+                                 > bigBoxImageViewer.minimumZoom
+                        onClicked: bigBoxImageViewer.panBy(64, 0)
+                    }
+                    Button {
+                        Layout.minimumWidth: 44
+                        Layout.preferredWidth: 44
+                        Layout.maximumWidth: 44
+                        text: "↑"
+                        enabled: bigBoxImageViewer.zoomFactor
+                                 > bigBoxImageViewer.minimumZoom
+                        onClicked: bigBoxImageViewer.panBy(0, 64)
+                    }
+                    Button {
+                        id: bigBoxImagePanDownButton
+                        Layout.minimumWidth: 44
+                        Layout.preferredWidth: 44
+                        Layout.maximumWidth: 44
+                        text: "↓"
+                        enabled: bigBoxImageViewer.zoomFactor
+                                 > bigBoxImageViewer.minimumZoom
+                        onClicked: bigBoxImageViewer.panBy(0, -64)
+                    }
+                    Button {
+                        Layout.minimumWidth: 44
+                        Layout.preferredWidth: 44
+                        Layout.maximumWidth: 44
+                        text: "→"
+                        enabled: bigBoxImageViewer.zoomFactor
+                                 > bigBoxImageViewer.minimumZoom
+                        onClicked: bigBoxImageViewer.panBy(-64, 0)
+                    }
+                }
+            }
+        }
+    }
+
     LaunchStartupOverlay {
         id: launchStartupOverlay
         anchors.fill: parent
@@ -2615,12 +3245,14 @@ ApplicationWindow {
     Shortcut {
         sequence: "L"
         enabled: !bigBoxGameDetails.opened
+                 && !bigBoxImageViewer.opened
         onActivated: window.showLaunchWithSelection()
     }
 
     Shortcut {
         sequence: "D"
         enabled: !bigBoxGameDetails.opened
+                 && !bigBoxImageViewer.opened
                  && !attributeFilterDrawer.opened
                  && !navigationDrawer.opened
                  && window.selectedBigBoxGameId.length > 0
@@ -2628,8 +3260,20 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "I"
+        enabled: !bigBoxImageViewer.opened
+                 && window.selectedBigBoxGameId.length > 0
+                 && window.selectedBigBoxGameImageCount > 0
+        onActivated:
+            window.openGameImages(
+                bigBoxGameDetails.opened
+                ? bigBoxGameDetails.selectedMediaIndex : -1)
+    }
+
+    Shortcut {
         sequence: "Tab"
         enabled: !bigBoxGameDetails.opened
+                 && !bigBoxImageViewer.opened
         onActivated: {
             if (navigationDrawer.opened) {
                 navigationDrawer.close()
@@ -2643,18 +3287,21 @@ ApplicationWindow {
     Shortcut {
         sequence: "F"
         enabled: !bigBoxGameDetails.opened
+                 && !bigBoxImageViewer.opened
         onActivated: window.openNavigation()
     }
 
     Shortcut {
         sequence: "G"
         enabled: !bigBoxGameDetails.opened
+                 && !bigBoxImageViewer.opened
         onActivated: window.openAttributeFilters()
     }
 
     Shortcut {
         sequence: "R"
         enabled: !bigBoxGameDetails.opened
+                 && !bigBoxImageViewer.opened
                  && !attributeFilterDrawer.opened
                  && !navigationDrawer.opened
                  && controller.filtered_count > 0
@@ -2664,7 +3311,9 @@ ApplicationWindow {
     Shortcut {
         sequence: "Esc"
         onActivated: {
-            if (bigBoxGameDetails.opened) {
+            if (bigBoxImageViewer.opened) {
+                bigBoxImageViewer.close()
+            } else if (bigBoxGameDetails.opened) {
                 bigBoxGameDetails.close()
             } else if (attributeFilterDrawer.opened) {
                 attributeFilterDrawer.close()

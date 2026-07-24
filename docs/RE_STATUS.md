@@ -94,11 +94,18 @@ an `ImageView`, an `ImageVideoView` explicitly marked as video content, and a
 `GameDetailsView` beside the game list. Its game-details resources bind title,
 details, notes, rating, favorite, portable, completed, and broken state. The
 shared `InputAction` contract includes `BigBoxShowGameDetails`,
-`BigBoxShowImages`, `BigBoxPlayGame`, directional navigation, Select, and Back.
-This establishes separate full-screen media/details presentation and
-controller-oriented entry/navigation as the first `BB-004` boundary. It does
-not establish exact protected transition timing, every configurable binding,
-theme-specific layout behavior, or 3D/related/document/application panes.
+`BigBoxShowImages`, `BigBoxSwitchImageType`, `BigBoxZoomIn`,
+`BigBoxZoomOut`, `BigBoxPlayGame`, directional and page navigation, Select,
+and Back. `MainViewModel.ShowImages(Game, ChildViewModelBase)` enters the
+dedicated `ImagesViewModel`; that view model exposes enter, escape, four
+directions, page-up, and page-down handlers plus an image path and detail
+label. The protected bodies do not recover exact zoom bounds, zoom increments,
+pan increments, or action-to-direction mapping. This establishes separate
+full-screen media/details presentation, image-type switching, zoom, pan-shaped
+navigation, and controller-oriented entry as the first two `BB-004`
+boundaries. It does not establish exact protected transition timing, every
+configurable binding, theme-specific layout behavior, or
+3D/related/document/application panes.
 
 The compiled port subsequently loaded that same read-only installation through
 the normal Qt worker transaction and selected 24,920 front images across the

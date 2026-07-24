@@ -276,17 +276,22 @@ deterministic, while directory/file/size/item limits and symlink refusal keep
 large or hostile libraries isolated. Pure tests and compiled offscreen
 SVG/H.264 decode, selection, autoplay, play/pause, actual-thumbnail, and
 rendered-gallery scenarios cover both frontends without media writes. BigBox's
-first `BB-004` subset follows the stock theme's separate image,
+first two `BB-004` subsets follow the stock theme's separate image,
 image/video, and game-details presenters: `D`/Details opens one full-screen
 stable-ID layer outside recycled delegates; left/right or Previous/Next wraps
 the collection, Space/play-pause and mute control video, Enter launches, and
 Back/Escape stops playback and returns to the game wheel. A metadata/notes
-column accompanies the media. Native Windows and
-Intel/Apple Silicon macOS Qt Multimedia execution remain explicit real-host
-gates, and all media mutation, download, manual/music playback, platform-video
-management, standalone image zoom, 3D models, related/document/application
-panes, custom BigBox theme layouts/transitions, cleanup, and migration work
-remains open.
+column accompanies the media. `I`, the real Images button, or View Image from
+details opens a second image-only full-screen surface over the same bounded
+native-URL index. Previous/next, Enter, and page actions switch image types;
+the explicit port policy clamps zoom to 100–400% in 25% increments, resets fit
+and pan on type changes, and supports wheel, mouse drag, directional keys, and
+visible pan/zoom controls. Back returns to details when nested or to the wheel
+when entered directly. Native Windows and Intel/Apple Silicon macOS Qt
+interaction and Qt Multimedia execution remain explicit real-host gates, and
+all media mutation, download, manual/music playback, platform-video
+management, box flip, 3D models, related/document/application panes, custom
+BigBox theme layouts/transitions, cleanup, and migration work remains open.
 The first three `DESK-002` verticals add a resizable LaunchBox selected-game
 details pane over the shared virtualized model plus hide/show and native
 pop-out/dock behavior. Its stable-ID selection contract survives filter and

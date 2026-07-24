@@ -252,6 +252,43 @@ cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
 
 echo "BigBox full-screen selected-game details, image/video thumbnails, decoded H.264 autoplay, real previous/play-pause/back controls, keyboard media navigation, stopped-on-close lifecycle, and preview rendering validated without media or library writes."
 
+bigbox_image_viewer_screenshot="$test_config_root/bigbox-image-viewer.png"
+bigbox_image_viewer_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --library "$media_root" \
+    --windowed \
+    --bigbox-image-viewer-smoke-test \
+    --bigbox-image-viewer-screenshot \
+    "$bigbox_image_viewer_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$bigbox_image_viewer_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=3 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  <<< "$bigbox_image_viewer_output"; then
+  printf '%s\n' "$bigbox_image_viewer_output" >&2
+  echo "BigBox did not validate its standalone full-screen image viewer." >&2
+  exit 1
+fi
+if [[ ! -s "$bigbox_image_viewer_screenshot" ]] \
+  || [[ $(wc -c < "$bigbox_image_viewer_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$bigbox_image_viewer_screenshot" \
+      | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$bigbox_image_viewer_output" >&2
+  echo "BigBox did not render a valid zoomed full-screen image PNG." >&2
+  exit 1
+fi
+cmp "$media_platform.before-media-smoke" "$media_platform"
+cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
+(
+  cd "$media_root"
+  sha256sum --check "$media_files_manifest"
+) >/dev/null
+
+echo "BigBox standalone image entry, image-type switching, bounded zoom, fit reset, pan, nested back navigation, native-path rendering, and read-only media behavior validated."
+
 game_details_ui_state="$test_config_root/game-details-ui-state.json"
 expected_game_details_ui_state="$test_config_root/expected-game-details-ui-state.json"
 game_details_layout_screenshot="$test_config_root/launchbox-popped-out-game-details.png"

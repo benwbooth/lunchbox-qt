@@ -149,6 +149,21 @@ and video thumbnails, renders the 1280x720 details screen, resumes playback,
 closes through Back, proves the player stops, and verifies every media and
 library byte remains unchanged.
 
+BigBox now also exposes the recovered image-only path independently of video.
+Select **Images**, press `I`, or choose **View Image** from an image in Details.
+Previous/Next, Page Up/Down, and Enter switch among the indexed image families;
+`+`, `-`, and `0` zoom or return to fit, while the mouse wheel, drag, arrows,
+and visible controls zoom and pan. Because the protected 13.27 implementation
+does not reveal its constants, the port explicitly uses a bounded 100–400%
+range in 25% steps and resets zoom/pan when the image changes. Back returns to
+Details when opened from there and otherwise returns to the game wheel. The
+compiled 1280x720 interaction enters through the real Details thumbnail and
+View Image controls, zooms and pans through real buttons, switches from box art
+to a gameplay screenshot, resets to fit, checks native regular-file URLs in
+Rust, renders a visually inspected PNG, and hashes all media and XML before and
+after. The QML and Rust path are platform-neutral; native Windows and
+Intel/Apple Silicon macOS Qt interaction remains a real-host release gate.
+
 Both frontends also use one typed, read-only library-filter contract. It
 combines text and platform/category/playlist navigation with favorite,
 completion, installation tri-state, played/rated, hidden, and broken state;

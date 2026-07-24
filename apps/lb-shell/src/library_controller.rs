@@ -155,6 +155,16 @@ pub mod qobject {
         fn game_media_count_for_game(self: &LibraryController, game_id: QString) -> i32;
 
         #[qinvokable]
+        fn game_image_count_for_game(self: &LibraryController, game_id: QString) -> i32;
+
+        #[qinvokable]
+        fn game_image_media_index_at(
+            self: &LibraryController,
+            game_id: QString,
+            image_index: i32,
+        ) -> i32;
+
+        #[qinvokable]
         fn game_media_url_at(self: &LibraryController, game_id: QString, index: i32) -> QUrl;
 
         #[qinvokable]
@@ -754,6 +764,16 @@ pub mod qobject {
             video_index: i32,
             image_url: QString,
             video_url: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_big_box_image_viewer_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            first_media_index: i32,
+            next_media_index: i32,
+            first_image_url: QString,
+            next_image_url: QString,
         ) -> bool;
 
         #[qinvokable]
@@ -15328,6 +15348,39 @@ impl qobject::LibraryController {
         )
     }
 
+    pub fn game_image_count_for_game(&self, game_id: QString) -> i32 {
+        saturating_i32(
+            self.rust()
+                .game_media_by_game_id
+                .get(&game_id.to_string())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter(|item| item.kind == GameMediaKind::Image)
+                        .count()
+                })
+                .unwrap_or_default(),
+        )
+    }
+
+    pub fn game_image_media_index_at(&self, game_id: QString, image_index: i32) -> i32 {
+        let Ok(image_index) = usize::try_from(image_index) else {
+            return -1;
+        };
+        self.rust()
+            .game_media_by_game_id
+            .get(&game_id.to_string())
+            .and_then(|items| {
+                items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| item.kind == GameMediaKind::Image)
+                    .nth(image_index)
+                    .map(|(media_index, _)| saturating_i32(media_index))
+            })
+            .unwrap_or(-1)
+    }
+
     pub fn game_media_url_at(&self, game_id: QString, index: i32) -> QUrl {
         self.game_media_item(&game_id.to_string(), index)
             .map(|item| QUrl::from_local_file(&qstring(item.path.to_string_lossy())))
@@ -18491,6 +18544,69 @@ impl qobject::LibraryController {
         if success {
             eprintln!(
                 "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=4 image=Box-Front video=Video-Snap autoplay=1 controls=1"
+            );
+        }
+        success
+    }
+
+    pub fn report_big_box_image_viewer_smoke_success(
+        &self,
+        game_id: QString,
+        first_media_index: i32,
+        next_media_index: i32,
+        first_image_url: QString,
+        next_image_url: QString,
+    ) -> bool {
+        let game_id = game_id.to_string();
+        let Some(items) = self.rust().game_media_by_game_id.get(&game_id) else {
+            return false;
+        };
+        let Some(first_image) = usize::try_from(first_media_index)
+            .ok()
+            .and_then(|index| items.get(index))
+        else {
+            return false;
+        };
+        let Some(next_image) = usize::try_from(next_media_index)
+            .ok()
+            .and_then(|index| items.get(index))
+        else {
+            return false;
+        };
+        let local_file = |value: QString| {
+            QUrl::from_user_input(&value, &QString::default())
+                .to_local_file()
+                .map(|path| PathBuf::from(path.to_string()))
+        };
+        let Some(first_file) = local_file(first_image_url) else {
+            return false;
+        };
+        let Some(next_file) = local_file(next_image_url) else {
+            return false;
+        };
+        let safe_regular_file = |path: &Path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        };
+        let success = game_id == "fixture-adventure"
+            && items.len() == 4
+            && self.game_image_count_for_game(qstring(&game_id)) == 3
+            && self.game_image_media_index_at(qstring(&game_id), 0) == first_media_index
+            && self.game_image_media_index_at(qstring(&game_id), 1) == next_media_index
+            && self.game_image_media_index_at(qstring(&game_id), 2) == 2
+            && first_image.kind == GameMediaKind::Image
+            && first_image.media_type == "Box - Front"
+            && first_image.path == first_file
+            && safe_regular_file(&first_file)
+            && next_image.kind == GameMediaKind::Image
+            && next_image.media_type == "Screenshot - Gameplay"
+            && next_image.path == next_file
+            && safe_regular_file(&next_file)
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            eprintln!(
+                "BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=3 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
             );
         }
         success
