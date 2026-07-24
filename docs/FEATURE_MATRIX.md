@@ -213,7 +213,7 @@ parity remain open.
 | MED-001 | LaunchBox Games Database metadata matching/download | welcome GamesDB and metadata-source views; installed platform metadata |
 | MED-002 | EmuMovies authentication and downloads | DV EmuMovies import/options pages |
 | MED-003 | Metadata/media update for existing games | DV download-metadata workflow; DM download metadata/media |
-| MED-004 | Per-game images and image-type selection | DV images page/image downloader; PA `ImageTypes` catalogue |
+| MED-004 | Per-game images and image-type selection | DV images page/image downloader; PA `ImageTypes` catalogue; the port's first read-only subset indexes configured front-image folders by persisted image-type/region priority and renders native file URLs in both shells, with bounded/symlink-safe scanning and a real offscreen decode/render gate. Image editing, downloads, alternate views, and the remaining image families stay open |
 | MED-005 | Game and platform videos/theme videos | DV videos page/platform-video downloader; video options |
 | MED-006 | Manuals, music, and additional media playback | DM view manual/play music; media viewer controls |
 | MED-007 | Media manager, cleanup, missing-media refresh, and duplicate-image grouping | DV media manager/cleanup; DM refresh actions; SI image dupe grouper |

@@ -82,10 +82,10 @@ cargo run -p lb-shell --bin launchbox -- \
 
 Library parsing runs on a Rust worker thread and returns through CXX-Qt's queued
 Qt-thread bridge. QML consumes the controller as a real `QAbstractListModel`
-with 37 named identity, state, descriptive-metadata, launch-configuration, and
-additional-application, and game-save roles; it does not receive a whole-library
+with 38 named identity, state, descriptive-metadata, launch-configuration,
+additional-application, game-save, and front-image roles; it does not receive a whole-library
 JSON snapshot. `check_qml.sh` validates generated type metadata, then runs both
-binaries offscreen and proves all 37 roles survive a model-resetting filter
+binaries offscreen and proves all 38 roles survive a model-resetting filter
 operation. It also edits a
 temporary fixture library through the Qt shell and checks the targeted model
 notification for a state-only edit, descriptive-metadata search refresh, exact
@@ -96,6 +96,16 @@ the application path, command line, emulator selection, and DOSBox/ScummVM
 settings in one transaction. A fresh Linux process then
 reloads that edit and executes the stored Windows-separated relative path with
 the exact expanded argument vector.
+
+LaunchBox and BigBox now render the selected per-game front image from the
+library's own `PlatformFolder` records. A bounded read-only Rust index applies
+the persisted front-image-type and region priorities, LaunchBox's observed
+filename normalization and numeric image ordering, then exposes only a native
+`file:` URL through the model. Portable backslash paths and explicitly mapped
+Windows drive/UNC paths cross the shared host resolver; QML contains no host
+path rules. Symlinks, deep nesting, non-regular files, oversized files, and
+unbounded directories fail closed. The offscreen suite requires both frontends
+to decode and render a real SVG fixture without changing any library file.
 
 Both frontends also use one typed, read-only library-filter contract. It
 combines text and platform/category/playlist navigation with favorite,

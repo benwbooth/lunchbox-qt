@@ -15,6 +15,8 @@ ApplicationWindow {
     title: "BigBox Port"
     color: "#07090d"
     property bool smokeTest: Qt.application.arguments.indexOf("--smoke-test") >= 0
+    property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
+    property bool mediaSmokeFinished: false
     property bool navigationSmokeTest:
         Qt.application.arguments.indexOf("--navigation-smoke-test") >= 0
     property bool libraryFilterSmokeTest:
@@ -270,7 +272,8 @@ ApplicationWindow {
 
     function verifyModelRoles(index, gameId, gameTitle, gamePlatform, gameFavorite,
                               gameCompleted, gamePlayCount, gameStarRating,
-                              gameAdditionalApplicationCount, rowCount) {
+                              gameAdditionalApplicationCount, gameFrontImageUrl,
+                              rowCount) {
         if (!smokeTest || index !== 0)
             return
         const expectedTitle = smokePhase === 0 ? "Fixture Adventure" : "Fixture Racer"
@@ -286,6 +289,7 @@ ApplicationWindow {
                 || gameFavorite !== expectedFavorite || gameCompleted !== expectedCompleted
                 || gamePlayCount !== expectedPlayCount || gameStarRating !== expectedStarRating
                 || gameAdditionalApplicationCount !== expectedAdditionalApplicationCount
+                || gameFrontImageUrl.toString() !== ""
                 || rowCount !== expectedRows) {
             console.error("MODEL_ROLE_SMOKE_FAILED id=" + gameId
                           + " title=" + gameTitle
@@ -455,6 +459,16 @@ ApplicationWindow {
         else
             controller.load_fixture()
         gameList.forceActiveFocus()
+    }
+
+    Timer {
+        interval: 15000
+        running: window.mediaSmokeTest && !window.mediaSmokeFinished
+        onTriggered: {
+            console.error("MEDIA_SMOKE_TIMEOUT images="
+                          + controller.front_image_count)
+            Qt.exit(45)
+        }
     }
 
     Timer {
@@ -1365,11 +1379,13 @@ ApplicationWindow {
                     required property int gamePlayCount
                     required property int gameStarRating
                     required property int gameAdditionalApplicationCount
+                    required property url gameFrontImageUrl
                     Component.onCompleted: window.verifyModelRoles(
                                                index, gameId, gameTitle, gamePlatform,
                                                gameFavorite, gameCompleted, gamePlayCount,
                                                gameStarRating,
                                                gameAdditionalApplicationCount,
+                                               gameFrontImageUrl,
                                                gameList.count)
                     width: 370
                     height: gameList.height - 20
@@ -1394,12 +1410,76 @@ ApplicationWindow {
                             font.bold: true
                             elide: Text.ElideRight
                         }
-                        Item { Layout.fillHeight: true }
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: 260
+
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: 8
+                                color: "#0c121b"
+                                visible: coverImage.status !== Image.Ready
+                                Label {
+                                    anchors.centerIn: parent
+                                    width: parent.width - 30
+                                    text: gameTitle
+                                    color: "#65758a"
+                                    font.pixelSize: 26
+                                    font.bold: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    wrapMode: Text.Wrap
+                                }
+                            }
+                            Image {
+                                id: coverImage
+                                anchors.fill: parent
+                                source: gameFrontImageUrl
+                                asynchronous: true
+                                cache: true
+                                fillMode: Image.PreserveAspectFit
+                                sourceSize.width: 600
+                                sourceSize.height: 800
+                                onStatusChanged: {
+                                    if (!window.mediaSmokeTest
+                                            || window.mediaSmokeFinished
+                                            || index !== 0
+                                            || status !== Image.Ready)
+                                        return
+                                    const sourceText = source.toString()
+                                    const localPath =
+                                        controller.local_path_from_url(
+                                            sourceText)
+                                    if (gameId !== "fixture-adventure"
+                                            || controller.front_image_count !== 1
+                                            || localPath.indexOf(
+                                                "Fixture Adventure-01.svg") < 0) {
+                                        console.error(
+                                            "MEDIA_SMOKE_BAD_ART id=" + gameId
+                                            + " images="
+                                            + controller.front_image_count
+                                            + " source=" + sourceText
+                                            + " local=" + localPath)
+                                        Qt.exit(46)
+                                        return
+                                    }
+                                    if (!controller.report_media_smoke_success(
+                                            index, sourceText)) {
+                                        console.error(
+                                            "MEDIA_SMOKE_CONTROLLER_REJECTED")
+                                        Qt.exit(47)
+                                        return
+                                    }
+                                    window.mediaSmokeFinished = true
+                                    Qt.quit()
+                                }
+                            }
+                        }
                         Label {
                             Layout.fillWidth: true
                             text: gameTitle
                             color: "white"
-                            font.pixelSize: 35
+                            font.pixelSize: 28
                             font.bold: true
                             wrapMode: Text.Wrap
                         }

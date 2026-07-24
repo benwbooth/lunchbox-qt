@@ -32,6 +32,8 @@ ApplicationWindow {
     property int libraryOrderSmokeRandomRow: -1
     property bool libraryOrderSmokeFinished: false
     property bool loadSmokeTest: Qt.application.arguments.indexOf("--load-smoke-test") >= 0
+    property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
+    property bool mediaSmokeFinished: false
     property bool editSmokeTest: Qt.application.arguments.indexOf("--edit-smoke-test") >= 0
     property bool crudSmokeTest: Qt.application.arguments.indexOf("--crud-smoke-test") >= 0
     property bool platformCrudSmokeTest:
@@ -376,7 +378,7 @@ ApplicationWindow {
                               gameDosBoxConfigurationPath, gameUseScummVm,
                               gameScummVmAspectCorrection, gameScummVmFullscreen,
                               gameScummVmGameDataFolderPath, gameScummVmGameType,
-                              rowCount) {
+                              gameFrontImageUrl, rowCount) {
         if (!smokeTest || index !== 0)
             return
         const expectedTitle = smokePhase === 0 ? "Fixture Adventure" : "Fixture Racer"
@@ -429,6 +431,7 @@ ApplicationWindow {
                 || gameAdditionalApplicationCount !== expectedAdditionalApplicationCount
                 || !metadataMatches
                 || !launchConfigurationMatches
+                || gameFrontImageUrl.toString() !== ""
                 || rowCount !== expectedRows) {
             console.error("MODEL_ROLE_SMOKE_FAILED id=" + gameId
                           + " title=" + gameTitle
@@ -656,6 +659,16 @@ ApplicationWindow {
             controller.load_library(library)
         else
             controller.load_fixture()
+    }
+
+    Timer {
+        interval: 15000
+        running: window.mediaSmokeTest && !window.mediaSmokeFinished
+        onTriggered: {
+            console.error("MEDIA_SMOKE_TIMEOUT images="
+                          + controller.front_image_count)
+            Qt.exit(45)
+        }
     }
 
     Timer {
@@ -3458,8 +3471,8 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    cellWidth: 210
-                    cellHeight: 150
+                    cellWidth: 230
+                    cellHeight: 340
                     model: controller
                     delegate: Rectangle {
                         required property int index
@@ -3500,6 +3513,7 @@ ApplicationWindow {
                         required property bool gameScummVmFullscreen
                         required property string gameScummVmGameDataFolderPath
                         required property string gameScummVmGameType
+                        required property url gameFrontImageUrl
 
                         function verifyEdit() {
                             window.verifyEditState(index, gameId, gameTitle, gameSortTitle,
@@ -3541,6 +3555,7 @@ ApplicationWindow {
                                                     gameScummVmFullscreen,
                                                     gameScummVmGameDataFolderPath,
                                                     gameScummVmGameType,
+                                                    gameFrontImageUrl,
                                                     gameGrid.count)
                             verifyEdit()
                         }
@@ -3570,15 +3585,83 @@ ApplicationWindow {
                         ColumnLayout {
                             anchors.fill: parent
                             anchors.margins: 12
-                            Label {
+                            anchors.topMargin: 48
+                            anchors.bottomMargin: 48
+                            spacing: 7
+                            Item {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
+                                Layout.minimumHeight: 150
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 4
+                                    color: "#151a20"
+                                    visible: coverImage.status !== Image.Ready
+                                    Label {
+                                        anchors.centerIn: parent
+                                        width: parent.width - 24
+                                        text: gameTitle
+                                        color: "#7d8590"
+                                        font.pixelSize: 16
+                                        font.bold: true
+                                        horizontalAlignment: Text.AlignHCenter
+                                        wrapMode: Text.Wrap
+                                    }
+                                }
+                                Image {
+                                    id: coverImage
+                                    anchors.fill: parent
+                                    source: gameFrontImageUrl
+                                    asynchronous: true
+                                    cache: true
+                                    fillMode: Image.PreserveAspectFit
+                                    sourceSize.width: 360
+                                    sourceSize.height: 480
+                                    onStatusChanged: {
+                                        if (!window.mediaSmokeTest
+                                                || window.mediaSmokeFinished
+                                                || index !== 0
+                                                || status !== Image.Ready)
+                                            return
+                                        const sourceText = source.toString()
+                                        const localPath =
+                                            controller.local_path_from_url(
+                                                sourceText)
+                                        if (gameId !== "fixture-adventure"
+                                                || controller.front_image_count !== 1
+                                                || localPath.indexOf(
+                                                    "Fixture Adventure-01.svg") < 0) {
+                                            console.error(
+                                                "MEDIA_SMOKE_BAD_ART id=" + gameId
+                                                + " images="
+                                                + controller.front_image_count
+                                                + " source=" + sourceText
+                                                + " local=" + localPath)
+                                            Qt.exit(46)
+                                            return
+                                        }
+                                        if (!controller.report_media_smoke_success(
+                                                index, sourceText)) {
+                                            console.error(
+                                                "MEDIA_SMOKE_CONTROLLER_REJECTED")
+                                            Qt.exit(47)
+                                            return
+                                        }
+                                        window.mediaSmokeFinished = true
+                                        Qt.quit()
+                                    }
+                                }
+                            }
+                            Label {
+                                Layout.fillWidth: true
                                 text: gameTitle
                                 color: "white"
-                                font.pixelSize: 18
+                                font.pixelSize: 16
                                 font.bold: true
                                 wrapMode: Text.Wrap
-                                verticalAlignment: Text.AlignVCenter
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
                             }
                             Label {
                                 Layout.fillWidth: true

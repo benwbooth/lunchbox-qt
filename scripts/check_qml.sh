@@ -81,8 +81,9 @@ install_process_fixture() {
 }
 
 test_config_root=$(mktemp -d)
+media_root=$(mktemp -d)
 empty_path_mappings="$test_config_root/empty-path-mappings.json"
-trap 'rm -rf "$test_config_root"' EXIT
+trap 'rm -rf "$test_config_root" "$media_root"' EXIT
 
 for shell in launchbox bigbox; do
   arguments=(--smoke-test --path-mappings-file "$empty_path_mappings")
@@ -101,6 +102,35 @@ for shell in launchbox bigbox; do
 done
 
 echo "LaunchBox and BigBox role-model runtime smokes validated."
+
+cp -a fixtures/launchbox/. "$media_root/"
+media_platform="$media_root/Data/Platforms/Fixture Console.xml"
+cp "$media_platform" "$media_platform.before-media-smoke"
+for shell in launchbox bigbox; do
+  arguments=(
+    --library "$media_root"
+    --media-smoke-test
+    --path-mappings-file "$empty_path_mappings"
+  )
+  if [[ "$shell" == bigbox ]]; then
+    arguments+=(--windowed)
+  fi
+  output=$(QT_QPA_PLATFORM=offscreen \
+    "$binary_dir/$shell" "${arguments[@]}" 2>&1) || {
+    printf '%s\n' "$output" >&2
+    exit 1
+  }
+  if ! rg -q \
+    'MEDIA_SMOKE_COMPLETE images=1 id=fixture-adventure file=Fixture-Adventure-01.svg' \
+    <<< "$output"; then
+    printf '%s\n' "$output" >&2
+    echo "$shell did not decode and render its indexed front artwork." >&2
+    exit 1
+  fi
+  cmp "$media_platform.before-media-smoke" "$media_platform"
+done
+
+echo "LaunchBox and BigBox native-path front artwork indexing, URL delivery, decoding, and rendering validated without library writes."
 
 bigbox_navigation_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
@@ -159,7 +189,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 
 cp -a fixtures/launchbox/. "$library_filter_root/"
 library_filter_platform="$library_filter_root/Data/Platforms/Fixture Console.xml"

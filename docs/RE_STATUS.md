@@ -63,6 +63,27 @@ then structurally round-tripped all 63 auxiliary documents through their typed
 lossless editors. This proves 13.24 XML data compatibility at the observed
 field/document boundary; it does not prove 13.27 schema or behavior parity.
 
+A separate read-only aggregate media audit recovered the Box Front filename
+contract without retaining titles or paths. Across the 37 platforms it found
+23,880 unique front-image stems and matched 23,793 games after replacing
+Windows-invalid punctuation plus apostrophes with underscores and removing a
+trailing numeric `-NN` image ordinal. In the Sega Master System sample all 293
+games matched all 293 image stems exactly under that rule. Fifty-eight games
+had multiple candidates, confirming that image ordering must be deterministic.
+Observed front art used JPG, PNG, GIF, and TIF files beneath media-type and
+optional region directories. This is evidence from the older 13.24 library,
+not a claim that every 13.27 priority or naming edge case is recovered.
+
+The compiled port subsequently loaded that same read-only installation through
+the normal Qt worker transaction and selected 24,920 front images across the
+full 47-entry persisted fallback list. It scanned 161,968 supported files in
+1,144 media folders without unsafe, oversized, or truncated entries. The
+debug Linux run over the mounted Windows filesystem completed in 27.301
+seconds and delivered all 35,869 games to the model. The loader also had to
+preserve two distinct `Arcade` mappings that the real library retains as
+default; unpinned launch selection remains deliberately ambiguous rather than
+silently choosing one.
+
 A value-free launch-plan audit additionally classified every game without
 recording titles or paths. It established that 1,848 games use the all-zero
 emulator ID as an explicit direct-launch sentinel, found 4,471 Windows-absolute

@@ -10603,7 +10603,7 @@ mod tests {
         assert_eq!(document.to_xml_bytes().unwrap(), before);
 
         let invalid = IndexedPlatformRecordEdit {
-            source_index: Some(1),
+            source_index: Some(catalog.folders.len()),
             record: catalog.folders[0].clone(),
         };
         assert!(matches!(

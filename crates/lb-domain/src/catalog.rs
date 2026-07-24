@@ -336,7 +336,6 @@ impl EmulatorConfiguration {
             }
         }
         let mut mappings = BTreeSet::new();
-        let mut defaults = BTreeSet::new();
         for platform in &self.platforms {
             platform.validate()?;
             if !emulator_ids.contains(&platform.emulator_id.to_lowercase()) {
@@ -354,12 +353,11 @@ impl EmulatorConfiguration {
                     platform: platform.platform.clone(),
                 });
             }
-            if platform.default && !defaults.insert(platform.platform.to_lowercase()) {
-                return Err(CatalogValidationError::DuplicateDefaultEmulator {
-                    platform: platform.platform.clone(),
-                });
-            }
         }
+        // Real LaunchBox libraries can retain more than one default mapping
+        // for a platform. Loading must preserve that data losslessly. Runtime
+        // selection refuses the ambiguous platform unless a game pins an
+        // emulator, while storage writes clear peer defaults transactionally.
         Ok(())
     }
 }
@@ -654,5 +652,39 @@ mod tests {
         assert_eq!(settings.get_bool("Enabled"), Some(true));
         assert_eq!(settings.get_i64("Count"), Some(12));
         assert_eq!(settings.get_bool("Theme"), None);
+    }
+
+    #[test]
+    fn emulator_configuration_preserves_multiple_platform_defaults() {
+        let configuration = EmulatorConfiguration {
+            emulators: vec![
+                Emulator {
+                    id: "first".into(),
+                    title: "First".into(),
+                    ..Emulator::default()
+                },
+                Emulator {
+                    id: "second".into(),
+                    title: "Second".into(),
+                    ..Emulator::default()
+                },
+            ],
+            platforms: vec![
+                EmulatorPlatform {
+                    emulator_id: "first".into(),
+                    platform: "Arcade".into(),
+                    default: true,
+                    ..EmulatorPlatform::default()
+                },
+                EmulatorPlatform {
+                    emulator_id: "second".into(),
+                    platform: "Arcade".into(),
+                    default: true,
+                    ..EmulatorPlatform::default()
+                },
+            ],
+            ..EmulatorConfiguration::default()
+        };
+        assert_eq!(configuration.validate(), Ok(()));
     }
 }

@@ -234,7 +234,7 @@ completion metrics.
 
 The repository and a narrow library-browsing vertical slice now exist. Exact
 multi-document transactions, golden semantic-diff/failure coverage, and the
-37-role `QAbstractListModel` now pass. Pending recovery, write-conflict UX,
+38-role `QAbstractListModel` now pass. Pending recovery, write-conflict UX,
 safe rollback, and the first transactional desktop game-state edit also pass a
 temporary-library Qt smoke with a targeted `dataChanged`. Transactional title
 editing now composes with the first complete persisted-status `LIB-014`
@@ -256,6 +256,15 @@ offscreen processes prove invalid-key refusal, exact PlayCount ordering,
 single/multi-result random behavior, Settings.xml backup/persistence, and
 byte-identical platform XML. Dynamic/custom-field arrangement, group headings,
 suggestions, and random play remain open.
+The first `MED-004` vertical now reads configured front-image folders through
+the shared cross-platform resolver and renders real game artwork in both
+frontends through a native file-URL model role. Type, region, and numeric-image
+priority are deterministic; directory/file/size limits and symlink refusal keep
+large or hostile libraries isolated. Pure tests and a compiled offscreen
+decode/render scenario cover the portable pipeline. Native Windows and macOS
+Qt rendering are still explicit real-host gates, and all media mutation,
+download, video/audio/manual, alternate-image, cleanup, and migration work
+remains open.
 Transactional title
 editing has expanded into 18 descriptive fields through a versioned typed
 payload; it recomputes sort/search membership, removes explicitly cleared

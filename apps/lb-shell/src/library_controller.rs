@@ -69,6 +69,7 @@ pub mod qobject {
         #[qproperty(bool, last_launch_succeeded)]
         #[qproperty(bool, write_conflict)]
         #[qproperty(i32, game_count)]
+        #[qproperty(i32, front_image_count)]
         #[qproperty(i32, filtered_count)]
         #[qproperty(i32, platform_entry_count)]
         #[qproperty(i32, navigation_entry_count)]
@@ -659,6 +660,13 @@ pub mod qobject {
         fn report_model_smoke_success(self: &LibraryController, rows: i32);
 
         #[qinvokable]
+        fn report_media_smoke_success(
+            self: &LibraryController,
+            row: i32,
+            image_url: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_library_filter_smoke_success(self: &LibraryController) -> bool;
 
         #[qinvokable]
@@ -1074,8 +1082,8 @@ use lb_integrations::xemu_bios::{
 use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
 use lb_platform::{
     default_host_path_mappings_path, default_platform_folders, execute_launch_sequence_controlled,
-    navigation_document_file_name, platform_document_file_name, portable_storage_name,
-    prepare_game_launch_sequence_with_mounts_context_and_resolver,
+    index_front_images, navigation_document_file_name, platform_document_file_name,
+    portable_storage_name, prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     select_emulator_for_game, ArchiveExtractor, FrontendLaunchScreenPolicy,
     FrontendPauseScreenPolicy, HostPathMappings, HostPathResolver, LaunchContext,
@@ -1154,8 +1162,9 @@ const GAME_SCUMM_VM_FULLSCREEN_ROLE: i32 = 290;
 const GAME_SCUMM_VM_GAME_DATA_FOLDER_PATH_ROLE: i32 = 291;
 const GAME_SCUMM_VM_GAME_TYPE_ROLE: i32 = 292;
 const GAME_SAVE_COUNT_ROLE: i32 = 293;
+const GAME_FRONT_IMAGE_URL_ROLE: i32 = 294;
 
-const GAME_ROLES: [(i32, &str); 37] = [
+const GAME_ROLES: [(i32, &str); 38] = [
     (GAME_ID_ROLE, "gameId"),
     (GAME_TITLE_ROLE, "gameTitle"),
     (GAME_PLATFORM_ROLE, "gamePlatform"),
@@ -1208,6 +1217,7 @@ const GAME_ROLES: [(i32, &str); 37] = [
     ),
     (GAME_SCUMM_VM_GAME_TYPE_ROLE, "gameScummVmGameType"),
     (GAME_SAVE_COUNT_ROLE, "gameSaveCount"),
+    (GAME_FRONT_IMAGE_URL_ROLE, "gameFrontImageUrl"),
 ];
 
 const EDITABLE_GAME_ROLES: [i32; 32] = [
@@ -1295,6 +1305,7 @@ pub struct LibraryControllerRust {
     last_launch_succeeded: bool,
     write_conflict: bool,
     game_count: i32,
+    front_image_count: i32,
     filtered_count: i32,
     platform_entry_count: i32,
     navigation_entry_count: i32,
@@ -1338,6 +1349,7 @@ pub struct LibraryControllerRust {
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
+    front_image_paths: BTreeMap<String, PathBuf>,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
@@ -1449,6 +1461,7 @@ struct LoadedLibrary {
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
+    front_image_paths: BTreeMap<String, PathBuf>,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
     navigation_catalog: NavigationCatalog,
@@ -1471,6 +1484,7 @@ struct LibraryReplacement {
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
+    front_image_paths: BTreeMap<String, PathBuf>,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
     navigation_catalog: NavigationCatalog,
@@ -1489,7 +1503,7 @@ struct LibraryReplacement {
 }
 
 impl LoadedLibrary {
-    fn load(path: String) -> Result<Self, String> {
+    fn load(path: String, path_resolver: &HostPathResolver) -> Result<Self, String> {
         let started = Instant::now();
         if Path::new(&path).is_file() {
             let library = LibraryIndex::load(&path).map_err(|error| error.to_string())?;
@@ -1536,6 +1550,7 @@ impl LoadedLibrary {
                 alternate_names_by_game,
                 custom_fields_by_game,
                 game_saves_by_game,
+                front_image_paths: BTreeMap::new(),
                 platform_names,
                 platform_sources,
                 navigation_catalog: NavigationCatalog::default(),
@@ -1552,6 +1567,7 @@ impl LoadedLibrary {
         }
 
         let data = LaunchBoxDataIndex::load(&path).map_err(|error| error.to_string())?;
+        let root = PathBuf::from(&path);
         let (game_sort, game_sort_descending) = game_sort_from_settings(data.settings());
         let launchbox_launch_screen_policy =
             FrontendLaunchScreenPolicy::from_settings(data.settings())
@@ -1593,17 +1609,36 @@ impl LoadedLibrary {
         let custom_fields_by_game = collect_custom_fields_by_game(data.platforms());
         let game_saves_by_game = collect_game_saves_by_game(data.platforms());
         let game_save_count = game_saves_by_game.values().map(Vec::len).sum::<usize>();
+        let front_image_index = index_front_images(
+            &root,
+            &games,
+            data.platform_catalog()
+                .map(|catalog| catalog.folders.as_slice())
+                .unwrap_or(&[]),
+            data.settings(),
+            path_resolver,
+        );
+        let front_image_count = front_image_index.paths_by_game_id.len();
+        let artwork_report = front_image_index.report;
+        let front_image_paths = front_image_index.paths_by_game_id;
+        let artwork_truncations = artwork_report
+            .truncated_folders
+            .saturating_add(artwork_report.truncated_configured_folders);
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
             .map(|configuration| configuration.emulators.len())
             .unwrap_or_default();
         let message = format!(
-            "Loaded {} games, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s.",
+            "Loaded {} games, {front_image_count} front images, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s (artwork: {} files across {} folders; {} unsafe, {} oversized, {} truncated).",
             games.len(),
-            started.elapsed().as_secs_f64()
+            started.elapsed().as_secs_f64(),
+            artwork_report.scanned_files,
+            artwork_report.scanned_folders,
+            artwork_report.unsafe_entries,
+            artwork_report.oversized_files,
+            artwork_truncations
         );
-        let root = PathBuf::from(&path);
         let launchbox_root = Some(root.clone());
         let pending_recovery_count = pending_transaction_manifests(&root)
             .map_err(|error| error.to_string())?
@@ -1620,6 +1655,7 @@ impl LoadedLibrary {
             alternate_names_by_game,
             custom_fields_by_game,
             game_saves_by_game,
+            front_image_paths,
             platform_names,
             platform_sources,
             navigation_catalog,
@@ -14657,6 +14693,7 @@ impl qobject::LibraryController {
                     alternate_names_by_game,
                     custom_fields_by_game,
                     game_saves_by_game,
+                    front_image_paths: BTreeMap::new(),
                     platform_names: vec![document.library().name.clone()],
                     platform_sources: BTreeMap::new(),
                     navigation_catalog: NavigationCatalog::default(),
@@ -14703,11 +14740,12 @@ impl qobject::LibraryController {
             .set_status_message(qstring(format!("Loading {path} in the background...")));
 
         let qt_thread = self.as_ref().qt_thread();
+        let path_resolver = self.as_ref().rust().path_resolver.clone();
         eprintln!("Started background LaunchBox library load.");
         let spawn_result = std::thread::Builder::new()
             .name("launchbox-library-index".to_string())
             .spawn(move || {
-                let loaded = LoadedLibrary::load(path);
+                let loaded = LoadedLibrary::load(path, &path_resolver);
                 match &loaded {
                     Ok(library) => eprintln!("Background index ready: {}", library.message),
                     Err(error) => eprintln!("Background index failed: {error}"),
@@ -17469,6 +17507,33 @@ impl qobject::LibraryController {
         eprintln!("MODEL_ROLE_SMOKE_COMPLETE rows={rows}");
     }
 
+    pub fn report_media_smoke_success(&self, row: i32, image_url: QString) -> bool {
+        let Some(game) = self.filtered_game(row) else {
+            return false;
+        };
+        let Some(expected) = self.rust().front_image_paths.get(&game.id) else {
+            return false;
+        };
+        let url = QUrl::from_user_input(&image_url, &QString::default());
+        let Some(local_file) = url.to_local_file() else {
+            return false;
+        };
+        let local_file = PathBuf::from(local_file.to_string());
+        let safe_file = fs::symlink_metadata(&local_file)
+            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink());
+        let success = game.id == "fixture-adventure"
+            && self.rust().front_image_paths.len() == 1
+            && local_file == *expected
+            && safe_file;
+        if success {
+            eprintln!(
+                "MEDIA_SMOKE_COMPLETE images=1 id={} file=Fixture-Adventure-01.svg",
+                game.id
+            );
+        }
+        success
+    }
+
     pub fn report_library_filter_smoke_success(&self) -> bool {
         let rust = self.rust();
         let success = rust.games.len() == 3
@@ -19088,6 +19153,14 @@ impl qobject::LibraryController {
                     .map(Vec::len)
                     .unwrap_or_default(),
             )),
+            GAME_FRONT_IMAGE_URL_ROLE => self
+                .rust()
+                .front_image_paths
+                .get(&game.id)
+                .map(|path| {
+                    QVariant::from(&QUrl::from_local_file(&qstring(path.to_string_lossy())))
+                })
+                .unwrap_or_else(|| QVariant::from(&QUrl::default())),
             GAME_SORT_TITLE_ROLE => {
                 QVariant::from(&qstring(game.sort_title.as_deref().unwrap_or_default()))
             }
@@ -21216,6 +21289,7 @@ impl qobject::LibraryController {
                     alternate_names_by_game: loaded.alternate_names_by_game,
                     custom_fields_by_game: loaded.custom_fields_by_game,
                     game_saves_by_game: loaded.game_saves_by_game,
+                    front_image_paths: loaded.front_image_paths,
                     platform_names: loaded.platform_names,
                     platform_sources: loaded.platform_sources,
                     navigation_catalog: loaded.navigation_catalog,
@@ -24418,6 +24492,7 @@ impl qobject::LibraryController {
                 }
                 {
                     let mut rust = self.as_mut().rust_mut();
+                    rust.front_image_paths.remove(&deleted.game.id);
                     rust.games.remove(actual_index);
                     rust.game_sources.remove(actual_index);
                     rust.filtered_indices.retain(|index| *index != actual_index);
@@ -24430,6 +24505,9 @@ impl qobject::LibraryController {
                         rust.row_remove_notifications += 1;
                     }
                 }
+                let front_image_count =
+                    saturating_i32(self.as_ref().rust().front_image_paths.len());
+                self.as_mut().set_front_image_count(front_image_count);
                 if filtered_row.is_some() {
                     self.as_mut().end_remove_rows();
                 }
@@ -24633,6 +24711,7 @@ impl qobject::LibraryController {
             alternate_names_by_game,
             custom_fields_by_game,
             game_saves_by_game,
+            front_image_paths,
             platform_names,
             platform_sources,
             navigation_catalog,
@@ -24651,6 +24730,7 @@ impl qobject::LibraryController {
         } = replacement;
         debug_assert!(game_sources.is_empty() || game_sources.len() == games.len());
         let game_count = saturating_i32(games.len());
+        let front_image_count = saturating_i32(front_image_paths.len());
         let platform_counts = collect_platform_counts(&games, &platform_names);
         let platform_entry_count = saturating_i32(platform_counts.len());
         let (navigation_entries, category_platforms, category_game_ids, playlist_game_ids) =
@@ -24675,6 +24755,7 @@ impl qobject::LibraryController {
             rust.alternate_names_by_game = alternate_names_by_game;
             rust.custom_fields_by_game = custom_fields_by_game;
             rust.game_saves_by_game = game_saves_by_game;
+            rust.front_image_paths = front_image_paths;
             rust.filtered_indices = filtered_indices;
             rust.platform_counts = platform_counts;
             rust.platform_names = platform_names;
@@ -24771,6 +24852,7 @@ impl qobject::LibraryController {
         self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_game_count(game_count);
+        self.as_mut().set_front_image_count(front_image_count);
         self.as_mut().set_filtered_count(filtered_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
         self.as_mut()
@@ -28772,8 +28854,11 @@ mod tests {
                 && folder.folder_path == "Images\\Dragon 32_64\\Box - Front"
         }));
         assert!(String::from_utf8_lossy(&created_catalog_bytes).contains("FutureCatalogRecord"));
-        let loaded = LoadedLibrary::load(directory.path().to_string_lossy().into_owned())
-            .expect("load library with empty portable platform");
+        let loaded = LoadedLibrary::load(
+            directory.path().to_string_lossy().into_owned(),
+            &HostPathResolver::default(),
+        )
+        .expect("load library with empty portable platform");
         assert_eq!(loaded.games.len(), 3);
         assert!(loaded
             .platform_names
@@ -28927,7 +29012,7 @@ mod tests {
             payload,
         )
         .unwrap();
-        assert_eq!(edited.folder_count, 2);
+        assert_eq!(edited.folder_count, 3);
         assert_eq!(
             fs::read(&edited.catalog_backup).unwrap(),
             original_catalog.as_bytes()
@@ -28952,8 +29037,8 @@ mod tests {
         assert_eq!(platform.release_date.as_deref(), Some("2001-02-03"));
         assert!(platform.metadata.hide_in_big_box);
         assert!(platform.disable_auto_import);
-        assert_eq!(catalog.folders[1].media_type, "Manual");
-        assert_eq!(catalog.folders[1].folder_path, r"Manuals\Fixture Console");
+        assert_eq!(catalog.folders[2].media_type, "Manual");
+        assert_eq!(catalog.folders[2].folder_path, r"Manuals\Fixture Console");
         assert!(!directory.path().join("Manuals").exists());
     }
 

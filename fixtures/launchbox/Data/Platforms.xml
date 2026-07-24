@@ -23,4 +23,9 @@
     <MediaType>Video</MediaType>
     <FolderPath>Videos/Fixture Console</FolderPath>
   </PlatformFolder>
+  <PlatformFolder>
+    <Platform>Fixture Console</Platform>
+    <MediaType>Box - Front</MediaType>
+    <FolderPath>Images\Fixture Console\Box - Front</FolderPath>
+  </PlatformFolder>
 </LaunchBox>

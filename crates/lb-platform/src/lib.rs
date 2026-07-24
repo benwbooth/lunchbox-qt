@@ -1,6 +1,7 @@
 mod archive;
 mod dosbox;
 mod m3u;
+mod media;
 mod path;
 mod path_settings;
 mod scummvm;
@@ -10,6 +11,10 @@ pub use archive::{
 };
 pub use dosbox::DosBoxPlanError;
 pub use m3u::M3uPreparationError;
+pub use media::{
+    front_image_type_priorities, index_front_images, launchbox_media_stem, region_priorities,
+    FrontImageIndex, FrontImageIndexReport,
+};
 pub use path::{
     default_platform_folders, is_windows_absolute_path, navigation_document_file_name,
     platform_document_file_name, platform_storage_name, portable_storage_name,

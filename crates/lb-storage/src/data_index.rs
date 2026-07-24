@@ -956,7 +956,7 @@ mod tests {
         let catalog = index.platform_catalog().expect("platform catalog");
         assert_eq!(catalog.platforms.len(), 1);
         assert_eq!(catalog.categories.len(), 1);
-        assert_eq!(catalog.folders.len(), 1);
+        assert_eq!(catalog.folders.len(), 2);
         assert_eq!(catalog.platforms[0].release_date.as_deref(), Some("1999"));
 
         assert_eq!(index.parents().len(), 2);
