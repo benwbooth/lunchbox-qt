@@ -31,6 +31,7 @@ pub mod qobject {
         #[qproperty(QString, missing_media_filter)]
         #[qproperty(QString, game_sort)]
         #[qproperty(bool, game_sort_descending)]
+        #[qproperty(bool, list_view)]
         #[qproperty(bool, include_hidden_games)]
         #[qproperty(bool, include_broken_games)]
         #[qproperty(bool, loading)]
@@ -375,6 +376,9 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn apply_list_view(self: Pin<&mut LibraryController>, list_view: bool) -> bool;
+
+        #[qinvokable]
         fn select_random_game(self: Pin<&mut LibraryController>, avoid_game_id: QString) -> i32;
 
         #[qinvokable]
@@ -707,6 +711,13 @@ pub mod qobject {
             self: &LibraryController,
             random_row: i32,
             avoided_game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_library_list_view_smoke_success(
+            self: &LibraryController,
+            reloaded: bool,
+            selected_game_id: QString,
         ) -> bool;
 
         #[qinvokable]
@@ -1317,6 +1328,7 @@ pub struct LibraryControllerRust {
     missing_media_filter: QString,
     game_sort: QString,
     game_sort_descending: bool,
+    list_view: bool,
     include_hidden_games: bool,
     include_broken_games: bool,
     loading: bool,
@@ -1538,6 +1550,7 @@ struct LoadedLibrary {
     big_box_pause_screen_policy: FrontendPauseScreenPolicy,
     game_sort: GameSort,
     game_sort_descending: bool,
+    list_view: bool,
 }
 
 struct LibraryReplacement {
@@ -1561,6 +1574,7 @@ struct LibraryReplacement {
     big_box_pause_screen_policy: FrontendPauseScreenPolicy,
     game_sort: GameSort,
     game_sort_descending: bool,
+    list_view: bool,
     name: String,
     message: String,
     pending_recovery_count: usize,
@@ -1627,12 +1641,14 @@ impl LoadedLibrary {
                 big_box_pause_screen_policy: FrontendPauseScreenPolicy::default(),
                 game_sort: GameSort::default(),
                 game_sort_descending: false,
+                list_view: false,
             });
         }
 
         let data = LaunchBoxDataIndex::load(&path).map_err(|error| error.to_string())?;
         let root = PathBuf::from(&path);
         let (game_sort, game_sort_descending) = game_sort_from_settings(data.settings());
+        let list_view = list_view_from_settings(data.settings());
         let launchbox_launch_screen_policy =
             FrontendLaunchScreenPolicy::from_settings(data.settings())
                 .map_err(|error| error.to_string())?;
@@ -1732,6 +1748,7 @@ impl LoadedLibrary {
             big_box_pause_screen_policy,
             game_sort,
             game_sort_descending,
+            list_view,
         })
     }
 }
@@ -1745,6 +1762,12 @@ fn game_sort_from_settings(settings: Option<&FrontendSettings>) -> (GameSort, bo
         .and_then(|settings| settings.get_bool("SortByDesc"))
         .unwrap_or(false);
     (sort, descending)
+}
+
+fn list_view_from_settings(settings: Option<&FrontendSettings>) -> bool {
+    settings
+        .and_then(|settings| settings.get_bool("ListView"))
+        .unwrap_or(false)
 }
 
 fn platform_key(name: &str) -> String {
@@ -2005,6 +2028,16 @@ struct GameSortWriteSuccess {
 }
 
 enum GameSortWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Other(String),
+}
+
+struct ListViewWriteSuccess {
+    backup: PathBuf,
+}
+
+enum ListViewWriteFailure {
     Conflict(String),
     PendingRecovery { count: usize, message: String },
     Other(String),
@@ -4270,6 +4303,42 @@ fn write_game_sort_settings(
             )
         })?;
     Ok(GameSortWriteSuccess { backup })
+}
+
+fn write_list_view_setting(
+    root: PathBuf,
+    list_view: bool,
+) -> Result<ListViewWriteSuccess, ListViewWriteFailure> {
+    let settings_path = root.join("Data").join("Settings.xml");
+    let mut settings = AuxiliaryDocument::load(&settings_path)
+        .map_err(|error| ListViewWriteFailure::Other(error.to_string()))?;
+    settings
+        .set_single_record_field(
+            "Settings",
+            "ListView",
+            if list_view { "true" } else { "false" },
+        )
+        .map_err(|error| ListViewWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_list_view_transaction_error)?;
+    transaction
+        .stage_auxiliary(&settings)
+        .map_err(classify_list_view_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_list_view_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == settings_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            ListViewWriteFailure::Other(
+                "view-mode transaction reported no Settings.xml write".into(),
+            )
+        })?;
+    Ok(ListViewWriteSuccess { backup })
 }
 
 fn write_game(
@@ -14328,6 +14397,27 @@ fn classify_game_sort_transaction_error(error: TransactionError) -> GameSortWrit
     }
 }
 
+fn classify_list_view_transaction_error(error: TransactionError) -> ListViewWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::SourceConflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            ListViewWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            ListViewWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            ListViewWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => ListViewWriteFailure::Other(message),
+    }
+}
+
 fn classify_platform_transaction_error(error: TransactionError) -> PlatformWriteFailure {
     let message = error.to_string();
     match error {
@@ -14869,6 +14959,7 @@ impl qobject::LibraryController {
                     big_box_pause_screen_policy: FrontendPauseScreenPolicy::default(),
                     game_sort: GameSort::default(),
                     game_sort_descending: false,
+                    list_view: false,
                     name: "Fixture Console".into(),
                     message: "Embedded compatibility fixture".into(),
                     pending_recovery_count: 0,
@@ -15195,6 +15286,47 @@ impl qobject::LibraryController {
                 self.as_mut().set_status_message(qstring(format!(
                     "Could not start Arrange By settings writer: {error}"
                 )));
+            }
+        }
+        true
+    }
+
+    pub fn apply_list_view(mut self: Pin<&mut Self>, list_view: bool) -> bool {
+        let previous = *self.as_ref().list_view();
+        if previous == list_view {
+            return true;
+        }
+        let launchbox_root = self.as_ref().rust().launchbox_root.clone();
+        if launchbox_root.is_some() && !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+
+        self.as_mut().set_list_view(list_view);
+        if let Some(root) = launchbox_root {
+            let generation = self.as_ref().rust().request_generation;
+            self.as_mut().set_writing(true);
+            self.as_mut()
+                .set_status_message(qstring("Saving library view mode in the background..."));
+            let qt_thread = self.as_ref().qt_thread();
+            let spawn_result = std::thread::Builder::new()
+                .name("launchbox-view-mode-settings-write".to_string())
+                .spawn(move || {
+                    let result = write_list_view_setting(root, list_view);
+                    qt_thread
+                        .queue(move |mut controller| {
+                            controller
+                                .as_mut()
+                                .finish_list_view_write(generation, previous, result);
+                        })
+                        .ok();
+                });
+            if let Err(error) = spawn_result {
+                self.as_mut().set_writing(false);
+                self.as_mut().set_list_view(previous);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not start library view-mode settings writer: {error}"
+                )));
+                return false;
             }
         }
         true
@@ -17883,6 +18015,44 @@ impl qobject::LibraryController {
             eprintln!(
                 "LIBRARY_ORDER_SMOKE_COMPLETE games={} sort={} descending=true random_row={random_row}",
                 rust.games.len(),
+                self.game_sort(),
+            );
+        }
+        success
+    }
+
+    pub fn report_library_list_view_smoke_success(
+        &self,
+        reloaded: bool,
+        selected_game_id: QString,
+    ) -> bool {
+        let selected_game_id = selected_game_id.to_string();
+        let rust = self.rust();
+        let ordered_ids = rust
+            .filtered_indices
+            .iter()
+            .map(|index| rust.games[*index].id.as_str())
+            .collect::<Vec<_>>();
+        let expected_selected = if reloaded {
+            "fixture-racer"
+        } else {
+            "fixture-adventure"
+        };
+        let success = rust.games.len() == 3
+            && ordered_ids == ["fixture-racer", "fixture-adventure", "fixture-puzzle"]
+            && *self.list_view()
+            && self.game_sort().to_string() == GameSort::PlayCount.key()
+            && *self.game_sort_descending()
+            && selected_game_id == expected_selected
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "LIBRARY_LIST_VIEW_SMOKE_COMPLETE reload={} rows={} selected={} sort={} descending=true",
+                i32::from(reloaded),
+                ordered_ids.len(),
+                selected_game_id,
                 self.game_sort(),
             );
         }
@@ -21624,6 +21794,7 @@ impl qobject::LibraryController {
                     big_box_pause_screen_policy: loaded.big_box_pause_screen_policy,
                     game_sort: loaded.game_sort,
                     game_sort_descending: loaded.game_sort_descending,
+                    list_view: loaded.list_view,
                     name: loaded.name,
                     message: loaded.message,
                     pending_recovery_count: loaded.pending_recovery_count,
@@ -21792,6 +21963,48 @@ impl qobject::LibraryController {
             Err(GameSortWriteFailure::Other(message)) => {
                 self.as_mut().set_status_message(qstring(format!(
                     "Could not save Arrange By settings: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_list_view_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        previous: bool,
+        result: Result<ListViewWriteSuccess, ListViewWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(written) => {
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved library view mode. Exact backup: {}",
+                    written.backup.display()
+                )));
+            }
+            Err(ListViewWriteFailure::Conflict(message)) => {
+                self.as_mut().set_list_view(previous);
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(ListViewWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut().set_list_view(previous);
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(ListViewWriteFailure::Other(message)) => {
+                self.as_mut().set_list_view(previous);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save library view mode: {message}"
                 )));
             }
         }
@@ -25053,6 +25266,7 @@ impl qobject::LibraryController {
             big_box_pause_screen_policy,
             game_sort,
             game_sort_descending,
+            list_view,
             name,
             message,
             pending_recovery_count,
@@ -25236,6 +25450,7 @@ impl qobject::LibraryController {
         self.as_mut().set_missing_media_filter(qstring("none"));
         self.as_mut().set_game_sort(qstring(game_sort.key()));
         self.as_mut().set_game_sort_descending(game_sort_descending);
+        self.as_mut().set_list_view(list_view);
         self.as_mut().set_include_hidden_games(false);
         self.as_mut().set_include_broken_games(false);
         self.as_mut().set_navigation_filter_kind(QString::default());
@@ -26038,6 +26253,37 @@ mod tests {
     }
 
     #[test]
+    fn launchbox_list_view_setting_is_typed_with_a_grid_default() {
+        let list = FrontendSettings {
+            entries: vec![lb_domain::SettingEntry {
+                key: "ListView".into(),
+                value: "true".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert!(list_view_from_settings(Some(&list)));
+
+        let grid = FrontendSettings {
+            entries: vec![lb_domain::SettingEntry {
+                key: "ListView".into(),
+                value: "false".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert!(!list_view_from_settings(Some(&grid)));
+
+        let invalid = FrontendSettings {
+            entries: vec![lb_domain::SettingEntry {
+                key: "ListView".into(),
+                value: "future-value".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert!(!list_view_from_settings(Some(&invalid)));
+        assert!(!list_view_from_settings(None));
+    }
+
+    #[test]
     fn arrange_by_writer_atomically_updates_only_launchbox_settings() {
         let directory = tempfile::tempdir().expect("temporary library");
         let data = directory.path().join("Data");
@@ -26063,6 +26309,45 @@ mod tests {
         assert!(updated.contains("<SortBy>PlayCount</SortBy>"));
         assert!(updated.contains("<SortByDesc>true</SortByDesc>"));
         assert!(updated.contains("<Theme>Fixture Theme</Theme>"));
+    }
+
+    #[test]
+    fn list_view_writer_atomically_updates_only_launchbox_settings() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        let platforms = data.join("Platforms");
+        fs::create_dir_all(&platforms).expect("create platform directory");
+        let settings_path = data.join("Settings.xml");
+        let platform_path = platforms.join("Fixture Console.xml");
+        let original_settings = include_bytes!("../../../fixtures/launchbox/Data/Settings.xml");
+        let original_platform =
+            include_bytes!("../../../fixtures/launchbox/Data/Platforms/Fixture Console.xml");
+        fs::write(&settings_path, original_settings).expect("write settings fixture");
+        fs::write(&platform_path, original_platform).expect("write platform fixture");
+
+        let written =
+            write_list_view_setting(directory.path().to_path_buf(), true).unwrap_or_else(|error| {
+                match error {
+                    ListViewWriteFailure::Conflict(message)
+                    | ListViewWriteFailure::Other(message)
+                    | ListViewWriteFailure::PendingRecovery { message, .. } => {
+                        panic!("write ListView setting: {message}")
+                    }
+                }
+            });
+        assert_eq!(
+            fs::read(&written.backup).expect("read exact backup"),
+            original_settings
+        );
+        let updated = fs::read_to_string(settings_path).expect("read updated settings");
+        assert!(updated.contains("<ListView>true</ListView>"));
+        assert!(updated.contains("<SortBy>Title</SortBy>"));
+        assert!(updated.contains("<SortByDesc>false</SortByDesc>"));
+        assert!(updated.contains("<Theme>Fixture Theme</Theme>"));
+        assert_eq!(
+            fs::read(platform_path).expect("read unchanged platform"),
+            original_platform
+        );
     }
 
     #[test]

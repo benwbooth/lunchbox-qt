@@ -973,7 +973,7 @@ mod tests {
 
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         let settings = index.settings().expect("LaunchBox settings");
-        assert_eq!(settings.entries.len(), 14);
+        assert_eq!(settings.entries.len(), 15);
         assert_eq!(settings.get("Theme"), Some("Fixture Theme"));
         assert_eq!(settings.get_bool("DebugLog"), Some(false));
         assert_eq!(settings.get_bool("UseStartupScreen"), Some(true));
@@ -996,6 +996,7 @@ mod tests {
         assert_eq!(settings.get_bool("PauseScreenFading"), Some(true));
         assert_eq!(settings.get("SortBy"), Some("Title"));
         assert_eq!(settings.get_bool("SortByDesc"), Some(false));
+        assert_eq!(settings.get_bool("ListView"), Some(false));
         assert_eq!(settings.get("EmptyValue"), Some(""));
         assert_eq!(settings.image_type_settings.len(), 1);
 

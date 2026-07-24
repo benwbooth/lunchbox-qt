@@ -38,6 +38,16 @@ ApplicationWindow {
     property int libraryOrderSmokePhase: 0
     property int libraryOrderSmokeRandomRow: -1
     property bool libraryOrderSmokeFinished: false
+    property bool libraryListViewSmokeTest:
+        Qt.application.arguments.indexOf("--library-list-view-smoke-test") >= 0
+    property bool libraryListViewReloadSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--library-list-view-reload-smoke-test") >= 0
+    property int libraryListViewSmokePhase: 0
+    property bool libraryListViewSmokeFinished: false
+    property bool libraryListViewScreenshotRequested: false
+    property string libraryListViewScreenshotPath:
+        argumentValue("--library-list-view-screenshot")
     property bool loadSmokeTest: Qt.application.arguments.indexOf("--load-smoke-test") >= 0
     property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
     property bool mediaSmokeFinished: false
@@ -77,6 +87,15 @@ ApplicationWindow {
     property bool detailsWindowMaximized: false
     property string selectedGameId: ""
     property bool gameSelectionResetPending: false
+    property string listCurrentGameId: ""
+    property string listCurrentGameTitle: ""
+    property string listCurrentGamePlatform: ""
+    property string listCurrentGameDeveloper: ""
+    property string listCurrentGameReleaseDate: ""
+    property string listCurrentGameGenre: ""
+    property string listCurrentGameRating: ""
+    property int listCurrentGamePlayCount: 0
+    property real listCurrentGamePlayTimeSeconds: 0
     readonly property var selectedGameItem:
         gameGrid.currentIndex >= 0 ? gameGrid.currentItem : null
     property bool editSmokeTest: Qt.application.arguments.indexOf("--edit-smoke-test") >= 0
@@ -314,6 +333,7 @@ ApplicationWindow {
         { label: "Status", key: "Status" },
         { label: "Favorite", key: "Favorite" }
     ]
+    readonly property int libraryListTableWidth: 1250
 
     function platformName(row) { return controller.platform_name_at(row) }
     function platformGameCount(row) { return controller.platform_game_count_at(row) }
@@ -342,6 +362,7 @@ ApplicationWindow {
     function restoreGameSelection(preferredId) {
         if (gameGrid.count <= 0) {
             gameGrid.currentIndex = -1
+            gameList.currentIndex = -1
             selectedGameId = ""
             return
         }
@@ -351,8 +372,95 @@ ApplicationWindow {
                           ? controller.row_for_game_id(retainedId) : -1
         const row = retainedRow >= 0 ? retainedRow : 0
         gameGrid.currentIndex = row
+        gameList.currentIndex = row
         selectedGameId = controller.game_id_at(row)
-        gameGrid.positionViewAtIndex(row, GridView.Contain)
+        positionCurrentGame(row, false)
+    }
+
+    function positionCurrentGame(row, center) {
+        if (row < 0)
+            return
+        if (controller.list_view)
+            gameList.positionViewAtIndex(
+                        row, center ? ListView.Center : ListView.Contain)
+        else
+            gameGrid.positionViewAtIndex(
+                        row, center ? GridView.Center : GridView.Contain)
+    }
+
+    function focusCurrentLibraryView() {
+        if (controller.list_view)
+            gameList.forceActiveFocus()
+        else
+            gameGrid.forceActiveFocus()
+    }
+
+    function setLibraryViewMode(listView) {
+        const retainedId = currentGameId()
+        if (!controller.apply_list_view(listView))
+            return false
+        Qt.callLater(function() {
+            restoreGameSelection(retainedId)
+            focusCurrentLibraryView()
+        })
+        return true
+    }
+
+    function sortIndicator(key) {
+        if (controller.game_sort !== key)
+            return ""
+        return controller.game_sort_descending ? "  ▼" : "  ▲"
+    }
+
+    function applyListColumnSort(key) {
+        const index = filterChoiceIndex(gameSortChoices, key)
+        if (index < 0)
+            return false
+        const descending = controller.game_sort === key
+                         ? !controller.game_sort_descending : false
+        gameSortCombo.currentIndex = index
+        gameSortDescendingCheck.checked = descending
+        return controller.apply_game_sort(key, descending)
+    }
+
+    function openSelectedGameEditor() {
+        if (selectedGameItem === null)
+            return false
+        selectedGameItem.openEditor()
+        return true
+    }
+
+    function finishLibraryListViewSmoke(reload) {
+        function complete() {
+            if (!controller.report_library_list_view_smoke_success(
+                    reload, selectedGameId)) {
+                console.error(
+                    "LIBRARY_LIST_VIEW_CONTROLLER_REJECTED reload="
+                    + (reload ? 1 : 0)
+                    + " selected=" + selectedGameId)
+                Qt.exit(486)
+                return
+            }
+            libraryListViewSmokeFinished = true
+            Qt.quit()
+        }
+        if (reload || libraryListViewScreenshotPath.length === 0) {
+            complete()
+            return
+        }
+        if (libraryListViewScreenshotRequested)
+            return
+        libraryListViewScreenshotRequested = true
+        gameListPane.grabToImage(function(result) {
+            if (!result.saveToFile(libraryListViewScreenshotPath)) {
+                console.error(
+                    "LIBRARY_LIST_VIEW_SCREENSHOT_SAVE_FAILED path="
+                    + libraryListViewScreenshotPath)
+                Qt.exit(486)
+                return
+            }
+            complete()
+        })
     }
 
     function beginGameSelectionReset() {
@@ -414,9 +522,10 @@ ApplicationWindow {
         const row = controller.select_random_game(currentId)
         if (row >= 0) {
             gameGrid.currentIndex = row
+            gameList.currentIndex = row
             selectedGameId = controller.game_id_at(row)
-            gameGrid.positionViewAtIndex(row, GridView.Center)
-            gameGrid.forceActiveFocus()
+            positionCurrentGame(row, true)
+            focusCurrentLibraryView()
         }
         return row
     }
@@ -1398,6 +1507,141 @@ ApplicationWindow {
             console.error("LIBRARY_ORDER_SMOKE_TIMEOUT phase="
                           + window.libraryOrderSmokePhase)
             Qt.exit(32)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: (window.libraryListViewSmokeTest
+                  || window.libraryListViewReloadSmokeTest)
+                 && !window.libraryListViewSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.library_path.length === 0
+                    || gameGrid.count !== 3)
+                return
+
+            if (window.libraryListViewReloadSmokeTest) {
+                if (!controller.list_view
+                        || controller.game_sort !== "PlayCount"
+                        || !controller.game_sort_descending
+                        || gameGrid.visible || !gameListPane.visible
+                        || !window.filteredIdsMatch(
+                            ["fixture-racer", "fixture-adventure",
+                             "fixture-puzzle"])
+                        || gameList.currentIndex !== gameGrid.currentIndex
+                        || gameList.currentItem === null
+                        || window.listCurrentGameTitle
+                           !== "Fixture Racer") {
+                    console.error(
+                        "LIBRARY_LIST_VIEW_RELOAD_BAD_STATE list="
+                        + controller.list_view
+                        + " sort=" + controller.game_sort
+                        + " descending=" + controller.game_sort_descending
+                        + " gridVisible=" + gameGrid.visible
+                        + " listVisible=" + gameListPane.visible
+                        + " row=" + gameList.currentIndex)
+                    Qt.exit(486)
+                    return
+                }
+                window.finishLibraryListViewSmoke(true)
+                return
+            }
+
+            if (window.libraryListViewSmokePhase === 0) {
+                if (controller.list_view || !gameGrid.visible
+                        || gameListPane.visible) {
+                    console.error(
+                        "LIBRARY_LIST_VIEW_BAD_GRID_DEFAULT list="
+                        + controller.list_view)
+                    Qt.exit(486)
+                    return
+                }
+                window.restoreGameSelection("fixture-adventure")
+                listViewButton.click()
+                window.libraryListViewSmokePhase = 1
+            } else if (window.libraryListViewSmokePhase === 1) {
+                if (!controller.list_view || gameGrid.visible
+                        || !gameListPane.visible
+                        || window.selectedGameId !== "fixture-adventure"
+                        || gameGrid.currentIndex !== gameList.currentIndex
+                        || gameList.currentItem === null
+                        || window.listCurrentGameId
+                           !== "fixture-adventure"
+                        || window.listCurrentGameTitle
+                           !== "Fixture Adventure"
+                        || window.listCurrentGamePlatform
+                           !== "Fixture Console"
+                        || window.listCurrentGameDeveloper
+                           !== "Fixture Labs"
+                        || window.listCurrentGameReleaseDate
+                           !== "1999-03-04"
+                        || window.listCurrentGameGenre !== "Adventure"
+                        || window.listCurrentGameRating !== "E"
+                        || window.listCurrentGamePlayCount !== 3
+                        || window.listCurrentGamePlayTimeSeconds !== 5400) {
+                    console.error(
+                        "LIBRARY_LIST_VIEW_BAD_ROW_BINDINGS selected="
+                        + window.selectedGameId
+                        + " gridRow=" + gameGrid.currentIndex
+                        + " listRow=" + gameList.currentIndex)
+                    Qt.exit(486)
+                    return
+                }
+                playCountHeader.click()
+                window.libraryListViewSmokePhase = 2
+            } else if (window.libraryListViewSmokePhase === 2) {
+                if (controller.game_sort !== "PlayCount"
+                        || controller.game_sort_descending
+                        || !window.filteredIdsMatch(
+                            ["fixture-puzzle", "fixture-adventure",
+                             "fixture-racer"])
+                        || window.selectedGameId !== "fixture-adventure"
+                        || gameList.currentIndex !== 1
+                        || gameGrid.currentIndex !== 1) {
+                    console.error(
+                        "LIBRARY_LIST_VIEW_BAD_ASCENDING_HEADER_SORT")
+                    Qt.exit(486)
+                    return
+                }
+                playCountHeader.click()
+                window.libraryListViewSmokePhase = 3
+            } else if (window.libraryListViewSmokePhase === 3) {
+                if (controller.game_sort !== "PlayCount"
+                        || !controller.game_sort_descending
+                        || !window.filteredIdsMatch(
+                            ["fixture-racer", "fixture-adventure",
+                             "fixture-puzzle"])
+                        || window.selectedGameId !== "fixture-adventure"
+                        || gameList.currentIndex !== 1
+                        || gameGrid.currentIndex !== 1
+                        || gameList.currentItem === null
+                        || window.listCurrentGameTitle
+                           !== "Fixture Adventure") {
+                    console.error(
+                        "LIBRARY_LIST_VIEW_BAD_DESCENDING_HEADER_SORT")
+                    Qt.exit(486)
+                    return
+                }
+                window.finishLibraryListViewSmoke(false)
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: (window.libraryListViewSmokeTest
+                  || window.libraryListViewReloadSmokeTest)
+                 && !window.libraryListViewSmokeFinished
+        onTriggered: {
+            console.error(
+                "LIBRARY_LIST_VIEW_SMOKE_TIMEOUT phase="
+                + window.libraryListViewSmokePhase
+                + " list=" + controller.list_view
+                + " rows=" + gameList.count
+                + " status=" + controller.status_message)
+            Qt.exit(486)
         }
     }
 
@@ -4385,6 +4629,30 @@ ApplicationWindow {
                                  && !controller.loading && !controller.writing
                         onClicked: window.selectRandomGame()
                     }
+                    Item { Layout.preferredWidth: 12 }
+                    Label {
+                        text: "View"
+                        color: "#aeb8c5"
+                        font.bold: true
+                    }
+                    Button {
+                        id: gridViewButton
+                        text: "Grid"
+                        highlighted: !controller.list_view
+                        Accessible.name: "Show games as images"
+                        enabled: controller.library_path.length > 0
+                                 && !controller.loading && !controller.writing
+                        onClicked: window.setLibraryViewMode(false)
+                    }
+                    Button {
+                        id: listViewButton
+                        text: "List"
+                        highlighted: controller.list_view
+                        Accessible.name: "Show games in a list"
+                        enabled: controller.library_path.length > 0
+                                 && !controller.loading && !controller.writing
+                        onClicked: window.setLibraryViewMode(true)
+                    }
                     Item { Layout.fillWidth: true }
                 }
 
@@ -4403,22 +4671,29 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     orientation: Qt.Horizontal
 
-                    GridView {
-                        id: gameGrid
+                    Item {
+                        id: gameLibraryView
                         SplitView.fillWidth: true
                         SplitView.minimumWidth: 420
-                        clip: true
-                        focus: true
-                        cellWidth: 230
-                        cellHeight: 340
-                        model: controller
-                        onCurrentIndexChanged: {
-                            if (!window.gameSelectionResetPending
-                                    && currentIndex >= 0)
-                                window.selectedGameId =
-                                    controller.game_id_at(currentIndex)
-                        }
-                        delegate: Rectangle {
+
+                        GridView {
+                            id: gameGrid
+                            anchors.fill: parent
+                            visible: !controller.list_view
+                            clip: true
+                            focus: visible
+                            cellWidth: 230
+                            cellHeight: 340
+                            model: controller
+                            onCurrentIndexChanged: {
+                                if (gameList.currentIndex !== currentIndex)
+                                    gameList.currentIndex = currentIndex
+                                if (!window.gameSelectionResetPending
+                                        && currentIndex >= 0)
+                                    window.selectedGameId =
+                                        controller.game_id_at(currentIndex)
+                            }
+                            delegate: Rectangle {
                             required property int index
                             required property string gameTitle
                             required property string gameId
@@ -4721,6 +4996,357 @@ ApplicationWindow {
                                          && !controller.write_conflict
                                 onClicked: gameSaveManager.prepare(
                                                index, gameId, gameTitle)
+                            }
+                        }
+
+                        }
+
+                        Item {
+                            id: gameListPane
+                            anchors.fill: parent
+                            visible: controller.list_view
+
+                            Flickable {
+                                id: gameListHorizontal
+                                anchors.fill: parent
+                                contentWidth: Math.max(
+                                                  width,
+                                                  window.libraryListTableWidth)
+                                contentHeight: height
+                                flickableDirection: Flickable.HorizontalFlick
+                                boundsBehavior: Flickable.StopAtBounds
+                                clip: true
+                                ScrollBar.horizontal: ScrollBar {}
+
+                                Item {
+                                    width: gameListHorizontal.contentWidth
+                                    height: gameListHorizontal.height
+
+                                    Row {
+                                        id: gameListHeader
+                                        width: parent.width
+                                        height: 42
+
+                                        Button {
+                                            width: 70
+                                            height: parent.height
+                                            text: "State"
+                                            Accessible.name:
+                                                "Sort list by favorite state"
+                                            onClicked:
+                                                window.applyListColumnSort(
+                                                    "Favorite")
+                                        }
+                                        Button {
+                                            width: 260
+                                            height: parent.height
+                                            text: "Title"
+                                                  + window.sortIndicator("Title")
+                                            Accessible.name:
+                                                "Sort list by title"
+                                            onClicked:
+                                                window.applyListColumnSort(
+                                                    "Title")
+                                        }
+                                        Button {
+                                            width: 150
+                                            height: parent.height
+                                            text: "Platform"
+                                                  + window.sortIndicator(
+                                                      "Platform")
+                                            Accessible.name:
+                                                "Sort list by platform"
+                                            onClicked:
+                                                window.applyListColumnSort(
+                                                    "Platform")
+                                        }
+                                        Button {
+                                            width: 180
+                                            height: parent.height
+                                            text: "Developer"
+                                                  + window.sortIndicator(
+                                                      "Developer")
+                                            Accessible.name:
+                                                "Sort list by developer"
+                                            onClicked:
+                                                window.applyListColumnSort(
+                                                    "Developer")
+                                        }
+                                        Button {
+                                            width: 120
+                                            height: parent.height
+                                            text: "Release Date"
+                                                  + window.sortIndicator(
+                                                      "ReleaseDate")
+                                            Accessible.name:
+                                                "Sort list by release date"
+                                            onClicked:
+                                                window.applyListColumnSort(
+                                                    "ReleaseDate")
+                                        }
+                                        Button {
+                                            width: 150
+                                            height: parent.height
+                                            text: "Genre"
+                                                  + window.sortIndicator(
+                                                      "Genre")
+                                            Accessible.name:
+                                                "Sort list by genre"
+                                            onClicked:
+                                                window.applyListColumnSort(
+                                                    "Genre")
+                                        }
+                                        Button {
+                                            width: 90
+                                            height: parent.height
+                                            text: "Rating"
+                                            enabled: false
+                                        }
+                                        Button {
+                                            id: playCountHeader
+                                            width: 110
+                                            height: parent.height
+                                            text: "Play Count"
+                                                  + window.sortIndicator(
+                                                      "PlayCount")
+                                            Accessible.name:
+                                                "Sort list by play count"
+                                            onClicked:
+                                                window.applyListColumnSort(
+                                                    "PlayCount")
+                                        }
+                                        Button {
+                                            width: 120
+                                            height: parent.height
+                                            text: "Play Time"
+                                                  + window.sortIndicator(
+                                                      "PlayTime")
+                                            Accessible.name:
+                                                "Sort list by play time"
+                                            onClicked:
+                                                window.applyListColumnSort(
+                                                    "PlayTime")
+                                        }
+                                    }
+
+                                    ListView {
+                                        id: gameList
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: gameListHeader.bottom
+                                        anchors.bottom: parent.bottom
+                                        clip: true
+                                        focus: visible
+                                        model: controller
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        ScrollBar.vertical: ScrollBar {}
+                                        Keys.onReturnPressed:
+                                            window.openSelectedGameEditor()
+                                        Keys.onEnterPressed:
+                                            window.openSelectedGameEditor()
+                                        onCurrentIndexChanged: {
+                                            if (gameGrid.currentIndex
+                                                    !== currentIndex)
+                                                gameGrid.currentIndex =
+                                                    currentIndex
+                                            if (!window.gameSelectionResetPending
+                                                    && currentIndex >= 0)
+                                                window.selectedGameId =
+                                                    controller.game_id_at(
+                                                        currentIndex)
+                                        }
+
+                                        delegate: Rectangle {
+                                            required property int index
+                                            required property string gameId
+                                            required property string gameTitle
+                                            required property string gamePlatform
+                                            required property bool gameFavorite
+                                            required property bool gameCompleted
+                                            required property string gameDeveloper
+                                            required property string gameReleaseDate
+                                            required property string gameGenre
+                                            required property string gameRating
+                                            required property int gamePlayCount
+                                            required property double gamePlayTimeSeconds
+
+                                            function publishSmokeBindings() {
+                                                if (!ListView.isCurrentItem)
+                                                    return
+                                                window.listCurrentGameId =
+                                                    gameId
+                                                window.listCurrentGameTitle =
+                                                    gameTitle
+                                                window.listCurrentGamePlatform =
+                                                    gamePlatform
+                                                window.listCurrentGameDeveloper =
+                                                    gameDeveloper
+                                                window.listCurrentGameReleaseDate =
+                                                    gameReleaseDate
+                                                window.listCurrentGameGenre =
+                                                    gameGenre
+                                                window.listCurrentGameRating =
+                                                    gameRating
+                                                window.listCurrentGamePlayCount =
+                                                    gamePlayCount
+                                                window
+                                                    .listCurrentGamePlayTimeSeconds =
+                                                    gamePlayTimeSeconds
+                                            }
+
+                                            Component.onCompleted:
+                                                publishSmokeBindings()
+                                            ListView.onIsCurrentItemChanged:
+                                                publishSmokeBindings()
+
+                                            width: gameList.width
+                                            height: 44
+                                            color: gameList.currentIndex === index
+                                                   ? "#27384d"
+                                                   : listRowMouse.containsMouse
+                                                     ? "#222b36"
+                                                     : index % 2 === 0
+                                                       ? "#191f26"
+                                                       : "#171c22"
+
+                                            Row {
+                                                anchors.fill: parent
+
+                                                Label {
+                                                    width: 70
+                                                    height: parent.height
+                                                    leftPadding: 12
+                                                    text: (gameFavorite
+                                                           ? "★" : "")
+                                                          + (gameCompleted
+                                                             ? "  ✓" : "")
+                                                    color: gameFavorite
+                                                           ? "#e3b341"
+                                                           : "#8b949e"
+                                                    verticalAlignment:
+                                                        Text.AlignVCenter
+                                                }
+                                                Label {
+                                                    width: 260
+                                                    height: parent.height
+                                                    leftPadding: 12
+                                                    rightPadding: 12
+                                                    text: gameTitle
+                                                    color: "white"
+                                                    font.bold:
+                                                        gameList.currentIndex
+                                                        === index
+                                                    elide: Text.ElideRight
+                                                    verticalAlignment:
+                                                        Text.AlignVCenter
+                                                }
+                                                Label {
+                                                    width: 150
+                                                    height: parent.height
+                                                    leftPadding: 12
+                                                    rightPadding: 12
+                                                    text: gamePlatform
+                                                    color: "#c4cfdb"
+                                                    elide: Text.ElideRight
+                                                    verticalAlignment:
+                                                        Text.AlignVCenter
+                                                }
+                                                Label {
+                                                    width: 180
+                                                    height: parent.height
+                                                    leftPadding: 12
+                                                    rightPadding: 12
+                                                    text: gameDeveloper
+                                                    color: "#c4cfdb"
+                                                    elide: Text.ElideRight
+                                                    verticalAlignment:
+                                                        Text.AlignVCenter
+                                                }
+                                                Label {
+                                                    width: 120
+                                                    height: parent.height
+                                                    leftPadding: 12
+                                                    text: gameReleaseDate
+                                                    color: "#c4cfdb"
+                                                    verticalAlignment:
+                                                        Text.AlignVCenter
+                                                }
+                                                Label {
+                                                    width: 150
+                                                    height: parent.height
+                                                    leftPadding: 12
+                                                    rightPadding: 12
+                                                    text: gameGenre
+                                                    color: "#c4cfdb"
+                                                    elide: Text.ElideRight
+                                                    verticalAlignment:
+                                                        Text.AlignVCenter
+                                                }
+                                                Label {
+                                                    width: 90
+                                                    height: parent.height
+                                                    leftPadding: 12
+                                                    text: gameRating
+                                                    color: "#c4cfdb"
+                                                    verticalAlignment:
+                                                        Text.AlignVCenter
+                                                }
+                                                Label {
+                                                    width: 110
+                                                    height: parent.height
+                                                    leftPadding: 12
+                                                    text: gamePlayCount
+                                                    color: "#c4cfdb"
+                                                    verticalAlignment:
+                                                        Text.AlignVCenter
+                                                }
+                                                Label {
+                                                    width: 120
+                                                    height: parent.height
+                                                    leftPadding: 12
+                                                    text: window.formatPlayTime(
+                                                              gamePlayTimeSeconds)
+                                                    color: "#c4cfdb"
+                                                    verticalAlignment:
+                                                        Text.AlignVCenter
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: listRowMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                enabled:
+                                                    controller.library_path.length
+                                                    > 0
+                                                    && !controller.loading
+                                                    && !controller.writing
+                                                    && !controller.launching
+                                                    && !controller.write_conflict
+                                                    && controller
+                                                       .pending_recovery_count
+                                                       === 0
+                                                onClicked: {
+                                                    gameList.currentIndex = index
+                                                    gameGrid.currentIndex = index
+                                                    window.selectedGameId =
+                                                        gameId
+                                                    gameList.forceActiveFocus()
+                                                }
+                                                onDoubleClicked: {
+                                                    gameList.currentIndex = index
+                                                    gameGrid.currentIndex = index
+                                                    window.selectedGameId =
+                                                        gameId
+                                                    Qt.callLater(function() {
+                                                        window
+                                                            .openSelectedGameEditor()
+                                                    })
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
 

@@ -196,6 +196,14 @@ transactional settings writer with an exact backup. Random selection operates
 on the visible model and avoids the current game when possible. This is
 platform-neutral Rust/Qt behavior shared unchanged by Linux, Windows, Intel
 macOS, and Apple Silicon.
+LaunchBox can now switch that same model and stable-ID selection between its
+box-art grid and a virtualized, horizontally scrollable list. The list shows
+state, title, platform, developer, release date, genre, content rating, play
+count, and play time; supported headers drive the shared sorter. The original
+`Settings.xml` `ListView` Boolean is loaded and transactionally persisted, so a
+new process restores the selected view on every supported host. Column
+visibility, ordering, resizing, the remaining original columns, and box-size
+controls are still tracked as later `DESK-001` work.
 Existing-platform game additions generate UUIDs and use targeted Qt row
 insertion. Deletion freshly scans every modeled platform, playlist, navigation,
 clone, save, controller, and blacklist reference and refuses orphaning; an

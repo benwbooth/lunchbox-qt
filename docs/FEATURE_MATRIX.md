@@ -27,7 +27,13 @@ subset of `LIB-002`, transactional direct/emulator/DOSBox/ScummVM launch-field
 editing subsets of `LIB-001` and `RUN-002`, and a descriptive-metadata search
 subset of `LIB-013`, now including 17 typed Arrange By modes, atomic
 `SortBy`/`SortByDesc` persistence, and visible-model random selection in both
-frontends. A source-indexed transactional editor also implements the
+frontends. The first `DESK-001` subset also switches LaunchBox between its
+box-art grid and a virtualized multi-column list over that same model and
+stable-ID selection. It loads and atomically persists the original `ListView`
+setting, exposes query-backed sortable headers, and renders nine recovered
+default columns. Original column visibility/order/width customization, the
+remaining columns, and box-size controls remain open. A source-indexed
+transactional editor also implements the
 three-field alternate-name and name/value custom-field subset of `LIB-003`.
 The dialog-driven portable platform create/edit/delete, recovered platform
 metadata, and source-indexed folder subset of `LIB-006` is also implemented

@@ -14,6 +14,7 @@
     <PauseScreenFading>true</PauseScreenFading>
     <SortBy>Title</SortBy>
     <SortByDesc>false</SortByDesc>
+    <ListView>false</ListView>
     <EmptyValue />
   </Settings>
   <ImageTypeSettings>

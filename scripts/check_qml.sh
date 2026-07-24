@@ -267,6 +267,7 @@ edit_root=$(mktemp -d)
 library_filter_root=$(mktemp -d)
 launchbox_order_root=$(mktemp -d)
 bigbox_order_root=$(mktemp -d)
+launchbox_list_root=$(mktemp -d)
 crud_root=$(mktemp -d)
 additional_application_crud_root=$(mktemp -d)
 additional_application_default_root=$(mktemp -d)
@@ -303,7 +304,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 
 cp -a fixtures/launchbox/. "$library_filter_root/"
 library_filter_platform="$library_filter_root/Data/Platforms/Fixture Console.xml"
@@ -384,6 +385,64 @@ for shell in launchbox bigbox; do
 done
 
 echo "LaunchBox and BigBox typed Arrange By, atomic Settings.xml persistence, stable ordering, and random selection validated."
+
+cp -a fixtures/launchbox/. "$launchbox_list_root/"
+list_platform="$launchbox_list_root/Data/Platforms/Fixture Console.xml"
+list_settings="$launchbox_list_root/Data/Settings.xml"
+list_screenshot="$launchbox_list_root/launchbox-list-view.png"
+cp "$list_platform" "$list_platform.before-list-view-smoke"
+list_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$launchbox_list_root" \
+    --library-list-view-smoke-test \
+    --library-list-view-screenshot "$list_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$list_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'LIBRARY_LIST_VIEW_SMOKE_COMPLETE reload=0 rows=3 selected=fixture-adventure sort=PlayCount descending=true' \
+  <<< "$list_output"; then
+  printf '%s\n' "$list_output" >&2
+  echo "LaunchBox did not validate its model-backed grid/list transition and sortable list rows." >&2
+  exit 1
+fi
+if [[ ! -s "$list_screenshot" ]] \
+  || [[ $(wc -c < "$list_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$list_screenshot" | tr -d ' \n') \
+    != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$list_output" >&2
+  echo "LaunchBox did not render a valid list-view PNG." >&2
+  exit 1
+fi
+if ! rg -q '<ListView>true</ListView>' "$list_settings" \
+  || ! rg -q '<SortBy>PlayCount</SortBy>' "$list_settings" \
+  || ! rg -q '<SortByDesc>true</SortByDesc>' "$list_settings"; then
+  echo "LaunchBox did not persist its LaunchBox-compatible list view and header sort." >&2
+  exit 1
+fi
+cp "$list_settings" "$list_settings.after-list-view-smoke"
+list_reload_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$launchbox_list_root" \
+    --library-list-view-reload-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$list_reload_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'LIBRARY_LIST_VIEW_SMOKE_COMPLETE reload=1 rows=3 selected=fixture-racer sort=PlayCount descending=true' \
+  <<< "$list_reload_output"; then
+  printf '%s\n' "$list_reload_output" >&2
+  echo "LaunchBox did not restore the list view and list-header sort in a new process." >&2
+  exit 1
+fi
+cmp "$list_settings.after-list-view-smoke" "$list_settings"
+cmp "$list_platform.before-list-view-smoke" "$list_platform"
+
+echo "LaunchBox model-backed grid/list switching, sortable columns, stable-ID selection, rendered rows, atomic Settings.xml persistence, and new-process restoration validated."
 
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"
