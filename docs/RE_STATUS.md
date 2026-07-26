@@ -204,17 +204,38 @@ disables repeat and soundtrack shuffle, and stores music volume 75. These
 aggregate facts establish explicit paths, conventional per-platform fallback,
 local playlists, legacy module formats, separate frontend policy, and
 symlink-aware indexing. They do not establish protected M3U parser quirks,
-background/platform music, every decoder, or original error/notification
+every decoder, or original error/notification
 behavior.
+
+The 13.27 BigBox settings contract separately exposes
+`EnableBackgroundMusic`, `VolumeBackgroundMusic`,
+`EnableMusicOnScreenDisplay`, `ShuffleBackgroundMusic`,
+`UsePlatformPlaylistCategorySpecificBackgroundMusic`, and
+`PlayVideoAudioWithBackgroundMusic`. The release resources name the exact
+default `Music\Background` folder plus
+`Music\Background\Platforms\[Platform Name]`,
+`Music\Background\Playlists\[Playlist Name]`, and
+`Music\Background\Platform Categories\[Platform Category Name]`. The same
+resources expand automatic background-music recognition with SID, AC3, ALAC,
+AMR, DTS, XM, IT, MOD, APE, OPUS, QCP, NSF, and SPC. Two read-only older
+settings snapshots agree on disabled background music, volume 75, enabled OSD,
+enabled shuffle, and enabled context-specific music; the older contract does
+not contain the later video-audio coexistence setting. These facts establish
+folder selection and typed policy inputs, but not protected shuffle order,
+notification timing, decoder-specific behavior, or custom-theme overrides.
 
 The implemented cross-platform boundary therefore keeps XML paths lexical,
 resolves them once through the existing native/mapped-Windows service, validates
 bounded regular files, rejects remote/nested/traversing M3U entries, and gives
-Qt only local URLs. A fresh read-only compiled load indexed 5,539 manuals and
-8,412 music tracks for the 35,869 games in 36.314 seconds. It scanned all
+Qt only local URLs. Background contexts additionally use the shared
+Windows/Linux/macOS-safe component transform and reject case-normalized
+ambiguity. A fresh read-only compiled load indexed 5,539 manuals and 8,412
+game-music tracks for the 35,869 games in 36.314 seconds. It scanned all
 14,022 regular manual/music files across 70 present platform folders, refused
-the two symlinks, and reported no oversized or truncated input. Missing
-explicit/configured targets stayed unresolved rather than being guessed.
+the two symlinks, and reported no oversized or truncated input. That older
+library had no background collection. Missing optional background folders are
+therefore treated as absent, while missing explicit/configured game targets
+stay unresolved rather than being guessed.
 
 The installed CriticalZoneV2 BigBox `TextGamesView.xaml` independently places
 an `ImageView`, an `ImageVideoView` explicitly marked as video content, and a

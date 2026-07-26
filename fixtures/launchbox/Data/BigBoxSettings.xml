@@ -20,6 +20,12 @@
     <ShowGameMenuPlayMusic>true</ShowGameMenuPlayMusic>
     <ShowGameMenuViewManual>true</ShowGameMenuViewManual>
     <VolumeMusic>75</VolumeMusic>
+    <EnableBackgroundMusic>false</EnableBackgroundMusic>
+    <VolumeBackgroundMusic>75</VolumeBackgroundMusic>
+    <EnableMusicOnScreenDisplay>true</EnableMusicOnScreenDisplay>
+    <ShuffleBackgroundMusic>true</ShuffleBackgroundMusic>
+    <UsePlatformPlaylistCategorySpecificBackgroundMusic>true</UsePlatformPlaylistCategorySpecificBackgroundMusic>
+    <PlayVideoAudioWithBackgroundMusic>false</PlayVideoAudioWithBackgroundMusic>
     <ShowGameMenuFlipBox>true</ShowGameMenuFlipBox>
     <ShowGameMenuViewModelFullscreen>true</ShowGameMenuViewModelFullscreen>
     <KeyboardFlipBox>49</KeyboardFlipBox>

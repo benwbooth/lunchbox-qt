@@ -15,7 +15,10 @@ ApplicationWindow {
                 ? Window.Windowed : Window.FullScreen
     title: "BigBox Port"
     color: "#07090d"
-    onClosing: bigBoxMusicPlayer.stopPlayback(true)
+    onClosing: {
+        bigBoxMusicPlayer.stopPlayback(true)
+        backgroundMusicPlayer.stopForFrontend()
+    }
     property bool smokeTest: Qt.application.arguments.indexOf("--smoke-test") >= 0
     property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
     property bool mediaSmokeFinished: false
@@ -29,6 +32,18 @@ ApplicationWindow {
     property bool supplementalMediaScreenshotRequested: false
     property string supplementalMediaScreenshotPath:
         argumentValue("--supplemental-media-screenshot")
+    property bool backgroundMusicSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-background-music-smoke-test") >= 0
+    property int backgroundMusicSmokePhase: 0
+    property bool backgroundMusicSmokeFinished: false
+    property bool backgroundMusicScreenshotRequested: false
+    property string backgroundMusicScreenshotPath:
+        argumentValue("--bigbox-background-music-screenshot")
+    property string backgroundMusicDefaultFirstUrl: ""
+    property string backgroundMusicPlatformFirstUrl: ""
+    property string backgroundMusicPlaylistFirstUrl: ""
+    property string backgroundMusicCategoryFirstUrl: ""
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -110,6 +125,8 @@ ApplicationWindow {
     property string launchPauseScreenshotPath:
         argumentValue("--launch-pause-screenshot")
     property string activeNavigationName: "All Games"
+    property string backgroundMusicContextKind: ""
+    property string backgroundMusicContextName: "All Games"
     property string selectedBigBoxGameId: ""
     property string selectedBigBoxGameTitle: ""
     property string selectedBigBoxGamePlatform: ""
@@ -208,11 +225,13 @@ ApplicationWindow {
 
     function launchGame(row, gameId) {
         bigBoxMusicPlayer.stopPlayback(true)
+        backgroundMusicPlayer.stopForFrontend()
         controller.launch_game(row, gameId)
     }
 
     function launchAdditionalApplication(row, gameId, applicationId) {
         bigBoxMusicPlayer.stopPlayback(true)
+        backgroundMusicPlayer.stopForFrontend()
         controller.launch_additional_application(
                     row, gameId, applicationId)
     }
@@ -336,6 +355,46 @@ ApplicationWindow {
                     "BIGBOX_SUPPLEMENTAL_MEDIA_SCREENSHOT_SAVE_FAILED path="
                     + supplementalMediaScreenshotPath)
                 Qt.exit(578)
+                return
+            }
+            complete()
+        })
+    }
+
+    function finishBackgroundMusicSmoke() {
+        function complete() {
+            if (!controller.report_background_music_smoke_success(
+                    backgroundMusicDefaultFirstUrl,
+                    backgroundMusicPlatformFirstUrl,
+                    backgroundMusicPlaylistFirstUrl,
+                    backgroundMusicCategoryFirstUrl)) {
+                console.error(
+                    "BIGBOX_BACKGROUND_MUSIC_CONTROLLER_REJECTED"
+                    + " default=" + backgroundMusicDefaultFirstUrl
+                    + " platform=" + backgroundMusicPlatformFirstUrl
+                    + " playlist=" + backgroundMusicPlaylistFirstUrl
+                    + " category=" + backgroundMusicCategoryFirstUrl)
+                Qt.exit(629)
+                return
+            }
+            backgroundMusicPlayer.stopForFrontend()
+            backgroundMusicSmokeFinished = true
+            Qt.quit()
+        }
+        if (backgroundMusicScreenshotPath.length === 0) {
+            complete()
+            return
+        }
+        if (backgroundMusicScreenshotRequested)
+            return
+        backgroundMusicScreenshotRequested = true
+        backgroundMusicPlayer.contentItem.grabToImage(function(result) {
+            if (!result.saveToFile(
+                    backgroundMusicScreenshotPath)) {
+                console.error(
+                    "BIGBOX_BACKGROUND_MUSIC_SCREENSHOT_SAVE_FAILED path="
+                    + backgroundMusicScreenshotPath)
+                Qt.exit(628)
                 return
             }
             complete()
@@ -498,12 +557,16 @@ ApplicationWindow {
     function activateNavigationRow(row) {
         if (row <= 0) {
             activeNavigationName = "All Games"
+            backgroundMusicContextKind = ""
+            backgroundMusicContextName = "All Games"
             controller.apply_filters("", "")
         } else {
             const index = row - 1
             const kind = controller.big_box_navigation_entry_kind_at(index)
             const key = controller.big_box_navigation_entry_key_at(index)
             activeNavigationName = controller.big_box_navigation_entry_name_at(index)
+            backgroundMusicContextKind = kind
+            backgroundMusicContextName = activeNavigationName
             if (kind === "category")
                 controller.apply_category_filter("", key)
             else if (kind === "playlist")
@@ -3860,6 +3923,38 @@ ApplicationWindow {
         controller: controller
     }
 
+    BackgroundMusicPlayer {
+        id: backgroundMusicPlayer
+        parent: Overlay.overlay
+        x: Math.round((window.width - width) / 2)
+        y: 76
+        controller: controller
+        contextKind: window.backgroundMusicContextKind
+        contextName: window.backgroundMusicContextName
+        backgroundMusicEnabled:
+            controller.big_box_background_music_enabled
+        shuffleEnabled: controller.big_box_shuffle_background_music
+        onScreenDisplayEnabled:
+            controller.big_box_music_on_screen_display_enabled
+        outputVolume:
+            Math.max(0, Math.min(
+                1,
+                controller.big_box_background_music_volume_percent
+                / 100))
+        blocked:
+            controller.loading
+            || controller.writing
+            || controller.launching
+            || controller.launch_session_active
+            || bigBoxMusicPlayer.opened
+            || (!controller
+                .big_box_play_video_audio_with_background_music
+                && bigBoxMediaPlayer.playbackState
+                   === MediaPlayer.PlayingState)
+        mutedForSmoke: window.backgroundMusicSmokeTest
+        pinnedForSmoke: window.backgroundMusicSmokeTest
+    }
+
     GameMusicPlayer {
         id: bigBoxMusicPlayer
         parent: Overlay.overlay
@@ -3873,6 +3968,7 @@ ApplicationWindow {
             Math.max(0, Math.min(
                 1, controller.big_box_music_volume_percent / 100))
         mutedForSmoke: window.supplementalMediaSmokeTest
+                       || window.backgroundMusicSmokeTest
     }
 
     Timer {
@@ -3988,6 +4084,289 @@ ApplicationWindow {
         }
     }
 
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.backgroundMusicSmokeTest
+                 && !window.backgroundMusicSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.library_path.length === 0)
+                return
+            if (window.backgroundMusicSmokePhase === 0) {
+                if (controller.indexed_background_music_track_count
+                        !== 8
+                        || !controller.big_box_background_music_enabled
+                        || controller
+                           .big_box_background_music_volume_percent
+                           !== 63
+                        || !controller
+                            .big_box_music_on_screen_display_enabled
+                        || controller.big_box_shuffle_background_music
+                        || !controller
+                            .big_box_context_specific_background_music
+                        || backgroundMusicPlayer.currentCollectionKey
+                           !== "default"
+                        || backgroundMusicPlayer.currentTrackIndex !== 0
+                        || backgroundMusicPlayer.trackName
+                           !== "Default-01.mp3"
+                        || backgroundMusicPlayer.duration <= 0
+                        || backgroundMusicPlayer.mediaError
+                           !== MediaPlayer.NoError
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                window.backgroundMusicDefaultFirstUrl =
+                    backgroundMusicPlayer.trackSource.toString()
+                if (!backgroundMusicPlayer
+                        .clickPlayPauseForSmoke()) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_PAUSE_MISSING")
+                    Qt.exit(616)
+                    return
+                }
+                window.backgroundMusicSmokePhase = 1
+            } else if (window.backgroundMusicSmokePhase === 1) {
+                if (backgroundMusicPlayer.playbackState
+                        !== MediaPlayer.PausedState)
+                    return
+                if (!backgroundMusicPlayer.clickNextForSmoke()) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_NEXT_MISSING")
+                    Qt.exit(617)
+                    return
+                }
+                window.backgroundMusicSmokePhase = 2
+            } else if (window.backgroundMusicSmokePhase === 2) {
+                if (backgroundMusicPlayer.currentTrackIndex !== 1
+                        || backgroundMusicPlayer.trackName
+                           !== "Default-02.mp3"
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                if (!backgroundMusicPlayer
+                        .clickPreviousForSmoke()) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_PREVIOUS_MISSING")
+                    Qt.exit(618)
+                    return
+                }
+                window.backgroundMusicSmokePhase = 3
+            } else if (window.backgroundMusicSmokePhase === 3) {
+                if (backgroundMusicPlayer.currentTrackIndex !== 0
+                        || backgroundMusicPlayer.trackName
+                           !== "Default-01.mp3"
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                const index = window.bigBoxNavigationIndex(
+                                  "platform", "Fixture Console")
+                if (index < 0) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_PLATFORM_MISSING")
+                    Qt.exit(619)
+                    return
+                }
+                window.activateNavigationRow(index + 1)
+                window.backgroundMusicSmokePhase = 4
+            } else if (window.backgroundMusicSmokePhase === 4) {
+                if (controller.navigation_filter_kind !== "platform"
+                        || window.activeNavigationName
+                           !== "Fixture Console"
+                        || backgroundMusicPlayer.trackName
+                           !== "Platform-01.mp3"
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                window.backgroundMusicPlatformFirstUrl =
+                    backgroundMusicPlayer.trackSource.toString()
+                const index = window.bigBoxNavigationIndex(
+                                  "playlist", "fixture-playlist")
+                if (index < 0) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_PLAYLIST_MISSING")
+                    Qt.exit(620)
+                    return
+                }
+                window.activateNavigationRow(index + 1)
+                window.backgroundMusicSmokePhase = 5
+            } else if (window.backgroundMusicSmokePhase === 5) {
+                if (controller.navigation_filter_kind !== "playlist"
+                        || window.activeNavigationName
+                           !== "Fixture Favorites"
+                        || backgroundMusicPlayer.trackName
+                           !== "Playlist-01.mp3"
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                window.backgroundMusicPlaylistFirstUrl =
+                    backgroundMusicPlayer.trackSource.toString()
+                const index = window.bigBoxNavigationIndex(
+                                  "category", "Fixture Category")
+                if (index < 0) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_CATEGORY_MISSING")
+                    Qt.exit(621)
+                    return
+                }
+                window.activateNavigationRow(index + 1)
+                window.backgroundMusicSmokePhase = 6
+            } else if (window.backgroundMusicSmokePhase === 6) {
+                if (controller.navigation_filter_kind !== "category"
+                        || window.activeNavigationName
+                           !== "Fixture Category"
+                        || backgroundMusicPlayer.trackName
+                           !== "Category-01.mp3"
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                window.backgroundMusicCategoryFirstUrl =
+                    backgroundMusicPlayer.trackSource.toString()
+                const index = window.bigBoxNavigationIndex(
+                                  "platform", "Fixture Console")
+                if (index < 0) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_RETURN_PLATFORM_MISSING")
+                    Qt.exit(626)
+                    return
+                }
+                window.activateNavigationRow(index + 1)
+                window.backgroundMusicSmokePhase = 7
+            } else if (window.backgroundMusicSmokePhase === 7) {
+                const row = controller.row_for_game_id(
+                                "fixture-adventure")
+                if (controller.navigation_filter_kind !== "platform"
+                        || backgroundMusicPlayer.trackName
+                           !== "Platform-01.mp3"
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState
+                        || row < 0)
+                    return
+                gameList.currentIndex = row
+                if (window.selectedBigBoxGameId
+                        !== "fixture-adventure")
+                    return
+                if (!window.openGameDetails()) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_DETAILS_MISSING")
+                    Qt.exit(622)
+                    return
+                }
+                window.backgroundMusicSmokePhase = 8
+            } else if (window.backgroundMusicSmokePhase === 8) {
+                const videoAudioOverlap = controller
+                    .big_box_play_video_audio_with_background_music
+                if (!bigBoxGameDetails.opened
+                        || bigBoxMediaPlayer.playbackState
+                           !== MediaPlayer.PlayingState
+                        || (videoAudioOverlap
+                            && (backgroundMusicPlayer.playbackState
+                                !== MediaPlayer.PlayingState
+                                || backgroundMusicPlayer.pausedForBlock))
+                        || (!videoAudioOverlap
+                            && (backgroundMusicPlayer.playbackState
+                                !== MediaPlayer.PausedState
+                                || !backgroundMusicPlayer.pausedForBlock)))
+                    return
+                bigBoxGameDetails.close()
+                window.backgroundMusicSmokePhase = 9
+            } else if (window.backgroundMusicSmokePhase === 9) {
+                if (bigBoxGameDetails.opened
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                if (!window.playGameMusic(
+                        "fixture-adventure",
+                        "Fixture Adventure", true)) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_GAME_TRACK_MISSING")
+                    Qt.exit(623)
+                    return
+                }
+                window.backgroundMusicSmokePhase = 10
+            } else if (window.backgroundMusicSmokePhase === 10) {
+                if (!bigBoxMusicPlayer.opened
+                        || bigBoxMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PausedState)
+                    return
+                bigBoxMusicPlayer.stopPlayback(true)
+                window.backgroundMusicSmokePhase = 11
+            } else if (window.backgroundMusicSmokePhase === 11) {
+                if (bigBoxMusicPlayer.opened
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                if (!backgroundMusicControlsButton.visible
+                        || !backgroundMusicPlayer
+                            .clickStopForSmoke()) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_STOP_MISSING")
+                    Qt.exit(624)
+                    return
+                }
+                window.backgroundMusicSmokePhase = 12
+            } else if (window.backgroundMusicSmokePhase === 12) {
+                if (!backgroundMusicPlayer.stoppedByUser
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.StoppedState)
+                    return
+                backgroundMusicControlsButton.clicked()
+                window.backgroundMusicSmokePhase = 13
+            } else if (window.backgroundMusicSmokePhase === 13) {
+                if (backgroundMusicPlayer.stoppedByUser
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                const index = window.bigBoxNavigationIndex(
+                                  "category", "Fixture Category")
+                if (index < 0) {
+                    console.error(
+                        "BIGBOX_BACKGROUND_MUSIC_FINAL_CATEGORY_MISSING")
+                    Qt.exit(625)
+                    return
+                }
+                window.activateNavigationRow(index + 1)
+                window.backgroundMusicSmokePhase = 14
+            } else if (window.backgroundMusicSmokePhase === 14) {
+                if (backgroundMusicPlayer.trackName
+                        !== "Category-01.mp3"
+                        || backgroundMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                window.finishBackgroundMusicSmoke()
+            }
+        }
+    }
+
+    Timer {
+        interval: 35000
+        running: window.backgroundMusicSmokeTest
+                 && !window.backgroundMusicSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_BACKGROUND_MUSIC_TIMEOUT phase="
+                + window.backgroundMusicSmokePhase
+                + " collection="
+                + backgroundMusicPlayer.currentCollectionKey
+                + " track=" + backgroundMusicPlayer.trackName
+                + " index="
+                + backgroundMusicPlayer.currentTrackIndex
+                + " state="
+                + backgroundMusicPlayer.playbackState
+                + " status="
+                + backgroundMusicPlayer.mediaStatus
+                + " error=" + backgroundMusicPlayer.mediaError
+                + " duration=" + backgroundMusicPlayer.duration
+                + " blocked=" + backgroundMusicPlayer.blocked
+                + " controller=" + controller.status_message)
+            Qt.exit(window.backgroundMusicScreenshotRequested
+                    ? 649
+                    : 630 + window.backgroundMusicSmokePhase)
+        }
+    }
+
     LaunchStartupOverlay {
         id: launchStartupOverlay
         anchors.fill: parent
@@ -3998,6 +4377,30 @@ ApplicationWindow {
         id: launchShutdownOverlay
         anchors.fill: parent
         controller: controller
+    }
+
+    Button {
+        id: backgroundMusicControlsButton
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: 22
+        anchors.rightMargin:
+            controller.pause_screen_available
+            && !controller.pause_screen_active
+            ? 240 : 22
+        z: 8999
+        visible: controller.big_box_background_music_enabled
+                 && controller
+                    .indexed_background_music_track_count > 0
+        text: "♫  BACKGROUND MUSIC"
+        Accessible.name: "Show background music controls"
+        onClicked: {
+            if (backgroundMusicPlayer.stoppedByUser
+                    || backgroundMusicPlayer.playbackState
+                       === MediaPlayer.StoppedState)
+                backgroundMusicPlayer.togglePlayback()
+            backgroundMusicPlayer.showOnScreenDisplay()
+        }
     }
 
     Button {

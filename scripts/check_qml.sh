@@ -32,6 +32,7 @@ diagnostics=$(
     apps/lb-shell/qml/BoxArtView.qml \
     apps/lb-shell/qml/BoxModelViewer.qml \
     apps/lb-shell/qml/GameMusicPlayer.qml \
+    apps/lb-shell/qml/BackgroundMusicPlayer.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -177,6 +178,20 @@ base64 --decode fixtures/media/fixture-manual.pdf.base64 > "$fixture_manual"
 base64 --decode fixtures/media/fixture-music.mp3.gz.base64 \
   | gzip --decompress > "$fixture_music_first"
 cp "$fixture_music_first" "$fixture_music_second"
+background_music_files=(
+  "$media_root/Music/Background/Default-01.mp3"
+  "$media_root/Music/Background/Default-02.mp3"
+  "$media_root/Music/Background/Platforms/Fixture Console/Platform-01.mp3"
+  "$media_root/Music/Background/Platforms/Fixture Console/Platform-02.mp3"
+  "$media_root/Music/Background/Playlists/Fixture Favorites/Playlist-01.mp3"
+  "$media_root/Music/Background/Playlists/Fixture Favorites/Playlist-02.mp3"
+  "$media_root/Music/Background/Platform Categories/Fixture Category/Category-01.mp3"
+  "$media_root/Music/Background/Platform Categories/Fixture Category/Category-02.mp3"
+)
+for background_music_file in "${background_music_files[@]}"; do
+  mkdir -p "$(dirname "$background_music_file")"
+  cp "$fixture_music_first" "$background_music_file"
+done
 if [[ $(sha256sum "$fixture_video" | cut -d' ' -f1) \
   != d415ca3d0511bb16cbbc5a508fe831f7a0f080e9c187475de907ba070431a205 ]]; then
   echo "Decoded selected-game video fixture does not match its pinned source." >&2
@@ -187,7 +202,10 @@ if [[ $(sha256sum "$fixture_manual" | cut -d' ' -f1) \
   echo "Decoded game-manual fixture does not match its pinned source." >&2
   exit 1
 fi
-for fixture_music in "$fixture_music_first" "$fixture_music_second"; do
+for fixture_music in \
+  "$fixture_music_first" \
+  "$fixture_music_second" \
+  "${background_music_files[@]}"; do
   if [[ $(sha256sum "$fixture_music" | cut -d' ' -f1) \
     != 89d64dd51662c9c3c41629582028828cf53f0d66608404b69e178310e1174fd3 ]]; then
     echo "Decoded game-music fixture does not match its pinned source." >&2
@@ -269,6 +287,112 @@ for shell in launchbox bigbox; do
 done
 
 echo "LaunchBox and BigBox manual opening, typed music policy, M3U expansion, Qt audio decode, pause/next/stop controls, and rendered player UI validated without library writes."
+
+background_music_root="$test_config_root/background-music-library"
+background_music_screenshot="$test_config_root/bigbox-background-music.png"
+mkdir -p "$background_music_root"
+cp -a "$media_root/." "$background_music_root/"
+background_music_settings="$background_music_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<EnableBackgroundMusic>false</EnableBackgroundMusic>#<EnableBackgroundMusic>true</EnableBackgroundMusic>#' \
+  "$background_music_settings"
+sed -i \
+  's#<VolumeBackgroundMusic>75</VolumeBackgroundMusic>#<VolumeBackgroundMusic>63</VolumeBackgroundMusic>#' \
+  "$background_music_settings"
+sed -i \
+  's#<ShuffleBackgroundMusic>true</ShuffleBackgroundMusic>#<ShuffleBackgroundMusic>false</ShuffleBackgroundMusic>#' \
+  "$background_music_settings"
+cp "$background_music_settings" \
+  "$background_music_settings.before-background-music-smoke"
+background_music_manifest="$test_config_root/background-music.before.sha256"
+(
+  cd "$background_music_root"
+  find Images Videos Manuals Music -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$background_music_manifest"
+background_music_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$background_music_root" \
+    --bigbox-background-music-smoke-test \
+    --bigbox-background-music-screenshot \
+    "$background_music_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$background_music_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_BACKGROUND_MUSIC_SMOKE_COMPLETE tracks=8 default=2 platform=2 playlist=2 category=2 audio=mp3 playlist_format=m3u controls=1 osd=1 video_audio=0' \
+  <<< "$background_music_output"; then
+  printf '%s\n' "$background_music_output" >&2
+  echo "BigBox did not validate context-specific background music." >&2
+  exit 1
+fi
+if [[ ! -s "$background_music_screenshot" ]] \
+  || [[ $(wc -c < "$background_music_screenshot") -lt 1024 ]]; then
+  echo "BigBox did not save a rendered background-music OSD screenshot." >&2
+  exit 1
+fi
+background_music_colors=$(
+  magick "$background_music_screenshot" -format '%k' info:
+)
+if [[ ! "$background_music_colors" =~ ^[0-9]+$ ]] \
+  || ((background_music_colors < 64)); then
+  echo "BigBox background-music screenshot is blank or insufficiently rendered ($background_music_colors colors)." >&2
+  exit 1
+fi
+cmp "$background_music_settings.before-background-music-smoke" \
+  "$background_music_settings"
+(
+  cd "$background_music_root"
+  sha256sum --check "$background_music_manifest"
+) >/dev/null
+
+background_music_overlap_root="$test_config_root/background-music-overlap-library"
+mkdir -p "$background_music_overlap_root"
+cp -a "$media_root/." "$background_music_overlap_root/"
+background_music_overlap_settings="$background_music_overlap_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<EnableBackgroundMusic>false</EnableBackgroundMusic>#<EnableBackgroundMusic>true</EnableBackgroundMusic>#' \
+  "$background_music_overlap_settings"
+sed -i \
+  's#<VolumeBackgroundMusic>75</VolumeBackgroundMusic>#<VolumeBackgroundMusic>63</VolumeBackgroundMusic>#' \
+  "$background_music_overlap_settings"
+sed -i \
+  's#<ShuffleBackgroundMusic>true</ShuffleBackgroundMusic>#<ShuffleBackgroundMusic>false</ShuffleBackgroundMusic>#' \
+  "$background_music_overlap_settings"
+sed -i \
+  's#<PlayVideoAudioWithBackgroundMusic>false</PlayVideoAudioWithBackgroundMusic>#<PlayVideoAudioWithBackgroundMusic>true</PlayVideoAudioWithBackgroundMusic>#' \
+  "$background_music_overlap_settings"
+cp "$background_music_overlap_settings" \
+  "$background_music_overlap_settings.before-background-music-smoke"
+background_music_overlap_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$background_music_overlap_root" \
+    --bigbox-background-music-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$background_music_overlap_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_BACKGROUND_MUSIC_SMOKE_COMPLETE tracks=8 default=2 platform=2 playlist=2 category=2 audio=mp3 playlist_format=m3u controls=1 osd=1 video_audio=1' \
+  <<< "$background_music_overlap_output"; then
+  printf '%s\n' "$background_music_overlap_output" >&2
+  echo "BigBox did not retain background music with video audio enabled." >&2
+  exit 1
+fi
+cmp "$background_music_overlap_settings.before-background-music-smoke" \
+  "$background_music_overlap_settings"
+(
+  cd "$background_music_overlap_root"
+  sha256sum --check "$background_music_manifest"
+) >/dev/null
+
+echo "BigBox default/platform/playlist/category background music, typed sound policy, context fallback, Qt decode, previous/pause/next controls, both video-audio coexistence policies, game-music interruption and resume, OSD rendering, and read-only media behavior validated."
 
 game_details_settings="$media_root/Data/Settings.xml"
 game_details_screenshot="$media_root/launchbox-game-details.png"

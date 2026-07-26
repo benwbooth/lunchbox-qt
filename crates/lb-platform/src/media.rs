@@ -1,4 +1,4 @@
-use crate::path::{is_windows_absolute_path, LaunchPathResolver};
+use crate::path::{is_windows_absolute_path, portable_storage_name, LaunchPathResolver};
 use lb_domain::{FrontendSettings, Game, PlatformFolder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,6 +17,8 @@ const MAX_MUSIC_PLAYLIST_BYTES: u64 = 1024 * 1024;
 const MAX_MEDIA_ITEMS: usize = 1_000_000;
 const MAX_MEDIA_ITEMS_PER_GAME: usize = 512;
 const MAX_MUSIC_TRACKS_PER_GAME: usize = 512;
+const MAX_BACKGROUND_MUSIC_CONTEXTS: usize = 4_096;
+const MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT: usize = 4_096;
 const MAX_MUSIC_PLAYLIST_ENTRIES: usize = 4_096;
 
 const FALLBACK_FRONT_IMAGE_TYPES: &[&str] = &[
@@ -55,11 +57,13 @@ const SUPPORTED_MANUAL_EXTENSIONS: &[&str] = &[
 ];
 
 const SUPPORTED_MUSIC_EXTENSIONS: &[&str] = &[
-    "aac", "aiff", "flac", "m4a", "mod", "mp3", "ogg", "opus", "s3m", "wav", "wma", "xm",
+    "aac", "ac3", "aiff", "alac", "amr", "ape", "dts", "flac", "it", "m4a", "mod", "mp3", "nsf",
+    "ogg", "opus", "qcp", "s3m", "sid", "spc", "wav", "wma", "xm",
 ];
 
 const SUPPORTED_MUSIC_INDEX_EXTENSIONS: &[&str] = &[
-    "aac", "aiff", "flac", "m3u", "m4a", "mod", "mp3", "ogg", "opus", "s3m", "wav", "wma", "xm",
+    "aac", "ac3", "aiff", "alac", "amr", "ape", "dts", "flac", "it", "m3u", "m4a", "mod", "mp3",
+    "nsf", "ogg", "opus", "qcp", "s3m", "sid", "spc", "wav", "wma", "xm",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -249,12 +253,72 @@ impl BigBoxMusicPolicy {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BigBoxBackgroundMusicPolicy {
+    pub enabled: bool,
+    pub volume_percent: u8,
+    pub on_screen_display: bool,
+    pub shuffle: bool,
+    pub use_context_specific_music: bool,
+    pub play_video_audio_with_background_music: bool,
+}
+
+impl Default for BigBoxBackgroundMusicPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            volume_percent: 75,
+            on_screen_display: true,
+            shuffle: true,
+            use_context_specific_music: true,
+            play_video_audio_with_background_music: false,
+        }
+    }
+}
+
+impl BigBoxBackgroundMusicPolicy {
+    pub fn from_settings(settings: Option<&FrontendSettings>) -> Self {
+        let fallback = Self::default();
+        let Some(settings) = settings else {
+            return fallback;
+        };
+        let volume_percent = settings
+            .get_i64("VolumeBackgroundMusic")
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|value| *value <= 100)
+            .unwrap_or(fallback.volume_percent);
+        Self {
+            enabled: settings
+                .get_bool("EnableBackgroundMusic")
+                .unwrap_or(fallback.enabled),
+            volume_percent,
+            on_screen_display: settings
+                .get_bool("EnableMusicOnScreenDisplay")
+                .unwrap_or(fallback.on_screen_display),
+            shuffle: settings
+                .get_bool("ShuffleBackgroundMusic")
+                .unwrap_or(fallback.shuffle),
+            use_context_specific_music: settings
+                .get_bool("UsePlatformPlaylistCategorySpecificBackgroundMusic")
+                .unwrap_or(fallback.use_context_specific_music),
+            play_video_audio_with_background_music: settings
+                .get_bool("PlayVideoAudioWithBackgroundMusic")
+                .unwrap_or(fallback.play_video_audio_with_background_music),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GameSupplementalMediaIndex {
     pub manual_paths_by_game_id: BTreeMap<String, PathBuf>,
     pub music_paths_by_game_id: BTreeMap<String, Vec<PathBuf>>,
+    pub background_music_paths: Vec<PathBuf>,
+    pub background_music_paths_by_platform: BTreeMap<String, Vec<PathBuf>>,
+    pub background_music_paths_by_playlist: BTreeMap<String, Vec<PathBuf>>,
+    pub background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
     pub launchbox_music_policy: LaunchBoxMusicPolicy,
     pub big_box_music_policy: BigBoxMusicPolicy,
+    pub big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
     pub report: GameSupplementalMediaIndexReport,
 }
 
@@ -265,6 +329,7 @@ pub struct GameSupplementalMediaIndexReport {
     pub scanned_files: usize,
     pub indexed_manuals: usize,
     pub indexed_music_tracks: usize,
+    pub indexed_background_music_tracks: usize,
     pub expanded_music_playlists: usize,
     pub unresolved_folders: usize,
     pub unresolved_files: usize,
@@ -841,14 +906,231 @@ pub fn index_game_supplemental_media(
     }
     report.indexed_manuals = manual_paths_by_game_id.len();
     report.indexed_music_tracks = music_paths_by_game_id.values().map(Vec::len).sum();
+    let background_music = index_background_music(launchbox_root, path_resolver, &mut report);
+    report.indexed_background_music_tracks = background_music
+        .default_paths
+        .len()
+        .saturating_add(
+            background_music
+                .platform_paths
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
+        )
+        .saturating_add(
+            background_music
+                .playlist_paths
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
+        )
+        .saturating_add(
+            background_music
+                .category_paths
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
+        );
 
     GameSupplementalMediaIndex {
         manual_paths_by_game_id,
         music_paths_by_game_id,
+        background_music_paths: background_music.default_paths,
+        background_music_paths_by_platform: background_music.platform_paths,
+        background_music_paths_by_playlist: background_music.playlist_paths,
+        background_music_paths_by_category: background_music.category_paths,
         launchbox_music_policy: LaunchBoxMusicPolicy::from_settings(launchbox_settings),
         big_box_music_policy: BigBoxMusicPolicy::from_settings(big_box_settings),
+        big_box_background_music_policy: BigBoxBackgroundMusicPolicy::from_settings(
+            big_box_settings,
+        ),
         report,
     }
+}
+
+#[derive(Default)]
+struct BackgroundMusicIndex {
+    default_paths: Vec<PathBuf>,
+    platform_paths: BTreeMap<String, Vec<PathBuf>>,
+    playlist_paths: BTreeMap<String, Vec<PathBuf>>,
+    category_paths: BTreeMap<String, Vec<PathBuf>>,
+}
+
+pub fn background_music_context_key(value: &str) -> String {
+    portable_storage_name(value)
+        .map(|value| normalized_key(&value))
+        .unwrap_or_default()
+}
+
+fn index_background_music(
+    launchbox_root: &Path,
+    path_resolver: &dyn LaunchPathResolver,
+    report: &mut GameSupplementalMediaIndexReport,
+) -> BackgroundMusicIndex {
+    let Ok(root) = path_resolver.resolve(launchbox_root, "Music/Background") else {
+        report.unresolved_folders = report.unresolved_folders.saturating_add(1);
+        return BackgroundMusicIndex::default();
+    };
+    let Some(entries) = optional_safe_directory_entries(&root, MAX_FILES_PER_FOLDER, report) else {
+        return BackgroundMusicIndex::default();
+    };
+
+    let mut index = BackgroundMusicIndex::default();
+    index.default_paths = collect_background_music_tracks(&entries, path_resolver, report, true);
+    index.platform_paths =
+        index_background_contexts(&root.join("Platforms"), path_resolver, report);
+    index.playlist_paths =
+        index_background_contexts(&root.join("Playlists"), path_resolver, report);
+    index.category_paths =
+        index_background_contexts(&root.join("Platform Categories"), path_resolver, report);
+    index
+}
+
+fn index_background_contexts(
+    container: &Path,
+    path_resolver: &dyn LaunchPathResolver,
+    report: &mut GameSupplementalMediaIndexReport,
+) -> BTreeMap<String, Vec<PathBuf>> {
+    let Some(entries) =
+        optional_safe_directory_entries(container, MAX_BACKGROUND_MUSIC_CONTEXTS, report)
+    else {
+        return BTreeMap::new();
+    };
+    let mut contexts = BTreeMap::new();
+    let mut ambiguous_contexts = BTreeSet::new();
+    for entry in entries {
+        let Ok(file_type) = entry.file_type() else {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        };
+        if file_type.is_symlink() || !file_type.is_dir() {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        }
+        let context_name = entry.file_name();
+        let Some(name) = context_name.to_str() else {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        };
+        let Some(context_entries) =
+            optional_safe_directory_entries(&entry.path(), MAX_FILES_PER_FOLDER, report)
+        else {
+            continue;
+        };
+        let tracks =
+            collect_background_music_tracks(&context_entries, path_resolver, report, false);
+        if tracks.is_empty() {
+            continue;
+        }
+        let key = background_music_context_key(name);
+        if key.is_empty() {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+        } else if ambiguous_contexts.contains(&key) {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+        } else if contexts.contains_key(&key) {
+            contexts.remove(&key);
+            ambiguous_contexts.insert(key);
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+        } else {
+            contexts.insert(key, tracks);
+        }
+    }
+    contexts
+}
+
+fn optional_safe_directory_entries(
+    folder: &Path,
+    limit: usize,
+    report: &mut GameSupplementalMediaIndexReport,
+) -> Option<Vec<fs::DirEntry>> {
+    let metadata = match fs::symlink_metadata(folder) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => {
+            report.unresolved_folders = report.unresolved_folders.saturating_add(1);
+            return None;
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+        return None;
+    }
+    report.scanned_folders = report.scanned_folders.saturating_add(1);
+    let (entries, truncated) = match sorted_directory_entries(folder, limit) {
+        Ok(result) => result,
+        Err(_) => {
+            report.unresolved_folders = report.unresolved_folders.saturating_add(1);
+            return None;
+        }
+    };
+    if truncated {
+        report.truncated_folders = report.truncated_folders.saturating_add(1);
+    }
+    Some(entries)
+}
+
+fn collect_background_music_tracks(
+    entries: &[fs::DirEntry],
+    path_resolver: &dyn LaunchPathResolver,
+    report: &mut GameSupplementalMediaIndexReport,
+    allow_directories: bool,
+) -> Vec<PathBuf> {
+    let mut tracks = Vec::new();
+    let mut ordered_entries = entries.iter().collect::<Vec<_>>();
+    ordered_entries.sort_by(|left, right| {
+        (!extension_matches(&left.path(), "m3u"))
+            .cmp(&(!extension_matches(&right.path(), "m3u")))
+            .then_with(|| left.path().cmp(&right.path()))
+    });
+    for entry in ordered_entries {
+        let Ok(file_type) = entry.file_type() else {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        };
+        if file_type.is_symlink() {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        }
+        if !file_type.is_file() {
+            if !allow_directories {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            }
+            continue;
+        }
+        let path = entry.path();
+        if !validate_supplemental_file(
+            &path,
+            SUPPORTED_MUSIC_INDEX_EXTENSIONS,
+            MAX_MUSIC_BYTES,
+            report,
+        ) {
+            continue;
+        }
+        report.scanned_files = report.scanned_files.saturating_add(1);
+        if extension_matches(&path, "m3u") {
+            if let Some(mut playlist_tracks) = expand_music_playlist(
+                &path,
+                path_resolver,
+                report,
+                MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT.saturating_sub(tracks.len()),
+            ) {
+                tracks.append(&mut playlist_tracks);
+            }
+        } else {
+            tracks.push(path);
+        }
+        deduplicate_paths(&mut tracks);
+        if tracks.len() >= MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT {
+            if tracks.len() > MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT {
+                report.truncated_music_tracks = report
+                    .truncated_music_tracks
+                    .saturating_add(tracks.len() - MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT);
+                tracks.truncate(MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT);
+            }
+            break;
+        }
+    }
+    tracks
 }
 
 fn select_game_image<'a>(
@@ -1246,7 +1528,7 @@ fn resolve_music_path(
         }
     };
     if extension_matches(&path, "m3u") {
-        return expand_music_playlist(&path, path_resolver, report);
+        return expand_music_playlist(&path, path_resolver, report, MAX_MUSIC_TRACKS_PER_GAME);
     }
     if validate_supplemental_file(&path, SUPPORTED_MUSIC_EXTENSIONS, MAX_MUSIC_BYTES, report) {
         Some(vec![path])
@@ -1268,9 +1550,12 @@ fn expand_music_candidates(
             break;
         }
         if extension_matches(&candidate.path, "m3u") {
-            if let Some(mut playlist_tracks) =
-                expand_music_playlist(&candidate.path, path_resolver, report)
-            {
+            if let Some(mut playlist_tracks) = expand_music_playlist(
+                &candidate.path,
+                path_resolver,
+                report,
+                MAX_MUSIC_TRACKS_PER_GAME.saturating_sub(tracks.len()),
+            ) {
                 tracks.append(&mut playlist_tracks);
             }
         } else {
@@ -1284,6 +1569,7 @@ fn expand_music_playlist(
     playlist_path: &Path,
     path_resolver: &dyn LaunchPathResolver,
     report: &mut GameSupplementalMediaIndexReport,
+    maximum_tracks: usize,
 ) -> Option<Vec<PathBuf>> {
     if !validate_supplemental_file(playlist_path, &["m3u"], MAX_MUSIC_PLAYLIST_BYTES, report) {
         report.unresolved_files = report.unresolved_files.saturating_add(1);
@@ -1320,7 +1606,7 @@ fn expand_music_playlist(
             continue;
         };
         if validate_supplemental_file(&path, SUPPORTED_MUSIC_EXTENSIONS, MAX_MUSIC_BYTES, report) {
-            if tracks.len() >= MAX_MUSIC_TRACKS_PER_GAME {
+            if tracks.len() >= maximum_tracks {
                 report.truncated_music_tracks = report.truncated_music_tracks.saturating_add(1);
                 break;
             }
@@ -2029,6 +2315,142 @@ mod tests {
             BigBoxMusicPolicy::from_settings(Some(&malformed)),
             BigBoxMusicPolicy::default()
         );
+
+        let background = FrontendSettings {
+            entries: vec![
+                SettingEntry {
+                    key: "EnableBackgroundMusic".into(),
+                    value: "true".into(),
+                },
+                SettingEntry {
+                    key: "VolumeBackgroundMusic".into(),
+                    value: "42".into(),
+                },
+                SettingEntry {
+                    key: "EnableMusicOnScreenDisplay".into(),
+                    value: "false".into(),
+                },
+                SettingEntry {
+                    key: "ShuffleBackgroundMusic".into(),
+                    value: "false".into(),
+                },
+                SettingEntry {
+                    key: "UsePlatformPlaylistCategorySpecificBackgroundMusic".into(),
+                    value: "false".into(),
+                },
+                SettingEntry {
+                    key: "PlayVideoAudioWithBackgroundMusic".into(),
+                    value: "true".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            BigBoxBackgroundMusicPolicy::from_settings(Some(&background)),
+            BigBoxBackgroundMusicPolicy {
+                enabled: true,
+                volume_percent: 42,
+                on_screen_display: false,
+                shuffle: false,
+                use_context_specific_music: false,
+                play_video_audio_with_background_music: true,
+            }
+        );
+        let malformed_background = FrontendSettings {
+            entries: vec![
+                SettingEntry {
+                    key: "EnableBackgroundMusic".into(),
+                    value: "sometimes".into(),
+                },
+                SettingEntry {
+                    key: "VolumeBackgroundMusic".into(),
+                    value: "-1".into(),
+                },
+                SettingEntry {
+                    key: "ShuffleBackgroundMusic".into(),
+                    value: String::new(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            BigBoxBackgroundMusicPolicy::from_settings(Some(&malformed_background)),
+            BigBoxBackgroundMusicPolicy::default()
+        );
+    }
+
+    #[test]
+    fn background_music_indexes_default_platform_playlist_and_category_collections() {
+        assert_eq!(
+            background_music_context_key("  Arcade: Classics.  "),
+            "arcade_ classics_"
+        );
+        assert_eq!(background_music_context_key("CON"), "con_");
+        assert!(background_music_context_key("   ").is_empty());
+
+        let directory = tempfile::tempdir().expect("temporary LaunchBox root");
+        let background = directory.path().join("Music/Background");
+        let platform = background.join("Platforms/Fixture Console");
+        let playlist = background.join("Playlists/Fixture Favorites");
+        let category = background.join("Platform Categories/Fixture Category");
+        for folder in [&background, &platform, &playlist, &category] {
+            fs::create_dir_all(folder).expect("background music folder");
+        }
+        fs::write(background.join("Default-02.mp3"), b"default two").expect("default two");
+        fs::write(background.join("Default-01.ogg"), b"default one").expect("default one");
+        fs::write(platform.join("Platform-01.mp3"), b"platform one").expect("platform one");
+        fs::write(platform.join("Platform-02.opus"), b"platform two").expect("platform two");
+        fs::write(
+            platform.join("Platform.m3u"),
+            b"#EXTM3U\nPlatform-02.opus\nhttps://example.invalid/remote.mp3\n../escape.mp3\nPlatform-01.mp3\nPlatform-02.opus\n",
+        )
+        .expect("platform playlist");
+        fs::write(playlist.join("Playlist.sid"), b"playlist").expect("playlist track");
+        fs::write(category.join("Category.spc"), b"category").expect("category track");
+        fs::create_dir_all(category.join("Nested")).expect("nested directory");
+
+        let index = index_game_supplemental_media(
+            directory.path(),
+            &[],
+            &[],
+            None,
+            None,
+            &HostPathResolver::default(),
+        );
+        assert_eq!(
+            index.background_music_paths,
+            [
+                background.join("Default-01.ogg"),
+                background.join("Default-02.mp3"),
+            ]
+        );
+        assert_eq!(
+            index.background_music_paths_by_platform
+                [&background_music_context_key("Fixture Console")],
+            [
+                platform.join("Platform-02.opus"),
+                platform.join("Platform-01.mp3"),
+            ],
+            "M3U order wins while duplicate, remote, and traversing entries are refused"
+        );
+        assert_eq!(
+            index.background_music_paths_by_playlist
+                [&background_music_context_key("Fixture Favorites")],
+            [playlist.join("Playlist.sid")]
+        );
+        assert_eq!(
+            index.background_music_paths_by_category
+                [&background_music_context_key("Fixture Category")],
+            [category.join("Category.spc")]
+        );
+        assert_eq!(index.report.indexed_background_music_tracks, 6);
+        assert_eq!(index.report.expanded_music_playlists, 1);
+        assert_eq!(index.report.unsafe_entries, 3);
+        assert!(index
+            .background_music_paths_by_platform
+            .values()
+            .flatten()
+            .all(|path| path.starts_with(&background)));
     }
 
     #[test]
@@ -2131,11 +2553,25 @@ mod tests {
         let music = directory.path().join("Music/Fixture Console");
         fs::create_dir_all(&manuals).expect("manual folder");
         fs::create_dir_all(&music).expect("music folder");
+        let background = directory
+            .path()
+            .join("Music/Background/Platforms/Fixture Console");
+        fs::create_dir_all(&background).expect("background music folder");
         fs::write(manuals.join("real.pdf"), b"manual").expect("manual");
         fs::write(music.join("real.mp3"), b"track").expect("track");
+        fs::write(background.join("real.mp3"), b"background").expect("background track");
         symlink(manuals.join("real.pdf"), manuals.join("linked.pdf")).expect("manual symlink");
         symlink(music.join("real.mp3"), music.join("linked.mp3")).expect("music symlink");
+        symlink(background.join("real.mp3"), background.join("linked.mp3"))
+            .expect("background track symlink");
         symlink(&manuals, directory.path().join("Linked Manuals")).expect("folder symlink");
+        symlink(
+            &background,
+            directory
+                .path()
+                .join("Music/Background/Platforms/Linked Console"),
+        )
+        .expect("background context symlink");
 
         let mut fixture = game("fixture", "No Default Candidate", None);
         fixture.manual_path = Some(r"Manuals\Fixture Console\linked.pdf".into());
@@ -2163,7 +2599,40 @@ mod tests {
         );
         assert!(index.manual_paths_by_game_id.is_empty());
         assert!(index.music_paths_by_game_id.is_empty());
-        assert!(index.report.unsafe_entries >= 4);
+        assert_eq!(
+            index.background_music_paths_by_platform
+                [&background_music_context_key("Fixture Console")],
+            [background.join("real.mp3")]
+        );
+        assert!(index
+            .background_music_paths_by_platform
+            .get(&background_music_context_key("Linked Console"))
+            .is_none());
+        assert!(index.report.unsafe_entries >= 6);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_music_refuses_case_ambiguous_context_folders() {
+        let directory = tempfile::tempdir().expect("temporary LaunchBox root");
+        let platforms = directory.path().join("Music/Background/Platforms");
+        let first = platforms.join("Fixture Console");
+        let duplicate = platforms.join("fixture console");
+        fs::create_dir_all(&first).expect("first context");
+        fs::create_dir_all(&duplicate).expect("duplicate context");
+        fs::write(first.join("first.mp3"), b"first").expect("first track");
+        fs::write(duplicate.join("second.mp3"), b"second").expect("second track");
+
+        let index = index_game_supplemental_media(
+            directory.path(),
+            &[],
+            &[],
+            None,
+            None,
+            &HostPathResolver::default(),
+        );
+        assert!(index.background_music_paths_by_platform.is_empty());
+        assert_eq!(index.report.unsafe_entries, 1);
     }
 
     #[test]

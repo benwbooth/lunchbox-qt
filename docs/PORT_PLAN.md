@@ -315,9 +315,23 @@ own explicit state transitions; no helper shell or Windows-only API is
 involved. Pure policy/index/symlink tests plus compiled PDF/MP3/M3U action,
 decode, control, render, local-URL, and whole-tree immutability smokes cover
 both shells. Native Windows and Intel/Apple Silicon macOS playback remain
-real-host gates. In-app document rendering, platform/background music, broad
-codec parity, global controls/notifications, theme music integration, and
-media mutation remain later slices.
+real-host gates. In-app document rendering, broad codec parity, configurable
+global controls/notifications, theme music integration, and media mutation
+remain later slices.
+The current `BB-014` slice extends that boundary to BigBox background music.
+It indexes bounded default, platform, playlist, and platform-category
+collections from the recovered `Music/Background` hierarchy using portable
+context names and ordered local M3Us. Typed settings own enablement, shuffle,
+volume, OSD visibility, context fallback, and video-audio coexistence. One
+separate lifecycle player follows navigation atomically, provides persistent
+previous/play-pause/next/stop/volume controls, falls back to the default
+collection, and coordinates selected video, per-game music, process launches,
+library replacement, and window close. Pure policy/path/index/symlink tests and
+two compiled eight-track scenarios prove both video coexistence branches,
+real navigation, audio decode, control wiring, OSD rendering, local URLs, and
+whole-tree immutability without a helper shell. Custom-theme sound integration,
+configurable global bindings/notifications, broad codec parity, and native
+Windows/macOS playback remain later slices.
 The current `DESK-004`/`BB-004` media vertical adds settings-prioritized box
 backs and one shared front/back Qt presenter to the LaunchBox grid and BigBox
 wheel. The exact recovered back priority is applied at the native-path index

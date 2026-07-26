@@ -480,9 +480,25 @@ before a game or additional application launches. Manuals open through Qt's
 cross-platform default-application service. Exact Rust tests and compiled
 LaunchBox/BigBox smokes use a valid PDF, a real MP3, and a two-track M3U;
 exercise the visible actions and audio controls; render the player; validate
-safe local URLs; and byte-check the library/media tree. In-app document
-rendering, platform/background music, broad codec/backend parity, global media
-hotkeys, and native Windows/macOS Qt Multimedia execution remain open.
+safe local URLs; and byte-check the library/media tree.
+
+BigBox now also indexes the recovered `Music/Background` hierarchy, including
+the default collection and exact `Platforms`, `Playlists`, and
+`Platform Categories` context folders. Folder names pass through the shared
+Windows/Linux/macOS-safe component rules, while bounded M3U expansion retains
+playlist order and rejects symlinks, traversal, remote URLs, nested lists, and
+case-ambiguous contexts. The typed BigBox policy covers enablement, volume,
+shuffle, context-specific fallback, on-screen display, and whether video audio
+may coexist. A persistent music control opens the real previous, play/pause,
+next, stop, and volume surface; navigation changes collections atomically,
+missing contexts fall back to default music, and game music, video policy,
+launches, library replacement, and window close own explicit pause/stop/resume
+transitions. Compiled scenarios decode all four two-track collections, drive
+the real navigation and controls, render the OSD, verify both video-audio
+coexistence settings, and hash the complete media tree. In-app document
+rendering, theme-specific sound integration, broad codec/backend parity,
+configurable global media hotkeys/notifications, and native Windows/macOS Qt
+Multimedia execution remain open.
 
 LaunchBox also has a three-page manual ROM importer backed by the reusable
 `lb-import` crate. It accepts multiple native files and folders, optional

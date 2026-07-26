@@ -1097,7 +1097,7 @@ mod tests {
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 22);
+        assert_eq!(big_box.entries.len(), 28);
         assert_eq!(big_box.get_bool("EnableAttractMode"), Some(true));
         assert_eq!(
             big_box.get_bool("ShowGameMenuViewModelFullscreen"),
