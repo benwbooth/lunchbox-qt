@@ -54,11 +54,38 @@ fields. `ProvidePrioritizedPlaylists()` contributes before
 `https://api.gamesdb.launchbox-app.com/api/discovery-lists`, prioritizes
 `PriorityRank`, randomizes ties, and projects manual or automatic playlists.
 
-The native page deliberately does not contact that service yet. Remote schema
-versioning, cache/failure behavior, consent and privacy policy, deterministic
-testing, and exact merge behavior need their own evidence-backed adapter. No
-test substitutes a fabricated response and no static built-in row is claimed
-to implement that provider.
+The provider assembly exposes its response contract without protected method
+bodies:
+
+- the root is `ResponseArray(Response?[]? data)`;
+- a row contains signed `Id`, required `Title`, optional `Subtitle`,
+  `ListType`, `SortBy`, `SortAsc`, `PriorityRank`, `MinimumItems`, and
+  `MaximumItems`, plus nullable `Games` and `Criteria` collections;
+- a manual item contains signed Games Database `Id`, `Platform`, and `Title`;
+- an automatic criterion contains `Field`, `Comparison`, and nullable `Value`;
+- JSON property matching is case-insensitive;
+- the response is fetched once for the provider instance, and either the
+  populated collection or the empty failure result is reused;
+- rows with `PriorityRank` belong to the prioritized provider and the rest to
+  the random provider;
+- prioritized enumeration orders by rank and randomizes ties;
+- nonempty criteria produce an `AutomaticPlaylist`; otherwise non-null games
+  produce a `ManualPlaylist`;
+- `SortAsc=false` becomes descending arrangement.
+
+The decompiled enumerator appears to dequeue one item and then peek the next.
+That would skip the first row and throw on the last row, so the port treats it
+as protection/decompiler damage rather than intentional product behavior. It
+preserves the independently visible semantic ordering instead of reproducing
+an apparent crash.
+
+The native adapter pins the exact HTTPS URL, refuses redirects, applies a
+two-MiB document cap and bounded list/game/criterion/text counts, detects
+case-ambiguous properties and duplicate IDs, and maps the recovered nullable
+record shapes. Those limits and redirect policy are port-owned security
+boundaries; they are not claimed as LaunchBox behavior. The current environment
+could not resolve `api.gamesdb.launchbox-app.com` on 2026-07-26, so no live
+response contents or current service availability are claimed.
 
 ## Protected behavior boundary
 
@@ -87,20 +114,37 @@ native ranking from being mistaken for recovered protected behavior.
 
 ## Native cross-platform implementation
 
-`lb-query` owns the typed six-section projection, time parsing, stable
-ordering, bounds, platform grouping, and source markers. The CXX-Qt controller
-publishes one strict versioned JSON document and exposes stable-ID game reveal.
-Revealing a game clears incompatible filters and selects that exact record in
-the existing wheel; selecting a platform uses the existing typed platform
-filter.
+`lb-integrations` owns the provider transport and bounded parser. `lb-query`
+owns the typed six-section local projection, provider-list conversion, time
+parsing, stable ordering, bounds, platform grouping, and source markers.
+Manual provider rows resolve a positive Games Database ID first and fall back
+to case-insensitive exact title/platform matching. Automatic rows use the
+shared playlist matcher: OR inside one field and AND across distinct fields.
+The matcher covers the represented Boolean, text, multivalue text, numeric,
+and date contracts; a row with an unsupported field, comparison, malformed
+number/date, or unknown arrangement is rejected instead of silently producing
+incorrect membership. Recognized provider arrangement uses the same typed
+stable sort engine as the desktop library.
 
-One full-screen Qt Quick page validates the version, contract source, six raw
-section keys, order, and item shapes before rendering. It omits unavailable or
+The CXX-Qt controller publishes one strict versioned JSON document and exposes
+stable-ID game reveal. It opens immediately with local lists and a `loading`
+provider state, fetches on a named Rust worker, then generation-checks the Qt
+completion before publishing `ready` or `unavailable`. The first success or
+failure is cached for the controller lifetime, matching the recovered
+fetch-once behavior. A library replacement cannot receive a stale worker
+result. Revealing a game clears incompatible filters and selects that exact
+record in the existing wheel; selecting a platform uses the existing typed
+platform filter.
+
+One full-screen Qt Quick page validates the version, contract source, provider
+state/endpoint/counts, the first six raw section keys/order, bounded dynamic
+provider rows, and item shapes before rendering. It omits unavailable or
 under-minimum rows from presentation while retaining them in the validated
-contract. Keyboard, mapped-controller, and pointer input move across lists and
-items, page lists, open stable game/platform selections, and return to the
-wheel. Each horizontal list tracks its current item, so selection remains
-visible beyond the first viewport.
+contract. It shows online-list loading/ready/offline state. Keyboard,
+mapped-controller, and pointer input move across lists and items, page lists,
+open stable game/platform selections, and return to the wheel. Each horizontal
+list tracks its current item, so selection remains visible beyond the first
+viewport.
 
 The product implementation contains no shell invocation, `/bin/sh`, Windows
 separator interpretation, host command, or OS-specific QML branch. Persisted
@@ -109,18 +153,27 @@ receives only guarded native local artwork URLs.
 
 ## Verification boundary
 
-Pure query tests freeze all six slots and their order, rating precedence and
-stable ties, recently-played ordering, the exact Recently Added bounds,
-platform grouping, favorite filtering, hidden/broken exclusion, the MAME
-pending marker, and the no-result display rules.
+Pure integration/query tests freeze all six slots and their order, rating
+precedence and stable ties, recently-played ordering, the exact Recently Added
+bounds, platform grouping, favorite filtering, hidden/broken exclusion, the
+MAME pending marker, and the no-result display rules. Provider tests cover the
+case-insensitive and nullable schema, signed IDs, caps, duplicate/ambiguous
+input, exact URL pinning, manual ID and fallback resolution, automatic
+criteria, nullable bounds and directions, priority-before-random ordering, and
+unsupported-semantic rejection. Shared matcher tests cover field grouping plus
+Boolean, multivalue text, numeric, and date comparisons.
 
 The compiled BigBox scenario loads a portable fixture through the real
 controller, enters Discovery through the central input/security dispatcher,
-requires six contract sections and four visible fixture sections, traverses
-rows and cards, captures and color-checks the rendered page, selects the exact
-stable game ID, and hashes the complete fixture before and after.
+requires the six local contract sections plus two provider sections, verifies
+one manual database-ID row and one automatic-criteria row, traverses rows and
+cards, captures and color-checks the visibly selected provider row, selects
+the exact stable game ID, and hashes the complete fixture before and after.
+The provider fixture is injected only through an explicit smoke-test method;
+production library loads use the HTTPS transport and never interpret a fixture
+path or environment variable.
 
 The protected Highly Rated, Recently Played, Platforms, and Favorites
-algorithms; the MAME high-score adapter; prioritized/random remote provider
-lists; provider cache/offline behavior; custom-theme binding surface; and
-native Windows/macOS Qt interaction remain parity gates.
+algorithms; the MAME high-score adapter; a current live provider response;
+custom-theme binding surface; and native Windows/macOS Qt interaction remain
+parity gates.

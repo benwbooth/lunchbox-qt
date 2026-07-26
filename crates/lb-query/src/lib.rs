@@ -3,9 +3,11 @@ use lb_domain::Game;
 use std::cmp::Ordering;
 
 mod discovery;
+mod playlist;
 mod related;
 
 pub use discovery::*;
+pub use playlist::*;
 pub use related::*;
 
 /// Stable LaunchBox `Settings.xml` values used by the desktop Arrange By

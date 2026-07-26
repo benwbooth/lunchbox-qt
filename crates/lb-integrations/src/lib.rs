@@ -6,6 +6,7 @@
 //! those transactions.
 
 pub mod bigpemu;
+pub mod discovery_provider;
 pub mod dolphin;
 pub mod emulator_discovery;
 pub mod emulator_lifecycle;

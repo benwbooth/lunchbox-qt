@@ -833,7 +833,7 @@ output=$(run_software_rendered_smoke \
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_DISCOVERY_SMOKE_COMPLETE selected=fixture-racer contracts=6 visible=4 revision=' \
+  'BIGBOX_DISCOVERY_SMOKE_COMPLETE selected=fixture-racer contracts=6 visible=6 revision=' \
   <<< "$output"; then
   printf '%s\n' "$output" >&2
   echo "BigBox did not complete its recovered Discovery Center list and stable-ID selection flow." >&2
@@ -857,7 +857,7 @@ fi
   sha256sum --check "$discovery_manifest"
 ) >/dev/null
 
-echo "BigBox recovered Discovery Center section order, local typed projections, keyboard navigation, rendered multi-row page, and stable installed-game navigation validated with immutable inputs."
+echo "BigBox recovered Discovery Center order, local projections, bounded provider manual/automatic rows, priority ordering, keyboard navigation, rendered provider content, and stable installed-game navigation validated with immutable inputs."
 
 marquee_root="$test_config_root/marquee-library"
 mkdir -p "$marquee_root"

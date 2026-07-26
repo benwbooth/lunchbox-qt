@@ -805,6 +805,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "lb-domain",
+ "lb-integrations",
  "serde",
  "xmltree",
 ]

@@ -461,16 +461,26 @@ Platforms, Favorites, and MAME High Scores. The inline Recently Added contract
 is exact: a 360-day window, five-item minimum, and 25-item maximum. Typed Rust
 projects every slot in order and source-labels the stable clean-room rating,
 history, platform, and favorite rankings; the MAME slot remains present but
-unavailable until its adapter exists. One strict versioned payload drives a
-full-screen keyboard/controller/pointer Qt page, and stable game IDs or typed
-platform keys return through the existing wheel/filter controller. Four pure
-tests plus a compiled rendered scenario prove ordering, bounds, rating/date
-behavior, platform/favorite rows, pending-MAME status, real navigation, and
-whole-fixture immutability. The product path contains no runtime shell,
-persisted-path parsing in QML, or OS-specific UI branch. Protected ranking
-details, MAME scores, prioritized/random remote provider lists, custom-theme
-bindings, and native Windows/macOS Qt interaction remain parity gates. Evidence
-is in `analysis/discovery-center-13.27.md`.
+unavailable until its adapter exists. The separately recovered 13.27 provider
+adapter pins the exact Games Database HTTPS endpoint, validates its
+case-insensitive nullable response under explicit byte/list/item/text bounds,
+and converts manual or automatic playlists with nullable arrangement and
+minimum/maximum fields. Priority-ranked rows precede entropy-shuffled random
+rows. Manual rows resolve Games Database ID then exact title/platform;
+automatic rows share the typed LaunchBox OR-within-field/AND-across-fields
+matcher and fail closed for unsupported semantics. A generation-checked worker
+fetches once per controller, caches success or failure, and upgrades the
+already-open versioned local payload to ready/offline state without blocking
+Qt. Stable game IDs or typed platform keys return through the existing
+wheel/filter controller. Fourteen pure tests plus a compiled rendered scenario
+prove local/provider ordering, bounds, hostile input rejection, automatic and
+manual mapping, provider-row rendering, real navigation, and whole-fixture
+immutability. The historical provider hostname did not resolve in the current
+live check, so current response contents are not claimed. The product path
+contains no runtime shell, persisted-path parsing in QML, or OS-specific UI
+branch. Protected local ranking details, MAME scores, live provider-service
+validation, custom-theme bindings, and native Windows/macOS Qt interaction
+remain parity gates. Evidence is in `analysis/discovery-center-13.27.md`.
 
 The current `BB-012` slice recovers the complete 59-action BigBox input
 vocabulary, every action-specific zero/one/four keyboard-slot contract, the

@@ -12,6 +12,7 @@ Popup {
     property int sectionIndex: -1
     property int itemIndex: -1
     property string loadError: ""
+    property string providerState: "notLoaded"
     property alias smokeCaptureTarget: pageLayout
 
     signal gameSelected(string gameId)
@@ -44,11 +45,22 @@ Popup {
         } catch (error) {
             return false
         }
-        if (payload === null || payload.version !== 1
+        if (payload === null || payload.version !== 2
                 || payload.contractSource
                    !== "launchBox13.27EmbeddedDefaultView"
+                || payload.provider === null
+                || (payload.provider.state !== "notLoaded"
+                    && payload.provider.state !== "loading"
+                    && payload.provider.state !== "ready"
+                    && payload.provider.state !== "unavailable")
+                || payload.provider.endpoint
+                   !== "https://api.gamesdb.launchbox-app.com/api/discovery-lists"
+                || typeof payload.provider.fetchedLists !== "number"
+                || typeof payload.provider.renderedLists !== "number"
+                || typeof payload.provider.rejectedLists !== "number"
                 || !Array.isArray(payload.sections)
-                || payload.sections.length !== 6)
+                || payload.sections.length < 6
+                || payload.sections.length > 262)
             return false
         const expectedSections = [
             { key: "highlyRated", minimumItems: 1,
@@ -68,23 +80,42 @@ Popup {
         for (let sectionIndex = 0;
              sectionIndex < payload.sections.length; ++sectionIndex) {
             const section = payload.sections[sectionIndex]
-            const expected = expectedSections[sectionIndex]
+            const expected = sectionIndex < expectedSections.length
+                           ? expectedSections[sectionIndex] : null
+            const providerSection = expected === null
             if (section === null
-                    || section.key !== expected.key
+                    || (providerSection
+                        ? (typeof section.key !== "string"
+                           || !section.key.startsWith("provider:")
+                           || typeof section.providerId !== "number"
+                           || section.source
+                              !== "launchBox13.27PlaylistProvider"
+                           || (section.priorityRank !== null
+                               && typeof section.priorityRank !== "number"))
+                        : section.key !== expected.key)
                     || typeof section.title !== "string"
+                    || section.title.length === 0
+                    || typeof section.subtitle !== "string"
                     || typeof section.listType !== "string"
                     || typeof section.source !== "string"
                     || typeof section.available !== "boolean"
                     || typeof section.displayable !== "boolean"
-                    || section.minimumItems
-                       !== expected.minimumItems
-                    || section.maximumItems
-                       !== expected.maximumItems
+                    || (providerSection
+                        ? (typeof section.minimumItems !== "number"
+                           || section.minimumItems < 0
+                           || section.minimumItems > 1000
+                           || typeof section.maximumItems !== "number"
+                           || section.maximumItems < section.minimumItems
+                           || section.maximumItems > 1000)
+                        : (section.minimumItems
+                           !== expected.minimumItems
+                           || section.maximumItems
+                              !== expected.maximumItems))
                     || !Array.isArray(section.items)
                     || section.items.length > 1000
-                    || (expected.maximumItems !== null
+                    || (section.maximumItems !== null
                         && section.items.length
-                           > expected.maximumItems))
+                           > section.maximumItems))
                 return false
             const items = []
             for (let itemIndex = 0;
@@ -124,6 +155,7 @@ Popup {
             }
         }
         sections = validated
+        providerState = payload.provider.state
         sectionIndex = sections.length > 0 ? 0 : -1
         itemIndex = activeItems.length > 0 ? 0 : -1
         loadError = sections.length > 0
@@ -136,6 +168,7 @@ Popup {
         sectionIndex = -1
         itemIndex = -1
         loadError = ""
+        providerState = "notLoaded"
         if (controller === null
                 || !controller.load_big_box_discovery_center()) {
             loadError = controller === null
@@ -229,6 +262,17 @@ Popup {
         sectionIndex = -1
         itemIndex = -1
         loadError = ""
+        providerState = "notLoaded"
+    }
+
+    Connections {
+        target: root.controller
+
+        function onBigBoxDiscoveryRevisionChanged() {
+            if (root.opened && root.controller !== null
+                    && root.controller.big_box_discovery_json.length > 0)
+                root.parsePayload(root.controller.big_box_discovery_json)
+        }
     }
 
     background: Rectangle {
@@ -289,7 +333,7 @@ Popup {
                         font.letterSpacing: 1.5
                     }
                     Label {
-                        text: "Explore your library by rating, history, recency, platform, and favorites"
+                        text: "Explore local and LaunchBox Games Database discovery lists"
                         color: "#a9bad0"
                         font.pixelSize: 15
                     }
@@ -302,6 +346,20 @@ Popup {
                           : ""
                     color: "#8ba8c8"
                     font.pixelSize: 18
+                    font.bold: true
+                }
+
+                Label {
+                    text: root.providerState === "loading"
+                          ? "ONLINE LISTS: LOADING"
+                          : root.providerState === "ready"
+                            ? "ONLINE LISTS: READY"
+                            : root.providerState === "unavailable"
+                              ? "ONLINE LISTS: OFFLINE"
+                              : ""
+                    color: root.providerState === "unavailable"
+                         ? "#d9a95f" : "#78a8d8"
+                    font.pixelSize: 13
                     font.bold: true
                 }
 
@@ -372,6 +430,13 @@ Popup {
                                 font.pixelSize: 21
                                 font.bold: true
                                 font.letterSpacing: 1
+                            }
+                            Label {
+                                visible: sectionDelegate.modelData.subtitle.length > 0
+                                text: sectionDelegate.modelData.subtitle
+                                color: "#9fb2c9"
+                                font.pixelSize: 13
+                                elide: Text.ElideRight
                             }
                             Label {
                                 text: sectionDelegate.modelData.items.length

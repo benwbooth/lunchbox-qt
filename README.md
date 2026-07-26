@@ -175,13 +175,22 @@ BigBox now also has a native Discovery Center for the first
 Favorites, and MAME High Scores. Recently Added implements the exact recovered
 360-day, minimum-five, maximum-25 contract. The remaining local rankings are
 stable, typed clean-room policies, and the unavailable MAME slot is retained
-and source-marked instead of faked. A strict versioned controller payload
-drives a full-screen keyboard/controller/pointer Qt page; game and platform
-selection return through stable IDs and existing typed filters. The product
-path contains no runtime shell, OS-specific path parsing, or platform-specific
-QML. MAME scores, prioritized/random remote provider lists, protected ranking
-details, custom themes, and native Windows/macOS interaction remain explicit
-gates in `analysis/discovery-center-13.27.md`.
+and source-marked instead of faked. The recovered 13.27 Discovery-list provider
+now fetches its exact HTTPS endpoint on a generation-checked Rust worker,
+validates a bounded case-insensitive schema, caches the first result, then
+appends priority-ranked lists before shuffled non-priority lists. Manual rows
+resolve Games Database IDs with title/platform fallback; automatic rows use
+the shared LaunchBox OR-within-field/AND-across-fields criterion engine and
+reject unsupported semantics rather than misclassifying games. A strict
+versioned controller payload drives a full-screen
+keyboard/controller/pointer Qt page, remains usable with local rows while the
+provider loads or is offline, and returns through stable IDs and typed
+filters. The historical endpoint did not resolve during the current live
+check, so no current service response is claimed. The product path contains
+no runtime shell, OS-specific path parsing, or platform-specific QML. MAME
+scores, protected local ranking details, custom themes, live provider-service
+validation, and native Windows/macOS interaction remain explicit gates in
+`analysis/discovery-center-13.27.md`.
 
 LaunchBox also has a resizable selected-game details pane backed directly by
 that role model. Stable game IDs preserve selection through filtering, sorting,

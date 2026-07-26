@@ -1,11 +1,16 @@
-use super::parse_timestamp;
+use super::{
+    parse_timestamp, playlist_filter_is_supported, playlist_filters_match, GameFilter, GameSort,
+};
 use chrono::{DateTime, Duration, Utc};
-use lb_domain::Game;
+use lb_domain::{Game, PlaylistFilter};
+use lb_integrations::discovery_provider::{
+    DiscoveryCatalog, DiscoveryList, DISCOVERY_LISTS_ENDPOINT, DISCOVERY_LISTS_MAX_ITEMS_PER_LIST,
+};
 use serde::Serialize;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-pub const BIG_BOX_DISCOVERY_PAYLOAD_VERSION: u8 = 1;
+pub const BIG_BOX_DISCOVERY_PAYLOAD_VERSION: u8 = 2;
 pub const BIG_BOX_DISCOVERY_MAXIMUM_GAME_ITEMS: usize = 25;
 pub const BIG_BOX_DISCOVERY_RECENTLY_ADDED_DAYS: i64 = 360;
 pub const BIG_BOX_DISCOVERY_RECENTLY_ADDED_MINIMUM_ITEMS: usize = 5;
@@ -15,7 +20,37 @@ pub const BIG_BOX_DISCOVERY_RECENTLY_ADDED_MINIMUM_ITEMS: usize = 5;
 pub struct BigBoxDiscoveryPayload {
     pub version: u8,
     pub contract_source: String,
+    pub provider: BigBoxDiscoveryProviderStatus,
     pub sections: Vec<BigBoxDiscoverySection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BigBoxDiscoveryProviderStatus {
+    pub state: String,
+    pub endpoint: String,
+    pub fetched_lists: usize,
+    pub rendered_lists: usize,
+    pub rejected_lists: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BigBoxDiscoveryProviderState {
+    NotLoaded,
+    Loading,
+    Ready,
+    Unavailable,
+}
+
+impl BigBoxDiscoveryProviderState {
+    const fn key(self) -> &'static str {
+        match self {
+            Self::NotLoaded => "notLoaded",
+            Self::Loading => "loading",
+            Self::Ready => "ready",
+            Self::Unavailable => "unavailable",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -23,8 +58,11 @@ pub struct BigBoxDiscoveryPayload {
 pub struct BigBoxDiscoverySection {
     pub key: String,
     pub title: String,
+    pub subtitle: String,
     pub list_type: String,
     pub source: String,
+    pub provider_id: Option<i32>,
+    pub priority_rank: Option<i32>,
     pub available: bool,
     pub displayable: bool,
     pub minimum_items: usize,
@@ -57,6 +95,22 @@ pub struct BigBoxDiscoveryItem {
 /// MAME high scores retain their recovered slot but remain unavailable until
 /// that separate adapter is implemented.
 pub fn project_big_box_discovery(games: &[Game], now: DateTime<Utc>) -> BigBoxDiscoveryPayload {
+    project_big_box_discovery_with_provider(
+        games,
+        now,
+        None,
+        BigBoxDiscoveryProviderState::NotLoaded,
+        0,
+    )
+}
+
+pub fn project_big_box_discovery_with_provider(
+    games: &[Game],
+    now: DateTime<Utc>,
+    provider_catalog: Option<&DiscoveryCatalog>,
+    provider_state: BigBoxDiscoveryProviderState,
+    entropy: u64,
+) -> BigBoxDiscoveryPayload {
     let visible = games
         .iter()
         .filter(|game| !game.hidden && !game.broken)
@@ -211,7 +265,7 @@ pub fn project_big_box_discovery(games: &[Game], now: DateTime<Utc>) -> BigBoxDi
         })
         .collect::<Vec<_>>();
 
-    let sections = vec![
+    let mut sections = vec![
         game_section(
             "highlyRated",
             "Highly Rated",
@@ -239,8 +293,11 @@ pub fn project_big_box_discovery(games: &[Game], now: DateTime<Utc>) -> BigBoxDi
         BigBoxDiscoverySection {
             key: "platforms".to_string(),
             title: "Platforms".to_string(),
+            subtitle: String::new(),
             list_type: "Platforms".to_string(),
             source: "recoveredViewModelPortProjection".to_string(),
+            provider_id: None,
+            priority_rank: None,
             available: true,
             displayable: !platforms.is_empty(),
             minimum_items: 1,
@@ -258,8 +315,11 @@ pub fn project_big_box_discovery(games: &[Game], now: DateTime<Utc>) -> BigBoxDi
         BigBoxDiscoverySection {
             key: "mameHighScores".to_string(),
             title: "MAME High Scores".to_string(),
+            subtitle: String::new(),
             list_type: "MameHighScores".to_string(),
             source: "recoveredViewModelAdapterPending".to_string(),
+            provider_id: None,
+            priority_rank: None,
             available: false,
             displayable: false,
             minimum_items: 1,
@@ -268,9 +328,56 @@ pub fn project_big_box_discovery(games: &[Game], now: DateTime<Utc>) -> BigBoxDi
         },
     ];
 
+    let fetched_lists = provider_catalog.map_or(0, |catalog| catalog.lists.len());
+    let mut rejected_lists = 0;
+    if let Some(catalog) = provider_catalog {
+        let mut prioritized = catalog
+            .lists
+            .iter()
+            .filter(|list| list.priority_rank.is_some())
+            .collect::<Vec<_>>();
+        prioritized.sort_by(|left, right| {
+            left.priority_rank
+                .unwrap_or(i32::MAX)
+                .cmp(&right.priority_rank.unwrap_or(i32::MAX))
+                .then_with(|| {
+                    randomized_list_key(left.id, entropy)
+                        .cmp(&randomized_list_key(right.id, entropy))
+                })
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let mut random = catalog
+            .lists
+            .iter()
+            .filter(|list| list.priority_rank.is_none())
+            .collect::<Vec<_>>();
+        random.sort_by(|left, right| {
+            randomized_list_key(left.id, entropy)
+                .cmp(&randomized_list_key(right.id, entropy))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        for list in prioritized.into_iter().chain(random) {
+            match provider_section(list, &visible, now) {
+                Some(section) => sections.push(section),
+                None => rejected_lists += 1,
+            }
+        }
+    }
+    let rendered_lists = sections
+        .iter()
+        .skip(6)
+        .filter(|section| section.displayable)
+        .count();
     BigBoxDiscoveryPayload {
         version: BIG_BOX_DISCOVERY_PAYLOAD_VERSION,
         contract_source: "launchBox13.27EmbeddedDefaultView".to_string(),
+        provider: BigBoxDiscoveryProviderStatus {
+            state: provider_state.key().to_string(),
+            endpoint: DISCOVERY_LISTS_ENDPOINT.to_string(),
+            fetched_lists,
+            rendered_lists,
+            rejected_lists,
+        },
         sections,
     }
 }
@@ -286,14 +393,133 @@ fn game_section(
     BigBoxDiscoverySection {
         key: key.to_string(),
         title: title.to_string(),
+        subtitle: String::new(),
         list_type: list_type.to_string(),
         source: source.to_string(),
+        provider_id: None,
+        priority_rank: None,
         available: true,
         displayable: items.len() >= minimum_items,
         minimum_items,
         maximum_items: Some(BIG_BOX_DISCOVERY_MAXIMUM_GAME_ITEMS),
         items,
     }
+}
+
+fn provider_section(
+    list: &DiscoveryList,
+    visible_games: &[&Game],
+    now: DateTime<Utc>,
+) -> Option<BigBoxDiscoverySection> {
+    let minimum_items = list.minimum_items.unwrap_or(1);
+    let maximum_items = list
+        .maximum_items
+        .unwrap_or(BIG_BOX_DISCOVERY_MAXIMUM_GAME_ITEMS)
+        .min(DISCOVERY_LISTS_MAX_ITEMS_PER_LIST);
+    if minimum_items > maximum_items {
+        return None;
+    }
+    let sort = match list
+        .sort_by
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(key) => GameSort::from_key(key)?,
+        None => GameSort::Title,
+    };
+    let mut matches = if let Some(criteria) = list
+        .criteria
+        .as_ref()
+        .filter(|criteria| !criteria.is_empty())
+    {
+        let filters = criteria
+            .iter()
+            .map(|criterion| PlaylistFilter {
+                field_key: criterion.field.clone(),
+                comparison_type_key: criterion.comparison.clone(),
+                value: criterion.value.clone(),
+            })
+            .collect::<Vec<_>>();
+        if filters
+            .iter()
+            .any(|filter| !playlist_filter_is_supported(filter))
+        {
+            return None;
+        }
+        visible_games
+            .iter()
+            .copied()
+            .filter(|game| playlist_filters_match(game, &filters, now))
+            .collect::<Vec<_>>()
+    } else {
+        let requested = list.games.as_ref()?;
+        let mut matched_ids = BTreeSet::new();
+        let mut matches = Vec::new();
+        for item in requested {
+            let matched = visible_games
+                .iter()
+                .copied()
+                .find(|game| {
+                    u32::try_from(item.database_id)
+                        .ok()
+                        .is_some_and(|database_id| game.database_id == Some(database_id))
+                })
+                .or_else(|| {
+                    visible_games.iter().copied().find(|game| {
+                        game.title.eq_ignore_ascii_case(item.title.trim())
+                            && game.platform.eq_ignore_ascii_case(item.platform.trim())
+                    })
+                });
+            if let Some(game) = matched.filter(|game| matched_ids.insert(game.id.clone())) {
+                matches.push(game);
+            }
+        }
+        matches
+    };
+    let filter = GameFilter {
+        sort,
+        sort_descending: list.sort_ascending.is_some_and(|ascending| !ascending),
+        ..GameFilter::default()
+    };
+    matches.sort_by(|left, right| super::compare_games(left, right, &filter));
+    matches.truncate(maximum_items);
+    let items = matches
+        .into_iter()
+        .map(|game| {
+            game_item(
+                game,
+                format!("{}  •  {}", game.platform, list.title),
+                effective_rating(game).0,
+                effective_rating(game).1,
+            )
+        })
+        .collect::<Vec<_>>();
+    Some(BigBoxDiscoverySection {
+        key: format!("provider:{}", list.id),
+        title: list.title.clone(),
+        subtitle: list.subtitle.clone().unwrap_or_default(),
+        list_type: list
+            .list_type
+            .clone()
+            .unwrap_or_else(|| "Games".to_string()),
+        source: "launchBox13.27PlaylistProvider".to_string(),
+        provider_id: Some(list.id),
+        priority_rank: list.priority_rank,
+        available: true,
+        displayable: items.len() >= minimum_items,
+        minimum_items,
+        maximum_items: Some(maximum_items),
+        items,
+    })
+}
+
+fn randomized_list_key(id: i32, entropy: u64) -> u64 {
+    let mut value = entropy ^ u64::from(id as u32).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
 }
 
 fn game_item(
@@ -367,7 +593,9 @@ mod tests {
         let payload =
             project_big_box_discovery(&games, Utc.with_ymd_and_hms(2026, 7, 26, 0, 0, 0).unwrap());
 
-        assert_eq!(payload.version, 1);
+        assert_eq!(payload.version, 2);
+        assert_eq!(payload.provider.state, "notLoaded");
+        assert_eq!(payload.provider.fetched_lists, 0);
         assert_eq!(
             payload
                 .sections
@@ -503,5 +731,173 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some("alpha"), Some("beta")]
         );
+    }
+
+    #[test]
+    fn provider_lists_follow_priority_then_random_contract_and_resolve_exact_games() {
+        use lb_integrations::discovery_provider::{
+            DiscoveryCatalog, DiscoveryCriterion, DiscoveryGame, DiscoveryList,
+        };
+
+        let mut arcade = game("arcade", "Robotron", "Arcade");
+        arcade.database_id = Some(42);
+        arcade.star_rating_float = 4.5;
+        let mut fallback = game("fallback", "Fallback", "Console");
+        fallback.star_rating = 4;
+        let catalog = DiscoveryCatalog {
+            lists: vec![
+                DiscoveryList {
+                    id: 30,
+                    title: "Random Automatic".into(),
+                    subtitle: Some("Automatic provider criteria".into()),
+                    list_type: Some("Games".into()),
+                    sort_by: Some("StarRating".into()),
+                    sort_ascending: Some(false),
+                    priority_rank: None,
+                    minimum_items: Some(1),
+                    maximum_items: Some(25),
+                    games: Some(Vec::new()),
+                    criteria: Some(vec![DiscoveryCriterion {
+                        field: "StarRating".into(),
+                        comparison: "GreaterThan".into(),
+                        value: "3".into(),
+                    }]),
+                },
+                DiscoveryList {
+                    id: 20,
+                    title: "Second Priority".into(),
+                    subtitle: None,
+                    list_type: None,
+                    sort_by: Some("Title".into()),
+                    sort_ascending: Some(true),
+                    priority_rank: Some(2),
+                    minimum_items: Some(1),
+                    maximum_items: Some(1),
+                    games: Some(vec![DiscoveryGame {
+                        database_id: 999,
+                        platform: "Console".into(),
+                        title: "Fallback".into(),
+                    }]),
+                    criteria: Some(Vec::new()),
+                },
+                DiscoveryList {
+                    id: 10,
+                    title: "First Priority".into(),
+                    subtitle: None,
+                    list_type: Some("Games".into()),
+                    sort_by: Some("Title".into()),
+                    sort_ascending: Some(true),
+                    priority_rank: Some(1),
+                    minimum_items: Some(1),
+                    maximum_items: Some(25),
+                    games: Some(vec![DiscoveryGame {
+                        database_id: 42,
+                        platform: "Wrong platform is ignored when the ID matches".into(),
+                        title: "Wrong title is ignored when the ID matches".into(),
+                    }]),
+                    criteria: Some(Vec::new()),
+                },
+            ],
+        };
+        let payload = project_big_box_discovery_with_provider(
+            &[fallback, arcade],
+            Utc.with_ymd_and_hms(2026, 7, 26, 0, 0, 0).unwrap(),
+            Some(&catalog),
+            BigBoxDiscoveryProviderState::Ready,
+            17,
+        );
+
+        assert_eq!(payload.provider.state, "ready");
+        assert_eq!(payload.provider.fetched_lists, 3);
+        assert_eq!(payload.provider.rendered_lists, 3);
+        assert_eq!(payload.provider.rejected_lists, 0);
+        assert_eq!(
+            payload
+                .sections
+                .iter()
+                .skip(6)
+                .map(|section| section.key.as_str())
+                .collect::<Vec<_>>(),
+            ["provider:10", "provider:20", "provider:30"]
+        );
+        assert_eq!(
+            payload.sections[6].items[0].game_id.as_deref(),
+            Some("arcade")
+        );
+        assert_eq!(
+            payload.sections[7].items[0].game_id.as_deref(),
+            Some("fallback")
+        );
+        assert_eq!(
+            payload.sections[8]
+                .items
+                .iter()
+                .map(|item| item.game_id.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("arcade"), Some("fallback")]
+        );
+        assert_eq!(payload.sections[8].subtitle, "Automatic provider criteria");
+    }
+
+    #[test]
+    fn provider_lists_reject_unsupported_semantics_and_enforce_bounds() {
+        use lb_integrations::discovery_provider::{
+            DiscoveryCatalog, DiscoveryCriterion, DiscoveryList,
+        };
+
+        let mut rated = game("rated", "Rated", "Console");
+        rated.star_rating = 5;
+        let catalog = DiscoveryCatalog {
+            lists: vec![
+                DiscoveryList {
+                    id: 1,
+                    title: "Unsupported".into(),
+                    subtitle: None,
+                    list_type: None,
+                    sort_by: None,
+                    sort_ascending: None,
+                    priority_rank: Some(1),
+                    minimum_items: Some(1),
+                    maximum_items: Some(25),
+                    games: None,
+                    criteria: Some(vec![DiscoveryCriterion {
+                        field: "HighScoreSupport".into(),
+                        comparison: "IsTrue".into(),
+                        value: String::new(),
+                    }]),
+                },
+                DiscoveryList {
+                    id: 2,
+                    title: "Needs Two".into(),
+                    subtitle: None,
+                    list_type: None,
+                    sort_by: None,
+                    sort_ascending: None,
+                    priority_rank: None,
+                    minimum_items: Some(2),
+                    maximum_items: Some(25),
+                    games: None,
+                    criteria: Some(vec![DiscoveryCriterion {
+                        field: "StarRating".into(),
+                        comparison: "GreaterThan".into(),
+                        value: "4".into(),
+                    }]),
+                },
+            ],
+        };
+        let payload = project_big_box_discovery_with_provider(
+            &[rated],
+            Utc.with_ymd_and_hms(2026, 7, 26, 0, 0, 0).unwrap(),
+            Some(&catalog),
+            BigBoxDiscoveryProviderState::Ready,
+            0,
+        );
+
+        assert_eq!(payload.provider.rejected_lists, 1);
+        assert_eq!(payload.provider.rendered_lists, 0);
+        assert_eq!(payload.sections.len(), 7);
+        assert_eq!(payload.sections[6].key, "provider:2");
+        assert!(!payload.sections[6].displayable);
+        assert_eq!(payload.sections[6].items.len(), 1);
     }
 }

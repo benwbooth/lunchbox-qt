@@ -4544,6 +4544,7 @@ ApplicationWindow {
                 if (window.selectedBigBoxGameId
                         !== "fixture-adventure")
                     return
+                controller.seed_big_box_discovery_smoke_fixture()
                 if (!window.openDiscoveryCenter()) {
                     window.failDiscoverySmoke(
                         "BIGBOX_DISCOVERY_OPEN_FAILED", 780)
@@ -4554,7 +4555,7 @@ ApplicationWindow {
                 if (!bigBoxDiscoveryPage.opened)
                     return
                 const sections = bigBoxDiscoveryPage.sections
-                if (sections.length !== 4
+                if (sections.length !== 6
                         || sections[0].key !== "highlyRated"
                         || sections[0].items.length !== 2
                         || sections[0].items[0].gameId
@@ -4567,8 +4568,14 @@ ApplicationWindow {
                            !== "Fixture Console"
                         || sections[3].key !== "favorites"
                         || sections[3].items.length !== 1
-                        || !bigBoxDiscoveryPage.moveSection(2)
-                        || bigBoxDiscoveryPage.sectionIndex !== 2) {
+                        || sections[4].key !== "provider:7301"
+                        || sections[4].items.length !== 1
+                        || sections[4].items[0].gameId
+                           !== "fixture-adventure"
+                        || sections[5].key !== "provider:7302"
+                        || sections[5].items.length !== 2
+                        || !bigBoxDiscoveryPage.moveSection(4)
+                        || bigBoxDiscoveryPage.sectionIndex !== 4) {
                     window.failDiscoverySmoke(
                         "BIGBOX_DISCOVERY_PAYLOAD_MISMATCH", 781)
                     return
@@ -4594,7 +4601,7 @@ ApplicationWindow {
                         window.discoverySmokePhase = 3
                     })
             } else if (window.discoverySmokePhase === 3) {
-                if (!bigBoxDiscoveryPage.moveSection(-2)
+                if (!bigBoxDiscoveryPage.moveSection(-4)
                         || bigBoxDiscoveryPage.sectionIndex !== 0
                         || !bigBoxDiscoveryPage.chooseCurrent()) {
                     window.failDiscoverySmoke(
@@ -4611,7 +4618,7 @@ ApplicationWindow {
                     return
                 if (!controller
                         .report_big_box_discovery_smoke_success(
-                            window.discoverySelectedGameId, 4)) {
+                            window.discoverySelectedGameId, 6)) {
                     window.failDiscoverySmoke(
                         "BIGBOX_DISCOVERY_CONTROLLER_REJECTED",
                         784)

@@ -172,6 +172,7 @@ pub mod qobject {
         #[qproperty(bool, big_box_related_games_loading)]
         #[qproperty(QString, big_box_related_games_json)]
         #[qproperty(i32, big_box_related_games_revision)]
+        #[qproperty(bool, big_box_discovery_loading)]
         #[qproperty(QString, big_box_discovery_json)]
         #[qproperty(i32, big_box_discovery_revision)]
         #[qproperty(bool, big_box_show_game_star_rating)]
@@ -1671,6 +1672,9 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn seed_big_box_discovery_smoke_fixture(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
         fn report_import_smoke_success(
             self: &LibraryController,
             expected_count: i32,
@@ -1866,6 +1870,10 @@ use lb_integrations::bigpemu::{
     BigPEmuLifecycleError, BigPEmuReleaseOffer, BigPEmuReleaseTransport,
     FileBigPEmuReleaseTransport, RichWhitehouseReleaseTransport, BIGPEMU_PROVIDER,
 };
+use lb_integrations::discovery_provider::{
+    embedded_discovery_catalog_fixture, fetch_discovery_catalog, DiscoveryCatalog,
+    LaunchBoxDiscoveryTransport,
+};
 use lb_integrations::dolphin::{
     default_dolphin_user_directories, discover_dolphin_saves, dolphin_wii_group_ids,
     is_dolphin_emulator, DolphinContent,
@@ -1941,10 +1949,11 @@ use lb_platform::{
     BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS, BIG_BOX_SECURITY_PERMISSIONS,
 };
 use lb_query::{
-    compare_games, filter_game_indices, game_query_result_may_change, project_big_box_discovery,
-    related_game_suggestions, select_random_filtered_row, GameFilter, GameSort, GameStateFilter,
-    MissingMediaFilter, RelatedCandidateSource, RelatedGameCandidate, RelatedGameSuggestion,
-    RelatedGamesPolicy, RelatedGamesSection, RelatedProfileSource,
+    compare_games, filter_game_indices, game_query_result_may_change, playlist_filters_match,
+    project_big_box_discovery_with_provider, related_game_suggestions, select_random_filtered_row,
+    BigBoxDiscoveryProviderState, GameFilter, GameSort, GameStateFilter, MissingMediaFilter,
+    RelatedCandidateSource, RelatedGameCandidate, RelatedGameSuggestion, RelatedGamesPolicy,
+    RelatedGamesSection, RelatedProfileSource,
 };
 use lb_storage::{
     delete_directory_if_revision, delete_regular_files_if_revisions, find_emulator_references,
@@ -2273,6 +2282,7 @@ pub struct LibraryControllerRust {
     big_box_related_games_loading: bool,
     big_box_related_games_json: QString,
     big_box_related_games_revision: i32,
+    big_box_discovery_loading: bool,
     big_box_discovery_json: QString,
     big_box_discovery_revision: i32,
     big_box_show_game_star_rating: bool,
@@ -2365,6 +2375,8 @@ pub struct LibraryControllerRust {
     big_box_game_action_policy: BigBoxGameActionPolicy,
     big_box_related_games_policy: RelatedGamesPolicy,
     big_box_related_games_generation: u64,
+    big_box_discovery_generation: u64,
+    discovery_provider_cache: Option<Result<DiscoveryCatalog, String>>,
     big_box_screensaver_candidates: Vec<BigBoxScreensaverCandidate>,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
@@ -17676,6 +17688,8 @@ impl qobject::LibraryController {
                     message: "Embedded compatibility fixture".into(),
                     pending_recovery_count: 0,
                 });
+                self.as_mut().rust_mut().discovery_provider_cache =
+                    Some(Ok(embedded_discovery_catalog_fixture()));
             }
             Err(error) => self
                 .as_mut()
@@ -17699,6 +17713,7 @@ impl qobject::LibraryController {
         if !self.as_mut().initialize_host_path_mappings() {
             return;
         }
+        self.as_mut().rust_mut().discovery_provider_cache = None;
 
         let generation = self.as_mut().advance_generation();
         self.as_mut().set_loading(true);
@@ -24575,22 +24590,32 @@ impl qobject::LibraryController {
             .as_ref()
             .and_then(|payload| payload.get("version"))
             .and_then(serde_json::Value::as_u64)
-            == Some(1)
+            == Some(2)
             && payload
                 .as_ref()
                 .and_then(|payload| payload.get("contractSource"))
                 .and_then(serde_json::Value::as_str)
                 == Some("launchBox13.27EmbeddedDefaultView")
-            && sections.map(Vec::len) == Some(expected_keys.len())
             && sections.is_some_and(|sections| {
-                sections.iter().zip(expected_keys).all(|(section, key)| {
-                    section.get("key").and_then(serde_json::Value::as_str) == Some(key)
-                        && section
-                            .get("items")
-                            .and_then(serde_json::Value::as_array)
-                            .is_some()
-                })
+                sections.len() >= expected_keys.len()
+                    && sections
+                        .iter()
+                        .take(6)
+                        .zip(expected_keys)
+                        .all(|(section, key)| {
+                            section.get("key").and_then(serde_json::Value::as_str) == Some(key)
+                                && section
+                                    .get("items")
+                                    .and_then(serde_json::Value::as_array)
+                                    .is_some()
+                        })
             })
+            && payload
+                .as_ref()
+                .and_then(|payload| payload.get("provider"))
+                .and_then(|provider| provider.get("state"))
+                .and_then(serde_json::Value::as_str)
+                == Some("ready")
             && usize::try_from(visible_section_count).ok() == Some(displayed)
             && self
                 .rust()
@@ -24598,6 +24623,7 @@ impl qobject::LibraryController {
                 .iter()
                 .any(|game| game.id == selected_game_id)
             && self.row_for_game_id(qstring(&selected_game_id)) >= 0
+            && !*self.big_box_discovery_loading()
             && !*self.loading()
             && !*self.writing();
         if success {
@@ -24608,6 +24634,11 @@ impl qobject::LibraryController {
             );
         }
         success
+    }
+
+    pub fn seed_big_box_discovery_smoke_fixture(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().discovery_provider_cache =
+            Some(Ok(embedded_discovery_catalog_fixture()));
     }
 
     pub fn report_import_smoke_success(
@@ -25110,13 +25141,63 @@ impl qobject::LibraryController {
             return false;
         }
 
-        let payload = project_big_box_discovery(&self.as_ref().rust().games, Utc::now());
-        let displayable = payload
-            .sections
-            .iter()
-            .filter(|section| section.displayable)
-            .count();
-        let json = match serde_json::to_string(&payload) {
+        let (generation, request_generation, games, cached, entropy) = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.big_box_discovery_generation = rust.big_box_discovery_generation.wrapping_add(1);
+            rust.random_selection_counter = rust.random_selection_counter.wrapping_add(1);
+            (
+                rust.big_box_discovery_generation,
+                rust.request_generation,
+                rust.games.clone(),
+                rust.discovery_provider_cache.clone(),
+                rust.random_selection_counter,
+            )
+        };
+        if let Some(cached) = cached {
+            let (catalog, state) = match cached.as_ref() {
+                Ok(catalog) => (Some(catalog), BigBoxDiscoveryProviderState::Ready),
+                Err(_) => (None, BigBoxDiscoveryProviderState::Unavailable),
+            };
+            let payload = project_big_box_discovery_with_provider(
+                &games,
+                Utc::now(),
+                catalog,
+                state,
+                entropy,
+            );
+            let displayable = payload
+                .sections
+                .iter()
+                .filter(|section| section.displayable)
+                .count();
+            let provider_lists = payload.provider.rendered_lists;
+            let json = match serde_json::to_string(&payload) {
+                Ok(json) => json,
+                Err(error) => {
+                    self.as_mut().set_status_message(qstring(format!(
+                        "Could not encode the Discovery Center: {error}"
+                    )));
+                    return false;
+                }
+            };
+            self.as_mut().set_big_box_discovery_loading(false);
+            self.as_mut().set_big_box_discovery_json(qstring(json));
+            let revision = self.as_ref().big_box_discovery_revision().wrapping_add(1);
+            self.as_mut().set_big_box_discovery_revision(revision);
+            self.as_mut().set_status_message(qstring(format!(
+                "Discovery Center ready with {displayable} list(s), including {provider_lists} provider list(s)."
+            )));
+            return true;
+        }
+
+        let local_payload = project_big_box_discovery_with_provider(
+            &games,
+            Utc::now(),
+            None,
+            BigBoxDiscoveryProviderState::Loading,
+            entropy,
+        );
+        let local_json = match serde_json::to_string(&local_payload) {
             Ok(json) => json,
             Err(error) => {
                 self.as_mut().set_status_message(qstring(format!(
@@ -25125,12 +25206,57 @@ impl qobject::LibraryController {
                 return false;
             }
         };
-        self.as_mut().set_big_box_discovery_json(qstring(json));
+        self.as_mut().set_big_box_discovery_loading(true);
+        self.as_mut()
+            .set_big_box_discovery_json(qstring(local_json));
         let revision = self.as_ref().big_box_discovery_revision().wrapping_add(1);
         self.as_mut().set_big_box_discovery_revision(revision);
-        self.as_mut().set_status_message(qstring(format!(
-            "Discovery Center ready with {displayable} local list(s)."
-        )));
+        self.as_mut().set_status_message(qstring(
+            "Local Discovery lists are ready; loading provider lists in the background...",
+        ));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("bigbox-discovery-provider".to_owned())
+            .spawn(move || {
+                let provider_result = fetch_discovery_catalog(&LaunchBoxDiscoveryTransport)
+                    .map_err(|error| error.to_string());
+                let (catalog, state) = match provider_result.as_ref() {
+                    Ok(catalog) => (Some(catalog), BigBoxDiscoveryProviderState::Ready),
+                    Err(_) => (None, BigBoxDiscoveryProviderState::Unavailable),
+                };
+                let payload = project_big_box_discovery_with_provider(
+                    &games,
+                    Utc::now(),
+                    catalog,
+                    state,
+                    entropy,
+                );
+                let rendered_lists = payload.provider.rendered_lists;
+                let rejected_lists = payload.provider.rejected_lists;
+                let json = serde_json::to_string(&payload)
+                    .map_err(|error| format!("Could not encode the Discovery Center: {error}"));
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_big_box_discovery(
+                            generation,
+                            request_generation,
+                            provider_result,
+                            json,
+                            rendered_lists,
+                            rejected_lists,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_big_box_discovery_loading(false);
+            self.as_mut().rust_mut().discovery_provider_cache =
+                Some(Err(format!("Could not start provider loader: {error}")));
+            self.as_mut().set_status_message(qstring(format!(
+                "Local Discovery lists are ready, but the provider loader could not start: {error}"
+            )));
+        }
         true
     }
 
@@ -27506,6 +27632,51 @@ impl qobject::LibraryController {
             .wrapping_add(1);
         self.as_mut().set_big_box_related_games_revision(revision);
         self.as_mut().set_big_box_related_games_loading(false);
+    }
+
+    fn finish_big_box_discovery(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        request_generation: u64,
+        provider_result: Result<DiscoveryCatalog, String>,
+        json: Result<String, String>,
+        rendered_lists: usize,
+        rejected_lists: usize,
+    ) {
+        if self.as_ref().rust().big_box_discovery_generation != generation
+            || self.as_ref().rust().request_generation != request_generation
+        {
+            return;
+        }
+        self.as_mut().rust_mut().discovery_provider_cache = Some(provider_result.clone());
+        match json {
+            Ok(json) => {
+                self.as_mut().set_big_box_discovery_json(qstring(json));
+                let provider_message = match provider_result {
+                    Ok(catalog) => format!(
+                        "{rendered_lists} of {} provider list(s) ready{}.",
+                        catalog.lists.len(),
+                        if rejected_lists == 0 {
+                            String::new()
+                        } else {
+                            format!("; {rejected_lists} used unsupported criteria or sorting")
+                        }
+                    ),
+                    Err(error) => format!(
+                        "Local Discovery lists remain available; provider lists are offline: {error}"
+                    ),
+                };
+                self.as_mut().set_status_message(qstring(provider_message));
+            }
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not update Discovery Center: {error}"
+                )));
+            }
+        }
+        let revision = self.as_ref().big_box_discovery_revision().wrapping_add(1);
+        self.as_mut().set_big_box_discovery_revision(revision);
+        self.as_mut().set_big_box_discovery_loading(false);
     }
 
     fn finish_rom_import_preview(
@@ -31845,6 +32016,7 @@ impl qobject::LibraryController {
             .wrapping_add(1);
         self.as_mut()
             .set_big_box_related_games_revision(related_games_revision);
+        self.as_mut().set_big_box_discovery_loading(false);
         self.as_mut().set_big_box_discovery_json(QString::default());
         let discovery_revision = self.as_ref().big_box_discovery_revision().wrapping_add(1);
         self.as_mut()
@@ -32959,86 +33131,7 @@ fn collect_descendant_game_ids(
 }
 
 fn auto_playlist_matches(game: &Game, filters: &[lb_domain::PlaylistFilter]) -> bool {
-    let mut grouped = BTreeMap::<String, Vec<&lb_domain::PlaylistFilter>>::new();
-    for filter in filters {
-        grouped
-            .entry(filter.field_key.to_lowercase())
-            .or_default()
-            .push(filter);
-    }
-    grouped.values().all(|group| {
-        group
-            .iter()
-            .any(|filter| playlist_filter_matches(game, filter))
-    })
-}
-
-fn playlist_filter_matches(game: &Game, filter: &lb_domain::PlaylistFilter) -> bool {
-    let field = filter.field_key.to_lowercase();
-    let comparison = filter.comparison_type_key.to_lowercase();
-    let expected = filter.value.trim();
-    let boolean = match field.as_str() {
-        "favorite" => Some(game.favorite),
-        "completed" => Some(game.completed),
-        "broken" => Some(game.broken),
-        "hidden" | "hide" => Some(game.hidden),
-        "installed" => game.installed,
-        _ => None,
-    };
-    if let Some(actual) = boolean {
-        return match comparison.as_str() {
-            "istrue" => actual,
-            "isfalse" => !actual,
-            "equalto" | "isequalto" => expected
-                .parse::<bool>()
-                .is_ok_and(|expected| actual == expected),
-            "notequalto" | "isnotequalto" => expected
-                .parse::<bool>()
-                .is_ok_and(|expected| actual != expected),
-            _ => false,
-        };
-    }
-    if field == "lastplayed" && comparison == "recentdays" {
-        let Ok(days) = expected.parse::<i64>() else {
-            return false;
-        };
-        let Some(last_played) = game.last_played_date.as_deref() else {
-            return false;
-        };
-        let Ok(last_played) = DateTime::parse_from_rfc3339(last_played) else {
-            return false;
-        };
-        return Local::now().signed_duration_since(last_played).num_days() <= days;
-    }
-    let actual = match field.as_str() {
-        "title" => Some(game.title.as_str()),
-        "platform" => Some(game.platform.as_str()),
-        "genre" => game.genre.as_deref(),
-        "publisher" => game.publisher.as_deref(),
-        "series" => game.series.as_deref(),
-        "source" => game.source.as_deref(),
-        "playmode" => game.play_mode.as_deref(),
-        "developer" => game.developer.as_deref(),
-        "status" => game.status.as_deref(),
-        "region" => game.region.as_deref(),
-        "rating" => game.rating.as_deref(),
-        "releasetype" => game.release_type.as_deref(),
-        "version" => game.version.as_deref(),
-        "progress" => game.progress.as_deref(),
-        _ => None,
-    }
-    .unwrap_or_default()
-    .to_lowercase();
-    let expected = expected.to_lowercase();
-    match comparison.as_str() {
-        "contains" => actual.contains(&expected),
-        "notcontains" => !actual.contains(&expected),
-        "equalto" | "isequalto" => actual == expected,
-        "notequalto" | "isnotequalto" => actual != expected,
-        "startswith" => actual.starts_with(&expected),
-        "endswith" => actual.ends_with(&expected),
-        _ => false,
-    }
+    playlist_filters_match(game, filters, Utc::now())
 }
 
 fn sort_navigation_keys(
