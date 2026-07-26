@@ -148,8 +148,7 @@ revisions. Favorite/Rating use the recovered security permissions; playlist
 membership fails closed while locked because no matching recovered permission
 exists. This shared Rust/CXX-Qt/QML path has no runtime shell, Windows path
 rule, or OS-specific UI branch. The evidence, explicit clean-room half-star and
-append-order policies, compiled interaction coverage, and still-open
-discovery work are recorded in
+append-order policies, and compiled interaction coverage are recorded in
 `analysis/game-actions-13.27.md`.
 
 BigBox now also has a native Related Games popup for the first
@@ -168,6 +167,21 @@ read-only mode, accepts only native media URLs from the existing index, and
 contains no runtime shell, Windows path interpretation, or OS-specific UI
 branch. Evidence and exact parity boundaries are in
 `analysis/related-games-13.27.md`.
+
+BigBox now also has a native Discovery Center for the first
+`LIB-013`/`BB-017` slice. The six-slot order is recovered from LaunchBox
+13.27's embedded Default-theme view and corroborated by the older complete
+13.24 installation: Highly Rated, Recently Played, Recently Added, Platforms,
+Favorites, and MAME High Scores. Recently Added implements the exact recovered
+360-day, minimum-five, maximum-25 contract. The remaining local rankings are
+stable, typed clean-room policies, and the unavailable MAME slot is retained
+and source-marked instead of faked. A strict versioned controller payload
+drives a full-screen keyboard/controller/pointer Qt page; game and platform
+selection return through stable IDs and existing typed filters. The product
+path contains no runtime shell, OS-specific path parsing, or platform-specific
+QML. MAME scores, prioritized/random remote provider lists, protected ranking
+details, custom themes, and native Windows/macOS interaction remain explicit
+gates in `analysis/discovery-center-13.27.md`.
 
 LaunchBox also has a resizable selected-game details pane backed directly by
 that role model. Stable game IDs preserve selection through filtering, sorting,

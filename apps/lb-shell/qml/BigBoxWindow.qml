@@ -225,6 +225,15 @@ ApplicationWindow {
     property bool relatedGamesScreenshotRequested: false
     property string relatedGamesScreenshotPath:
         argumentValue("--bigbox-related-games-screenshot")
+    property bool discoverySmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-discovery-smoke-test") >= 0
+    property int discoverySmokePhase: 0
+    property bool discoverySmokeFinished: false
+    property bool discoveryScreenshotRequested: false
+    property string discoverySelectedGameId: ""
+    property string discoveryScreenshotPath:
+        argumentValue("--bigbox-discovery-screenshot")
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -622,8 +631,23 @@ ApplicationWindow {
         Qt.exit(exitCode)
     }
 
+    function failDiscoverySmoke(message, exitCode) {
+        console.error(message
+                      + " phase=" + discoverySmokePhase
+                      + " game=" + selectedBigBoxGameId
+                      + " page=" + bigBoxDiscoveryPage.opened
+                      + " section=" + bigBoxDiscoveryPage.sectionIndex
+                      + " item=" + bigBoxDiscoveryPage.itemIndex
+                      + " revision="
+                      + controller.big_box_discovery_revision
+                      + " status=" + controller.status_message)
+        Qt.exit(exitCode)
+    }
+
     function closeBigBoxSurface() {
-        if (bigBoxRelatedGamesPopup.opened) {
+        if (bigBoxDiscoveryPage.opened) {
+            bigBoxDiscoveryPage.cancelPage()
+        } else if (bigBoxRelatedGamesPopup.opened) {
             bigBoxRelatedGamesPopup.cancelEntry()
         } else if (bigBoxPlaylistPopup.opened) {
             bigBoxPlaylistPopup.cancelEntry()
@@ -741,6 +765,8 @@ ApplicationWindow {
             return bigBoxUnlockPopup.handleAction(action)
         if (bigBoxSecuritySettings.opened)
             return bigBoxSecuritySettings.handleAction(action)
+        if (bigBoxDiscoveryPage.opened)
+            return bigBoxDiscoveryPage.handleAction(action)
         if (bigBoxRelatedGamesPopup.opened)
             return bigBoxRelatedGamesPopup.handleAction(action)
         if (bigBoxPlaylistPopup.opened)
@@ -920,6 +946,8 @@ ApplicationWindow {
             openAttributeFilters()
             return true
         }
+        if (action === "BigBoxShowDiscoveryCenter")
+            return openDiscoveryCenter()
         if (action === "BigBoxShowAllGames")
             return activateFirstNavigationKind("")
         if (action === "BigBoxShowPlatforms")
@@ -1229,6 +1257,14 @@ ApplicationWindow {
             return false
         }
         return true
+    }
+
+    function openDiscoveryCenter() {
+        if (controller.loading || controller.writing
+                || !guardSecurityAction(
+                    "BigBoxShowDiscoveryCenter"))
+            return false
+        return bigBoxDiscoveryPage.openCenter()
     }
 
     function applyRelatedGamesControllerPayload() {
@@ -4494,6 +4530,108 @@ ApplicationWindow {
             775 + window.relatedGamesSmokePhase)
     }
 
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.discoverySmokeTest
+                 && !window.discoverySmokeFinished
+        onTriggered: {
+            if (controller.loading
+                    || window.startupPresentationPending
+                    || controller.library_path.length === 0)
+                return
+            if (window.discoverySmokePhase === 0) {
+                if (window.selectedBigBoxGameId
+                        !== "fixture-adventure")
+                    return
+                if (!window.openDiscoveryCenter()) {
+                    window.failDiscoverySmoke(
+                        "BIGBOX_DISCOVERY_OPEN_FAILED", 780)
+                    return
+                }
+                window.discoverySmokePhase = 1
+            } else if (window.discoverySmokePhase === 1) {
+                if (!bigBoxDiscoveryPage.opened)
+                    return
+                const sections = bigBoxDiscoveryPage.sections
+                if (sections.length !== 4
+                        || sections[0].key !== "highlyRated"
+                        || sections[0].items.length !== 2
+                        || sections[0].items[0].gameId
+                           !== "fixture-racer"
+                        || sections[1].key !== "recentlyPlayed"
+                        || sections[1].items.length !== 1
+                        || sections[2].key !== "platforms"
+                        || sections[2].items.length !== 1
+                        || sections[2].items[0].platformKey
+                           !== "Fixture Console"
+                        || sections[3].key !== "favorites"
+                        || sections[3].items.length !== 1
+                        || !bigBoxDiscoveryPage.moveSection(2)
+                        || bigBoxDiscoveryPage.sectionIndex !== 2) {
+                    window.failDiscoverySmoke(
+                        "BIGBOX_DISCOVERY_PAYLOAD_MISMATCH", 781)
+                    return
+                }
+                window.discoverySmokePhase = 2
+            } else if (window.discoverySmokePhase === 2) {
+                if (window.discoveryScreenshotPath.length === 0) {
+                    window.discoverySmokePhase = 3
+                    return
+                }
+                if (window.discoveryScreenshotRequested)
+                    return
+                window.discoveryScreenshotRequested = true
+                bigBoxDiscoveryPage.smokeCaptureTarget.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.discoveryScreenshotPath)) {
+                            window.failDiscoverySmoke(
+                                "BIGBOX_DISCOVERY_SCREENSHOT_FAILED",
+                                782)
+                            return
+                        }
+                        window.discoverySmokePhase = 3
+                    })
+            } else if (window.discoverySmokePhase === 3) {
+                if (!bigBoxDiscoveryPage.moveSection(-2)
+                        || bigBoxDiscoveryPage.sectionIndex !== 0
+                        || !bigBoxDiscoveryPage.chooseCurrent()) {
+                    window.failDiscoverySmoke(
+                        "BIGBOX_DISCOVERY_SELECT_FAILED", 783)
+                    return
+                }
+                window.discoverySmokePhase = 4
+            } else if (window.discoverySmokePhase === 4) {
+                if (bigBoxDiscoveryPage.opened
+                        || window.selectedBigBoxGameId
+                           !== "fixture-racer"
+                        || window.discoverySelectedGameId
+                           !== "fixture-racer")
+                    return
+                if (!controller
+                        .report_big_box_discovery_smoke_success(
+                            window.discoverySelectedGameId, 4)) {
+                    window.failDiscoverySmoke(
+                        "BIGBOX_DISCOVERY_CONTROLLER_REJECTED",
+                        784)
+                    return
+                }
+                window.discoverySmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.discoverySmokeTest
+                 && !window.discoverySmokeFinished
+        onTriggered: window.failDiscoverySmoke(
+            "BIGBOX_DISCOVERY_SMOKE_TIMEOUT",
+            785 + window.discoverySmokePhase)
+    }
+
     Rectangle {
         anchors.fill: parent
         gradient: Gradient {
@@ -5170,6 +5308,15 @@ ApplicationWindow {
                 enabled: controller.filtered_count > 0
                          && !controller.loading && !controller.writing
                 onClicked: window.selectRandomGame()
+            }
+            Button {
+                text: "DISCOVER"
+                enabled: controller.game_count > 0
+                         && !controller.loading && !controller.writing
+                         && window.securityActionAllowed(
+                             "BigBoxShowDiscoveryCenter")
+                Accessible.name: "Open Game Discovery Center"
+                onClicked: window.openDiscoveryCenter()
             }
             Button {
                 id: startAttractButton
@@ -7784,6 +7931,32 @@ ApplicationWindow {
                 gameList.currentIndex = row
                 gameList.positionViewAtIndex(row, ListView.Center)
             }
+            gameList.forceActiveFocus()
+        }
+
+        onCancelled: gameList.forceActiveFocus()
+    }
+
+    BigBoxDiscoveryPage {
+        id: bigBoxDiscoveryPage
+        controller: controller
+
+        onGameSelected: function(gameId) {
+            const row = controller.reveal_discovery_game(gameId)
+            if (row >= 0) {
+                gameList.currentIndex = row
+                gameList.positionViewAtIndex(row, ListView.Center)
+                window.discoverySelectedGameId = gameId
+            }
+            gameList.forceActiveFocus()
+        }
+
+        onPlatformSelected: function(platformKey) {
+            controller.apply_filters("", platformKey)
+            activeNavigationName = platformKey
+            backgroundMusicContextKind = "platform"
+            backgroundMusicContextName = platformKey
+            gameList.currentIndex = gameList.count > 0 ? 0 : -1
             gameList.forceActiveFocus()
         }
 

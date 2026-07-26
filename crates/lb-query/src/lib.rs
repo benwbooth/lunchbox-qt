@@ -2,8 +2,10 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use lb_domain::Game;
 use std::cmp::Ordering;
 
+mod discovery;
 mod related;
 
+pub use discovery::*;
 pub use related::*;
 
 /// Stable LaunchBox `Settings.xml` values used by the desktop Arrange By

@@ -432,9 +432,9 @@ policy fails the action closed. Pure tests and a second compiled interaction
 prove deterministic manual targets, derived exclusion, locked denial, rendered
 selection, add, real playlist navigation, remove, two exact backup states,
 unknown-field retention, immutable peers, and no recovery manifest. The shared
-path contains no runtime shell or OS-specific path/UI code. Discovery behavior,
-custom-theme bindings, and native Windows/macOS Qt interaction remain later
-parity work. Evidence is in `analysis/game-actions-13.27.md`.
+path contains no runtime shell or OS-specific path/UI code. Custom-theme
+bindings and native Windows/macOS Qt interaction remain later parity work.
+Evidence is in `analysis/game-actions-13.27.md`.
 
 The first native `BB-004`/`BB-017` Related Games vertical adds the recovered
 Recommended Games, Similar Games, and Possible Ports sections behind
@@ -454,6 +454,23 @@ candidate, stable installed navigation, and whole-tree immutability. The
 protected fuzzy similarity/rounding/cap, remote metadata refresh, custom-theme
 bindings, and native Windows/macOS Qt interaction remain parity gates. Evidence
 is in `analysis/related-games-13.27.md`.
+
+The first native `LIB-013`/`BB-017` Discovery Center vertical recovers the
+six-slot Default-theme order: Highly Rated, Recently Played, Recently Added,
+Platforms, Favorites, and MAME High Scores. The inline Recently Added contract
+is exact: a 360-day window, five-item minimum, and 25-item maximum. Typed Rust
+projects every slot in order and source-labels the stable clean-room rating,
+history, platform, and favorite rankings; the MAME slot remains present but
+unavailable until its adapter exists. One strict versioned payload drives a
+full-screen keyboard/controller/pointer Qt page, and stable game IDs or typed
+platform keys return through the existing wheel/filter controller. Four pure
+tests plus a compiled rendered scenario prove ordering, bounds, rating/date
+behavior, platform/favorite rows, pending-MAME status, real navigation, and
+whole-fixture immutability. The product path contains no runtime shell,
+persisted-path parsing in QML, or OS-specific UI branch. Protected ranking
+details, MAME scores, prioritized/random remote provider lists, custom-theme
+bindings, and native Windows/macOS Qt interaction remain parity gates. Evidence
+is in `analysis/discovery-center-13.27.md`.
 
 The current `BB-012` slice recovers the complete 59-action BigBox input
 vocabulary, every action-specific zero/one/four keyboard-slot contract, the

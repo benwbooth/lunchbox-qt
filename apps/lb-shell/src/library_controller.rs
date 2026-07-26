@@ -172,6 +172,8 @@ pub mod qobject {
         #[qproperty(bool, big_box_related_games_loading)]
         #[qproperty(QString, big_box_related_games_json)]
         #[qproperty(i32, big_box_related_games_revision)]
+        #[qproperty(QString, big_box_discovery_json)]
+        #[qproperty(i32, big_box_discovery_revision)]
         #[qproperty(bool, big_box_show_game_star_rating)]
         #[qproperty(i32, big_box_game_state_revision)]
         #[qproperty(i32, big_box_playlist_membership_revision)]
@@ -1662,6 +1664,13 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_big_box_discovery_smoke_success(
+            self: &LibraryController,
+            selected_game_id: QString,
+            visible_section_count: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_import_smoke_success(
             self: &LibraryController,
             expected_count: i32,
@@ -1714,6 +1723,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn reveal_related_game(self: Pin<&mut LibraryController>, game_id: QString) -> i32;
+
+        #[qinvokable]
+        fn load_big_box_discovery_center(self: Pin<&mut LibraryController>) -> bool;
+
+        #[qinvokable]
+        fn reveal_discovery_game(self: Pin<&mut LibraryController>, game_id: QString) -> i32;
 
         #[qinvokable]
         fn game_id_at(self: &LibraryController, row: i32) -> QString;
@@ -1926,10 +1941,10 @@ use lb_platform::{
     BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS, BIG_BOX_SECURITY_PERMISSIONS,
 };
 use lb_query::{
-    compare_games, filter_game_indices, game_query_result_may_change, related_game_suggestions,
-    select_random_filtered_row, GameFilter, GameSort, GameStateFilter, MissingMediaFilter,
-    RelatedCandidateSource, RelatedGameCandidate, RelatedGameSuggestion, RelatedGamesPolicy,
-    RelatedGamesSection, RelatedProfileSource,
+    compare_games, filter_game_indices, game_query_result_may_change, project_big_box_discovery,
+    related_game_suggestions, select_random_filtered_row, GameFilter, GameSort, GameStateFilter,
+    MissingMediaFilter, RelatedCandidateSource, RelatedGameCandidate, RelatedGameSuggestion,
+    RelatedGamesPolicy, RelatedGamesSection, RelatedProfileSource,
 };
 use lb_storage::{
     delete_directory_if_revision, delete_regular_files_if_revisions, find_emulator_references,
@@ -2258,6 +2273,8 @@ pub struct LibraryControllerRust {
     big_box_related_games_loading: bool,
     big_box_related_games_json: QString,
     big_box_related_games_revision: i32,
+    big_box_discovery_json: QString,
+    big_box_discovery_revision: i32,
     big_box_show_game_star_rating: bool,
     big_box_game_state_revision: i32,
     big_box_playlist_membership_revision: i32,
@@ -24523,6 +24540,76 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_big_box_discovery_smoke_success(
+        &self,
+        selected_game_id: QString,
+        visible_section_count: i32,
+    ) -> bool {
+        let selected_game_id = selected_game_id.to_string();
+        let payload =
+            serde_json::from_str::<serde_json::Value>(&self.big_box_discovery_json().to_string())
+                .ok();
+        let sections = payload
+            .as_ref()
+            .and_then(|payload| payload.get("sections"))
+            .and_then(serde_json::Value::as_array);
+        let expected_keys = [
+            "highlyRated",
+            "recentlyPlayed",
+            "recentlyAdded",
+            "platforms",
+            "favorites",
+            "mameHighScores",
+        ];
+        let displayed = sections
+            .into_iter()
+            .flatten()
+            .filter(|section| {
+                section
+                    .get("displayable")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            })
+            .count();
+        let success = payload
+            .as_ref()
+            .and_then(|payload| payload.get("version"))
+            .and_then(serde_json::Value::as_u64)
+            == Some(1)
+            && payload
+                .as_ref()
+                .and_then(|payload| payload.get("contractSource"))
+                .and_then(serde_json::Value::as_str)
+                == Some("launchBox13.27EmbeddedDefaultView")
+            && sections.map(Vec::len) == Some(expected_keys.len())
+            && sections.is_some_and(|sections| {
+                sections.iter().zip(expected_keys).all(|(section, key)| {
+                    section.get("key").and_then(serde_json::Value::as_str) == Some(key)
+                        && section
+                            .get("items")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some()
+                })
+            })
+            && usize::try_from(visible_section_count).ok() == Some(displayed)
+            && self
+                .rust()
+                .games
+                .iter()
+                .any(|game| game.id == selected_game_id)
+            && self.row_for_game_id(qstring(&selected_game_id)) >= 0
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            eprintln!(
+                "BIGBOX_DISCOVERY_SMOKE_COMPLETE selected={selected_game_id} contracts={} visible={displayed} revision={}",
+                expected_keys.len(),
+                self.big_box_discovery_revision()
+            );
+        }
+        success
+    }
+
     pub fn report_import_smoke_success(
         &self,
         expected_count: i32,
@@ -25002,6 +25089,91 @@ impl qobject::LibraryController {
         let row = self.as_ref().row_for_game_id(qstring(&game.id));
         self.as_mut()
             .set_status_message(qstring(format!("Selected related game: {}.", game.title)));
+        row
+    }
+
+    pub fn load_big_box_discovery_center(mut self: Pin<&mut Self>) -> bool {
+        if *self.as_ref().big_box_locked()
+            && !self
+                .as_ref()
+                .rust()
+                .big_box_security_policy
+                .allows_action_key("BigBoxShowDiscoveryCenter")
+        {
+            self.as_mut()
+                .note_big_box_locked_action(qstring("BigBoxShowDiscoveryCenter"));
+            return false;
+        }
+        if self.as_ref().rust().games.is_empty() {
+            self.as_mut()
+                .set_status_message(qstring("The library has no games to discover."));
+            return false;
+        }
+
+        let payload = project_big_box_discovery(&self.as_ref().rust().games, Utc::now());
+        let displayable = payload
+            .sections
+            .iter()
+            .filter(|section| section.displayable)
+            .count();
+        let json = match serde_json::to_string(&payload) {
+            Ok(json) => json,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not encode the Discovery Center: {error}"
+                )));
+                return false;
+            }
+        };
+        self.as_mut().set_big_box_discovery_json(qstring(json));
+        let revision = self.as_ref().big_box_discovery_revision().wrapping_add(1);
+        self.as_mut().set_big_box_discovery_revision(revision);
+        self.as_mut().set_status_message(qstring(format!(
+            "Discovery Center ready with {displayable} local list(s)."
+        )));
+        true
+    }
+
+    pub fn reveal_discovery_game(mut self: Pin<&mut Self>, game_id: QString) -> i32 {
+        if *self.as_ref().big_box_locked()
+            && !self
+                .as_ref()
+                .rust()
+                .big_box_security_policy
+                .allows_action_key("BigBoxShowDiscoveryCenter")
+        {
+            self.as_mut()
+                .note_big_box_locked_action(qstring("BigBoxShowDiscoveryCenter"));
+            return -1;
+        }
+        let game_id = game_id.to_string();
+        let Some(game) = self
+            .as_ref()
+            .rust()
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(&game_id))
+            .cloned()
+        else {
+            self.as_mut().set_status_message(qstring(format!(
+                "Discovery game is no longer installed: {game_id}"
+            )));
+            return -1;
+        };
+        self.as_mut().set_search_text(QString::default());
+        self.as_mut().set_platform_filter(QString::default());
+        self.as_mut().set_game_state_filter(qstring("any"));
+        self.as_mut().set_missing_media_filter(qstring("none"));
+        self.as_mut().set_include_hidden_games(game.hidden);
+        self.as_mut().set_include_broken_games(game.broken);
+        self.as_mut().set_navigation_filter_kind(QString::default());
+        self.as_mut().set_navigation_filter_key(QString::default());
+        self.as_mut().rust_mut().category_filter = None;
+        self.as_mut().rust_mut().playlist_filter = None;
+        self.as_mut().refresh_filtered_games();
+        let row = self.as_ref().row_for_game_id(qstring(&game.id));
+        self.as_mut()
+            .set_status_message(qstring(format!("Selected discovery game: {}.", game.title)));
         row
     }
 
@@ -31673,6 +31845,10 @@ impl qobject::LibraryController {
             .wrapping_add(1);
         self.as_mut()
             .set_big_box_related_games_revision(related_games_revision);
+        self.as_mut().set_big_box_discovery_json(QString::default());
+        let discovery_revision = self.as_ref().big_box_discovery_revision().wrapping_add(1);
+        self.as_mut()
+            .set_big_box_discovery_revision(discovery_revision);
         self.as_mut()
             .set_big_box_show_game_star_rating(big_box_show_game_star_rating);
         let game_state_revision = self.as_ref().big_box_game_state_revision().wrapping_add(1);

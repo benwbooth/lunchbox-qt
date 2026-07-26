@@ -42,6 +42,7 @@ diagnostics=$(
     apps/lb-shell/qml/BigBoxPinPopup.qml \
     apps/lb-shell/qml/BigBoxPlaylistPopup.qml \
     apps/lb-shell/qml/BigBoxRelatedGamesPopup.qml \
+    apps/lb-shell/qml/BigBoxDiscoveryPage.qml \
     apps/lb-shell/qml/BigBoxStarRatingPopup.qml \
     apps/lb-shell/qml/BigBoxSecuritySettings.qml \
     apps/lb-shell/qml/BigBoxMarqueeWindow.qml \
@@ -809,6 +810,54 @@ fi
 ) >/dev/null
 
 echo "BigBox lazy Related Games, three recovered tabs, read-only metadata candidates, dimmed cloud rows, rendered popup, and stable installed-game navigation validated."
+
+discovery_root="$test_config_root/discovery-library"
+mkdir -p "$discovery_root"
+cp -a "$media_root/." "$discovery_root/"
+discovery_screenshot="$test_config_root/bigbox-discovery.png"
+discovery_manifest="$test_config_root/discovery.before.sha256"
+(
+  cd "$discovery_root"
+  find Data Images Metadata Music Videos Manuals -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$discovery_manifest"
+output=$(run_software_rendered_smoke \
+  "$binary_dir/bigbox" \
+    --library "$discovery_root" \
+    --bigbox-discovery-smoke-test \
+    --bigbox-discovery-screenshot "$discovery_screenshot" \
+    --windowed \
+    --path-mappings-file "$empty_path_mappings" 2>&1) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_DISCOVERY_SMOKE_COMPLETE selected=fixture-racer contracts=6 visible=4 revision=' \
+  <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox did not complete its recovered Discovery Center list and stable-ID selection flow." >&2
+  exit 1
+fi
+if [[ ! -s "$discovery_screenshot" ]] \
+  || [[ $(wc -c < "$discovery_screenshot") -lt 4096 ]]; then
+  echo "BigBox Discovery Center did not save a rendered screenshot." >&2
+  exit 1
+fi
+discovery_colors=$(
+  magick "$discovery_screenshot" -format '%k' info:
+)
+if [[ ! "$discovery_colors" =~ ^[0-9]+$ ]] \
+  || ((discovery_colors < 48)); then
+  echo "BigBox Discovery Center screenshot is blank or insufficiently rendered ($discovery_colors colors)." >&2
+  exit 1
+fi
+(
+  cd "$discovery_root"
+  sha256sum --check "$discovery_manifest"
+) >/dev/null
+
+echo "BigBox recovered Discovery Center section order, local typed projections, keyboard navigation, rendered multi-row page, and stable installed-game navigation validated with immutable inputs."
 
 marquee_root="$test_config_root/marquee-library"
 mkdir -p "$marquee_root"
