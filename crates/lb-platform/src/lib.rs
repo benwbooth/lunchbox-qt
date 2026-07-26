@@ -1,4 +1,5 @@
 mod archive;
+mod attract;
 mod dosbox;
 mod m3u;
 mod media;
@@ -11,6 +12,7 @@ mod ui_state;
 pub use archive::{
     ArchiveCreationError, ArchiveExtractionError, ArchiveExtractor, LaunchResourceLease,
 };
+pub use attract::{BigBoxAttractModePolicy, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS};
 pub use dosbox::DosBoxPlanError;
 pub use m3u::M3uPreparationError;
 pub use media::{

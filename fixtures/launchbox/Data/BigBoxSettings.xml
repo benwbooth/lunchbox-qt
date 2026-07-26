@@ -3,6 +3,14 @@
   <BigBoxSettings>
     <Theme>Fixture BigBox Theme</Theme>
     <EnableAttractMode>true</EnableAttractMode>
+    <AttractModeSwitchFilters>true</AttractModeSwitchFilters>
+    <AttractModeDelay>120</AttractModeDelay>
+    <AttractModeTimePerMovement>5</AttractModeTimePerMovement>
+    <AttractModeMaximumSpeed>20</AttractModeMaximumSpeed>
+    <AttractModeMinimumSpeed>200</AttractModeMinimumSpeed>
+    <PlayMoveInAttractMode>false</PlayMoveInAttractMode>
+    <VolumeAttractModeNavigationSound>15</VolumeAttractModeNavigationSound>
+    <VolumeAttractModeMaster>100</VolumeAttractModeMaster>
     <ShowStartupSplashScreen>true</ShowStartupSplashScreen>
     <PlayStartupSound>true</PlayStartupSound>
     <SoundPack>Fixture Sounds</SoundPack>

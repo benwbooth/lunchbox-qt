@@ -1106,8 +1106,19 @@ mod tests {
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 34);
+        assert_eq!(big_box.entries.len(), 42);
         assert_eq!(big_box.get_bool("EnableAttractMode"), Some(true));
+        assert_eq!(big_box.get_bool("AttractModeSwitchFilters"), Some(true));
+        assert_eq!(big_box.get_i64("AttractModeDelay"), Some(120));
+        assert_eq!(big_box.get_i64("AttractModeTimePerMovement"), Some(5));
+        assert_eq!(big_box.get_i64("AttractModeMaximumSpeed"), Some(20));
+        assert_eq!(big_box.get_i64("AttractModeMinimumSpeed"), Some(200));
+        assert_eq!(big_box.get_bool("PlayMoveInAttractMode"), Some(false));
+        assert_eq!(
+            big_box.get_i64("VolumeAttractModeNavigationSound"),
+            Some(15)
+        );
+        assert_eq!(big_box.get_i64("VolumeAttractModeMaster"), Some(100));
         assert_eq!(big_box.get_bool("ShowStartupSplashScreen"), Some(true));
         assert_eq!(big_box.get_bool("PlayStartupSound"), Some(true));
         assert_eq!(big_box.get("SoundPack"), Some("Fixture Sounds"));

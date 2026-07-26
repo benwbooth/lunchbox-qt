@@ -525,6 +525,20 @@ fidelity, custom-theme packaged sound precedence, controller mapping, primary
 monitor routing, original VLC/WMP backend parity, video-and-startup-sound
 coexistence, and native Windows/macOS Qt Multimedia execution remain open.
 
+The first native BigBox Attract Mode subset reads all nine recovered 13.27
+settings through a typed Rust policy and starts from configured idle or an
+explicit visible action. It spins the real game wheel with a bounded,
+deterministic acceleration/deceleration curve, optionally advances among
+non-empty filters, pauses for the configured interval, and owns a full-window
+key/pointer/wheel exit layer. Direct WAV files under
+`Sounds/<SoundPack>/Move` take precedence over exact legacy `Move.wav`; the
+same cross-platform safe-media boundary publishes local URLs to Qt Multimedia
+and combines the separate attract navigation/master volumes. Compiled enabled
+and disabled scenarios prove automatic and manual entry, wheel/filter changes,
+decoded sound, volume, actual return/input controls, rendered UI, and immutable
+library data. The protected product's exact curve, filter algorithm, and
+binding interpretation remain explicitly open rather than being inferred.
+
 LaunchBox also has a three-page manual ROM importer backed by the reusable
 `lb-import` crate. It accepts multiple native files and folders, optional
 recursive discovery and extension filters, file- or folder-derived editable

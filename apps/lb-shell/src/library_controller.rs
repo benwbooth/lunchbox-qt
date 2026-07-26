@@ -81,6 +81,7 @@ pub mod qobject {
         #[qproperty(i32, indexed_background_music_track_count)]
         #[qproperty(i32, indexed_startup_video_count)]
         #[qproperty(i32, indexed_startup_sound_count)]
+        #[qproperty(i32, indexed_attract_move_sound_count)]
         #[qproperty(bool, startup_presentation_ready)]
         #[qproperty(i32, game_media_revision)]
         #[qproperty(i32, model_settings_revision)]
@@ -109,6 +110,15 @@ pub mod qobject {
         #[qproperty(i32, big_box_startup_sound_volume_percent)]
         #[qproperty(i32, big_box_master_volume_percent)]
         #[qproperty(QString, big_box_sound_pack)]
+        #[qproperty(bool, big_box_attract_mode_enabled)]
+        #[qproperty(bool, big_box_attract_mode_switch_filters)]
+        #[qproperty(i32, big_box_attract_mode_delay_seconds)]
+        #[qproperty(i32, big_box_attract_mode_time_per_movement_seconds)]
+        #[qproperty(i32, big_box_attract_mode_maximum_speed_ms)]
+        #[qproperty(i32, big_box_attract_mode_minimum_speed_ms)]
+        #[qproperty(bool, big_box_play_move_in_attract_mode)]
+        #[qproperty(i32, big_box_attract_mode_navigation_sound_volume_percent)]
+        #[qproperty(i32, big_box_attract_mode_master_volume_percent)]
         #[qproperty(bool, big_box_show_game_menu_flip_box)]
         #[qproperty(bool, big_box_show_game_menu_model)]
         #[qproperty(i32, filtered_count)]
@@ -283,6 +293,15 @@ pub mod qobject {
 
         #[qinvokable]
         fn startup_sound_file_name_at(self: &LibraryController, sound_index: i32) -> QString;
+
+        #[qinvokable]
+        fn attract_move_sound_url_at(self: &LibraryController, sound_index: i32) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_attract_mode_wheel_step_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn big_box_attract_mode_wheel_interval_ms(self: &LibraryController, step: i32) -> i32;
 
         #[qinvokable]
         fn game_model_settings_json_for_game(self: &LibraryController, game_id: QString)
@@ -903,6 +922,19 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_big_box_attract_mode_smoke_success(
+            self: &LibraryController,
+            expected_enabled: bool,
+            wheel_steps: i32,
+            movement_cycles: i32,
+            filter_switches: i32,
+            automatic_delay_elapsed_ms: i32,
+            manual_start_seen: bool,
+            input_stop_count: i32,
+            sound_ready: bool,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_game_details_smoke_success(
             self: &LibraryController,
             row: i32,
@@ -1432,13 +1464,14 @@ use lb_platform::{
     navigation_document_file_name, platform_document_file_name, portable_storage_name,
     prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
-    select_emulator_for_game, ArchiveExtractor, BigBoxBackgroundMusicPolicy, BigBoxMusicPolicy,
-    BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, FrontendLaunchScreenPolicy,
-    FrontendPauseScreenPolicy, GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem,
-    GameMediaKind, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState,
-    LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy,
-    LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy,
-    LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
+    select_emulator_for_game, ArchiveExtractor, BigBoxAttractModePolicy,
+    BigBoxBackgroundMusicPolicy, BigBoxMusicPolicy, BigBoxStartupPresentationIndex,
+    BigBoxStartupPresentationPolicy, FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy,
+    GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem, GameMediaKind, HostPathMappings,
+    HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
+    LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
+    LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
+    ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
@@ -1694,6 +1727,7 @@ pub struct LibraryControllerRust {
     indexed_background_music_track_count: i32,
     indexed_startup_video_count: i32,
     indexed_startup_sound_count: i32,
+    indexed_attract_move_sound_count: i32,
     startup_presentation_ready: bool,
     game_media_revision: i32,
     model_settings_revision: i32,
@@ -1722,6 +1756,15 @@ pub struct LibraryControllerRust {
     big_box_startup_sound_volume_percent: i32,
     big_box_master_volume_percent: i32,
     big_box_sound_pack: QString,
+    big_box_attract_mode_enabled: bool,
+    big_box_attract_mode_switch_filters: bool,
+    big_box_attract_mode_delay_seconds: i32,
+    big_box_attract_mode_time_per_movement_seconds: i32,
+    big_box_attract_mode_maximum_speed_ms: i32,
+    big_box_attract_mode_minimum_speed_ms: i32,
+    big_box_play_move_in_attract_mode: bool,
+    big_box_attract_mode_navigation_sound_volume_percent: i32,
+    big_box_attract_mode_master_volume_percent: i32,
     big_box_show_game_menu_flip_box: bool,
     big_box_show_game_menu_model: bool,
     filtered_count: i32,
@@ -1794,11 +1837,13 @@ pub struct LibraryControllerRust {
     background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
     startup_video_paths: Vec<PathBuf>,
     startup_sound_paths: Vec<PathBuf>,
+    attract_move_sound_paths: Vec<PathBuf>,
     game_details_media_policy: GameDetailsMediaPolicy,
     launchbox_music_policy: LaunchBoxMusicPolicy,
     big_box_music_policy: BigBoxMusicPolicy,
     big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
+    big_box_attract_mode_policy: BigBoxAttractModePolicy,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
@@ -1931,11 +1976,13 @@ struct LoadedLibrary {
     background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
     startup_video_paths: Vec<PathBuf>,
     startup_sound_paths: Vec<PathBuf>,
+    attract_move_sound_paths: Vec<PathBuf>,
     game_details_media_policy: GameDetailsMediaPolicy,
     launchbox_music_policy: LaunchBoxMusicPolicy,
     big_box_music_policy: BigBoxMusicPolicy,
     big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
+    big_box_attract_mode_policy: BigBoxAttractModePolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -1978,11 +2025,13 @@ struct LibraryReplacement {
     background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
     startup_video_paths: Vec<PathBuf>,
     startup_sound_paths: Vec<PathBuf>,
+    attract_move_sound_paths: Vec<PathBuf>,
     game_details_media_policy: GameDetailsMediaPolicy,
     launchbox_music_policy: LaunchBoxMusicPolicy,
     big_box_music_policy: BigBoxMusicPolicy,
     big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
+    big_box_attract_mode_policy: BigBoxAttractModePolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2069,11 +2118,13 @@ impl LoadedLibrary {
                 background_music_paths_by_category: BTreeMap::new(),
                 startup_video_paths: Vec::new(),
                 startup_sound_paths: Vec::new(),
+                attract_move_sound_paths: Vec::new(),
                 game_details_media_policy: GameDetailsMediaPolicy::default(),
                 launchbox_music_policy: LaunchBoxMusicPolicy::default(),
                 big_box_music_policy: BigBoxMusicPolicy::default(),
                 big_box_background_music_policy: BigBoxBackgroundMusicPolicy::default(),
                 big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
+                big_box_attract_mode_policy: BigBoxAttractModePolicy::default(),
                 big_box_show_game_menu_flip_box: true,
                 details_show_3d_model: true,
                 big_box_show_game_menu_model: true,
@@ -2195,6 +2246,7 @@ impl LoadedLibrary {
             supplemental_report.indexed_background_music_tracks;
         let indexed_startup_video_count = supplemental_report.indexed_startup_videos;
         let indexed_startup_sound_count = supplemental_report.indexed_startup_sounds;
+        let indexed_attract_move_sound_count = supplemental_report.indexed_attract_move_sounds;
         let manual_paths_by_game_id = supplemental_media_index.manual_paths_by_game_id;
         let music_paths_by_game_id = supplemental_media_index.music_paths_by_game_id;
         let background_music_paths = supplemental_media_index.background_music_paths;
@@ -2206,19 +2258,22 @@ impl LoadedLibrary {
             supplemental_media_index.background_music_paths_by_category;
         let startup_video_paths = supplemental_media_index.startup_video_paths;
         let startup_sound_paths = supplemental_media_index.startup_sound_paths;
+        let attract_move_sound_paths = supplemental_media_index.attract_move_sound_paths;
         let launchbox_music_policy = supplemental_media_index.launchbox_music_policy;
         let big_box_music_policy = supplemental_media_index.big_box_music_policy;
         let big_box_background_music_policy =
             supplemental_media_index.big_box_background_music_policy;
         let big_box_startup_presentation_policy =
             supplemental_media_index.big_box_startup_presentation_policy;
+        let big_box_attract_mode_policy =
+            BigBoxAttractModePolicy::from_settings(data.big_box_settings());
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
             .map(|configuration| configuration.emulators.len())
             .unwrap_or_default();
         let message = format!(
-            "Loaded {} games, {front_image_count} front images, {indexed_media_count} detail media items, {indexed_manual_count} manuals, {indexed_music_track_count} game-music tracks, {indexed_background_music_track_count} background-music tracks, {indexed_startup_video_count} startup videos, {indexed_startup_sound_count} startup sounds, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s (media: {} files across {} folders; supplemental: {} files across {} folders; {} unsafe, {} oversized, {} unresolved, {} truncated).",
+            "Loaded {} games, {front_image_count} front images, {indexed_media_count} detail media items, {indexed_manual_count} manuals, {indexed_music_track_count} game-music tracks, {indexed_background_music_track_count} background-music tracks, {indexed_startup_video_count} startup videos, {indexed_startup_sound_count} startup sounds, {indexed_attract_move_sound_count} attract move sounds, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s (media: {} files across {} folders; supplemental: {} files across {} folders; {} unsafe, {} oversized, {} unresolved, {} truncated).",
             games.len(),
             started.elapsed().as_secs_f64(),
             media_report.scanned_files,
@@ -2270,11 +2325,13 @@ impl LoadedLibrary {
             background_music_paths_by_category,
             startup_video_paths,
             startup_sound_paths,
+            attract_move_sound_paths,
             game_details_media_policy,
             launchbox_music_policy,
             big_box_music_policy,
             big_box_background_music_policy,
             big_box_startup_presentation_policy,
+            big_box_attract_mode_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -16055,11 +16112,13 @@ impl qobject::LibraryController {
                     background_music_paths_by_category: BTreeMap::new(),
                     startup_video_paths: Vec::new(),
                     startup_sound_paths: Vec::new(),
+                    attract_move_sound_paths: Vec::new(),
                     game_details_media_policy: GameDetailsMediaPolicy::default(),
                     launchbox_music_policy: LaunchBoxMusicPolicy::default(),
                     big_box_music_policy: BigBoxMusicPolicy::default(),
                     big_box_background_music_policy: BigBoxBackgroundMusicPolicy::default(),
                     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
+                    big_box_attract_mode_policy: BigBoxAttractModePolicy::default(),
                     big_box_show_game_menu_flip_box: true,
                     details_show_3d_model: true,
                     big_box_show_game_menu_model: true,
@@ -16369,6 +16428,25 @@ impl qobject::LibraryController {
             .and_then(|path| path.file_name())
             .map(|name| qstring(name.to_string_lossy()))
             .unwrap_or_default()
+    }
+
+    pub fn attract_move_sound_url_at(&self, sound_index: i32) -> QUrl {
+        self.attract_move_sound_path(sound_index)
+            .map(|path| QUrl::from_local_file(&qstring(path.to_string_lossy())))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_attract_mode_wheel_step_count(&self) -> i32 {
+        saturating_i32(BIG_BOX_ATTRACT_MODE_WHEEL_STEPS as usize)
+    }
+
+    pub fn big_box_attract_mode_wheel_interval_ms(&self, step: i32) -> i32 {
+        let step = u32::try_from(step).unwrap_or_default();
+        saturating_i32(
+            self.rust()
+                .big_box_attract_mode_policy
+                .wheel_interval_ms(step) as usize,
+        )
     }
 
     pub fn game_media_url_at(&self, game_id: QString, index: i32) -> QUrl {
@@ -19648,6 +19726,72 @@ impl qobject::LibraryController {
             eprintln!(
                 "BIGBOX_STARTUP_SPLASH_SMOKE_COMPLETE enabled={enabled} sounds={} selected={selected_name} decode=wav probe_before_load=1 splash={splash} audio={audio} volume=32",
                 paths.len()
+            );
+        }
+        success
+    }
+
+    pub fn report_big_box_attract_mode_smoke_success(
+        &self,
+        expected_enabled: bool,
+        wheel_steps: i32,
+        movement_cycles: i32,
+        filter_switches: i32,
+        automatic_delay_elapsed_ms: i32,
+        manual_start_seen: bool,
+        input_stop_count: i32,
+        sound_ready: bool,
+    ) -> bool {
+        let paths = &self.rust().attract_move_sound_paths;
+        let safe_regular_file = |path: &Path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        };
+        let sounds_match = paths.len() == 2
+            && paths
+                .iter()
+                .zip(["MOVE001.wav", "MOVE002.wav"])
+                .all(|(path, expected_name)| {
+                    path.file_name().and_then(|name| name.to_str()) == Some(expected_name)
+                        && safe_regular_file(path)
+                });
+        let interaction_matches = if expected_enabled {
+            wheel_steps >= saturating_i32(BIG_BOX_ATTRACT_MODE_WHEEL_STEPS as usize)
+                && movement_cycles >= 1
+                && filter_switches >= 1
+                && (800..=5_000).contains(&automatic_delay_elapsed_ms)
+                && input_stop_count >= 2
+        } else {
+            wheel_steps >= 1
+                && movement_cycles == 0
+                && filter_switches == 0
+                && automatic_delay_elapsed_ms == 0
+                && input_stop_count >= 1
+        };
+        let success = sounds_match
+            && *self.indexed_attract_move_sound_count() == 2
+            && *self.big_box_attract_mode_enabled() == expected_enabled
+            && *self.big_box_attract_mode_switch_filters()
+            && *self.big_box_attract_mode_delay_seconds() == 1
+            && *self.big_box_attract_mode_time_per_movement_seconds() == 1
+            && *self.big_box_attract_mode_maximum_speed_ms() == 20
+            && *self.big_box_attract_mode_minimum_speed_ms() == 80
+            && *self.big_box_play_move_in_attract_mode()
+            && *self.big_box_attract_mode_navigation_sound_volume_percent() == 40
+            && *self.big_box_attract_mode_master_volume_percent() == 50
+            && self.big_box_attract_mode_wheel_step_count()
+                == saturating_i32(BIG_BOX_ATTRACT_MODE_WHEEL_STEPS as usize)
+            && self.big_box_attract_mode_wheel_interval_ms(0) == 80
+            && self.big_box_attract_mode_wheel_interval_ms(7) == 20
+            && manual_start_seen
+            && sound_ready
+            && interaction_matches
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            let enabled = u8::from(expected_enabled);
+            eprintln!(
+                "BIGBOX_ATTRACT_MODE_SMOKE_COMPLETE enabled={enabled} wheel_steps={wheel_steps} movement_cycles={movement_cycles} filter_switches={filter_switches} auto_delay_ms={automatic_delay_elapsed_ms} manual=1 input_exit={input_stop_count} sounds=2 sound=wav volume=20 curve=80-20-80"
             );
         }
         success
@@ -23952,11 +24096,13 @@ impl qobject::LibraryController {
                     background_music_paths_by_category: loaded.background_music_paths_by_category,
                     startup_video_paths: loaded.startup_video_paths,
                     startup_sound_paths: loaded.startup_sound_paths,
+                    attract_move_sound_paths: loaded.attract_move_sound_paths,
                     game_details_media_policy: loaded.game_details_media_policy,
                     launchbox_music_policy: loaded.launchbox_music_policy,
                     big_box_music_policy: loaded.big_box_music_policy,
                     big_box_background_music_policy: loaded.big_box_background_music_policy,
                     big_box_startup_presentation_policy: loaded.big_box_startup_presentation_policy,
+                    big_box_attract_mode_policy: loaded.big_box_attract_mode_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     details_show_3d_model: loaded.details_show_3d_model,
                     big_box_show_game_menu_model: loaded.big_box_show_game_menu_model,
@@ -27640,11 +27786,13 @@ impl qobject::LibraryController {
             background_music_paths_by_category,
             startup_video_paths,
             startup_sound_paths,
+            attract_move_sound_paths,
             game_details_media_policy,
             launchbox_music_policy,
             big_box_music_policy,
             big_box_background_music_policy,
             big_box_startup_presentation_policy,
+            big_box_attract_mode_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -27699,6 +27847,7 @@ impl qobject::LibraryController {
         );
         let indexed_startup_video_count = saturating_i32(startup_video_paths.len());
         let indexed_startup_sound_count = saturating_i32(startup_sound_paths.len());
+        let indexed_attract_move_sound_count = saturating_i32(attract_move_sound_paths.len());
         let details_show_video = game_details_media_policy.show_video;
         let details_auto_play_video = game_details_media_policy.auto_play_video;
         let platform_counts = collect_platform_counts(&games, &platform_names);
@@ -27739,11 +27888,13 @@ impl qobject::LibraryController {
             rust.background_music_paths_by_category = background_music_paths_by_category;
             rust.startup_video_paths = startup_video_paths;
             rust.startup_sound_paths = startup_sound_paths;
+            rust.attract_move_sound_paths = attract_move_sound_paths;
             rust.game_details_media_policy = game_details_media_policy;
             rust.launchbox_music_policy = launchbox_music_policy;
             rust.big_box_music_policy = big_box_music_policy;
             rust.big_box_background_music_policy = big_box_background_music_policy;
             rust.big_box_startup_presentation_policy = big_box_startup_presentation_policy;
+            rust.big_box_attract_mode_policy = big_box_attract_mode_policy;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
             rust.platform_counts = platform_counts;
@@ -27852,6 +28003,8 @@ impl qobject::LibraryController {
             .set_indexed_startup_video_count(indexed_startup_video_count);
         self.as_mut()
             .set_indexed_startup_sound_count(indexed_startup_sound_count);
+        self.as_mut()
+            .set_indexed_attract_move_sound_count(indexed_attract_move_sound_count);
         self.as_mut().set_startup_presentation_ready(true);
         let game_media_revision = self.as_ref().game_media_revision().wrapping_add(1);
         self.as_mut().set_game_media_revision(game_media_revision);
@@ -27924,6 +28077,37 @@ impl qobject::LibraryController {
             .set_big_box_master_volume_percent(i32::from(startup_policy.master_volume_percent));
         self.as_mut()
             .set_big_box_sound_pack(qstring(startup_policy.sound_pack));
+        let attract_policy = self.as_ref().rust().big_box_attract_mode_policy.clone();
+        self.as_mut()
+            .set_big_box_attract_mode_enabled(attract_policy.enabled);
+        self.as_mut()
+            .set_big_box_attract_mode_switch_filters(attract_policy.switch_filters);
+        self.as_mut()
+            .set_big_box_attract_mode_delay_seconds(saturating_i32(
+                attract_policy.delay_seconds as usize,
+            ));
+        self.as_mut()
+            .set_big_box_attract_mode_time_per_movement_seconds(saturating_i32(
+                attract_policy.time_per_movement_seconds as usize,
+            ));
+        self.as_mut()
+            .set_big_box_attract_mode_maximum_speed_ms(saturating_i32(
+                attract_policy.maximum_speed_ms as usize,
+            ));
+        self.as_mut()
+            .set_big_box_attract_mode_minimum_speed_ms(saturating_i32(
+                attract_policy.minimum_speed_ms as usize,
+            ));
+        self.as_mut()
+            .set_big_box_play_move_in_attract_mode(attract_policy.play_move_sound);
+        self.as_mut()
+            .set_big_box_attract_mode_navigation_sound_volume_percent(i32::from(
+                attract_policy.navigation_sound_volume_percent,
+            ));
+        self.as_mut()
+            .set_big_box_attract_mode_master_volume_percent(i32::from(
+                attract_policy.master_volume_percent,
+            ));
         self.as_mut()
             .set_big_box_show_game_menu_flip_box(big_box_show_game_menu_flip_box);
         self.as_mut()
@@ -28108,6 +28292,11 @@ impl qobject::LibraryController {
     fn startup_sound_path(&self, sound_index: i32) -> Option<&PathBuf> {
         let sound_index = usize::try_from(sound_index).ok()?;
         self.rust().startup_sound_paths.get(sound_index)
+    }
+
+    fn attract_move_sound_path(&self, sound_index: i32) -> Option<&PathBuf> {
+        let sound_index = usize::try_from(sound_index).ok()?;
+        self.rust().attract_move_sound_paths.get(sound_index)
     }
 
     fn validate_image_viewer_smoke(

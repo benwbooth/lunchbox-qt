@@ -34,6 +34,7 @@ diagnostics=$(
     apps/lb-shell/qml/GameMusicPlayer.qml \
     apps/lb-shell/qml/BackgroundMusicPlayer.qml \
     apps/lb-shell/qml/BigBoxStartupPresentation.qml \
+    apps/lb-shell/qml/BigBoxAttractMode.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -296,6 +297,131 @@ for shell in launchbox bigbox; do
 done
 
 echo "LaunchBox and BigBox manual opening, typed music policy, M3U expansion, Qt audio decode, pause/next/stop controls, and rendered player UI validated without library writes."
+
+attract_root="$test_config_root/attract-mode-library"
+attract_screenshot="$test_config_root/bigbox-attract-mode.png"
+attract_move_folder="$attract_root/Sounds/Fixture Sounds/Move"
+mkdir -p "$attract_root"
+cp -a "$media_root/." "$attract_root/"
+mkdir -p "$attract_move_folder"
+cp "$fixture_startup_sound" "$attract_move_folder/MOVE001.wav"
+cp "$fixture_startup_sound" "$attract_move_folder/MOVE002.wav"
+attract_settings="$attract_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<AttractModeDelay>120</AttractModeDelay>#<AttractModeDelay>1</AttractModeDelay>#' \
+  "$attract_settings"
+sed -i \
+  's#<AttractModeTimePerMovement>5</AttractModeTimePerMovement>#<AttractModeTimePerMovement>1</AttractModeTimePerMovement>#' \
+  "$attract_settings"
+sed -i \
+  's#<AttractModeMinimumSpeed>200</AttractModeMinimumSpeed>#<AttractModeMinimumSpeed>80</AttractModeMinimumSpeed>#' \
+  "$attract_settings"
+sed -i \
+  's#<PlayMoveInAttractMode>false</PlayMoveInAttractMode>#<PlayMoveInAttractMode>true</PlayMoveInAttractMode>#' \
+  "$attract_settings"
+sed -i \
+  's#<VolumeAttractModeNavigationSound>15</VolumeAttractModeNavigationSound>#<VolumeAttractModeNavigationSound>40</VolumeAttractModeNavigationSound>#' \
+  "$attract_settings"
+sed -i \
+  's#<VolumeAttractModeMaster>100</VolumeAttractModeMaster>#<VolumeAttractModeMaster>50</VolumeAttractModeMaster>#' \
+  "$attract_settings"
+cp "$attract_settings" "$attract_settings.before-attract-mode-smoke"
+attract_manifest="$test_config_root/attract-mode.before.sha256"
+(
+  cd "$attract_root"
+  find Images Videos Manuals Music Sounds -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$attract_manifest"
+attract_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$attract_root" \
+    --bigbox-attract-mode-smoke-test \
+    --bigbox-attract-mode-screenshot "$attract_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$attract_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_ATTRACT_MODE_SMOKE_COMPLETE enabled=1 wheel_steps=[0-9]+ movement_cycles=[0-9]+ filter_switches=[0-9]+ auto_delay_ms=[0-9]+ manual=1 input_exit=[0-9]+ sounds=2 sound=wav volume=20 curve=80-20-80' \
+  <<< "$attract_output"; then
+  printf '%s\n' "$attract_output" >&2
+  echo "BigBox did not complete automatic and manual Attract Mode interaction." >&2
+  exit 1
+fi
+if [[ ! -s "$attract_screenshot" ]] \
+  || [[ $(wc -c < "$attract_screenshot") -lt 1024 ]]; then
+  echo "BigBox did not save a rendered Attract Mode screenshot." >&2
+  exit 1
+fi
+attract_colors=$(magick "$attract_screenshot" -format '%k' info:)
+if [[ ! "$attract_colors" =~ ^[0-9]+$ ]] \
+  || ((attract_colors < 64)); then
+  echo "BigBox Attract Mode screenshot is blank or insufficiently rendered ($attract_colors colors)." >&2
+  exit 1
+fi
+cmp "$attract_settings.before-attract-mode-smoke" "$attract_settings"
+(
+  cd "$attract_root"
+  sha256sum --check "$attract_manifest"
+) >/dev/null
+
+attract_disabled_root="$test_config_root/attract-mode-disabled-library"
+attract_disabled_move_folder="$attract_disabled_root/Sounds/Fixture Sounds/Move"
+mkdir -p "$attract_disabled_root"
+cp -a "$media_root/." "$attract_disabled_root/"
+mkdir -p "$attract_disabled_move_folder"
+cp "$fixture_startup_sound" \
+  "$attract_disabled_move_folder/MOVE001.wav"
+cp "$fixture_startup_sound" \
+  "$attract_disabled_move_folder/MOVE002.wav"
+attract_disabled_settings="$attract_disabled_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<EnableAttractMode>true</EnableAttractMode>#<EnableAttractMode>false</EnableAttractMode>#' \
+  "$attract_disabled_settings"
+sed -i \
+  's#<AttractModeDelay>120</AttractModeDelay>#<AttractModeDelay>1</AttractModeDelay>#' \
+  "$attract_disabled_settings"
+sed -i \
+  's#<AttractModeTimePerMovement>5</AttractModeTimePerMovement>#<AttractModeTimePerMovement>1</AttractModeTimePerMovement>#' \
+  "$attract_disabled_settings"
+sed -i \
+  's#<AttractModeMinimumSpeed>200</AttractModeMinimumSpeed>#<AttractModeMinimumSpeed>80</AttractModeMinimumSpeed>#' \
+  "$attract_disabled_settings"
+sed -i \
+  's#<PlayMoveInAttractMode>false</PlayMoveInAttractMode>#<PlayMoveInAttractMode>true</PlayMoveInAttractMode>#' \
+  "$attract_disabled_settings"
+sed -i \
+  's#<VolumeAttractModeNavigationSound>15</VolumeAttractModeNavigationSound>#<VolumeAttractModeNavigationSound>40</VolumeAttractModeNavigationSound>#' \
+  "$attract_disabled_settings"
+sed -i \
+  's#<VolumeAttractModeMaster>100</VolumeAttractModeMaster>#<VolumeAttractModeMaster>50</VolumeAttractModeMaster>#' \
+  "$attract_disabled_settings"
+cp "$attract_disabled_settings" \
+  "$attract_disabled_settings.before-attract-mode-smoke"
+attract_disabled_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$attract_disabled_root" \
+    --bigbox-attract-mode-disabled-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$attract_disabled_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_ATTRACT_MODE_SMOKE_COMPLETE enabled=0 wheel_steps=[0-9]+ movement_cycles=0 filter_switches=0 auto_delay_ms=0 manual=1 input_exit=[0-9]+ sounds=2 sound=wav volume=20 curve=80-20-80' \
+  <<< "$attract_disabled_output"; then
+  printf '%s\n' "$attract_disabled_output" >&2
+  echo "BigBox did not keep automatic Attract Mode disabled while retaining manual start." >&2
+  exit 1
+fi
+cmp "$attract_disabled_settings.before-attract-mode-smoke" \
+  "$attract_disabled_settings"
+
+echo "BigBox typed Attract Mode policy, delayed automatic and explicit manual entry, bounded native wheel curve, filter switching, key/button exit layer, decoded move sounds, attract-specific volume, rendering, disabled-auto behavior, and immutable library data validated."
 
 background_music_root="$test_config_root/background-music-library"
 background_music_screenshot="$test_config_root/bigbox-background-music.png"

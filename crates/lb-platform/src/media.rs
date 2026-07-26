@@ -20,6 +20,7 @@ const MAX_MEDIA_ITEMS_PER_GAME: usize = 512;
 const MAX_MUSIC_TRACKS_PER_GAME: usize = 512;
 const MAX_STARTUP_VIDEOS: usize = 4_096;
 const MAX_STARTUP_SOUNDS: usize = 256;
+const MAX_ATTRACT_MOVE_SOUNDS: usize = 256;
 const MAX_BACKGROUND_MUSIC_CONTEXTS: usize = 4_096;
 const MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT: usize = 4_096;
 const MAX_MUSIC_PLAYLIST_ENTRIES: usize = 4_096;
@@ -403,6 +404,7 @@ pub struct GameSupplementalMediaIndex {
     pub background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
     pub startup_video_paths: Vec<PathBuf>,
     pub startup_sound_paths: Vec<PathBuf>,
+    pub attract_move_sound_paths: Vec<PathBuf>,
     pub launchbox_music_policy: LaunchBoxMusicPolicy,
     pub big_box_music_policy: BigBoxMusicPolicy,
     pub big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
@@ -420,6 +422,7 @@ pub struct GameSupplementalMediaIndexReport {
     pub indexed_background_music_tracks: usize,
     pub indexed_startup_videos: usize,
     pub indexed_startup_sounds: usize,
+    pub indexed_attract_move_sounds: usize,
     pub expanded_music_playlists: usize,
     pub unresolved_folders: usize,
     pub unresolved_files: usize,
@@ -1032,6 +1035,17 @@ pub fn index_game_supplemental_media(
         &mut report,
     );
     report.indexed_startup_sounds = startup_sound_paths.len();
+    let attract_move_sound_paths = index_sound_event(
+        launchbox_root,
+        big_box_settings
+            .and_then(|settings| settings.get("SoundPack"))
+            .unwrap_or_default(),
+        "Move",
+        MAX_ATTRACT_MOVE_SOUNDS,
+        path_resolver,
+        &mut report,
+    );
+    report.indexed_attract_move_sounds = attract_move_sound_paths.len();
 
     GameSupplementalMediaIndex {
         manual_paths_by_game_id,
@@ -1042,6 +1056,7 @@ pub fn index_game_supplemental_media(
         background_music_paths_by_category: background_music.category_paths,
         startup_video_paths,
         startup_sound_paths,
+        attract_move_sound_paths,
         launchbox_music_policy: LaunchBoxMusicPolicy::from_settings(launchbox_settings),
         big_box_music_policy: BigBoxMusicPolicy::from_settings(big_box_settings),
         big_box_background_music_policy: BigBoxBackgroundMusicPolicy::from_settings(
@@ -1143,6 +1158,24 @@ fn index_startup_sounds(
     path_resolver: &dyn LaunchPathResolver,
     report: &mut GameSupplementalMediaIndexReport,
 ) -> Vec<PathBuf> {
+    index_sound_event(
+        launchbox_root,
+        sound_pack,
+        "Startup",
+        MAX_STARTUP_SOUNDS,
+        path_resolver,
+        report,
+    )
+}
+
+fn index_sound_event(
+    launchbox_root: &Path,
+    sound_pack: &str,
+    event_name: &str,
+    maximum_sounds: usize,
+    path_resolver: &dyn LaunchPathResolver,
+    report: &mut GameSupplementalMediaIndexReport,
+) -> Vec<PathBuf> {
     let sound_pack = sound_pack.trim();
     if sound_pack.is_empty() {
         return Vec::new();
@@ -1161,11 +1194,9 @@ fn index_startup_sounds(
         report.unresolved_folders = report.unresolved_folders.saturating_add(1);
         return Vec::new();
     };
-    let startup_folder = pack_root.join("Startup");
+    let event_folder = pack_root.join(event_name);
     let mut paths = Vec::new();
-    if let Some(entries) =
-        optional_safe_directory_entries(&startup_folder, MAX_STARTUP_SOUNDS, report)
-    {
+    if let Some(entries) = optional_safe_directory_entries(&event_folder, maximum_sounds, report) {
         for entry in entries {
             let Ok(file_type) = entry.file_type() else {
                 report.unsafe_entries = report.unsafe_entries.saturating_add(1);
@@ -1191,7 +1222,7 @@ fn index_startup_sounds(
         return paths;
     }
 
-    let legacy_path = pack_root.join("Startup.wav");
+    let legacy_path = pack_root.join(format!("{event_name}.wav"));
     if validate_supplemental_file(
         &legacy_path,
         SUPPORTED_STARTUP_SOUND_EXTENSIONS,
@@ -2821,6 +2852,63 @@ mod tests {
         );
         assert!(unsafe_index.sound_paths.is_empty());
         assert!(unsafe_index.policy.sound_pack.is_empty());
+    }
+
+    #[test]
+    fn attract_move_sounds_use_the_selected_packs_bounded_native_layouts() {
+        let directory = tempfile::tempdir().expect("temporary LaunchBox root");
+        let sounds = directory.path().join("Sounds/Fixture Sounds");
+        let randomized = sounds.join("Move");
+        fs::create_dir_all(&randomized).expect("move sound folder");
+        fs::write(sounds.join("Move.wav"), b"legacy").expect("legacy move sound");
+        fs::write(randomized.join("MOVE002.wav"), b"second").expect("second move sound");
+        fs::write(randomized.join("MOVE001.WAV"), b"first").expect("first move sound");
+        fs::write(randomized.join("Ignore.mp3"), b"unsupported").expect("unsupported sound");
+        fs::create_dir(randomized.join("Nested")).expect("nested move sound folder");
+        let configured = FrontendSettings {
+            entries: vec![SettingEntry {
+                key: "SoundPack".into(),
+                value: "Fixture Sounds".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+
+        let index = index_game_supplemental_media(
+            directory.path(),
+            &[],
+            &[],
+            None,
+            Some(&configured),
+            &HostPathResolver::default(),
+        );
+        assert_eq!(
+            index.attract_move_sound_paths,
+            [
+                randomized.join("MOVE001.WAV"),
+                randomized.join("MOVE002.wav"),
+            ],
+            "a non-empty multi-sound folder takes precedence over Move.wav"
+        );
+        assert_eq!(index.report.indexed_attract_move_sounds, 2);
+        assert_eq!(index.report.unsafe_entries, 1);
+
+        let legacy_directory = tempfile::tempdir().expect("legacy LaunchBox root");
+        let legacy_sounds = legacy_directory.path().join("Sounds/Fixture Sounds");
+        fs::create_dir_all(&legacy_sounds).expect("legacy sound pack");
+        fs::write(legacy_sounds.join("Move.wav"), b"legacy").expect("legacy move sound");
+        let legacy = index_game_supplemental_media(
+            legacy_directory.path(),
+            &[],
+            &[],
+            None,
+            Some(&configured),
+            &HostPathResolver::default(),
+        );
+        assert_eq!(
+            legacy.attract_move_sound_paths,
+            [legacy_sounds.join("Move.wav")]
+        );
+        assert_eq!(legacy.report.indexed_attract_move_sounds, 1);
     }
 
     #[test]

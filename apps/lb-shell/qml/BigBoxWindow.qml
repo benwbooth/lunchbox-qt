@@ -16,6 +16,7 @@ ApplicationWindow {
     title: "BigBox Port"
     color: "#07090d"
     onClosing: {
+        bigBoxAttractMode.stopMode("frontend")
         startupPresentationOverlay.stopForFrontend()
         bigBoxMusicPlayer.stopPlayback(true)
         backgroundMusicPlayer.stopForFrontend()
@@ -94,6 +95,25 @@ ApplicationWindow {
     property bool startupSplashSmokeFinished: false
     property string startupSplashScreenshotPath:
         argumentValue("--bigbox-startup-splash-screenshot")
+    property bool attractModeSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-attract-mode-smoke-test") >= 0
+    property bool attractModeDisabledSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-attract-mode-disabled-smoke-test") >= 0
+    property bool attractModeAnySmokeTest:
+        attractModeSmokeTest || attractModeDisabledSmokeTest
+    property int attractModeSmokePhase: 0
+    property bool attractModeSmokeFinished: false
+    property bool attractModeScreenshotRequested: false
+    property string attractModeScreenshotPath:
+        argumentValue("--bigbox-attract-mode-screenshot")
+    property int attractModeAutoWheelSteps: 0
+    property int attractModeAutoMovementCycles: 0
+    property int attractModeAutoFilterSwitches: 0
+    property int attractModeAutoDelayElapsedMs: 0
+    property double attractModeDisabledWaitStartedAt: 0
+    property int attractNavigationCursor: -1
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -606,6 +626,118 @@ ApplicationWindow {
             gameList.forceActiveFocus()
         }
         return row
+    }
+
+    function advanceAttractWheel() {
+        if (gameList.count <= 0)
+            return false
+        const row = gameList.currentIndex < 0
+                  ? 0 : (gameList.currentIndex + 1) % gameList.count
+        gameList.currentIndex = row
+        gameList.positionViewAtIndex(row, ListView.Center)
+        return true
+    }
+
+    function currentBigBoxNavigationRow() {
+        if (controller.navigation_filter_kind.length === 0)
+            return 0
+        for (let index = 0;
+             index < controller.big_box_navigation_entry_count;
+             ++index) {
+            if (controller.big_box_navigation_entry_kind_at(index)
+                    === controller.navigation_filter_kind
+                    && controller.big_box_navigation_entry_key_at(index)
+                       === controller.navigation_filter_key)
+                return index + 1
+        }
+        return 0
+    }
+
+    function switchAttractFilter() {
+        const rowCount = controller.big_box_navigation_entry_count + 1
+        if (rowCount <= 1)
+            return false
+        if (attractNavigationCursor < 0
+                || attractNavigationCursor >= rowCount)
+            attractNavigationCursor = currentBigBoxNavigationRow()
+        for (let offset = 1; offset < rowCount; ++offset) {
+            const row = (attractNavigationCursor + offset) % rowCount
+            const gameCount = row === 0
+                            ? controller.game_count
+                            : controller
+                              .big_box_navigation_entry_game_count_at(
+                                  row - 1)
+            if (gameCount <= 0)
+                continue
+            attractNavigationCursor = row
+            activateNavigationRow(row)
+            return true
+        }
+        return false
+    }
+
+    function finishAttractModeSmoke(expectedEnabled) {
+        const wheelSteps = expectedEnabled
+                         ? attractModeAutoWheelSteps
+                         : bigBoxAttractMode.totalWheelSteps
+        const movementCycles = expectedEnabled
+                             ? attractModeAutoMovementCycles
+                             : bigBoxAttractMode.movementCycles
+        const filterSwitches = expectedEnabled
+                             ? attractModeAutoFilterSwitches
+                             : bigBoxAttractMode.filterSwitches
+        const automaticDelay = expectedEnabled
+                             ? attractModeAutoDelayElapsedMs : 0
+        if (!controller.report_big_box_attract_mode_smoke_success(
+                expectedEnabled,
+                wheelSteps,
+                movementCycles,
+                filterSwitches,
+                automaticDelay,
+                bigBoxAttractMode.manualStartCount > 0,
+                bigBoxAttractMode.inputStopCount,
+                bigBoxAttractMode.moveSoundReady)) {
+            console.error(
+                "BIGBOX_ATTRACT_MODE_CONTROLLER_REJECTED enabled="
+                + expectedEnabled
+                + " wheelSteps=" + wheelSteps
+                + " movementCycles=" + movementCycles
+                + " filterSwitches=" + filterSwitches
+                + " autoDelay=" + automaticDelay
+                + " manualStarts="
+                + bigBoxAttractMode.manualStartCount
+                + " inputStops=" + bigBoxAttractMode.inputStopCount
+                + " soundStatus="
+                + bigBoxAttractMode.moveSoundStatus)
+            Qt.exit(638)
+            return
+        }
+        attractModeSmokeFinished = true
+        Qt.quit()
+    }
+
+    function captureAttractModeSmokeAndExit() {
+        function exitMode() {
+            bigBoxAttractMode.clickReturnForSmoke()
+            attractModeSmokePhase = 3
+        }
+        if (attractModeScreenshotPath.length === 0) {
+            exitMode()
+            return
+        }
+        if (attractModeScreenshotRequested)
+            return
+        attractModeScreenshotRequested = true
+        bigBoxAttractMode.grabToImage(function(result) {
+            if (!result.saveToFile(attractModeScreenshotPath)) {
+                console.error(
+                    "BIGBOX_ATTRACT_MODE_SCREENSHOT_SAVE_FAILED path="
+                    + attractModeScreenshotPath)
+                Qt.exit(637)
+                return
+            }
+            exitMode()
+        })
     }
 
     function filteredIdsMatch(expected) {
@@ -2758,6 +2890,10 @@ ApplicationWindow {
                     window.launchSelection()
                     event.accepted = true
                 }
+                Keys.onPressed: function(event) {
+                    if (!bigBoxAttractMode.active)
+                        bigBoxAttractMode.noteActivity()
+                }
                 Keys.onEnterPressed: function(event) {
                     window.launchSelection()
                     event.accepted = true
@@ -2991,6 +3127,16 @@ ApplicationWindow {
                 enabled: controller.filtered_count > 0
                          && !controller.loading && !controller.writing
                 onClicked: window.selectRandomGame()
+            }
+            Button {
+                id: startAttractButton
+                text: "START ATTRACT"
+                enabled:
+                    controller.filtered_count > 0
+                    && !bigBoxAttractMode.blocked
+                    && !bigBoxAttractMode.active
+                Accessible.name: "Start Attract Mode"
+                onClicked: bigBoxAttractMode.startManual()
             }
             Button {
                 id: bigBoxGameDetailsButton
@@ -4317,6 +4463,39 @@ ApplicationWindow {
         }
     }
 
+    BigBoxAttractMode {
+        id: bigBoxAttractMode
+        anchors.fill: parent
+        z: 9000
+        controller: controller
+        mutedForSmoke: window.attractModeAnySmokeTest
+        blocked:
+            controller.loading
+            || controller.writing
+            || controller.launching
+            || controller.launch_session_active
+            || controller.startup_screen_active
+            || controller.shutdown_screen_active
+            || controller.pause_screen_active
+            || window.startupPresentationPending
+            || bigBoxGameDetails.opened
+            || bigBoxImageViewer.opened
+            || bigBoxModelViewer.opened
+            || attributeFilterDrawer.opened
+            || navigationDrawer.opened
+            || launchWithDialog.opened
+        advanceWheelCallback: window.advanceAttractWheel
+        switchFilterCallback: window.switchAttractFilter
+        focusReturnCallback: function() {
+            gameList.forceActiveFocus()
+        }
+        onActiveChanged: {
+            if (active)
+                window.attractNavigationCursor =
+                    window.currentBigBoxNavigationRow()
+        }
+    }
+
     BigBoxStartupPresentation {
         id: startupPresentationOverlay
         anchors.fill: parent
@@ -4381,7 +4560,10 @@ ApplicationWindow {
             Math.max(0, Math.min(
                 1,
                 controller.big_box_background_music_volume_percent
-                / 100))
+                * (bigBoxAttractMode.active
+                   ? controller.big_box_attract_mode_master_volume_percent
+                   : 100)
+                / 10000))
         blocked:
             controller.loading
             || controller.writing
@@ -4408,9 +4590,127 @@ ApplicationWindow {
         repeatEnabled: controller.big_box_repeat_game_music
         outputVolume:
             Math.max(0, Math.min(
-                1, controller.big_box_music_volume_percent / 100))
+                1,
+                controller.big_box_music_volume_percent
+                * (bigBoxAttractMode.active
+                   ? controller.big_box_attract_mode_master_volume_percent
+                   : 100)
+                / 10000))
         mutedForSmoke: window.supplementalMediaSmokeTest
                        || window.backgroundMusicSmokeTest
+    }
+
+    Timer {
+        interval: 20
+        repeat: true
+        running: window.attractModeAnySmokeTest
+                 && !window.attractModeSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.library_path.length === 0)
+                return
+
+            if (window.attractModeDisabledSmokeTest) {
+                if (window.attractModeSmokePhase === 0) {
+                    window.attractModeDisabledWaitStartedAt = Date.now()
+                    window.attractModeSmokePhase = 1
+                } else if (window.attractModeSmokePhase === 1) {
+                    if (Date.now()
+                            - window.attractModeDisabledWaitStartedAt
+                            < 1300)
+                        return
+                    if (bigBoxAttractMode.active
+                            || bigBoxAttractMode.lastStartSource
+                               === "automatic") {
+                        console.error(
+                            "BIGBOX_ATTRACT_MODE_DISABLED_AUTO_STARTED")
+                        Qt.exit(639)
+                        return
+                    }
+                    startAttractButton.clicked()
+                    window.attractModeSmokePhase = 2
+                } else if (window.attractModeSmokePhase === 2) {
+                    if (!bigBoxAttractMode.active
+                            || bigBoxAttractMode.lastStartSource
+                               !== "manual"
+                            || bigBoxAttractMode.totalWheelSteps < 1
+                            || !bigBoxAttractMode.moveSoundReady)
+                        return
+                    bigBoxAttractMode.clickReturnForSmoke()
+                    window.attractModeSmokePhase = 3
+                } else if (window.attractModeSmokePhase === 3) {
+                    if (bigBoxAttractMode.active)
+                        return
+                    window.finishAttractModeSmoke(false)
+                }
+                return
+            }
+
+            if (window.attractModeSmokePhase === 0) {
+                if (!controller.big_box_attract_mode_enabled
+                        || bigBoxAttractMode.idleCountdownStartedAt <= 0)
+                    return
+                window.attractModeSmokePhase = 1
+            } else if (window.attractModeSmokePhase === 1) {
+                if (!bigBoxAttractMode.active
+                        || bigBoxAttractMode.lastStartSource
+                           !== "automatic")
+                    return
+                window.attractModeSmokePhase = 2
+            } else if (window.attractModeSmokePhase === 2) {
+                if (!bigBoxAttractMode.active
+                        || bigBoxAttractMode.movementCycles < 1
+                        || bigBoxAttractMode.filterSwitches < 1
+                        || !bigBoxAttractMode.moveSoundReady)
+                    return
+                window.attractModeAutoWheelSteps =
+                    bigBoxAttractMode.totalWheelSteps
+                window.attractModeAutoMovementCycles =
+                    bigBoxAttractMode.movementCycles
+                window.attractModeAutoFilterSwitches =
+                    bigBoxAttractMode.filterSwitches
+                window.attractModeAutoDelayElapsedMs =
+                    bigBoxAttractMode.lastAutomaticDelayElapsedMs
+                window.captureAttractModeSmokeAndExit()
+            } else if (window.attractModeSmokePhase === 3) {
+                if (bigBoxAttractMode.active)
+                    return
+                startAttractButton.clicked()
+                window.attractModeSmokePhase = 4
+            } else if (window.attractModeSmokePhase === 4) {
+                if (!bigBoxAttractMode.active
+                        || bigBoxAttractMode.lastStartSource !== "manual"
+                        || bigBoxAttractMode.totalWheelSteps
+                           <= window.attractModeAutoWheelSteps)
+                    return
+                bigBoxAttractMode.clickReturnForSmoke()
+                window.attractModeSmokePhase = 5
+            } else if (window.attractModeSmokePhase === 5) {
+                if (bigBoxAttractMode.active)
+                    return
+                window.finishAttractModeSmoke(true)
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.attractModeAnySmokeTest
+                 && !window.attractModeSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_ATTRACT_MODE_TIMEOUT phase="
+                + window.attractModeSmokePhase
+                + " active=" + bigBoxAttractMode.active
+                + " source=" + bigBoxAttractMode.lastStartSource
+                + " stop=" + bigBoxAttractMode.lastStopReason
+                + " wheelSteps=" + bigBoxAttractMode.totalWheelSteps
+                + " movements=" + bigBoxAttractMode.movementCycles
+                + " filters=" + bigBoxAttractMode.filterSwitches
+                + " soundStatus=" + bigBoxAttractMode.moveSoundStatus
+                + " controller=" + controller.status_message)
+            Qt.exit(640 + window.attractModeSmokePhase)
+        }
     }
 
     Timer {
@@ -4922,6 +5222,14 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "A"
+        enabled: !bigBoxAttractMode.active
+                 && !bigBoxAttractMode.blocked
+                 && controller.filtered_count > 0
+        onActivated: bigBoxAttractMode.startManual()
+    }
+
+    Shortcut {
         sequence: "F"
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
@@ -5014,7 +5322,9 @@ ApplicationWindow {
     Shortcut {
         sequence: "Esc"
         onActivated: {
-            if (bigBoxModelViewer.opened) {
+            if (bigBoxAttractMode.active) {
+                bigBoxAttractMode.stopMode("input")
+            } else if (bigBoxModelViewer.opened) {
                 bigBoxModelViewer.close()
             } else if (bigBoxImageViewer.opened) {
                 bigBoxImageViewer.close()
