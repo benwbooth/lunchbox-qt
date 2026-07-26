@@ -51,6 +51,7 @@
             qtdeclarative
             qtimageformats
             qtmultimedia
+            qtquick3d
             qtsvg
             qttools
           ]
@@ -73,7 +74,11 @@
             scummvm
             sqlite
           ]
-          ++ lib.optionals pkgs.stdenv.isLinux [ appimage-run ];
+          ++ lib.optionals pkgs.stdenv.isLinux [
+            appimage-run
+            imagemagick
+            xvfb-run
+          ];
 
         buildInputs = qtModules ++ [ pkgs.libGL ];
 

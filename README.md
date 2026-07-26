@@ -191,6 +191,20 @@ controls in both directions, require distinct contained regular front/back
 files, render the back state, and hash the full media and XML trees before and
 after.
 
+Both frontends now share a true six-face Qt Quick 3D generic box preview.
+LaunchBox opens it from the settings-gated **3D Model** Details action or `M`;
+BigBox uses its settings-gated game-menu action or `M`. Distinct safely indexed
+front, back, and spine files texture the corresponding faces. Left-drag or
+arrows rotate, right-drag or Shift+arrows translate, the wheel or `+`/`-` zooms,
+and double-click, Home, or `0` resets. Visible controls expose the same paths.
+Free, horizontal, and vertical rotation lock is stored atomically in the
+platform-native user configuration directory and shared between the two
+applications without changing LaunchBox XML. Sequential offscreen scenarios
+open the actual controls, exercise both lock axes, render both model screens,
+verify native regular textures and focus return, compare exact persisted state,
+and hash the media/XML tree. Specialized DVD/jewel/full-scan models and
+per-platform/per-game model settings remain open.
+
 Both frontends also use one typed, read-only library-filter contract. It
 combines text and platform/category/playlist navigation with favorite,
 completion, installation tri-state, played/rated, hidden, and broken state;

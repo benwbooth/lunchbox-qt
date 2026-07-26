@@ -35,6 +35,11 @@
   </PlatformFolder>
   <PlatformFolder>
     <Platform>Fixture Console</Platform>
+    <MediaType>Box - Spine</MediaType>
+    <FolderPath>Images\Fixture Console\Box - Spine</FolderPath>
+  </PlatformFolder>
+  <PlatformFolder>
+    <Platform>Fixture Console</Platform>
     <MediaType>Screenshot - Gameplay</MediaType>
     <FolderPath>Images/Fixture Console/Screenshot - Gameplay</FolderPath>
   </PlatformFolder>

@@ -956,7 +956,7 @@ mod tests {
         let catalog = index.platform_catalog().expect("platform catalog");
         assert_eq!(catalog.platforms.len(), 1);
         assert_eq!(catalog.categories.len(), 1);
-        assert_eq!(catalog.folders.len(), 5);
+        assert_eq!(catalog.folders.len(), 6);
         assert_eq!(catalog.platforms[0].release_date.as_deref(), Some("1999"));
 
         assert_eq!(index.parents().len(), 2);
@@ -973,10 +973,11 @@ mod tests {
 
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         let settings = index.settings().expect("LaunchBox settings");
-        assert_eq!(settings.entries.len(), 23);
+        assert_eq!(settings.entries.len(), 24);
         assert_eq!(settings.get("Theme"), Some("Fixture Theme"));
         assert_eq!(settings.get_bool("DebugLog"), Some(false));
         assert_eq!(settings.get_bool("UseStartupScreen"), Some(true));
+        assert_eq!(settings.get_bool("ShowDetails3dModel"), Some(true));
         assert_eq!(
             settings.get("StartupTheme"),
             Some("Fixture Desktop Startup")
@@ -1030,8 +1031,12 @@ mod tests {
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 13);
+        assert_eq!(big_box.entries.len(), 14);
         assert_eq!(big_box.get_bool("EnableAttractMode"), Some(true));
+        assert_eq!(
+            big_box.get_bool("ShowGameMenuViewModelFullscreen"),
+            Some(true)
+        );
         assert_eq!(big_box.get_bool("UseStartupScreen"), Some(true));
         assert_eq!(big_box.get("StartupTheme"), Some("Fixture BigBox Startup"));
         assert_eq!(big_box.get("MinimumStartupScreenDisplayTime"), Some("700"));

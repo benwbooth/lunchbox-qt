@@ -74,6 +74,35 @@ Observed front art used JPG, PNG, GIF, and TIF files beneath media-type and
 optional region directories. This is evidence from the older 13.24 library,
 not a claim that every 13.27 priority or naming edge case is recovered.
 
+The model-preview boundary now has a separate evidence record. The recovered
+13.27 desktop `FullscreenModelPreviewViewModel` and BigBox
+`ModelPreviewViewModel` expose rotate, translate, zoom-in, and zoom-out
+operations; `FlowModelRotationLockMode` has `None`, `LockToY`, and `LockToX`.
+The shared `ModelSettings` contract retains model type, size, case/cover color,
+front-spine image, spine/logo rotation, landscape/full-scan flags, and
+game/platform identity. `ModelType` names Box, DVD Case, Jewel Case, and Long
+Jewel Case. These contracts establish the feature shape, not protected camera,
+geometry, material, timing, or default behavior.
+
+The read-only 13.24 installation currently contains 20,658 PNG and 7 JPEG files
+under its configured `Box - 3D` directories. Its settings retain
+`Box3dImageTypePriorities=Box - 3D`, `RotateModelDefaultsApplied=true`, and
+`ShowDetails3dModel=true`; BigBox retains
+`ShowGameMenuViewModelFullscreen=true`, `ModelWheelMinimumSpeed=400`,
+`Use3dModelCoverFlow=true`, and `Use3dModelImageView=true`. The downloaded
+`Box - 3D` flat image family is therefore kept distinct from the interactive
+geometry contract and from the separate front/back/spine inputs used by the
+first port model vertical.
+
+The implemented baseline deliberately uses one generic six-face Qt model with
+distinct selected `Box - Front`, `Box - Back`, and `Box - Spine` textures.
+Its free/horizontal/vertical lock names are a port-owned strict state contract
+mapped to the recovered axis concept. Specialized DVD/jewel geometry,
+full-scan construction, colors, sizes, rotations, per-platform/per-game
+overrides, CoverFlow/image-view integration, and original camera/default input
+behavior remain runtime-oracle work and are not inferred from the protected
+method bodies.
+
 The recovered 13.27 stock `GameDetailsView.xaml` binds `MediaList.SelectedItem`
 to `MediaPreview.MediaItem`; the concrete `MediaItem` exposes location, preview,
 full-size preview, and an `IsVideo` discriminator. `GameDetailsViewModel`

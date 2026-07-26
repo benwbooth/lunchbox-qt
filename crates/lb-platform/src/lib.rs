@@ -2,6 +2,7 @@ mod archive;
 mod dosbox;
 mod m3u;
 mod media;
+mod model_viewer_state;
 mod path;
 mod path_settings;
 mod scummvm;
@@ -16,6 +17,10 @@ pub use media::{
     front_image_type_priorities, index_front_images, index_game_media, launchbox_media_stem,
     region_priorities, FrontImageIndex, FrontImageIndexReport, GameDetailsMediaPolicy,
     GameMediaIndex, GameMediaIndexReport, GameMediaItem, GameMediaKind,
+};
+pub use model_viewer_state::{
+    default_model_viewer_state_path, ModelRotationLock, ModelViewerState, ModelViewerStateError,
+    MODEL_VIEWER_STATE_VERSION,
 };
 pub use path::{
     default_platform_folders, is_windows_absolute_path, navigation_document_file_name,

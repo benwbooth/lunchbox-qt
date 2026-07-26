@@ -112,6 +112,7 @@ pub struct GameMediaIndex {
     pub items_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
     pub front_paths_by_game_id: BTreeMap<String, PathBuf>,
     pub back_paths_by_game_id: BTreeMap<String, PathBuf>,
+    pub spine_paths_by_game_id: BTreeMap<String, PathBuf>,
     pub policy: GameDetailsMediaPolicy,
     pub report: GameMediaIndexReport,
 }
@@ -530,6 +531,8 @@ pub fn index_game_media(
         .collect::<BTreeMap<_, _>>();
     let mut front_paths_by_game_id = BTreeMap::new();
     let mut back_paths_by_game_id = BTreeMap::new();
+    let mut spine_paths_by_game_id = BTreeMap::new();
+    let spine_priorities = ["Box - Spine".to_string()];
     for (game_id, items) in &items_by_game_id {
         let Some(game) = games_by_id.get(game_id.as_str()) else {
             continue;
@@ -542,6 +545,11 @@ pub fn index_game_media(
         if let Some(selected) = select_game_image(items, game, &back_priorities, &region_priorities)
         {
             back_paths_by_game_id.insert(game_id.clone(), selected.path.clone());
+        }
+        if let Some(selected) =
+            select_game_image(items, game, &spine_priorities, &region_priorities)
+        {
+            spine_paths_by_game_id.insert(game_id.clone(), selected.path.clone());
         }
     }
 
@@ -556,6 +564,7 @@ pub fn index_game_media(
         items_by_game_id,
         front_paths_by_game_id,
         back_paths_by_game_id,
+        spine_paths_by_game_id,
         policy,
         report,
     }
@@ -1387,6 +1396,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary LaunchBox root");
         let boxes = directory.path().join("Images/Fixture Console/Box - Front");
         let box_backs = directory.path().join("Images/Fixture Console/Box - Back");
+        let box_spines = directory.path().join("Images/Fixture Console/Box - Spine");
         let screenshots = directory
             .path()
             .join("Images/Fixture Console/Screenshot - Gameplay");
@@ -1394,7 +1404,7 @@ mod tests {
             .path()
             .join("Images/Fixture Console/Fanart - Background");
         let videos = directory.path().join("Videos/Fixture Console");
-        for folder in [&boxes, &box_backs, &screenshots, &fanart] {
+        for folder in [&boxes, &box_backs, &box_spines, &screenshots, &fanart] {
             fs::create_dir_all(folder.join("North America")).expect("image region");
         }
         fs::create_dir_all(videos.join("Theme/North America")).expect("theme video region");
@@ -1405,6 +1415,11 @@ mod tests {
             b"box back",
         )
         .expect("box back");
+        fs::write(
+            box_spines.join("North America/Fixture Adventure-01.png"),
+            b"box spine",
+        )
+        .expect("box spine");
         fs::write(
             screenshots.join("North America/Fixture Adventure-01.jpg"),
             b"screenshot",
@@ -1449,6 +1464,11 @@ mod tests {
                 platform: "Fixture Console".into(),
                 media_type: "Box - Back".into(),
                 folder_path: r"Images\Fixture Console\Box - Back".into(),
+            },
+            PlatformFolder {
+                platform: "Fixture Console".into(),
+                media_type: "Box - Spine".into(),
+                folder_path: r"Images\Fixture Console\Box - Spine".into(),
             },
             PlatformFolder {
                 platform: "Fixture Console".into(),
@@ -1502,7 +1522,7 @@ mod tests {
             &HostPathResolver::default(),
         );
         let items = &index.items_by_game_id["fixture-adventure"];
-        assert_eq!(items.len(), 8);
+        assert_eq!(items.len(), 9);
         assert_eq!(
             items
                 .iter()
@@ -1513,6 +1533,7 @@ mod tests {
                 (GameMediaKind::Image, "Screenshot - Gameplay", 1),
                 (GameMediaKind::Image, "Fanart - Background", 1),
                 (GameMediaKind::Image, "Box - Back", 1),
+                (GameMediaKind::Image, "Box - Spine", 1),
                 (GameMediaKind::Video, "Theme Video", 1),
                 (GameMediaKind::Video, "Trailer", 2),
                 (GameMediaKind::Video, "Video Snap", 0),
@@ -1527,7 +1548,11 @@ mod tests {
             index.back_paths_by_game_id["fixture-adventure"],
             box_backs.join("North America/Fixture Adventure-01.png")
         );
-        assert_eq!(index.report.indexed_images, 4);
+        assert_eq!(
+            index.spine_paths_by_game_id["fixture-adventure"],
+            box_spines.join("North America/Fixture Adventure-01.png")
+        );
+        assert_eq!(index.report.indexed_images, 5);
         assert_eq!(index.report.indexed_videos, 4);
         assert_eq!(index.report.matched_games, 1);
         assert!(

@@ -292,13 +292,13 @@ contract from the Details View Image action or the global `I` action. The
 docked path is owned by the main window, while popped-out Details opens the
 modal in its own native window; both stop hidden video, retain the selected
 image, and restore focus to the media row on Back. A compiled desktop scenario
-drives the shared button activation paths, validates the four-to-five
+drives the shared button activation paths, validates the five-to-six
 image/media mapping and native regular files, renders a zoomed PNG, and proves
 byte-identical media and library documents. Native Windows and Intel/Apple
 Silicon macOS Qt
 interaction and Qt Multimedia execution remain explicit real-host gates, and
 all media mutation, download, manual/music playback, platform-video
-management, 3D models, related/document/application panes, custom
+management, specialized 3D models, related/document/application panes, custom
 BigBox theme layouts/transitions, cleanup, and migration work remains open.
 The current `DESK-004`/`BB-004` media vertical adds settings-prioritized box
 backs and one shared front/back Qt presenter to the LaunchBox grid and BigBox
@@ -315,6 +315,26 @@ entire fixture media/XML tree. The protected 13.27 transition duration remains
 unknown, so the shared 220 ms animation is an explicit cross-platform Qt
 policy. Native Windows and Intel/Apple Silicon macOS interaction remains a
 real-host gate.
+The first `MED-009` model vertical uses one Qt Quick 3D preview in both
+frontends. It builds a true six-face rectangular model and maps the safely
+indexed front, back, and `Box - Spine` files to distinct faces while keeping
+top and bottom as solid materials. LaunchBox honors `ShowDetails3dModel` and
+enters from Details or `M`; BigBox honors
+`ShowGameMenuViewModelFullscreen` and enters from the game menu or `M`.
+Pointer drag, right-drag, wheel, directional/Shift-directional/Page/Home keys,
+and visible buttons cover rotation, translation, zoom, and reset. A strict
+versioned state document in the native Linux, Windows, or macOS user
+configuration location atomically stores free/horizontal/vertical rotation
+lock, so one frontend restores changes made by the other without touching
+shared LaunchBox XML. Sequential compiled scenarios activate the real entry and
+control buttons, prove each lock axis, decode three distinct native regular
+textures, render both model surfaces, restore focus, compare the exact
+persisted state, and hash the media/XML tree. The recovered `ModelType` set
+(box, DVD, jewel, and long-jewel), `ModelSettings`
+colors/sizes/rotations/full-scan construction and platform/game overrides,
+`Use3dModelImageView`/CoverFlow paths, original camera and timing, native
+controller bindings, and native Windows/Intel/Apple Silicon macOS interaction
+remain explicit later gates.
 The first three `DESK-002` verticals add a resizable LaunchBox selected-game
 details pane over the shared virtualized model plus hide/show and native
 pop-out/dock behavior. Its stable-ID selection contract survives filter and
@@ -331,7 +351,7 @@ preservation, and restoration in a fresh process while fixture
 platform/settings documents stay byte-identical. Its third vertical follows
 the recovered stock `MediaList`/`MediaPreview` shape with a selectable
 thumbnail row, large image/video preview, details-video settings, and playback
-controls. The next desktop media gaps are 3D models, related and
+controls. The next desktop media gaps are specialized model parity, related and
 document/application panes, media mutation/management, and multi-display
 geometry recovery; native Windows/macOS Qt interaction also remains open.
 Transactional title

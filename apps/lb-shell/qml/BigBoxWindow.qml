@@ -42,6 +42,15 @@ ApplicationWindow {
     property bool boxFlipScreenshotRequested: false
     property string boxFlipScreenshotPath:
         argumentValue("--bigbox-box-flip-screenshot")
+    property bool modelViewerSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-model-viewer-smoke-test") >= 0
+    property int modelViewerSmokePhase: 0
+    property bool modelViewerSmokeFinished: false
+    property bool modelViewerScreenshotRequested: false
+    property bool modelViewerRestoredHorizontalLock: false
+    property string modelViewerScreenshotPath:
+        argumentValue("--bigbox-model-viewer-screenshot")
     property bool navigationSmokeTest:
         Qt.application.arguments.indexOf("--navigation-smoke-test") >= 0
     property bool libraryFilterSmokeTest:
@@ -201,6 +210,18 @@ ApplicationWindow {
             return false
         return bigBoxImageViewer.openForGame(
                     selectedBigBoxGameId, preferredMediaIndex)
+    }
+
+    function openGameModel(returnFocusItem) {
+        if (!controller.big_box_show_game_menu_model
+                || selectedBigBoxGameId.length === 0
+                || controller.loading || controller.writing)
+            return false
+        bigBoxMediaPlayer.stop()
+        return bigBoxModelViewer.openForGame(
+                    selectedBigBoxGameId,
+                    selectedBigBoxGameTitle,
+                    returnFocusItem ? returnFocusItem : gameList)
     }
 
     function flipSelectedBox() {
@@ -453,6 +474,16 @@ ApplicationWindow {
                ? Qt.application.arguments[index + 1] : ""
     }
 
+    function isSmokeRun() {
+        for (let index = 0; index < Qt.application.arguments.length; ++index) {
+            const argument = Qt.application.arguments[index]
+            if (argument === "--smoke-test"
+                    || argument.endsWith("-smoke-test"))
+                return true
+        }
+        return false
+    }
+
     LibraryController {
         id: controller
     }
@@ -587,6 +618,19 @@ ApplicationWindow {
 
     Component.onCompleted: {
         controller.configure_frontend(true)
+        const usePersistedModelState = !window.isSmokeRun()
+                                     || argumentValue(
+                                         "--model-viewer-state-file")
+                                        .length > 0
+        if (usePersistedModelState
+                && !controller.initialize_model_viewer_state()) {
+            console.error(
+                "MODEL_VIEWER_STATE_INITIALIZE_FAILED status="
+                + controller.status_message)
+            if (window.modelViewerSmokeTest)
+                Qt.exit(544)
+            return
+        }
         if (!controller.initialize_host_path_mappings()) {
             console.error("HOST_PATH_MAPPING_INITIALIZE_FAILED status="
                           + controller.status_message)
@@ -753,6 +797,163 @@ ApplicationWindow {
     Timer {
         interval: 25
         repeat: true
+        running: window.modelViewerSmokeTest
+                 && !window.modelViewerSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0
+                    || !controller.model_viewer_state_ready)
+                return
+            if (window.modelViewerSmokePhase === 0) {
+                const row = controller.row_for_game_id(
+                                "fixture-adventure")
+                if (row < 0)
+                    return
+                gameList.currentIndex = row
+                gameList.positionViewAtIndex(row, ListView.Center)
+                window.modelViewerSmokePhase = 1
+                return
+            }
+            if (window.modelViewerSmokePhase === 1) {
+                if (window.selectedBigBoxGameId
+                        !== "fixture-adventure"
+                        || controller.model_rotation_lock
+                           !== "horizontal")
+                    return
+                window.modelViewerRestoredHorizontalLock = true
+                if (!bigBoxModelButton.activate()) {
+                    console.error(
+                        "BIGBOX_MODEL_VIEWER_CONTROL_MISSING")
+                    Qt.exit(557)
+                    return
+                }
+                window.modelViewerSmokePhase = 2
+            } else if (window.modelViewerSmokePhase === 2) {
+                if (!bigBoxModelViewer.opened
+                        || !bigBoxModelViewer.sceneReady
+                        || bigBoxModelViewer.frontImageStatus
+                           !== Image.Ready
+                        || bigBoxModelViewer.backImageStatus
+                           !== Image.Ready
+                        || bigBoxModelViewer.spineImageStatus
+                           !== Image.Ready
+                        || !bigBoxModelViewer.hasBack
+                        || !bigBoxModelViewer.hasSpine
+                        || bigBoxModelViewer.rotationLock
+                           !== "horizontal"
+                        || bigBoxModelViewer.rotationX !== -8
+                        || bigBoxModelViewer.rotationY !== -22)
+                    return
+                bigBoxModelViewer.activateRotateUpControl()
+                if (!bigBoxModelViewer
+                        .activateRotateRightControl()) {
+                    console.error(
+                        "BIGBOX_MODEL_VIEWER_ROTATE_CONTROL_MISSING")
+                    Qt.exit(558)
+                    return
+                }
+                window.modelViewerSmokePhase = 3
+            } else if (window.modelViewerSmokePhase === 3) {
+                if (bigBoxModelViewer.rotationX !== -8
+                        || bigBoxModelViewer.rotationY !== -12)
+                    return
+                if (!bigBoxModelViewer.activatePanRightControl()
+                        || !bigBoxModelViewer
+                           .activateZoomInControl()
+                        || !bigBoxModelViewer
+                           .activateVerticalLockControl()) {
+                    console.error(
+                        "BIGBOX_MODEL_VIEWER_NAVIGATION_CONTROL_MISSING")
+                    Qt.exit(559)
+                    return
+                }
+                window.modelViewerSmokePhase = 4
+            } else if (window.modelViewerSmokePhase === 4) {
+                if (controller.model_rotation_lock !== "vertical"
+                        || bigBoxModelViewer.rotationLock
+                           !== "vertical"
+                        || bigBoxModelViewer.panX !== 10
+                        || Math.abs(
+                            bigBoxModelViewer.modelZoom - 1.15)
+                           > 0.0001)
+                    return
+                bigBoxModelViewer.activateRotateRightControl()
+                bigBoxModelViewer.activateRotateUpControl()
+                window.modelViewerSmokePhase = 5
+            } else if (window.modelViewerSmokePhase === 5) {
+                if (bigBoxModelViewer.rotationX !== -18
+                        || bigBoxModelViewer.rotationY !== -12)
+                    return
+                if (window.modelViewerScreenshotRequested)
+                    return
+                window.modelViewerScreenshotRequested = true
+                const closeViewer = function() {
+                    if (!bigBoxModelViewer
+                            .activateBackControl()) {
+                        console.error(
+                            "BIGBOX_MODEL_VIEWER_BACK_CONTROL_MISSING")
+                        Qt.exit(560)
+                        return
+                    }
+                    window.modelViewerSmokePhase = 6
+                }
+                if (window.modelViewerScreenshotPath.length === 0) {
+                    closeViewer()
+                    return
+                }
+                bigBoxModelViewer.viewerContentItem.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.modelViewerScreenshotPath)) {
+                            console.error(
+                                "BIGBOX_MODEL_VIEWER_SCREENSHOT_SAVE_FAILED path="
+                                + window.modelViewerScreenshotPath)
+                            Qt.exit(561)
+                            return
+                        }
+                        closeViewer()
+                    })
+            } else if (window.modelViewerSmokePhase === 6) {
+                if (bigBoxModelViewer.opened
+                        || !bigBoxModelButton.activeFocus)
+                    return
+                if (!controller
+                        .report_big_box_model_viewer_smoke_success(
+                            "fixture-adventure",
+                            bigBoxModelViewer.frontSource.toString(),
+                            bigBoxModelViewer.backSource.toString(),
+                            bigBoxModelViewer.spineSource.toString(),
+                            window
+                            .modelViewerRestoredHorizontalLock)) {
+                    console.error(
+                        "BIGBOX_MODEL_VIEWER_CONTROLLER_REJECTED")
+                    Qt.exit(562)
+                    return
+                }
+                window.modelViewerSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 25000
+        running: window.modelViewerSmokeTest
+                 && !window.modelViewerSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_MODEL_VIEWER_TIMEOUT phase="
+                + window.modelViewerSmokePhase
+                + " open=" + bigBoxModelViewer.opened
+                + " ready=" + bigBoxModelViewer.sceneReady
+                + " lock=" + controller.model_rotation_lock
+                + " status=" + controller.status_message)
+            Qt.exit(563 + window.modelViewerSmokePhase)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
         running: window.gameDetailsMediaSmokeTest
                  && !window.gameDetailsMediaSmokeFinished
         onTriggered: {
@@ -771,8 +972,8 @@ ApplicationWindow {
                 window.gameDetailsMediaSmokePhase = 1
             } else if (window.gameDetailsMediaSmokePhase === 1) {
                 if (!bigBoxGameDetails.opened
-                        || bigBoxGameDetails.mediaCount !== 5
-                        || bigBoxGameDetails.selectedMediaIndex !== 4
+                        || bigBoxGameDetails.mediaCount !== 6
+                        || bigBoxGameDetails.selectedMediaIndex !== 5
                         || bigBoxGameDetails.selectedMediaKind !== "video"
                         || bigBoxGameDetails.selectedMediaType !== "Video Snap"
                         || bigBoxGameDetails.mediaDuration <= 0
@@ -789,7 +990,7 @@ ApplicationWindow {
                 bigBoxPreviousMediaButton.clicked()
                 window.gameDetailsMediaSmokePhase = 3
             } else if (window.gameDetailsMediaSmokePhase === 3) {
-                if (bigBoxGameDetails.selectedMediaIndex !== 3
+                if (bigBoxGameDetails.selectedMediaIndex !== 4
                         || bigBoxGameDetails.selectedMediaKind !== "image"
                         || bigBoxGameDetails.mediaImageStatus !== Image.Ready)
                     return
@@ -811,7 +1012,7 @@ ApplicationWindow {
                     return
                 window.gameDetailsMediaScreenshotRequested = true
                 const continueWithVideo = function() {
-                    if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(4)) {
+                    if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(5)) {
                         console.error(
                             "BIGBOX_GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
                         Qt.exit(508)
@@ -835,7 +1036,7 @@ ApplicationWindow {
                     continueWithVideo()
                 })
             } else if (window.gameDetailsMediaSmokePhase === 5) {
-                if (bigBoxGameDetails.selectedMediaIndex !== 4
+                if (bigBoxGameDetails.selectedMediaIndex !== 5
                         || bigBoxGameDetails.selectedMediaKind !== "video"
                         || bigBoxGameDetails.selectedMediaType !== "Video Snap"
                         || bigBoxGameDetails.mediaDuration <= 0
@@ -852,11 +1053,11 @@ ApplicationWindow {
                     return
                 if (!controller
                         .report_big_box_game_details_media_smoke_success(
-                        "fixture-adventure", 0, 4,
+                        "fixture-adventure", 0, 5,
                         controller.game_media_url_at(
                             "fixture-adventure", 0).toString(),
                         controller.game_media_url_at(
-                            "fixture-adventure", 4).toString())) {
+                            "fixture-adventure", 5).toString())) {
                     console.error(
                         "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
                     Qt.exit(510)
@@ -907,7 +1108,7 @@ ApplicationWindow {
                 window.imageViewerSmokePhase = 1
             } else if (window.imageViewerSmokePhase === 1) {
                 if (!bigBoxGameDetails.opened
-                        || bigBoxGameDetails.mediaCount !== 5)
+                        || bigBoxGameDetails.mediaCount !== 6)
                     return
                 if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(0)) {
                     console.error(
@@ -927,7 +1128,7 @@ ApplicationWindow {
                 if (!bigBoxImageViewer.opened
                         || bigBoxImageViewer.gameId
                            !== "fixture-adventure"
-                        || bigBoxImageViewer.imageCount !== 4
+                        || bigBoxImageViewer.imageCount !== 5
                         || bigBoxImageViewer.selectedImageIndex !== 0
                         || bigBoxImageViewer.selectedMediaIndex !== 0
                         || bigBoxImageViewer.selectedMediaType
@@ -2190,6 +2391,26 @@ ApplicationWindow {
                 onClicked: window.openGameImages(-1)
             }
             Button {
+                id: bigBoxModelButton
+                text: "3D MODEL"
+                visible: controller.big_box_show_game_menu_model
+                enabled: visible
+                         && window.selectedBigBoxGameId.length > 0
+                         && window.selectedBigBoxGameFrontImageUrl
+                            .toString().length > 0
+                         && !controller.loading
+                         && !controller.writing
+                Accessible.name: "Show interactive 3D box model"
+
+                function activate() {
+                    if (!enabled)
+                        return false
+                    return window.openGameModel(bigBoxModelButton)
+                }
+
+                onClicked: activate()
+            }
+            Button {
                 id: bigBoxFlipBoxButton
                 text: window.selectedBigBoxGameBoxBackVisible
                       ? "SHOW FRONT" : "FLIP BOX"
@@ -3360,6 +3581,16 @@ ApplicationWindow {
         }
     }
 
+    BoxModelViewer {
+        id: bigBoxModelViewer
+        parent: Overlay.overlay
+        x: 0
+        y: 0
+        width: window.width
+        height: window.height
+        controller: controller
+    }
+
     LaunchStartupOverlay {
         id: launchStartupOverlay
         anchors.fill: parent
@@ -3451,6 +3682,7 @@ ApplicationWindow {
         sequence: "F"
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
+                 && !bigBoxModelViewer.opened
                  && !attributeFilterDrawer.opened
                  && !navigationDrawer.opened
                  && controller.big_box_show_game_menu_flip_box
@@ -3463,6 +3695,7 @@ ApplicationWindow {
         sequence: "L"
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
+                 && !bigBoxModelViewer.opened
         onActivated: window.showLaunchWithSelection()
     }
 
@@ -3470,6 +3703,7 @@ ApplicationWindow {
         sequence: "D"
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
+                 && !bigBoxModelViewer.opened
                  && !attributeFilterDrawer.opened
                  && !navigationDrawer.opened
                  && window.selectedBigBoxGameId.length > 0
@@ -3479,6 +3713,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "I"
         enabled: !bigBoxImageViewer.opened
+                 && !bigBoxModelViewer.opened
                  && window.selectedBigBoxGameId.length > 0
                  && window.selectedBigBoxGameImageCount > 0
         onActivated:
@@ -3488,9 +3723,22 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "M"
+        enabled: !bigBoxImageViewer.opened
+                 && !bigBoxModelViewer.opened
+                 && controller.big_box_show_game_menu_model
+                 && window.selectedBigBoxGameId.length > 0
+        onActivated:
+            window.openGameModel(
+                bigBoxGameDetails.opened
+                ? bigBoxGameDetailsContent : gameList)
+    }
+
+    Shortcut {
         sequence: "Tab"
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
+                 && !bigBoxModelViewer.opened
         onActivated: {
             if (navigationDrawer.opened) {
                 navigationDrawer.close()
@@ -3505,6 +3753,7 @@ ApplicationWindow {
         sequence: "G"
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
+                 && !bigBoxModelViewer.opened
         onActivated: window.openAttributeFilters()
     }
 
@@ -3512,6 +3761,7 @@ ApplicationWindow {
         sequence: "R"
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
+                 && !bigBoxModelViewer.opened
                  && !attributeFilterDrawer.opened
                  && !navigationDrawer.opened
                  && controller.filtered_count > 0
@@ -3521,7 +3771,9 @@ ApplicationWindow {
     Shortcut {
         sequence: "Esc"
         onActivated: {
-            if (bigBoxImageViewer.opened) {
+            if (bigBoxModelViewer.opened) {
+                bigBoxModelViewer.close()
+            } else if (bigBoxImageViewer.opened) {
                 bigBoxImageViewer.close()
             } else if (bigBoxGameDetails.opened) {
                 bigBoxGameDetails.close()

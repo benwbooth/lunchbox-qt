@@ -97,9 +97,21 @@ ApplicationWindow {
     property bool boxFlipScreenshotRequested: false
     property string boxFlipScreenshotPath:
         argumentValue("--launchbox-box-flip-screenshot")
+    property bool modelViewerSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--launchbox-model-viewer-smoke-test") >= 0
+    property int modelViewerSmokePhase: 0
+    property bool modelViewerSmokeFinished: false
+    property bool modelViewerScreenshotRequested: false
+    property string modelViewerScreenshotPath:
+        argumentValue("--launchbox-model-viewer-screenshot")
+    property bool modelViewerOpen: false
     readonly property var imageViewerForDetails:
         controller.game_details_popped_out
         ? gameDetailsWindowImageViewer : launchBoxImageViewer
+    readonly property var modelViewerForDetails:
+        controller.game_details_popped_out
+        ? gameDetailsWindowModelViewer : launchBoxModelViewer
     property bool gameDetailsLayoutSmokeTest:
         Qt.application.arguments.indexOf(
             "--game-details-layout-smoke-test") >= 0
@@ -701,6 +713,31 @@ ApplicationWindow {
         return imageViewerForDetails.openForGame(
                     gameId, gameTitle, preferredMediaIndex,
                     returnFocusItem)
+    }
+
+    function openSelectedGameModel() {
+        if (selectedGameId.length === 0
+                || !controller.details_show_3d_model
+                || controller.loading || controller.writing)
+            return false
+        const detailsPane = activeGameDetailsPane()
+        if (detailsPane) {
+            // qmllint disable missing-property
+            return detailsPane["openModelViewer"]()
+            // qmllint enable missing-property
+        }
+        const title = selectedGameItem
+                    ? selectedGameItem.gameTitle
+                    : listCurrentGameTitle
+        return launchBoxModelViewer.openForGame(
+                    selectedGameId, title,
+                    controller.list_view ? gameList : gameGrid)
+    }
+
+    function openGameModelFromDetails(gameId, gameTitle,
+                                      returnFocusItem) {
+        return modelViewerForDetails.openForGame(
+                    gameId, gameTitle, returnFocusItem)
     }
 
     function finishLibraryListViewSmoke(reload) {
@@ -1326,6 +1363,19 @@ ApplicationWindow {
             }
             return
         }
+        const usePersistedModelState = !window.isSmokeRun()
+                                     || argumentValue(
+                                         "--model-viewer-state-file")
+                                        .length > 0
+        if (usePersistedModelState
+                && !controller.initialize_model_viewer_state()) {
+            console.error(
+                "MODEL_VIEWER_STATE_INITIALIZE_FAILED status="
+                + controller.status_message)
+            if (window.modelViewerSmokeTest)
+                Qt.exit(536)
+            return
+        }
         if (!window.loadListViewLayout()) {
             console.error("LIST_VIEW_LAYOUT_INITIALIZE_FAILED")
             if (window.libraryListViewSmokeTest
@@ -1383,6 +1433,7 @@ ApplicationWindow {
         enabled: !controller.list_view
                  && gameGrid.currentIndex >= 0
                  && !window.imageViewerOpen
+                 && !window.modelViewerOpen
                  && !controller.loading
                  && !controller.writing
         onActivated: {
@@ -1496,6 +1547,152 @@ ApplicationWindow {
                 + window.boxFlipSmokePhase
                 + " status=" + controller.status_message)
             Qt.exit(530)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.modelViewerSmokeTest
+                 && !window.modelViewerSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0
+                    || !controller.model_viewer_state_ready)
+                return
+            if (window.modelViewerSmokePhase === 0) {
+                window.setAttributeFilters("any", "none", true, true)
+                window.restoreGameSelection("fixture-adventure")
+                window.modelViewerSmokePhase = 1
+                return
+            }
+            const pane = window.activeGameDetailsPane()
+            if (!pane)
+                return
+            const modelViewer = window.modelViewerForDetails
+            // qmllint disable missing-property
+            if (window.modelViewerSmokePhase === 1) {
+                if (window.selectedGameId !== "fixture-adventure"
+                        || controller.model_rotation_lock !== "free")
+                    return
+                if (!pane["clickViewModelForSmoke"]()) {
+                    console.error(
+                        "LAUNCHBOX_MODEL_VIEWER_CONTROL_MISSING")
+                    Qt.exit(537)
+                    return
+                }
+                window.modelViewerSmokePhase = 2
+            } else if (window.modelViewerSmokePhase === 2) {
+                if (!modelViewer.opened
+                        || !window.modelViewerOpen
+                        || !modelViewer.sceneReady
+                        || modelViewer.frontImageStatus !== Image.Ready
+                        || modelViewer.backImageStatus !== Image.Ready
+                        || modelViewer.spineImageStatus !== Image.Ready
+                        || !modelViewer.hasBack
+                        || !modelViewer.hasSpine
+                        || modelViewer.rotationX !== -8
+                        || modelViewer.rotationY !== -22
+                        || modelViewer.modelZoom !== 1
+                        || modelViewer.panX !== 0
+                        || modelViewer.panY !== 0)
+                    return
+                if (!modelViewer.activateRotateRightControl()) {
+                    console.error(
+                        "LAUNCHBOX_MODEL_VIEWER_ROTATE_CONTROL_MISSING")
+                    Qt.exit(538)
+                    return
+                }
+                window.modelViewerSmokePhase = 3
+            } else if (window.modelViewerSmokePhase === 3) {
+                if (modelViewer.rotationY !== -12
+                        || modelViewer.rotationX !== -8)
+                    return
+                if (!modelViewer.activatePanRightControl()
+                        || !modelViewer.activateZoomInControl()
+                        || !modelViewer
+                           .activateHorizontalLockControl()) {
+                    console.error(
+                        "LAUNCHBOX_MODEL_VIEWER_NAVIGATION_CONTROL_MISSING")
+                    Qt.exit(539)
+                    return
+                }
+                window.modelViewerSmokePhase = 4
+            } else if (window.modelViewerSmokePhase === 4) {
+                if (controller.model_rotation_lock !== "horizontal"
+                        || modelViewer.rotationLock !== "horizontal"
+                        || modelViewer.panX !== 10
+                        || Math.abs(modelViewer.modelZoom - 1.15)
+                           > 0.0001)
+                    return
+                modelViewer.activateRotateUpControl()
+                window.modelViewerSmokePhase = 5
+            } else if (window.modelViewerSmokePhase === 5) {
+                if (modelViewer.rotationX !== -8
+                        || modelViewer.rotationY !== -12)
+                    return
+                if (window.modelViewerScreenshotRequested)
+                    return
+                window.modelViewerScreenshotRequested = true
+                const closeViewer = function() {
+                    if (!modelViewer.activateBackControl()) {
+                        console.error(
+                            "LAUNCHBOX_MODEL_VIEWER_BACK_CONTROL_MISSING")
+                        Qt.exit(540)
+                        return
+                    }
+                    window.modelViewerSmokePhase = 6
+                }
+                if (window.modelViewerScreenshotPath.length === 0) {
+                    closeViewer()
+                    return
+                }
+                modelViewer.viewerContentItem.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.modelViewerScreenshotPath)) {
+                            console.error(
+                                "LAUNCHBOX_MODEL_VIEWER_SCREENSHOT_SAVE_FAILED path="
+                                + window.modelViewerScreenshotPath)
+                            Qt.exit(541)
+                            return
+                        }
+                        closeViewer()
+                    })
+            } else if (window.modelViewerSmokePhase === 6) {
+                if (modelViewer.opened || window.modelViewerOpen
+                        || !pane["modelViewerControlFocused"]())
+                    return
+                if (!controller
+                        .report_launch_box_model_viewer_smoke_success(
+                            "fixture-adventure",
+                            modelViewer.frontSource.toString(),
+                            modelViewer.backSource.toString(),
+                            modelViewer.spineSource.toString())) {
+                    console.error(
+                        "LAUNCHBOX_MODEL_VIEWER_CONTROLLER_REJECTED")
+                    Qt.exit(542)
+                    return
+                }
+                window.modelViewerSmokeFinished = true
+                Qt.quit()
+            }
+            // qmllint enable missing-property
+        }
+    }
+
+    Timer {
+        interval: 25000
+        running: window.modelViewerSmokeTest
+                 && !window.modelViewerSmokeFinished
+        onTriggered: {
+            console.error(
+                "LAUNCHBOX_MODEL_VIEWER_TIMEOUT phase="
+                + window.modelViewerSmokePhase
+                + " open=" + window.modelViewerOpen
+                + " ready=" + window.modelViewerForDetails.sceneReady
+                + " lock=" + controller.model_rotation_lock
+                + " status=" + controller.status_message)
+            Qt.exit(543 + window.modelViewerSmokePhase)
         }
     }
 
@@ -4876,6 +5073,32 @@ ApplicationWindow {
                                     detailsMediaList)
                             }
 
+                            function openModelViewer() {
+                                if (!game
+                                        || !controller
+                                            .details_show_3d_model)
+                                    return false
+                                detailsMediaPlayer.stop()
+                                return window.openGameModelFromDetails(
+                                    mediaGameId, game.gameTitle,
+                                    detailsViewModelButton)
+                            }
+
+                            function clickViewModelForSmoke() {
+                                if (!detailsViewModelButton.visible
+                                        || !detailsViewModelButton.enabled)
+                                    return false
+                                detailsViewModelButton
+                                    .modelViewerOpenSucceeded = false
+                                detailsViewModelButton.activate()
+                                return detailsViewModelButton
+                                    .modelViewerOpenSucceeded
+                            }
+
+                            function modelViewerControlFocused() {
+                                return detailsViewModelButton.activeFocus
+                            }
+
                             function clickViewImageForSmoke() {
                                 if (!detailsViewImageButton.visible
                                         || !detailsViewImageButton.enabled)
@@ -4919,9 +5142,9 @@ ApplicationWindow {
                                         if (window.selectedGameId
                                                 !== "fixture-adventure"
                                                 || gameDetailsPane
-                                                   .mediaCount !== 5
+                                                   .mediaCount !== 6
                                                 || gameDetailsPane
-                                                   .selectedMediaIndex !== 4
+                                                   .selectedMediaIndex !== 5
                                                 || gameDetailsPane
                                                    .selectedMediaKind
                                                    !== "video"
@@ -4983,7 +5206,7 @@ ApplicationWindow {
                                             function() {
                                                 if (!gameDetailsPane
                                                         .clickMediaThumbnailForSmoke(
-                                                            4)) {
+                                                            5)) {
                                                     console.error(
                                                         "GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
                                                     Qt.exit(495)
@@ -5018,7 +5241,7 @@ ApplicationWindow {
                                             .gameDetailsMediaSmokePhase
                                             === 4) {
                                         if (gameDetailsPane
-                                                .selectedMediaIndex !== 4
+                                                .selectedMediaIndex !== 5
                                                 || gameDetailsPane
                                                    .selectedMediaKind
                                                    !== "video"
@@ -5038,7 +5261,7 @@ ApplicationWindow {
                                         if (!controller
                                                 .report_game_details_media_smoke_success(
                                                     "fixture-adventure",
-                                                    0, 4,
+                                                    0, 5,
                                                     controller
                                                     .game_media_url_at(
                                                         "fixture-adventure",
@@ -5046,7 +5269,7 @@ ApplicationWindow {
                                                     controller
                                                     .game_media_url_at(
                                                         "fixture-adventure",
-                                                        4).toString())) {
+                                                        5).toString())) {
                                             console.error(
                                                 "GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
                                             Qt.exit(497)
@@ -5083,7 +5306,7 @@ ApplicationWindow {
                                         if (window.selectedGameId
                                                 !== "fixture-adventure"
                                                 || gameDetailsPane
-                                                   .mediaCount !== 5)
+                                                   .mediaCount !== 6)
                                             return
                                         if (!gameDetailsPane
                                                 .clickMediaThumbnailForSmoke(
@@ -5120,7 +5343,7 @@ ApplicationWindow {
                                                    .gameId
                                                    !== "fixture-adventure"
                                                 || detailsImageViewer
-                                                   .imageCount !== 4
+                                                   .imageCount !== 5
                                                 || detailsImageViewer
                                                    .selectedImageIndex !== 0
                                                 || detailsImageViewer
@@ -5772,6 +5995,33 @@ ApplicationWindow {
                                     }
                                     RowLayout {
                                         Layout.fillWidth: true
+                                        Button {
+                                            id: detailsViewModelButton
+                                            property bool
+                                                modelViewerOpenSucceeded:
+                                                false
+                                            Layout.fillWidth: true
+                                            text: "3D Model"
+                                            visible:
+                                                gameDetailsPane.game
+                                                && controller
+                                                   .details_show_3d_model
+                                                && gameDetailsPane.game
+                                                   .gameFrontImageUrl
+                                                   .toString().length > 0
+                                            enabled: visible
+                                                     && !controller.loading
+                                                     && !controller.writing
+                                            Accessible.name:
+                                                "View interactive 3D box model"
+                                            function activate() {
+                                                modelViewerOpenSucceeded =
+                                                    gameDetailsPane
+                                                    .openModelViewer()
+                                                return modelViewerOpenSucceeded
+                                            }
+                                            onClicked: activate()
+                                        }
                                         Button {
                                             id: detailsLaunchWithButton
                                             Layout.fillWidth: true
@@ -7395,6 +7645,18 @@ ApplicationWindow {
             controller: controller
             onOpened: window.imageViewerOpen = true
             onClosed: window.imageViewerOpen = false
+        }
+
+        BoxModelViewer {
+            id: gameDetailsWindowModelViewer
+            parent: gameDetailsWindow.contentItem
+            x: 0
+            y: 0
+            width: gameDetailsWindow.width
+            height: gameDetailsWindow.height
+            controller: controller
+            onOpened: window.modelViewerOpen = true
+            onClosed: window.modelViewerOpen = false
         }
     }
 
@@ -13224,6 +13486,18 @@ ApplicationWindow {
         onClosed: window.imageViewerOpen = false
     }
 
+    BoxModelViewer {
+        id: launchBoxModelViewer
+        parent: Overlay.overlay
+        x: 0
+        y: 0
+        width: window.width
+        height: window.height
+        controller: controller
+        onOpened: window.modelViewerOpen = true
+        onClosed: window.modelViewerOpen = false
+    }
+
     LaunchStartupOverlay {
         id: launchStartupOverlay
         anchors.fill: parent
@@ -13250,10 +13524,22 @@ ApplicationWindow {
     Shortcut {
         sequence: "I"
         enabled: !window.imageViewerOpen
+                 && !window.modelViewerOpen
                  && window.selectedGameImageCount > 0
                  && !controller.loading
                  && !controller.writing
         onActivated: window.openSelectedGameImages()
+    }
+
+    Shortcut {
+        sequence: "M"
+        enabled: !window.imageViewerOpen
+                 && !window.modelViewerOpen
+                 && controller.details_show_3d_model
+                 && window.selectedGameId.length > 0
+                 && !controller.loading
+                 && !controller.writing
+        onActivated: window.openSelectedGameModel()
     }
 
     Shortcut {

@@ -4,6 +4,11 @@ set -euo pipefail
 workspace_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$workspace_root"
 
+nix_build_sandbox=false
+if [[ -n ${NIX_BUILD_TOP:-} && -z ${IN_NIX_SHELL:-} ]]; then
+  nix_build_sandbox=true
+fi
+
 target_root=${CARGO_TARGET_DIR:-target}
 qml_module_dir="$target_root/cxxqt/qml_modules"
 if [[ ! -d "$qml_module_dir/LaunchBoxPort" ]]; then
@@ -25,6 +30,7 @@ diagnostics=$(
     apps/lb-shell/qml/BigBoxWindow.qml \
     apps/lb-shell/qml/GameImageViewer.qml \
     apps/lb-shell/qml/BoxArtView.qml \
+    apps/lb-shell/qml/BoxModelViewer.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -80,6 +86,57 @@ install_process_fixture() {
   local destination=$1
   cp "$process_fixture" "$destination"
   chmod +x "$destination"
+}
+
+run_model_viewer_smoke() {
+  if [[ $(uname -s) == Linux ]]; then
+    local runtime_root="$test_config_root/model-viewer-runtime"
+    mkdir -p \
+      "$runtime_root/home" \
+      "$runtime_root/cache" \
+      "$runtime_root/config" \
+      "$runtime_root/runtime"
+    chmod 700 "$runtime_root/runtime"
+    if "$nix_build_sandbox"; then
+      env \
+        HOME="$runtime_root/home" \
+        XDG_CACHE_HOME="$runtime_root/cache" \
+        XDG_CONFIG_HOME="$runtime_root/config" \
+        XDG_RUNTIME_DIR="$runtime_root/runtime" \
+        QT_QPA_PLATFORM=offscreen \
+        "$@"
+      return
+    fi
+    xvfb-run -a -s '-screen 0 1280x800x24' \
+      env \
+      HOME="$runtime_root/home" \
+      XDG_CACHE_HOME="$runtime_root/cache" \
+      XDG_CONFIG_HOME="$runtime_root/config" \
+      XDG_RUNTIME_DIR="$runtime_root/runtime" \
+      LIBGL_ALWAYS_SOFTWARE=1 \
+      QT_QPA_PLATFORM=xcb \
+      "$@"
+  else
+    QT_QPA_PLATFORM=offscreen "$@"
+  fi
+}
+
+validate_rendered_model_viewport() {
+  local screenshot=$1
+  if [[ $(uname -s) != Linux ]]; then
+    return
+  fi
+
+  local unique_colors
+  unique_colors=$(
+    magick "$screenshot" -crop 1230x480+25+110 +repage \
+      -format '%k' info:
+  )
+  if [[ ! "$unique_colors" =~ ^[0-9]+$ ]] \
+    || ((unique_colors < 64)); then
+    echo "3D model viewport is blank or insufficiently rendered: $screenshot ($unique_colors unique colors)." >&2
+    exit 1
+  fi
 }
 
 test_config_root=$(mktemp -d)
@@ -194,7 +251,7 @@ game_details_media_output=$(
   exit 1
 }
 if ! rg -q \
-  'GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=5 image=Box-Front video=Video-Snap autoplay=1' \
+  'GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=6 image=Box-Front video=Video-Snap autoplay=1' \
   <<< "$game_details_media_output"; then
   printf '%s\n' "$game_details_media_output" >&2
   echo "LaunchBox did not validate selected-game image and video media." >&2
@@ -230,7 +287,7 @@ launchbox_image_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=4 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  'LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=5 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
   <<< "$launchbox_image_viewer_output"; then
   printf '%s\n' "$launchbox_image_viewer_output" >&2
   echo "LaunchBox did not validate its full-screen image viewer." >&2
@@ -267,7 +324,7 @@ bigbox_game_details_media_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=5 image=Box-Front video=Video-Snap autoplay=1 controls=1' \
+  'BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=6 image=Box-Front video=Video-Snap autoplay=1 controls=1' \
   <<< "$bigbox_game_details_media_output"; then
   printf '%s\n' "$bigbox_game_details_media_output" >&2
   echo "BigBox did not validate its full-screen selected-game media controls." >&2
@@ -304,7 +361,7 @@ bigbox_image_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=4 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  'BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=5 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
   <<< "$bigbox_image_viewer_output"; then
   printf '%s\n' "$bigbox_image_viewer_output" >&2
   echo "BigBox did not validate its standalone full-screen image viewer." >&2
@@ -408,6 +465,133 @@ cmp "$box_flip_bigbox_settings.before-box-flip-smoke" \
 ) >/dev/null
 
 echo "BigBox settings-prioritized front/back box selection, real Flip control, F shortcut contract, animated return, native-path rendering, and read-only media behavior validated."
+
+model_viewer_state="$test_config_root/model-viewer-state.json"
+launchbox_model_viewer_screenshot="$test_config_root/launchbox-model-viewer.png"
+model_viewer_visual_smoke=true
+if "$nix_build_sandbox"; then
+  # Nix's Linux sandbox intentionally withholds host graphics devices. Xvfb
+  # can exercise the Qt Quick 3D scene and controls there, but Qt cannot
+  # capture a rendered QQuickWindow. The ordinary developer check below
+  # remains the real rendered-pixel gate.
+  model_viewer_visual_smoke=false
+fi
+launchbox_model_viewer_args=(
+  --library "$media_root"
+  --launchbox-model-viewer-smoke-test
+  --model-viewer-state-file "$model_viewer_state"
+  --path-mappings-file "$empty_path_mappings"
+)
+if "$model_viewer_visual_smoke"; then
+  launchbox_model_viewer_args+=(
+    --launchbox-model-viewer-screenshot
+    "$launchbox_model_viewer_screenshot"
+  )
+fi
+launchbox_model_viewer_output=$(
+  run_model_viewer_smoke "$binary_dir/launchbox" \
+    "${launchbox_model_viewer_args[@]}" 2>&1
+) || {
+  printf '%s\n' "$launchbox_model_viewer_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'LAUNCHBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 lock=horizontal controls=1' \
+  <<< "$launchbox_model_viewer_output"; then
+  printf '%s\n' "$launchbox_model_viewer_output" >&2
+  echo "LaunchBox did not validate its interactive 3D box-model viewer." >&2
+  exit 1
+fi
+if "$model_viewer_visual_smoke"; then
+  if [[ ! -s "$launchbox_model_viewer_screenshot" ]] \
+    || [[ $(wc -c < "$launchbox_model_viewer_screenshot") -lt 1024 ]] \
+    || [[ $(od -An -tx1 -N8 "$launchbox_model_viewer_screenshot" \
+        | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+    printf '%s\n' "$launchbox_model_viewer_output" >&2
+    echo "LaunchBox did not render a valid interactive 3D box-model PNG." >&2
+    exit 1
+  fi
+  validate_rendered_model_viewport "$launchbox_model_viewer_screenshot"
+fi
+if ! rg -q '"rotation_lock": "horizontal"' "$model_viewer_state"; then
+  cat "$model_viewer_state" >&2
+  echo "LaunchBox did not persist its horizontal model-rotation lock." >&2
+  exit 1
+fi
+cmp "$media_platform.before-media-smoke" "$media_platform"
+cmp "$game_details_settings.before-game-details-smoke" \
+  "$game_details_settings"
+cmp "$box_flip_bigbox_settings.before-box-flip-smoke" \
+  "$box_flip_bigbox_settings"
+(
+  cd "$media_root"
+  sha256sum --check "$media_files_manifest"
+) >/dev/null
+
+echo "LaunchBox six-face Qt Quick 3D box geometry, front/back/spine textures, actual details entry, rotation, translation, zoom, horizontal lock, focus return, and read-only media behavior validated."
+
+bigbox_model_viewer_screenshot="$test_config_root/bigbox-model-viewer.png"
+bigbox_model_viewer_args=(
+  --library "$media_root"
+  --windowed
+  --bigbox-model-viewer-smoke-test
+  --model-viewer-state-file "$model_viewer_state"
+  --path-mappings-file "$empty_path_mappings"
+)
+if "$model_viewer_visual_smoke"; then
+  bigbox_model_viewer_args+=(
+    --bigbox-model-viewer-screenshot
+    "$bigbox_model_viewer_screenshot"
+  )
+fi
+bigbox_model_viewer_output=$(
+  run_model_viewer_smoke "$binary_dir/bigbox" \
+    "${bigbox_model_viewer_args[@]}" 2>&1
+) || {
+  printf '%s\n' "$bigbox_model_viewer_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 restored=horizontal lock=vertical controls=1' \
+  <<< "$bigbox_model_viewer_output"; then
+  printf '%s\n' "$bigbox_model_viewer_output" >&2
+  echo "BigBox did not validate its interactive 3D box-model viewer." >&2
+  exit 1
+fi
+if "$model_viewer_visual_smoke"; then
+  if [[ ! -s "$bigbox_model_viewer_screenshot" ]] \
+    || [[ $(wc -c < "$bigbox_model_viewer_screenshot") -lt 1024 ]] \
+    || [[ $(od -An -tx1 -N8 "$bigbox_model_viewer_screenshot" \
+        | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+    printf '%s\n' "$bigbox_model_viewer_output" >&2
+    echo "BigBox did not render a valid interactive 3D box-model PNG." >&2
+    exit 1
+  fi
+  validate_rendered_model_viewport "$bigbox_model_viewer_screenshot"
+fi
+expected_model_viewer_state='{
+  "version": 1,
+  "rotation_lock": "vertical"
+}'
+if [[ $(< "$model_viewer_state") != "$expected_model_viewer_state" ]]; then
+  cat "$model_viewer_state" >&2
+  echo "BigBox did not restore and atomically replace shared model-viewer state." >&2
+  exit 1
+fi
+cmp "$media_platform.before-media-smoke" "$media_platform"
+cmp "$game_details_settings.before-game-details-smoke" \
+  "$game_details_settings"
+cmp "$box_flip_bigbox_settings.before-box-flip-smoke" \
+  "$box_flip_bigbox_settings"
+(
+  cd "$media_root"
+  sha256sum --check "$media_files_manifest"
+) >/dev/null
+
+echo "BigBox six-face Qt Quick 3D box geometry, game-menu entry, restored horizontal lock, vertical lock replacement, keyboard/pointer control surface, focus return, and read-only media behavior validated."
+if ! "$model_viewer_visual_smoke"; then
+  echo "Qt Quick 3D rendered-pixel capture is unavailable inside the Nix sandbox; run scripts/check_qml.sh from nix develop for the visual gate."
+fi
 
 game_details_ui_state="$test_config_root/game-details-ui-state.json"
 expected_game_details_ui_state="$test_config_root/expected-game-details-ui-state.json"

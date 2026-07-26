@@ -17,6 +17,7 @@
     <ListView>false</ListView>
     <NextBoxSize>0.17214286</NextBoxSize>
     <ShowDetailsVideo>true</ShowDetailsVideo>
+    <ShowDetails3dModel>true</ShowDetails3dModel>
     <AutoPlayDetailsVideo>true</AutoPlayDetailsVideo>
     <VideoTypePriorities>Theme Video,Video Snap,Recording,Trailer</VideoTypePriorities>
     <FrontImageTypePriorities>Box - Front,Screenshot - Gameplay,Fanart - Background</FrontImageTypePriorities>

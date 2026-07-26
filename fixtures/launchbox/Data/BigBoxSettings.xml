@@ -13,6 +13,7 @@
     <PauseScreenMuting>true</PauseScreenMuting>
     <PauseScreenFading>true</PauseScreenFading>
     <ShowGameMenuFlipBox>true</ShowGameMenuFlipBox>
+    <ShowGameMenuViewModelFullscreen>true</ShowGameMenuViewModelFullscreen>
     <KeyboardFlipBox>49</KeyboardFlipBox>
   </BigBoxSettings>
 </LaunchBox>
