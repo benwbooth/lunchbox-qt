@@ -37,6 +37,7 @@ fn run(mut arguments: Vec<OsString>) -> Result<(), String> {
 
     match executable_role()?.as_str() {
         "argument" => run_argument_recorder(&arguments),
+        "frontend-handoff" => write_arguments_from_env("LBPORT_FRONTEND_HANDOFF_LOG", &arguments),
         "archive" => run_archive_recorder(&arguments),
         "m3u" => run_m3u_recorder(&arguments),
         "sequence" => run_sequence_recorder(&arguments),
@@ -211,7 +212,9 @@ fn executable_role() -> Result<String, String> {
         .and_then(OsStr::to_str)
         .ok_or_else(|| format!("fixture executable has a non-Unicode name: {executable:?}"))?
         .to_ascii_lowercase();
-    let role = if name.contains("archive-recorder") {
+    let role = if name.contains("frontend-handoff-recorder") {
+        "frontend-handoff"
+    } else if name.contains("archive-recorder") {
         "archive"
     } else if name.contains("m3u-recorder") {
         "m3u"

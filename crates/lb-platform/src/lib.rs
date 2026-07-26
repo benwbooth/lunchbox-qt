@@ -2,6 +2,7 @@ mod archive;
 mod attract;
 mod dosbox;
 mod engagement;
+mod frontend_handoff;
 mod input;
 mod m3u;
 mod media;
@@ -21,6 +22,10 @@ pub use dosbox::DosBoxPlanError;
 pub use engagement::{
     normalize_big_box_star_rating, prioritize_favorite_game_indices, BigBoxGameActionPolicy,
     BigBoxStarRatingError,
+};
+pub use frontend_handoff::{
+    FrontendHandoffActivity, FrontendHandoffError, FrontendHandoffPlan, FrontendKind,
+    FRONTEND_PEER_EXECUTABLE_FLAG, FRONTEND_SELECTED_GAME_FLAG,
 };
 pub use input::{
     qt_key_to_wpf_key, qt_key_to_wpf_key_with_modifiers, wpf_key_to_qt_portable_text,

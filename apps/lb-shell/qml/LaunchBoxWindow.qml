@@ -76,6 +76,17 @@ ApplicationWindow {
         window.close()
     }
 
+    function switchToBigBox() {
+        if (!controller.request_frontend_handoff(
+                    "bigbox", window.selectedGameId))
+            return false
+        window.frontendHandoffSmokeFinished = true
+        window.forceApplicationExit = true
+        window.finalizeApplicationExit()
+        Qt.quit()
+        return true
+    }
+
     property string selectedPlatform: ""
     property string selectedNavigationKind: "all"
     property string selectedNavigationKey: ""
@@ -195,6 +206,12 @@ ApplicationWindow {
     property bool applicationClosing: false
     property bool forceApplicationExit: false
     property bool trayHidePending: false
+    property bool frontendHandoffSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--frontend-handoff-smoke-test") >= 0
+    property bool frontendHandoffSmokeFinished: false
+    readonly property string requestedFrontendSelection:
+        argumentValue("--select-game-id")
     property bool gameDetailsLayoutScreenshotRequested: false
     property string gameDetailsLayoutScreenshotPath:
         argumentValue("--game-details-layout-screenshot")
@@ -1360,6 +1377,16 @@ ApplicationWindow {
     Connections {
         target: controller
 
+        function onLoadingChanged() {
+            if (controller.loading
+                    || window.requestedFrontendSelection.length === 0)
+                return
+            Qt.callLater(function() {
+                window.restoreGameSelection(
+                    window.requestedFrontendSelection)
+            })
+        }
+
         function onGame_details_pane_widthChanged() {
             window.detailsPaneWidth = controller.game_details_pane_width
         }
@@ -1613,6 +1640,46 @@ ApplicationWindow {
         onTriggered: window.persistGameDetailsLayout(
                          controller.show_game_details,
                          controller.game_details_popped_out)
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.frontendHandoffSmokeTest
+                 && !window.frontendHandoffSmokeFinished
+        onTriggered: {
+            if (!bigBoxModeButton.enabled)
+                return
+            if (window.requestedFrontendSelection.length > 0) {
+                window.restoreGameSelection(
+                    window.requestedFrontendSelection)
+                if (window.selectedGameId
+                        !== window.requestedFrontendSelection)
+                    return
+            }
+            if (!bigBoxModeButton.activate()) {
+                console.error(
+                    "FRONTEND_HANDOFF_SMOKE_FAILED source=launchbox"
+                    + " target=bigbox status="
+                    + controller.status_message)
+                Qt.exit(701)
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.frontendHandoffSmokeTest
+                 && !window.frontendHandoffSmokeFinished
+        onTriggered: {
+            console.error(
+                "FRONTEND_HANDOFF_SMOKE_TIMEOUT source=launchbox"
+                + " target=bigbox loading=" + controller.loading
+                + " writing=" + controller.writing
+                + " session=" + controller.launch_session_active
+                + " status=" + controller.status_message)
+            Qt.exit(702)
+        }
     }
 
     Timer {
@@ -5540,6 +5607,33 @@ ApplicationWindow {
                 color: "#58a6ff"
                 font.pixelSize: 20
                 font.bold: true
+            }
+            Button {
+                id: bigBoxModeButton
+                text: "Big Box Mode"
+                Accessible.name: "Switch to Big Box Mode"
+                enabled: controller.library_path.length > 0
+                         && !controller.loading
+                         && !controller.import_scanning
+                         && !controller.emulator_discovery_scanning
+                         && !controller.emulator_bios_scanning
+                         && !controller.emulator_release_checking
+                         && !controller.emulator_managed_checking
+                         && !controller.emulator_installing
+                         && !controller.writing
+                         && !controller.launching
+                         && !controller.launch_session_active
+                         && !controller.startup_screen_active
+                         && !controller.shutdown_screen_active
+                         && !controller.pause_screen_active
+
+                function activate() {
+                    if (!enabled)
+                        return false
+                    return window.switchToBigBox()
+                }
+
+                onClicked: activate()
             }
             TextField {
                 id: searchField

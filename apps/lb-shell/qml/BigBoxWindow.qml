@@ -315,6 +315,15 @@ ApplicationWindow {
     property string launchPauseScreenshotPath:
         argumentValue("--launch-pause-screenshot")
     property string activeNavigationName: "All Games"
+    property bool frontendHandoffSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--frontend-handoff-smoke-test") >= 0
+    property bool frontendHandoffBlockedSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--frontend-handoff-blocked-smoke-test") >= 0
+    property bool frontendHandoffSmokeFinished: false
+    readonly property string requestedFrontendSelection:
+        argumentValue("--select-game-id")
     property string backgroundMusicContextKind: ""
     property string backgroundMusicContextName: "All Games"
     property string selectedBigBoxGameId: ""
@@ -565,6 +574,18 @@ ApplicationWindow {
             return true
         }
         return controller.lock_big_box()
+    }
+
+    function switchToDesktopMode() {
+        if (window.startupPresentationPending
+                || !window.guardSecurityAction("BigBoxExit"))
+            return false
+        if (!controller.request_frontend_handoff(
+                    "launchbox", window.selectedBigBoxGameId))
+            return false
+        window.frontendHandoffSmokeFinished = true
+        Qt.quit()
+        return true
     }
 
     function failSecuritySmoke(message, exitCode) {
@@ -1821,6 +1842,16 @@ ApplicationWindow {
                 window.startupLibraryLoadSeen = true
                 return
             }
+            if (window.requestedFrontendSelection.length > 0) {
+                Qt.callLater(function() {
+                    const row = controller.row_for_game_id(
+                                    window.requestedFrontendSelection)
+                    if (row < 0)
+                        return
+                    gameList.currentIndex = row
+                    gameList.positionViewAtIndex(row, ListView.Center)
+                })
+            }
             if (!window.startupPresentationPending
                     || !window.startupLibraryLoadSeen
                     || startupPresentationOverlay.active)
@@ -2006,6 +2037,75 @@ ApplicationWindow {
         }
         applyPrimaryMonitorScreen()
         gameList.forceActiveFocus()
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: (window.frontendHandoffSmokeTest
+                  || window.frontendHandoffBlockedSmokeTest)
+                 && !window.frontendHandoffSmokeFinished
+        onTriggered: {
+            if (controller.loading
+                    || window.startupPresentationPending)
+                return
+            if (window.frontendHandoffBlockedSmokeTest) {
+                if (!controller.big_box_locked)
+                    return
+                if (desktopModeButton.activate()) {
+                    console.error(
+                        "FRONTEND_HANDOFF_BLOCKED_SMOKE_ESCAPED")
+                    window.securitySmokeAborting = true
+                    Qt.exit(703)
+                    return
+                }
+                if (controller.status_message.indexOf(
+                        "Unlock BigBox") < 0)
+                    return
+                window.frontendHandoffSmokeFinished = true
+                window.securitySmokeAborting = true
+                Qt.quit()
+                return
+            }
+            if (!desktopModeButton.enabled)
+                return
+            if (window.requestedFrontendSelection.length > 0) {
+                const row = controller.row_for_game_id(
+                                window.requestedFrontendSelection)
+                if (row < 0)
+                    return
+                gameList.currentIndex = row
+                if (window.selectedBigBoxGameId
+                        !== window.requestedFrontendSelection)
+                    return
+            }
+            if (!desktopModeButton.activate()) {
+                console.error(
+                    "FRONTEND_HANDOFF_SMOKE_FAILED source=bigbox"
+                    + " target=launchbox status="
+                    + controller.status_message)
+                Qt.exit(704)
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: (window.frontendHandoffSmokeTest
+                  || window.frontendHandoffBlockedSmokeTest)
+                 && !window.frontendHandoffSmokeFinished
+        onTriggered: {
+            console.error(
+                "FRONTEND_HANDOFF_SMOKE_TIMEOUT source=bigbox"
+                + " target=launchbox loading=" + controller.loading
+                + " startup=" + window.startupPresentationPending
+                + " locked=" + controller.big_box_locked
+                + " writing=" + controller.writing
+                + " session=" + controller.launch_session_active
+                + " status=" + controller.status_message)
+            window.securitySmokeAborting = true
+            Qt.exit(705)
+        }
     }
 
     Timer {
@@ -4958,6 +5058,34 @@ ApplicationWindow {
                 font.pixelSize: 34
                 font.bold: true
                 font.letterSpacing: 3
+            }
+            Button {
+                id: desktopModeButton
+                text: "DESKTOP MODE"
+                Accessible.name: "Switch to LaunchBox Desktop Mode"
+                enabled: controller.library_path.length > 0
+                         && !window.startupPresentationPending
+                         && !controller.loading
+                         && !controller.import_scanning
+                         && !controller.emulator_discovery_scanning
+                         && !controller.emulator_bios_scanning
+                         && !controller.emulator_release_checking
+                         && !controller.emulator_managed_checking
+                         && !controller.emulator_installing
+                         && !controller.writing
+                         && !controller.launching
+                         && !controller.launch_session_active
+                         && !controller.startup_screen_active
+                         && !controller.shutdown_screen_active
+                         && !controller.pause_screen_active
+
+                function activate() {
+                    if (!enabled)
+                        return false
+                    return window.switchToDesktopMode()
+                }
+
+                onClicked: activate()
             }
             Label {
                 text: controller.library_name

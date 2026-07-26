@@ -297,6 +297,102 @@ done
 
 echo "LaunchBox and BigBox native-path front artwork indexing, URL delivery, decoding, and rendering validated without library writes."
 
+frontend_handoff_recorder="$test_config_root/frontend-handoff-recorder"
+frontend_handoff_ui_state="$test_config_root/frontend-handoff-ui-state.json"
+frontend_handoff_model_state="$test_config_root/frontend-handoff-model-state.json"
+install_process_fixture "$frontend_handoff_recorder"
+
+for shell_name in launchbox bigbox; do
+  frontend_handoff_log="$test_config_root/frontend-handoff-$shell_name-arguments.txt"
+  output=$(
+    LBPORT_FRONTEND_HANDOFF_LOG="$frontend_handoff_log" \
+      QT_QPA_PLATFORM=offscreen \
+      "$binary_dir/$shell_name" \
+      --library "$media_root" \
+      --frontend-handoff-smoke-test \
+      --frontend-peer-executable "$frontend_handoff_recorder" \
+      --select-game-id fixture-racer \
+      --windowed \
+      --path-mappings-file "$empty_path_mappings" \
+      --map-windows-drive "Z=$media_root" \
+      --ui-state-file "$frontend_handoff_ui_state" \
+      --model-viewer-state-file "$frontend_handoff_model_state" \
+      --frontend-handoff-drop-me drop-me 2>&1
+  ) || {
+    printf '%s\n' "$output" >&2
+    exit 1
+  }
+  target_name=bigbox
+  if [[ "$shell_name" == bigbox ]]; then
+    target_name=launchbox
+  fi
+  if ! rg -q \
+    "FRONTEND_HANDOFF_STARTED source=$shell_name target=$target_name selected=fixture-racer forwarded_arguments=12" \
+    <<< "$output"; then
+    printf '%s\n' "$output" >&2
+    echo "$shell_name did not activate its real $target_name handoff control." >&2
+    exit 1
+  fi
+  for ((attempt = 0; attempt < 200; ++attempt)); do
+    if [[ -f "$frontend_handoff_log" ]]; then
+      break
+    fi
+    sleep 0.01
+  done
+  if ! cmp -s "$frontend_handoff_log" <(
+    printf '%s\n' \
+      --path-mappings-file "$empty_path_mappings" \
+      --map-windows-drive "Z=$media_root" \
+      --ui-state-file "$frontend_handoff_ui_state" \
+      --model-viewer-state-file "$frontend_handoff_model_state" \
+      --library "$media_root" \
+      --select-game-id fixture-racer
+  ); then
+    printf '%s handoff arguments were:\n' "$shell_name" >&2
+    sed 's/^/  /' "$frontend_handoff_log" >&2 || true
+    exit 1
+  fi
+done
+
+frontend_handoff_locked_root="$test_config_root/frontend-handoff-locked-library"
+cp -a "$media_root" "$frontend_handoff_locked_root"
+frontend_handoff_locked_settings="$frontend_handoff_locked_root/Data/BigBoxSettings.xml"
+sed -i \
+  '/<ShowGameLockUnlock>true<\/ShowGameLockUnlock>/a\    <LockPin>2580</LockPin>' \
+  "$frontend_handoff_locked_settings"
+cp "$frontend_handoff_locked_settings" \
+  "$frontend_handoff_locked_settings.before"
+frontend_handoff_log="$test_config_root/frontend-handoff-locked-arguments.txt"
+output=$(
+  LBPORT_FRONTEND_HANDOFF_LOG="$frontend_handoff_log" \
+    QT_QPA_PLATFORM=offscreen \
+    "$binary_dir/bigbox" \
+    --windowed \
+    --library "$frontend_handoff_locked_root" \
+    --frontend-handoff-blocked-smoke-test \
+    --frontend-peer-executable "$frontend_handoff_recorder" \
+    --select-game-id fixture-racer \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_LOCKED_ACTION_BLOCKED action=BigBoxExit' \
+  <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "Locked BigBox did not deny its Desktop Mode handoff." >&2
+  exit 1
+fi
+if [[ -e "$frontend_handoff_log" ]]; then
+  echo "Locked BigBox started a frontend peer despite the denied exit permission." >&2
+  exit 1
+fi
+cmp "$frontend_handoff_locked_settings.before" \
+  "$frontend_handoff_locked_settings"
+
+echo "LaunchBox and BigBox direct-process handoffs preserved the live library, selected stable game, path mappings, and state files; dropped smoke/UI-only arguments; and enforced locked-mode exit permission without a shell."
+
 input_settings="$media_root/Data/BigBoxSettings.xml"
 input_bindings="$media_root/Data/InputBindings.xml"
 cp "$input_settings" "$input_settings.before-input-smoke"

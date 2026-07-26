@@ -265,6 +265,13 @@ pub mod qobject {
         fn configure_frontend(self: Pin<&mut LibraryController>, big_box: bool);
 
         #[qinvokable]
+        fn request_frontend_handoff(
+            self: Pin<&mut LibraryController>,
+            target: QString,
+            selected_game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn load_fixture(self: Pin<&mut LibraryController>);
 
         #[qinvokable]
@@ -2022,12 +2029,13 @@ use lb_platform::{
     BigBoxMarqueeCompatibilityMode, BigBoxMarqueePolicy, BigBoxMusicPolicy,
     BigBoxPlatformMarqueeMedia, BigBoxScreensaverCandidate, BigBoxScreensaverPolicy,
     BigBoxSecurityPermission, BigBoxSecurityPolicy, BigBoxStartupPresentationIndex,
-    BigBoxStartupPresentationPolicy, ControllerBinding, FrontendLaunchScreenPolicy,
-    FrontendPauseScreenPolicy, GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem,
-    GameMediaKind, GamepadInputEvent, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy,
-    LaunchBoxUiState, LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver,
-    LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport,
-    LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
+    BigBoxStartupPresentationPolicy, ControllerBinding, FrontendHandoffActivity,
+    FrontendHandoffPlan, FrontendKind, FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy,
+    GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem, GameMediaKind,
+    GamepadInputEvent, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState,
+    LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy,
+    LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy,
+    LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
     BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS, BIG_BOX_SECURITY_PERMISSIONS,
 };
 use lb_query::{
@@ -17428,6 +17436,146 @@ impl qobject::LibraryController {
         self.as_mut().refresh_frontend_launch_screen_policy();
     }
 
+    pub fn request_frontend_handoff(
+        mut self: Pin<&mut Self>,
+        target: QString,
+        selected_game_id: QString,
+    ) -> bool {
+        let target_key = target.to_string();
+        let target = match target_key.trim() {
+            "launchbox" => FrontendKind::LaunchBox,
+            "bigbox" => FrontendKind::BigBox,
+            _ => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Unknown frontend handoff target {:?}.",
+                    target_key.trim()
+                )));
+                return false;
+            }
+        };
+        let frontend_is_big_box = *self.as_ref().frontend_is_big_box();
+        let expected_target = if frontend_is_big_box {
+            FrontendKind::LaunchBox
+        } else {
+            FrontendKind::BigBox
+        };
+        if target != expected_target {
+            let active_frontend = if frontend_is_big_box {
+                "BigBox"
+            } else {
+                "LaunchBox"
+            };
+            self.as_mut().set_status_message(qstring(format!(
+                "{active_frontend} is already the active frontend."
+            )));
+            return false;
+        }
+
+        if frontend_is_big_box
+            && *self.as_ref().big_box_locked()
+            && !self
+                .as_ref()
+                .rust()
+                .big_box_security_policy
+                .permission_allowed(BigBoxSecurityPermission::Exit)
+        {
+            self.as_mut()
+                .note_big_box_locked_action(qstring("BigBoxExit"));
+            return false;
+        }
+
+        let activity = FrontendHandoffActivity {
+            loading: *self.as_ref().loading(),
+            importing: *self.as_ref().import_scanning(),
+            emulator_scan: *self.as_ref().emulator_discovery_scanning()
+                || *self.as_ref().emulator_bios_scanning(),
+            emulator_update: *self.as_ref().emulator_release_checking()
+                || *self.as_ref().emulator_managed_checking()
+                || *self.as_ref().emulator_installing(),
+            writing: *self.as_ref().writing(),
+            launching: *self.as_ref().launching(),
+            launch_session_active: *self.as_ref().launch_session_active(),
+            startup_screen_active: *self.as_ref().startup_screen_active(),
+            shutdown_screen_active: *self.as_ref().shutdown_screen_active(),
+            pause_screen_active: *self.as_ref().pause_screen_active(),
+        };
+        if let Some(blocker) = activity.blocker() {
+            self.as_mut().set_status_message(qstring(format!(
+                "Wait for {blocker} to finish before switching frontends."
+            )));
+            return false;
+        }
+
+        let Some(library_root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Load a LaunchBox library before switching frontends.",
+            ));
+            return false;
+        };
+        let selected_game_id = selected_game_id.to_string();
+        let selected_game_id = selected_game_id.trim();
+        if !selected_game_id.is_empty()
+            && !self
+                .as_ref()
+                .rust()
+                .games
+                .iter()
+                .any(|game| game.id == selected_game_id)
+        {
+            self.as_mut().set_status_message(qstring(
+                "The selected game changed before the frontend switch could start.",
+            ));
+            return false;
+        }
+
+        let plan = match FrontendHandoffPlan::from_current_process(
+            target,
+            &library_root,
+            (!selected_game_id.is_empty()).then_some(selected_game_id),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not prepare the {} handoff: {error}",
+                    target.key()
+                )));
+                return false;
+            }
+        };
+        if let Err(error) = plan.spawn() {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not switch to {}: {error}",
+                target.key()
+            )));
+            return false;
+        }
+
+        eprintln!(
+            "FRONTEND_HANDOFF_STARTED source={} target={} selected={} forwarded_arguments={}",
+            if frontend_is_big_box {
+                "bigbox"
+            } else {
+                "launchbox"
+            },
+            target.key(),
+            if selected_game_id.is_empty() {
+                "none"
+            } else {
+                selected_game_id
+            },
+            plan.arguments.len()
+        );
+        self.as_mut().set_status_message(qstring(format!(
+            "Started {} with the current library.",
+            if target == FrontendKind::BigBox {
+                "BigBox"
+            } else {
+                "LaunchBox"
+            }
+        )));
+        true
+    }
+
     fn apply_launchbox_ui_state(mut self: Pin<&mut Self>, state: LaunchBoxUiState) {
         self.as_mut().set_show_game_details(state.show_game_details);
         self.as_mut()
@@ -18817,6 +18965,7 @@ impl qobject::LibraryController {
             .big_box_security_blocked_actions
             .saturating_add(1);
         let key = action_key.to_string();
+        eprintln!("BIGBOX_LOCKED_ACTION_BLOCKED action={}", key.trim());
         let label = BigBoxInputAction::from_key(key.trim())
             .map(|action| humanize_pascal_case(action.key().trim_start_matches("BigBox")))
             .unwrap_or_else(|| humanize_pascal_case(key.trim()));

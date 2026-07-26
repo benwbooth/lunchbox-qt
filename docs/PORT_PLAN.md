@@ -741,6 +741,21 @@ shared pause overlay with the same portable Rust fixture used by platform
 integration tests. Theme/media asset selection, pause scripts, global
 input/focus behavior, mute/fade behavior, processes that deliberately escape
 the supervised session, and pause-excluded play time remain open.
+The first `DESK-012`/`BB-018` frontend-switching slice now connects visible
+LaunchBox and BigBox controls to one shell-free process boundary. The typed
+planner selects a platform-suffixed sibling executable, accepts an absolute
+packaging/conformance override, replaces stale command-line library input with
+the controller's loaded root, retains the selected stable game, and forwards
+only explicit mapping and host-state locations. It rejects malformed or
+duplicate singleton flags and never carries its peer override, window mode,
+smoke controls, launch fixtures, or unknown arguments into the next frontend.
+The controller refuses a switch during every background library/emulator
+operation or game presentation/session lifecycle. Desktop Mode additionally
+uses the recovered BigBox Exit permission in both QML and Rust. Two compiled
+control activations compare the recorder's 12 arguments exactly; a locked
+fixture proves no process starts and no settings change. Premium registration
+and entitlement remain a separate legal/service contract and are not
+reconstructed or bypassed.
 Source-indexed alternate names and custom fields
 now edit through the same real Qt dialog and transaction; retained rows keep
 unknown XML, new rows survive reload, and the custom-field fixture is explicitly

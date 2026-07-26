@@ -837,6 +837,19 @@ fuzzy comparison, rounding, cap, or refresh cadence, so those remain explicit
 port-owned behavior and parity gates. The complete evidence and native
 boundary are recorded in `analysis/related-games-13.27.md`.
 
+Frontend switching has a narrow structural contract and a protected behavioral
+boundary. LaunchBox retains `BigBoxModeMenuAction.OnSelect()` and static `Go()`,
+but both bodies are unavailable in stored IL. BigBox retains
+`DesktopModeMenuAction`, whose constructor accepts the current `Game`, while
+its Enter handler is likewise protected. Installed resources independently
+name Big Box mode, Switch to Desktop Mode, and refusal to switch while another
+operation is in progress. This supports visible bidirectional actions,
+operation exclusion, and stable selected-game carryover from BigBox; it does
+not establish the original process lifetime, argument protocol, or premium
+validation. The native port therefore documents its direct sibling-process
+launch and strict durable-argument allowlist as clean-room policy. It does not
+copy, infer, or bypass proprietary entitlement state.
+
 ## Protection boundary
 
 The assemblies are not ordinary unobfuscated .NET applications:

@@ -100,6 +100,55 @@ This made the BigBox premium gate observable:
 No license contents, account data, titles, paths, media, or proprietary
 application files are committed.
 
+## BigBox post-navigation crash
+
+The generic `0xe0434352` / `0x80004005` debugger report that appeared after
+BigBox loaded was a separate Wine compatibility fault. The application log
+showed its 60-second theme-demo transition enter a real filters view and then
+emit `Attract Mode stopped` on nearly every frame. The managed exception hook
+recovered the terminating cause behind the native report:
+
+```text
+System.TypeInitializationException:
+The type initializer for 'Microsoft.Data.Sqlite.SqliteConnection' threw an exception.
+ ---> System.Reflection.TargetInvocationException
+ ---> System.NotImplementedException
+   at ABI.Windows.Storage.IApplicationDataMethods.get_LocalFolder(...)
+   at Microsoft.Data.Sqlite.SqliteConnection..cctor()
+   ...
+   at Unbroken.LaunchBox.Windows.Data.Platform.GetPlatformBannerImagePaths()
+   at Unbroken.LaunchBox.Windows.BigBox.ViewModels.PlatformFiltersViewModelBase.LoadDetails(...)
+```
+
+Microsoft.Data.Sqlite 9.0.14 initializes SQLitePCL and, on Windows, probes
+`Windows.Storage.ApplicationData` for SQLite data and temporary directories.
+Wine exposes `ApplicationData.Current` but returns `E_NOTIMPL` from
+`LocalFolder`. The library catches a failure while obtaining `Current`, not a
+failure from the later folder getter, so its static initializer becomes
+permanently faulted.
+
+Upstream source:
+<https://github.com/dotnet/efcore/blob/v9.0.14/src/Microsoft.Data.Sqlite.Core/SqliteConnection.cs#L61-L107>
+
+The ignored oracle now has a reversible, prefix-local replacement:
+
+| `Core` file | SHA-256 |
+|---|---|
+| active `Microsoft.Data.Sqlite.dll` | `1bc46f00c262e0af227b575cba2a43782af630338e145b2feab399e7337401be` |
+| `Microsoft.Data.Sqlite.dll.wine-oracle-original` | `94111289bef8bcc875cb1ef54fb727f582b4c97936fec1f8615c114095be0a8b` |
+
+The replacement starts from Microsoft's official IL-only 9.0.14 package and
+retains the exact assembly name, version `9.0.14.0`, and public-key token
+`adb9793829ddae60`. Its one local change preserves SQLitePCL initialization but
+skips only the Windows storage-directory probe. No patched or original
+assembly is checked in.
+
+An isolated 105-second run then entered
+`PlatformWheel1FiltersViewModel`, continued for another 31 seconds, and was
+stopped by the diagnostic timeout. The managed and Wine traces contained no
+`ApplicationData`, `SqliteConnection`, unhandled-exception, or CLR-crash
+record. Restoring the `.wine-oracle-original` file removes this workaround.
+
 ## Remaining BigBox blocker
 
 The stock Default theme creates a full-screen WPF window but paints black. At
