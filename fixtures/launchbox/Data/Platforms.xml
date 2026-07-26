@@ -55,6 +55,16 @@
   </PlatformFolder>
   <PlatformFolder>
     <Platform>Fixture Console</Platform>
+    <MediaType>Clear Logo</MediaType>
+    <FolderPath>Images\Fixture Console\Clear Logo</FolderPath>
+  </PlatformFolder>
+  <PlatformFolder>
+    <Platform>Fixture Console</Platform>
+    <MediaType>Arcade - Marquee</MediaType>
+    <FolderPath>Images\Fixture Console\Arcade - Marquee</FolderPath>
+  </PlatformFolder>
+  <PlatformFolder>
+    <Platform>Fixture Console</Platform>
     <MediaType>Manual</MediaType>
     <FolderPath>Manuals\Fixture Console</FolderPath>
   </PlatformFolder>

@@ -5248,6 +5248,11 @@ ApplicationWindow {
                             }
 
                             function clickMediaThumbnailForSmoke(index) {
+                                if (index < 0 || index >= mediaCount)
+                                    return false
+                                detailsMediaList.positionViewAtIndex(
+                                    index, ListView.Contain)
+                                detailsMediaList.forceLayout()
                                 const item = detailsMediaList.itemAtIndex(index)
                                 if (!item)
                                     return false
@@ -5353,9 +5358,9 @@ ApplicationWindow {
                                         if (window.selectedGameId
                                                 !== "fixture-adventure"
                                                 || gameDetailsPane
-                                                   .mediaCount !== 7
+                                                   .mediaCount !== 10
                                                 || gameDetailsPane
-                                                   .selectedMediaIndex !== 6
+                                                   .selectedMediaIndex !== 8
                                                 || gameDetailsPane
                                                    .selectedMediaKind
                                                    !== "video"
@@ -5417,7 +5422,7 @@ ApplicationWindow {
                                             function() {
                                                 if (!gameDetailsPane
                                                         .clickMediaThumbnailForSmoke(
-                                                            6)) {
+                                                            8)) {
                                                     console.error(
                                                         "GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
                                                     Qt.exit(495)
@@ -5452,7 +5457,7 @@ ApplicationWindow {
                                             .gameDetailsMediaSmokePhase
                                             === 4) {
                                         if (gameDetailsPane
-                                                .selectedMediaIndex !== 6
+                                                .selectedMediaIndex !== 8
                                                 || gameDetailsPane
                                                    .selectedMediaKind
                                                    !== "video"
@@ -5472,7 +5477,7 @@ ApplicationWindow {
                                         if (!controller
                                                 .report_game_details_media_smoke_success(
                                                     "fixture-adventure",
-                                                    0, 6,
+                                                    0, 8,
                                                     controller
                                                     .game_media_url_at(
                                                         "fixture-adventure",
@@ -5480,7 +5485,7 @@ ApplicationWindow {
                                                     controller
                                                     .game_media_url_at(
                                                         "fixture-adventure",
-                                                        6).toString())) {
+                                                        8).toString())) {
                                             console.error(
                                                 "GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
                                             Qt.exit(497)
@@ -5517,7 +5522,7 @@ ApplicationWindow {
                                         if (window.selectedGameId
                                                 !== "fixture-adventure"
                                                 || gameDetailsPane
-                                                   .mediaCount !== 7)
+                                                   .mediaCount !== 10)
                                             return
                                         if (!gameDetailsPane
                                                 .clickMediaThumbnailForSmoke(
@@ -5554,7 +5559,7 @@ ApplicationWindow {
                                                    .gameId
                                                    !== "fixture-adventure"
                                                 || detailsImageViewer
-                                                   .imageCount !== 6
+                                                   .imageCount !== 8
                                                 || detailsImageViewer
                                                    .selectedImageIndex !== 0
                                                 || detailsImageViewer

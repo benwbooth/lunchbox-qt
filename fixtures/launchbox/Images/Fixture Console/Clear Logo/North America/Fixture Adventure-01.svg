@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360">
+  <path d="M54 300 L180 58 L306 300 Z" fill="#f0c04a" stroke="#ffffff" stroke-width="8"/>
+  <text x="575" y="166" fill="#ffffff" stroke="#102844" stroke-width="5"
+        paint-order="stroke" font-family="sans-serif" font-size="76"
+        font-weight="700" text-anchor="middle">FIXTURE</text>
+  <text x="575" y="250" fill="#9ccfff" stroke="#102844" stroke-width="4"
+        paint-order="stroke" font-family="sans-serif" font-size="62"
+        font-weight="700" text-anchor="middle">ADVENTURE</text>
+</svg>

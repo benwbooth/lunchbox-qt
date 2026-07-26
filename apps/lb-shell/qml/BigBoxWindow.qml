@@ -21,6 +21,8 @@ ApplicationWindow {
         startupPresentationOverlay.stopForFrontend()
         bigBoxMusicPlayer.stopPlayback(true)
         backgroundMusicPlayer.stopForFrontend()
+        bigBoxMarquee.requestedVisible = false
+        bigBoxMarquee.stopPlayback()
     }
     property bool smokeTest: Qt.application.arguments.indexOf("--smoke-test") >= 0
     property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
@@ -151,6 +153,23 @@ ApplicationWindow {
     property bool inputEditorSmokeScreenshotReady: false
     property string inputEditorSmokeScreenshotPath:
         argumentValue("--bigbox-input-editor-screenshot")
+    property bool marqueeSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-marquee-smoke-test") >= 0
+    property int marqueeSmokePhase: 0
+    property int marqueeSmokeStartRevision: -1
+    property bool marqueeSmokeFinished: false
+    property bool marqueeGameScreenshotRequested: false
+    property bool marqueeGameScreenshotReady: false
+    property bool marqueePlatformScreenshotRequested: false
+    property bool marqueePlatformScreenshotReady: false
+    property bool marqueeVideoReadySeen: false
+    property string marqueeGameScreenshotPath:
+        argumentValue("--bigbox-marquee-game-screenshot")
+    property string marqueePlatformScreenshotPath:
+        argumentValue("--bigbox-marquee-platform-screenshot")
+    property string marqueeContextKind: "game"
+    property string marqueeContextName: ""
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -394,7 +413,9 @@ ApplicationWindow {
     }
 
     function closeBigBoxSurface() {
-        if (bigBoxModelViewer.opened) {
+        if (bigBoxMarqueeSettings.opened) {
+            bigBoxMarqueeSettings.close()
+        } else if (bigBoxModelViewer.opened) {
             bigBoxModelViewer.close()
         } else if (bigBoxImageViewer.opened) {
             bigBoxImageViewer.close()
@@ -413,6 +434,35 @@ ApplicationWindow {
             return false
         }
         return true
+    }
+
+    function applyPrimaryMonitorScreen() {
+        const index = controller.big_box_primary_monitor_index
+        if (index >= 0 && index < controller.host_screen_count())
+            controller.route_window_to_host_screen(window, index)
+    }
+
+    function resetMarqueeContext() {
+        marqueeContextKind = "game"
+        marqueeContextName = ""
+    }
+
+    function updateMarqueeNavigationPreview() {
+        if (!navigationDrawer.opened
+                || navigationList.currentIndex <= 0) {
+            resetMarqueeContext()
+            return
+        }
+        const index = navigationList.currentIndex - 1
+        const kind =
+            controller.big_box_navigation_entry_kind_at(index)
+        if (kind === "platform") {
+            marqueeContextKind = "platform"
+            marqueeContextName =
+                controller.big_box_navigation_entry_name_at(index)
+        } else {
+            resetMarqueeContext()
+        }
     }
 
     function activateFirstNavigationKind(kind) {
@@ -1403,6 +1453,10 @@ ApplicationWindow {
             bigBoxIncludeBrokenCheck.checked = controller.include_broken_games
         }
 
+        function onBig_box_primary_monitor_indexChanged() {
+            window.applyPrimaryMonitorScreen()
+        }
+
         function onStartup_screen_activeChanged() {
             if (window.launchLifecycleSmokeTest
                     && controller.startup_screen_active
@@ -1525,6 +1579,7 @@ ApplicationWindow {
         } else {
             controller.load_fixture()
         }
+        applyPrimaryMonitorScreen()
         gameList.forceActiveFocus()
     }
 
@@ -2172,8 +2227,8 @@ ApplicationWindow {
                 window.gameDetailsMediaSmokePhase = 1
             } else if (window.gameDetailsMediaSmokePhase === 1) {
                 if (!bigBoxGameDetails.opened
-                        || bigBoxGameDetails.mediaCount !== 7
-                        || bigBoxGameDetails.selectedMediaIndex !== 6
+                        || bigBoxGameDetails.mediaCount !== 10
+                        || bigBoxGameDetails.selectedMediaIndex !== 8
                         || bigBoxGameDetails.selectedMediaKind !== "video"
                         || bigBoxGameDetails.selectedMediaType !== "Video Snap"
                         || bigBoxGameDetails.mediaDuration <= 0
@@ -2190,7 +2245,7 @@ ApplicationWindow {
                 bigBoxPreviousMediaButton.clicked()
                 window.gameDetailsMediaSmokePhase = 3
             } else if (window.gameDetailsMediaSmokePhase === 3) {
-                if (bigBoxGameDetails.selectedMediaIndex !== 5
+                if (bigBoxGameDetails.selectedMediaIndex !== 7
                         || bigBoxGameDetails.selectedMediaKind !== "image"
                         || bigBoxGameDetails.mediaImageStatus !== Image.Ready)
                     return
@@ -2212,7 +2267,7 @@ ApplicationWindow {
                     return
                 window.gameDetailsMediaScreenshotRequested = true
                 const continueWithVideo = function() {
-                    if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(6)) {
+                    if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(8)) {
                         console.error(
                             "BIGBOX_GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
                         Qt.exit(508)
@@ -2236,7 +2291,7 @@ ApplicationWindow {
                     continueWithVideo()
                 })
             } else if (window.gameDetailsMediaSmokePhase === 5) {
-                if (bigBoxGameDetails.selectedMediaIndex !== 6
+                if (bigBoxGameDetails.selectedMediaIndex !== 8
                         || bigBoxGameDetails.selectedMediaKind !== "video"
                         || bigBoxGameDetails.selectedMediaType !== "Video Snap"
                         || bigBoxGameDetails.mediaDuration <= 0
@@ -2253,11 +2308,11 @@ ApplicationWindow {
                     return
                 if (!controller
                         .report_big_box_game_details_media_smoke_success(
-                        "fixture-adventure", 0, 6,
+                        "fixture-adventure", 0, 8,
                         controller.game_media_url_at(
                             "fixture-adventure", 0).toString(),
                         controller.game_media_url_at(
-                            "fixture-adventure", 6).toString())) {
+                            "fixture-adventure", 8).toString())) {
                     console.error(
                         "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
                     Qt.exit(510)
@@ -2308,7 +2363,7 @@ ApplicationWindow {
                 window.imageViewerSmokePhase = 1
             } else if (window.imageViewerSmokePhase === 1) {
                 if (!bigBoxGameDetails.opened
-                        || bigBoxGameDetails.mediaCount !== 7)
+                        || bigBoxGameDetails.mediaCount !== 10)
                     return
                 if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(0)) {
                     console.error(
@@ -2328,7 +2383,7 @@ ApplicationWindow {
                 if (!bigBoxImageViewer.opened
                         || bigBoxImageViewer.gameId
                            !== "fixture-adventure"
-                        || bigBoxImageViewer.imageCount !== 6
+                        || bigBoxImageViewer.imageCount !== 8
                         || bigBoxImageViewer.selectedImageIndex !== 0
                         || bigBoxImageViewer.selectedMediaIndex !== 0
                         || bigBoxImageViewer.selectedMediaType
@@ -2850,6 +2905,212 @@ ApplicationWindow {
     }
 
     Timer {
+        interval: 20
+        repeat: true
+        running: window.marqueeSmokeTest
+                 && !window.marqueeSmokeFinished
+        onTriggered: {
+            if (controller.loading
+                    || window.startupPresentationPending
+                    || controller.library_path.length === 0)
+                return
+            if (window.marqueeSmokePhase === 0) {
+                if (controller.writing
+                        || controller.big_box_marquee_settings_revision < 1)
+                    return
+                if (window.selectedBigBoxGameId
+                        !== "fixture-adventure") {
+                    const row =
+                        controller.row_for_game_id("fixture-adventure")
+                    if (row < 0) {
+                        console.error(
+                            "BIGBOX_MARQUEE_SMOKE_GAME_MISSING")
+                        Qt.exit(663)
+                        return
+                    }
+                    gameList.currentIndex = row
+                    gameList.positionViewAtIndex(
+                        row, ListView.Center)
+                    return
+                }
+                window.marqueeSmokeStartRevision =
+                    controller.big_box_marquee_settings_revision
+                bigBoxMarqueeSettings.openEditor()
+                window.marqueeSmokePhase = 1
+            } else if (window.marqueeSmokePhase === 1) {
+                if (!bigBoxMarqueeSettings.opened)
+                    return
+                if (!bigBoxMarqueeSettings.runSmokeExercise()) {
+                    console.error(
+                        "BIGBOX_MARQUEE_SMOKE_SETTINGS_FAILED")
+                    Qt.exit(664)
+                    return
+                }
+                window.marqueeSmokePhase = 2
+            } else if (window.marqueeSmokePhase === 2) {
+                if (controller.writing
+                        || bigBoxMarqueeSettings.opened
+                        || controller.big_box_marquee_settings_revision
+                           === window.marqueeSmokeStartRevision
+                        || bigBoxMarquee.resolvedMonitorIndex !== 0
+                        || !bigBoxMarquee.visible)
+                    return
+                if (!window.marqueeVideoReadySeen) {
+                    if (!bigBoxMarquee.videoReady)
+                        return
+                    window.marqueeVideoReadySeen = true
+                    // QQuickItem::grabToImage cannot read a software
+                    // VideoOutput texture on all Qt backends. Decoder
+                    // readiness is proven above; capture the indexed direct
+                    // marquee image for deterministic rendered evidence.
+                    bigBoxMarquee.suspendVideoForCapture = true
+                    return
+                }
+                if (bigBoxMarquee.directImageStatus !== Image.Ready)
+                    return
+                if (!window.marqueeGameScreenshotRequested) {
+                    if (window.marqueeGameScreenshotPath.length === 0) {
+                        window.marqueeGameScreenshotRequested = true
+                        window.marqueeGameScreenshotReady = true
+                    } else {
+                        window.marqueeGameScreenshotRequested = true
+                        const started =
+                            bigBoxMarquee.captureTarget.grabToImage(
+                                function(result) {
+                                    if (!result.saveToFile(
+                                            window
+                                            .marqueeGameScreenshotPath)) {
+                                        console.error(
+                                            "BIGBOX_MARQUEE_GAME_SCREENSHOT_SAVE_FAILED path="
+                                            + window
+                                              .marqueeGameScreenshotPath)
+                                        Qt.exit(665)
+                                        return
+                                    }
+                                    window.marqueeGameScreenshotReady = true
+                                })
+                        if (!started)
+                            window.marqueeGameScreenshotRequested = false
+                    }
+                    return
+                }
+                if (!window.marqueeGameScreenshotReady)
+                    return
+                const platformIndex =
+                    window.bigBoxNavigationIndex(
+                        "platform", "Fixture Console")
+                if (platformIndex < 0) {
+                    console.error(
+                        "BIGBOX_MARQUEE_SMOKE_PLATFORM_MISSING")
+                    Qt.exit(666)
+                    return
+                }
+                navigationDrawer.open()
+                navigationList.currentIndex = platformIndex + 1
+                navigationList.positionViewAtIndex(
+                    navigationList.currentIndex, ListView.Contain)
+                window.updateMarqueeNavigationPreview()
+                window.marqueeSmokePhase = 3
+            } else if (window.marqueeSmokePhase === 3) {
+                if (window.marqueeContextKind !== "platform"
+                        || window.marqueeContextName
+                           !== "Fixture Console"
+                        || bigBoxMarquee.platformBannerUrl
+                           .toString().length === 0
+                        || bigBoxMarquee.directImageStatus
+                           !== Image.Ready)
+                    return
+                if (!window.marqueePlatformScreenshotRequested) {
+                    if (window.marqueePlatformScreenshotPath.length === 0) {
+                        window.marqueePlatformScreenshotRequested = true
+                        window.marqueePlatformScreenshotReady = true
+                    } else {
+                        window.marqueePlatformScreenshotRequested = true
+                        const started =
+                            bigBoxMarquee.captureTarget.grabToImage(
+                                function(result) {
+                                    if (!result.saveToFile(
+                                            window
+                                            .marqueePlatformScreenshotPath)) {
+                                        console.error(
+                                            "BIGBOX_MARQUEE_PLATFORM_SCREENSHOT_SAVE_FAILED path="
+                                            + window
+                                              .marqueePlatformScreenshotPath)
+                                        Qt.exit(667)
+                                        return
+                                    }
+                                    window.marqueePlatformScreenshotReady = true
+                                })
+                        if (!started)
+                            window.marqueePlatformScreenshotRequested = false
+                    }
+                    return
+                }
+                if (!window.marqueePlatformScreenshotReady)
+                    return
+                window.marqueeSmokePhase = 4
+            } else if (window.marqueeSmokePhase === 4) {
+                if (!controller.report_big_box_marquee_smoke_success(
+                        bigBoxMarquee.screenCount,
+                        bigBoxMarquee.resolvedMonitorIndex,
+                        window.selectedBigBoxGameId,
+                        window.marqueeContextName,
+                        bigBoxMarquee.gameVideoUrl.toString(),
+                        bigBoxMarquee.gameImageUrl.toString(),
+                        bigBoxMarquee.platformBannerUrl.toString())) {
+                    console.error(
+                        "BIGBOX_MARQUEE_SMOKE_CONTROLLER_REJECTED"
+                        + " screenCount=" + bigBoxMarquee.screenCount
+                        + " monitor="
+                        + bigBoxMarquee.resolvedMonitorIndex
+                        + " videoReadySeen="
+                        + window.marqueeVideoReadySeen
+                        + " imageStatus="
+                        + bigBoxMarquee.directImageStatus
+                        + " revision="
+                        + controller.big_box_marquee_settings_revision
+                        + " status=" + controller.status_message)
+                    Qt.exit(668)
+                    return
+                }
+                window.marqueeSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 12000
+        repeat: false
+        running: window.marqueeSmokeTest
+                 && !window.marqueeSmokeFinished
+        onTriggered: {
+            controller.report_big_box_marquee_smoke_success(
+                bigBoxMarquee.screenCount,
+                bigBoxMarquee.resolvedMonitorIndex,
+                window.selectedBigBoxGameId,
+                window.marqueeContextName,
+                bigBoxMarquee.gameVideoUrl.toString(),
+                bigBoxMarquee.gameImageUrl.toString(),
+                bigBoxMarquee.platformBannerUrl.toString())
+            console.error(
+                "BIGBOX_MARQUEE_SMOKE_TIMEOUT phase="
+                + window.marqueeSmokePhase
+                + " visible=" + bigBoxMarquee.visible
+                + " monitor=" + bigBoxMarquee.resolvedMonitorIndex
+                + " videoReadySeen=" + window.marqueeVideoReadySeen
+                + " videoStatus=" + bigBoxMarquee.videoMediaStatus
+                + " videoState=" + bigBoxMarquee.videoPlaybackState
+                + " imageStatus=" + bigBoxMarquee.directImageStatus
+                + " writing=" + controller.writing
+                + " revision="
+                + controller.big_box_marquee_settings_revision
+                + " status=" + controller.status_message)
+            Qt.exit(669)
+        }
+    }
+
+    Timer {
         interval: 25
         repeat: true
         running: window.launchSmokeTest && !window.launchSmokeFinished
@@ -3106,8 +3367,14 @@ ApplicationWindow {
         edge: Qt.LeftEdge
         modal: true
         closePolicy: Popup.CloseOnPressOutside
-        onOpened: navigationList.forceActiveFocus()
-        onClosed: gameList.forceActiveFocus()
+        onOpened: {
+            window.updateMarqueeNavigationPreview()
+            navigationList.forceActiveFocus()
+        }
+        onClosed: {
+            window.resetMarqueeContext()
+            gameList.forceActiveFocus()
+        }
 
         background: Rectangle {
             color: "#101824"
@@ -3145,6 +3412,8 @@ ApplicationWindow {
                 focus: true
                 keyNavigationWraps: true
                 model: controller.big_box_navigation_entry_count + 1
+                onCurrentIndexChanged:
+                    window.updateMarqueeNavigationPreview()
                 Keys.onReturnPressed: function(event) {
                     window.activateNavigationRow(currentIndex)
                     event.accepted = true
@@ -3692,6 +3961,12 @@ ApplicationWindow {
                 onClicked: bigBoxInputSettings.openEditor()
             }
             Button {
+                text: "DISPLAYS"
+                enabled: !controller.loading && !controller.writing
+                Accessible.name: "Edit BigBox display and marquee settings"
+                onClicked: bigBoxMarqueeSettings.openEditor()
+            }
+            Button {
                 text: "RANDOM"
                 enabled: controller.filtered_count > 0
                          && !controller.loading && !controller.writing
@@ -3963,6 +4238,11 @@ ApplicationWindow {
         }
 
         function clickMediaThumbnailForSmoke(index) {
+            if (index < 0 || index >= mediaCount)
+                return false
+            bigBoxMediaThumbnailList.positionViewAtIndex(
+                index, ListView.Contain)
+            bigBoxMediaThumbnailList.forceLayout()
             const item = bigBoxMediaThumbnailList.itemAtIndex(index)
             if (!item)
                 return false
@@ -6125,12 +6405,32 @@ ApplicationWindow {
         controller: controller
     }
 
+    BigBoxMarqueeSettings {
+        id: bigBoxMarqueeSettings
+        controller: controller
+    }
+
+    BigBoxMarqueeWindow {
+        id: bigBoxMarquee
+        controller: controller
+        requestedVisible:
+            window.visible
+            && controller.library_path.length > 0
+            && controller.big_box_marquee_monitor_index >= 0
+        windowedForSmoke: window.marqueeSmokeTest
+        gameId: window.selectedBigBoxGameId
+        gameTitle: window.selectedBigBoxGameTitle
+        contextKind: window.marqueeContextKind
+        contextName: window.marqueeContextName
+    }
+
     BigBoxInputRouter {
         id: bigBoxInputRouter
         controller: controller
         enabled: window.visible
                  && controller.library_path.length > 0
                  && !bigBoxInputSettings.opened
+                 && !bigBoxMarqueeSettings.opened
         onActionsTriggered: function(actions) {
             if (!bigBoxAttractMode.active)
                 bigBoxAttractMode.noteActivity()
@@ -6146,6 +6446,7 @@ ApplicationWindow {
                  && !bigBoxImageViewer.opened
                  && !bigBoxModelViewer.opened
                  && !bigBoxInputSettings.opened
+                 && !bigBoxMarqueeSettings.opened
         onActivated: window.showLaunchWithSelection()
     }
 
@@ -6155,6 +6456,7 @@ ApplicationWindow {
                  && !bigBoxImageViewer.opened
                  && !bigBoxModelViewer.opened
                  && !bigBoxInputSettings.opened
+                 && !bigBoxMarqueeSettings.opened
         onActivated: {
             if (navigationDrawer.opened) {
                 navigationDrawer.close()

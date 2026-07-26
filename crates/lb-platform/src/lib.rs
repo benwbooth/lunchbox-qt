@@ -23,9 +23,11 @@ pub use input::{
 };
 pub use m3u::M3uPreparationError;
 pub use media::{
-    background_music_context_key, front_image_type_priorities, index_big_box_startup_presentation,
-    index_front_images, index_game_media, index_game_supplemental_media, launchbox_media_stem,
-    region_priorities, BigBoxBackgroundMusicPolicy, BigBoxMusicPolicy,
+    background_music_context_key, front_image_type_priorities,
+    index_big_box_platform_marquee_media, index_big_box_startup_presentation, index_front_images,
+    index_game_media, index_game_supplemental_media, launchbox_media_stem, region_priorities,
+    BigBoxBackgroundMusicPolicy, BigBoxGameMarqueeMedia, BigBoxMarqueeCompatibilityMode,
+    BigBoxMarqueePolicy, BigBoxMusicPolicy, BigBoxPlatformMarqueeIndex, BigBoxPlatformMarqueeMedia,
     BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, FrontImageIndex,
     FrontImageIndexReport, GameDetailsMediaPolicy, GameMediaIndex, GameMediaIndexReport,
     GameMediaItem, GameMediaKind, GameSupplementalMediaIndex, GameSupplementalMediaIndexReport,

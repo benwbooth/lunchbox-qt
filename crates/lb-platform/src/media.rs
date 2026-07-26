@@ -21,6 +21,8 @@ const MAX_MUSIC_TRACKS_PER_GAME: usize = 512;
 const MAX_STARTUP_VIDEOS: usize = 4_096;
 const MAX_STARTUP_SOUNDS: usize = 256;
 const MAX_ATTRACT_MOVE_SOUNDS: usize = 256;
+const MAX_PLATFORM_MARQUEE_CONTEXTS: usize = 4_096;
+const MAX_PLATFORM_MARQUEE_FILES_PER_TYPE: usize = 4_096;
 const MAX_BACKGROUND_MUSIC_CONTEXTS: usize = 4_096;
 const MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT: usize = 4_096;
 const MAX_MUSIC_PLAYLIST_ENTRIES: usize = 4_096;
@@ -160,6 +162,162 @@ pub struct GameMediaIndexReport {
     pub oversized_files: usize,
     pub truncated_folders: usize,
     pub truncated_items: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BigBoxMarqueeCompatibilityMode {
+    #[default]
+    None,
+    HalfSizeStretched,
+    ThirdSizeStretched,
+    BottomHalfCutOff,
+    TopHalfCutOff,
+    BottomTwoThirdsCutOff,
+    TopTwoThirdsCutOff,
+    TopAndBottomOneThirdCutOff,
+}
+
+impl BigBoxMarqueeCompatibilityMode {
+    pub const ALL: [Self; 8] = [
+        Self::None,
+        Self::HalfSizeStretched,
+        Self::ThirdSizeStretched,
+        Self::BottomHalfCutOff,
+        Self::TopHalfCutOff,
+        Self::BottomTwoThirdsCutOff,
+        Self::TopTwoThirdsCutOff,
+        Self::TopAndBottomOneThirdCutOff,
+    ];
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::HalfSizeStretched => "HalfSizeStretched",
+            Self::ThirdSizeStretched => "ThirdSizeStretched",
+            Self::BottomHalfCutOff => "BottomHalfCutOff",
+            Self::TopHalfCutOff => "TopHalfCutOff",
+            Self::BottomTwoThirdsCutOff => "BottomTwoThirdsCutOff",
+            Self::TopTwoThirdsCutOff => "TopTwoThirdsCutOff",
+            Self::TopAndBottomOneThirdCutOff => "TopAndBottomOneThirdCutOff",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::HalfSizeStretched => "Half-size stretched",
+            Self::ThirdSizeStretched => "Third-size stretched",
+            Self::BottomHalfCutOff => "Bottom half cut off",
+            Self::TopHalfCutOff => "Top half cut off",
+            Self::BottomTwoThirdsCutOff => "Bottom two-thirds cut off",
+            Self::TopTwoThirdsCutOff => "Top two-thirds cut off",
+            Self::TopAndBottomOneThirdCutOff => "Top and bottom thirds cut off",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.key().eq_ignore_ascii_case(value.trim()))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BigBoxMarqueePolicy {
+    pub primary_monitor_index: i32,
+    pub marquee_monitor_index: i32,
+    pub ignore_theme_views: bool,
+    pub stretch_images: bool,
+    pub compatibility_mode: BigBoxMarqueeCompatibilityMode,
+}
+
+impl Default for BigBoxMarqueePolicy {
+    fn default() -> Self {
+        Self {
+            primary_monitor_index: 0,
+            marquee_monitor_index: -1,
+            ignore_theme_views: false,
+            stretch_images: false,
+            compatibility_mode: BigBoxMarqueeCompatibilityMode::None,
+        }
+    }
+}
+
+impl BigBoxMarqueePolicy {
+    pub fn from_settings(settings: Option<&FrontendSettings>) -> Self {
+        let fallback = Self::default();
+        let Some(settings) = settings else {
+            return fallback;
+        };
+        Self {
+            primary_monitor_index: settings
+                .get_i64("PrimaryMonitorIndex")
+                .and_then(|value| i32::try_from(value).ok())
+                .filter(|value| (0..=255).contains(value))
+                .unwrap_or(fallback.primary_monitor_index),
+            marquee_monitor_index: settings
+                .get_i64("MarqueeMonitorIndex")
+                .and_then(|value| i32::try_from(value).ok())
+                .filter(|value| (-1..=255).contains(value))
+                .unwrap_or(fallback.marquee_monitor_index),
+            ignore_theme_views: settings
+                .get_bool("MarqueeIgnoreThemeViews")
+                .unwrap_or(fallback.ignore_theme_views),
+            stretch_images: settings
+                .get_bool("MarqueeStretchImages")
+                .unwrap_or(fallback.stretch_images),
+            compatibility_mode: settings
+                .get("MarqueeScreenCompatibilityMode")
+                .and_then(BigBoxMarqueeCompatibilityMode::from_key)
+                .unwrap_or(fallback.compatibility_mode),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BigBoxGameMarqueeMedia {
+    pub video_path: Option<PathBuf>,
+    pub marquee_image_path: Option<PathBuf>,
+    pub clear_logo_path: Option<PathBuf>,
+    pub box_art_path: Option<PathBuf>,
+    pub background_path: Option<PathBuf>,
+}
+
+impl BigBoxGameMarqueeMedia {
+    pub fn from_items(items: &[GameMediaItem]) -> Self {
+        Self {
+            video_path: first_media_path(items, GameMediaKind::Video, &["Marquee"]),
+            marquee_image_path: first_media_path(
+                items,
+                GameMediaKind::Image,
+                &["Arcade - Marquee", "Marquee"],
+            ),
+            clear_logo_path: first_media_path(items, GameMediaKind::Image, &["Clear Logo"]),
+            box_art_path: first_media_path(items, GameMediaKind::Image, FALLBACK_FRONT_IMAGE_TYPES),
+            background_path: first_media_path(
+                items,
+                GameMediaKind::Image,
+                &["Fanart - Background", "Background"],
+            ),
+        }
+    }
+
+    pub fn has_direct_media(&self) -> bool {
+        self.video_path.is_some() || self.marquee_image_path.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BigBoxPlatformMarqueeMedia {
+    pub banner_path: Option<PathBuf>,
+    pub clear_logo_path: Option<PathBuf>,
+    pub background_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BigBoxPlatformMarqueeIndex {
+    pub media_by_platform_key: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
+    pub report: GameSupplementalMediaIndexReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -871,6 +1029,82 @@ pub fn index_game_media(
         spine_paths_by_game_id,
         full_paths_by_game_id,
         policy,
+        report,
+    }
+}
+
+pub fn index_big_box_platform_marquee_media(
+    launchbox_root: &Path,
+    platform_names: &[String],
+    path_resolver: &dyn LaunchPathResolver,
+) -> BigBoxPlatformMarqueeIndex {
+    let mut report = GameSupplementalMediaIndexReport::default();
+    let Ok(platform_root) = path_resolver.resolve(launchbox_root, "Images/Platforms") else {
+        report.unresolved_folders = report.unresolved_folders.saturating_add(1);
+        return BigBoxPlatformMarqueeIndex {
+            media_by_platform_key: BTreeMap::new(),
+            report,
+        };
+    };
+    let Some(platform_entries) =
+        optional_safe_directory_entries(&platform_root, MAX_PLATFORM_MARQUEE_CONTEXTS, &mut report)
+    else {
+        return BigBoxPlatformMarqueeIndex {
+            media_by_platform_key: BTreeMap::new(),
+            report,
+        };
+    };
+
+    let expected_names = platform_names
+        .iter()
+        .filter_map(|name| {
+            portable_storage_name(name)
+                .ok()
+                .map(|storage_name| (background_music_context_key(&storage_name), name))
+        })
+        .filter(|(key, _)| !key.is_empty())
+        .collect::<BTreeMap<_, _>>();
+    let mut media_by_platform_key = BTreeMap::new();
+    let mut ambiguous = BTreeSet::new();
+    for entry in platform_entries {
+        let Ok(file_type) = entry.file_type() else {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        };
+        if file_type.is_symlink() || !file_type.is_dir() {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        }
+        let Some(directory_name) = entry.file_name().to_str().map(str::to_string) else {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        };
+        let key = background_music_context_key(&directory_name);
+        if !expected_names.contains_key(&key) {
+            continue;
+        }
+        if ambiguous.contains(&key) || media_by_platform_key.contains_key(&key) {
+            media_by_platform_key.remove(&key);
+            ambiguous.insert(key);
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        }
+
+        let media = BigBoxPlatformMarqueeMedia {
+            banner_path: first_platform_image(&entry.path().join("Banner"), &mut report),
+            clear_logo_path: first_platform_image(&entry.path().join("Clear Logo"), &mut report),
+            background_path: first_platform_image(&entry.path().join("Fanart"), &mut report),
+        };
+        if media.banner_path.is_some()
+            || media.clear_logo_path.is_some()
+            || media.background_path.is_some()
+        {
+            media_by_platform_key.insert(key, media);
+        }
+    }
+
+    BigBoxPlatformMarqueeIndex {
+        media_by_platform_key,
         report,
     }
 }
@@ -1966,6 +2200,45 @@ fn validate_media_file(
     true
 }
 
+fn first_media_path(
+    items: &[GameMediaItem],
+    kind: GameMediaKind,
+    media_types: &[&str],
+) -> Option<PathBuf> {
+    media_types.iter().find_map(|media_type| {
+        items
+            .iter()
+            .find(|item| {
+                item.kind == kind && item.media_type.trim().eq_ignore_ascii_case(media_type)
+            })
+            .map(|item| item.path.clone())
+    })
+}
+
+fn first_platform_image(
+    folder: &Path,
+    report: &mut GameSupplementalMediaIndexReport,
+) -> Option<PathBuf> {
+    let entries =
+        optional_safe_directory_entries(folder, MAX_PLATFORM_MARQUEE_FILES_PER_TYPE, report)?;
+    for entry in entries {
+        let Ok(file_type) = entry.file_type() else {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        };
+        if file_type.is_symlink() || !file_type.is_file() {
+            report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+            continue;
+        }
+        let path = entry.path();
+        if validate_supplemental_file(&path, SUPPORTED_IMAGE_EXTENSIONS, MAX_IMAGE_BYTES, report) {
+            report.scanned_files = report.scanned_files.saturating_add(1);
+            return Some(path);
+        }
+    }
+    None
+}
+
 fn push_game_media_item(
     game: &Game,
     item: GameMediaItem,
@@ -2376,6 +2649,176 @@ mod tests {
             ],
             ..FrontendSettings::default()
         }
+    }
+
+    #[test]
+    fn marquee_policy_recovers_all_1327_modes_and_fails_closed() {
+        assert_eq!(
+            BigBoxMarqueeCompatibilityMode::ALL
+                .into_iter()
+                .map(BigBoxMarqueeCompatibilityMode::key)
+                .collect::<Vec<_>>(),
+            [
+                "None",
+                "HalfSizeStretched",
+                "ThirdSizeStretched",
+                "BottomHalfCutOff",
+                "TopHalfCutOff",
+                "BottomTwoThirdsCutOff",
+                "TopTwoThirdsCutOff",
+                "TopAndBottomOneThirdCutOff",
+            ]
+        );
+        let configured = FrontendSettings {
+            entries: vec![
+                SettingEntry {
+                    key: "PrimaryMonitorIndex".into(),
+                    value: "2".into(),
+                },
+                SettingEntry {
+                    key: "MarqueeMonitorIndex".into(),
+                    value: "1".into(),
+                },
+                SettingEntry {
+                    key: "MarqueeIgnoreThemeViews".into(),
+                    value: "true".into(),
+                },
+                SettingEntry {
+                    key: "MarqueeStretchImages".into(),
+                    value: "true".into(),
+                },
+                SettingEntry {
+                    key: "MarqueeScreenCompatibilityMode".into(),
+                    value: "TopAndBottomOneThirdCutOff".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            BigBoxMarqueePolicy::from_settings(Some(&configured)),
+            BigBoxMarqueePolicy {
+                primary_monitor_index: 2,
+                marquee_monitor_index: 1,
+                ignore_theme_views: true,
+                stretch_images: true,
+                compatibility_mode: BigBoxMarqueeCompatibilityMode::TopAndBottomOneThirdCutOff,
+            }
+        );
+
+        let malformed = FrontendSettings {
+            entries: vec![
+                SettingEntry {
+                    key: "PrimaryMonitorIndex".into(),
+                    value: "-1".into(),
+                },
+                SettingEntry {
+                    key: "MarqueeMonitorIndex".into(),
+                    value: "999".into(),
+                },
+                SettingEntry {
+                    key: "MarqueeIgnoreThemeViews".into(),
+                    value: "maybe".into(),
+                },
+                SettingEntry {
+                    key: "MarqueeScreenCompatibilityMode".into(),
+                    value: "FutureMode".into(),
+                },
+            ],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            BigBoxMarqueePolicy::from_settings(Some(&malformed)),
+            BigBoxMarqueePolicy::default()
+        );
+        assert_eq!(
+            BigBoxMarqueePolicy::from_settings(None),
+            BigBoxMarqueePolicy::default()
+        );
+    }
+
+    #[test]
+    fn game_marquee_media_uses_video_then_direct_art_and_theme_fallbacks() {
+        let items = vec![
+            GameMediaItem {
+                kind: GameMediaKind::Image,
+                media_type: "Fanart - Background".into(),
+                path: PathBuf::from("background.svg"),
+                region: None,
+                ordinal: 1,
+            },
+            GameMediaItem {
+                kind: GameMediaKind::Image,
+                media_type: "Box - Front".into(),
+                path: PathBuf::from("box.svg"),
+                region: None,
+                ordinal: 1,
+            },
+            GameMediaItem {
+                kind: GameMediaKind::Image,
+                media_type: "Clear Logo".into(),
+                path: PathBuf::from("logo.svg"),
+                region: None,
+                ordinal: 1,
+            },
+            GameMediaItem {
+                kind: GameMediaKind::Image,
+                media_type: "Arcade - Marquee".into(),
+                path: PathBuf::from("marquee.svg"),
+                region: None,
+                ordinal: 1,
+            },
+            GameMediaItem {
+                kind: GameMediaKind::Video,
+                media_type: "Marquee".into(),
+                path: PathBuf::from("marquee.mp4"),
+                region: None,
+                ordinal: 1,
+            },
+        ];
+        let selected = BigBoxGameMarqueeMedia::from_items(&items);
+        assert_eq!(selected.video_path, Some(PathBuf::from("marquee.mp4")));
+        assert_eq!(
+            selected.marquee_image_path,
+            Some(PathBuf::from("marquee.svg"))
+        );
+        assert_eq!(selected.clear_logo_path, Some(PathBuf::from("logo.svg")));
+        assert_eq!(selected.box_art_path, Some(PathBuf::from("box.svg")));
+        assert_eq!(
+            selected.background_path,
+            Some(PathBuf::from("background.svg"))
+        );
+        assert!(selected.has_direct_media());
+    }
+
+    #[test]
+    fn platform_marquee_index_is_bounded_safe_and_case_unambiguous() {
+        let directory = tempfile::tempdir().expect("temporary LaunchBox root");
+        let platform = directory.path().join("Images/Platforms/Fixture Console");
+        for folder in ["Banner", "Clear Logo", "Fanart"] {
+            fs::create_dir_all(platform.join(folder)).expect("create platform media folder");
+        }
+        fs::write(platform.join("Banner/Fixture-02.svg"), b"banner").expect("write banner");
+        fs::write(platform.join("Clear Logo/Fixture-01.png"), b"logo").expect("write logo");
+        fs::write(platform.join("Fanart/Fixture-03.jpg"), b"fanart").expect("write fanart");
+        let index = index_big_box_platform_marquee_media(
+            directory.path(),
+            &["Fixture Console".into()],
+            &HostPathResolver::default(),
+        );
+        let media = &index.media_by_platform_key[&background_music_context_key("Fixture Console")];
+        assert_eq!(
+            media.banner_path.as_deref(),
+            Some(platform.join("Banner/Fixture-02.svg").as_path())
+        );
+        assert_eq!(
+            media.clear_logo_path.as_deref(),
+            Some(platform.join("Clear Logo/Fixture-01.png").as_path())
+        );
+        assert_eq!(
+            media.background_path.as_deref(),
+            Some(platform.join("Fanart/Fixture-03.jpg").as_path())
+        );
+        assert_eq!(index.report.scanned_files, 3);
     }
 
     #[test]

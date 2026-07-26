@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320" viewBox="0 0 900 320">
+  <text x="450" y="145" fill="#ffffff" stroke="#28144c" stroke-width="6"
+        paint-order="stroke" font-family="sans-serif" font-size="88"
+        font-weight="700" text-anchor="middle">FIXTURE</text>
+  <text x="450" y="242" fill="#b69cff" stroke="#28144c" stroke-width="5"
+        paint-order="stroke" font-family="sans-serif" font-size="76"
+        font-weight="700" text-anchor="middle">CONSOLE</text>
+</svg>

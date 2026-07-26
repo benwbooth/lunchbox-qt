@@ -33,6 +33,11 @@
     <PauseTheme>Fixture BigBox Pause</PauseTheme>
     <PauseScreenMuting>true</PauseScreenMuting>
     <PauseScreenFading>true</PauseScreenFading>
+    <PrimaryMonitorIndex>0</PrimaryMonitorIndex>
+    <MarqueeMonitorIndex>-1</MarqueeMonitorIndex>
+    <MarqueeIgnoreThemeViews>false</MarqueeIgnoreThemeViews>
+    <MarqueeStretchImages>false</MarqueeStretchImages>
+    <MarqueeScreenCompatibilityMode>None</MarqueeScreenCompatibilityMode>
     <AutoPlayMusicGamesList>false</AutoPlayMusicGamesList>
     <AutoPlayMusicGameDetails>false</AutoPlayMusicGameDetails>
     <PrioritizeMusicOverVideoAudio>false</PrioritizeMusicOverVideoAudio>

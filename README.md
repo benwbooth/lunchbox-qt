@@ -109,6 +109,17 @@ contains no host path rules. Symlinks, deep nesting, non-regular files,
 oversized files, unbounded directories, and unsupported extensions fail
 closed. No media or XML is changed.
 
+BigBox also has an independent native Qt marquee window for the selected game
+or highlighted platform. It uses the recovered 13.27 primary/marquee monitor,
+theme-view, image-stretch, and eight-mode compatibility settings; prioritizes
+silent marquee video and direct game/platform marquee art; and exposes a real
+display editor backed by one lossless recovery transaction. Screen discovery
+and placement use Qt's shared Windows/Linux/macOS `QScreen` and `QWindow`
+interfaces. No display shell command, OS-specific monitor API, or host path
+rule appears in QML. The exact protected compatibility transforms and custom
+theme views remain explicit parity gates; the current clean-room geometry and
+evidence boundary are documented in `analysis/marquee-13.27.md`.
+
 LaunchBox also has a resizable selected-game details pane backed directly by
 that role model. Stable game IDs preserve selection through filtering, sorting,
 editing, insertion, and removal; when a game is filtered out the first visible

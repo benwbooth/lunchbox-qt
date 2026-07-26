@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300">
+  <defs>
+    <linearGradient id="banner" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#28144c"/>
+      <stop offset="1" stop-color="#7147a8"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="300" rx="28" fill="url(#banner)"/>
+  <circle cx="170" cy="150" r="92" fill="#b69cff" opacity="0.32"/>
+  <path d="M95 215 L170 82 L245 215 Z" fill="#f0c04a"/>
+  <text x="720" y="174" fill="#ffffff" font-family="sans-serif" font-size="84"
+        font-weight="700" text-anchor="middle">FIXTURE CONSOLE</text>
+</svg>

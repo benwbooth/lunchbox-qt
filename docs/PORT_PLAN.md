@@ -395,6 +395,30 @@ global input while a game owns focus, and real-device/native Qt validation on
 Windows and both macOS architectures remain later parity work. The evidence
 and deliberate device-mapping boundary are recorded in
 `analysis/input-13.27.md`.
+The current `BB-013` slice adds the independent game/platform marquee display.
+A strict Rust policy owns the exact five recovered monitor, theme, stretch,
+and compatibility settings, their fresh-install defaults, and all eight mode
+names. The shared bounded media index supplies silent game marquee video,
+direct game marquee art, and clear-logo/box/background fallbacks; a separate
+safe index supplies platform Banner, Clear Logo, and Fanart media. One
+frameless, non-focusable, always-on-top Qt window follows the selected game or
+highlighted platform, loops video silently, hides for disabled/invalid
+selection, and responds to live host-screen topology. A visible editor obtains
+native screen names and dimensions and writes all five settings through one
+strict, lossless, recovery-backed `BigBoxSettings.xml` transaction. The native
+screen bridge uses only common `QGuiApplication`, `QScreen`, and
+`QWindow::setScreen()` APIs; no OS-specific path, monitor command, or runtime
+shell crosses into QML.
+
+Five pure tests plus one compiled Xvfb scenario prove defaults/modes/bounds,
+media priority and unsafe-entry refusal, exact backup and reload, real editor
+submission, native Qt screen routing, H.264 decoder readiness, actual
+game-to-platform navigation, color-checked direct media, and whole-media-tree
+immutability. The exact protected compatibility transform is unavailable, so
+the name-derived retained-region geometry is documented as clean-room port
+policy in `analysis/marquee-13.27.md`. Exact custom-theme views, physical
+multi-monitor and hot-plug behavior, and native Windows/macOS Qt
+windowing/multimedia remain later parity work.
 The current `DESK-004`/`BB-004` media vertical adds settings-prioritized box
 backs and one shared front/back Qt presenter to the LaunchBox grid and BigBox
 wheel. The exact recovered back priority is applied at the native-path index

@@ -2,6 +2,8 @@ use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
 fn main() {
     println!("cargo:rerun-if-changed=src/library_controller.rs");
+    println!("cargo:rerun-if-changed=src/host_screens.cpp");
+    println!("cargo:rerun-if-changed=include/host_screens.h");
     println!("cargo:rerun-if-changed=qml/LaunchBoxWindow.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxWindow.qml");
     println!("cargo:rerun-if-changed=qml/GameImageViewer.qml");
@@ -15,6 +17,8 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/BigBoxScreensaver.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxInputRouter.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxInputSettings.qml");
+    println!("cargo:rerun-if-changed=qml/BigBoxMarqueeSettings.qml");
+    println!("cargo:rerun-if-changed=qml/BigBoxMarqueeWindow.qml");
     println!("cargo:rerun-if-changed=qml/LaunchStartupOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchShutdownOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchPauseOverlay.qml");
@@ -39,6 +43,8 @@ fn main() {
                 "qml/BigBoxScreensaver.qml",
                 "qml/BigBoxInputRouter.qml",
                 "qml/BigBoxInputSettings.qml",
+                "qml/BigBoxMarqueeSettings.qml",
+                "qml/BigBoxMarqueeWindow.qml",
                 "qml/LaunchStartupOverlay.qml",
                 "qml/LaunchShutdownOverlay.qml",
                 "qml/LaunchPauseOverlay.qml",
@@ -48,6 +54,8 @@ fn main() {
     .qt_module("QuickControls2")
     .qt_module("Multimedia")
     .qt_module("Quick3D")
+    .include_dir("include")
+    .cpp_file("src/host_screens.cpp")
     .file("src/library_controller.rs")
     .build();
 }

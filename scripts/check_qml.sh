@@ -38,6 +38,8 @@ diagnostics=$(
     apps/lb-shell/qml/BigBoxScreensaver.qml \
     apps/lb-shell/qml/BigBoxInputRouter.qml \
     apps/lb-shell/qml/BigBoxInputSettings.qml \
+    apps/lb-shell/qml/BigBoxMarqueeSettings.qml \
+    apps/lb-shell/qml/BigBoxMarqueeWindow.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -195,15 +197,18 @@ echo "LaunchBox and BigBox role-model runtime smokes validated."
 
 cp -a fixtures/launchbox/. "$media_root/"
 fixture_video="$media_root/Videos/Fixture Console/fixture-adventure.mp4"
+fixture_marquee_video="$media_root/Videos/Fixture Console/Marquee/Fixture Adventure-01.mp4"
 fixture_manual="$media_root/Manuals/Fixture Console/fixture-adventure.pdf"
 fixture_music_first="$media_root/Music/Fixture Console/Fixture Adventure-01.mp3"
 fixture_music_second="$media_root/Music/Fixture Console/Fixture Adventure-02.mp3"
 fixture_startup_sound="$test_config_root/fixture-startup.wav"
 mkdir -p \
   "$(dirname "$fixture_video")" \
+  "$(dirname "$fixture_marquee_video")" \
   "$(dirname "$fixture_manual")" \
   "$(dirname "$fixture_music_first")"
 base64 --decode fixtures/media/fixture-video.mp4.base64 > "$fixture_video"
+cp "$fixture_video" "$fixture_marquee_video"
 base64 --decode fixtures/media/fixture-manual.pdf.base64 > "$fixture_manual"
 base64 --decode fixtures/media/fixture-music.mp3.gz.base64 \
   | gzip --decompress > "$fixture_music_first"
@@ -376,6 +381,77 @@ if [[ ! "$input_editor_colors" =~ ^[0-9]+$ ]] \
 fi
 
 echo "BigBox rendered Qt input editor, logical key capture, controller/hold editing, two-document transaction, exact backups, and committed live-policy reload validated."
+
+marquee_root="$test_config_root/marquee-library"
+mkdir -p "$marquee_root"
+cp -a "$media_root/." "$marquee_root/"
+marquee_settings="$marquee_root/Data/BigBoxSettings.xml"
+marquee_settings_before="$test_config_root/BigBoxSettings.before-marquee.xml"
+marquee_game_screenshot="$test_config_root/bigbox-marquee-game.png"
+marquee_platform_screenshot="$test_config_root/bigbox-marquee-platform.png"
+cp "$marquee_settings" "$marquee_settings_before"
+marquee_manifest="$test_config_root/marquee-media.before.sha256"
+(
+  cd "$marquee_root"
+  find Images Videos Manuals Music -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$marquee_manifest"
+output=$(run_software_rendered_smoke \
+  "$binary_dir/bigbox" \
+    --library "$marquee_root" \
+    --bigbox-marquee-smoke-test \
+    --bigbox-marquee-game-screenshot "$marquee_game_screenshot" \
+    --bigbox-marquee-platform-screenshot "$marquee_platform_screenshot" \
+    --windowed \
+    --path-mappings-file "$empty_path_mappings" 2>&1) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_MARQUEE_SMOKE_COMPLETE screens=[1-9][0-9]* monitor=0 game=fixture-adventure video=mp4 image=svg platform=Fixture Console banner=svg stretch=1 theme_override=1 compatibility=TopHalfCutOff transaction=1 revision=' \
+  <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox did not complete its native secondary-marquee display transaction and rendered game/platform flow." >&2
+  exit 1
+fi
+if ! rg -q '<PrimaryMonitorIndex>0</PrimaryMonitorIndex>' "$marquee_settings" \
+  || ! rg -q '<MarqueeMonitorIndex>0</MarqueeMonitorIndex>' "$marquee_settings" \
+  || ! rg -q '<MarqueeIgnoreThemeViews>true</MarqueeIgnoreThemeViews>' "$marquee_settings" \
+  || ! rg -q '<MarqueeStretchImages>true</MarqueeStretchImages>' "$marquee_settings" \
+  || ! rg -q '<MarqueeScreenCompatibilityMode>TopHalfCutOff</MarqueeScreenCompatibilityMode>' "$marquee_settings" \
+  || ! rg -q '<Theme>Fixture BigBox Theme</Theme>' "$marquee_settings"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox marquee settings did not preserve the expected LaunchBox XML semantics." >&2
+  exit 1
+fi
+marquee_backups=(
+  "$marquee_root"/Data/BigBoxSettings.xml.lbport-transaction-backup-*
+)
+if [[ ${#marquee_backups[@]} -ne 1 ]]; then
+  echo "BigBox marquee settings did not retain exactly one transaction backup." >&2
+  exit 1
+fi
+cmp "$marquee_settings_before" "${marquee_backups[0]}"
+for screenshot in "$marquee_game_screenshot" "$marquee_platform_screenshot"; do
+  if [[ ! -s "$screenshot" ]] \
+    || [[ $(wc -c < "$screenshot") -lt 256 ]]; then
+    echo "BigBox marquee did not save a rendered screenshot: $screenshot" >&2
+    exit 1
+  fi
+  marquee_colors=$(magick "$screenshot" -format '%k' info:)
+  if [[ ! "$marquee_colors" =~ ^[0-9]+$ ]] \
+    || ((marquee_colors < 48)); then
+    echo "BigBox marquee screenshot is blank or insufficiently rendered: $screenshot ($marquee_colors colors)." >&2
+    exit 1
+  fi
+done
+(
+  cd "$marquee_root"
+  sha256sum --check "$marquee_manifest"
+) >/dev/null
+
+echo "BigBox native Qt marquee window, host-screen routing, silent video priority, direct game/platform art, display editor, compatibility geometry, one-document transaction, exact backup, live-policy reload, and immutable media validated."
 
 for shell in launchbox bigbox; do
   screenshot="$media_root/$shell-supplemental-media.png"
@@ -1093,7 +1169,7 @@ game_details_media_output=$(
   exit 1
 }
 if ! rg -q \
-  'GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=7 image=Box-Front full=Box-Full video=Video-Snap autoplay=1' \
+  'GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=10 image=Box-Front full=Box-Full video=Video-Snap autoplay=1' \
   <<< "$game_details_media_output"; then
   printf '%s\n' "$game_details_media_output" >&2
   echo "LaunchBox did not validate selected-game image and video media." >&2
@@ -1129,7 +1205,7 @@ launchbox_image_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=6 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  'LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=8 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
   <<< "$launchbox_image_viewer_output"; then
   printf '%s\n' "$launchbox_image_viewer_output" >&2
   echo "LaunchBox did not validate its full-screen image viewer." >&2
@@ -1166,7 +1242,7 @@ bigbox_game_details_media_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=7 image=Box-Front full=Box-Full video=Video-Snap autoplay=1 controls=1' \
+  'BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=10 image=Box-Front full=Box-Full video=Video-Snap autoplay=1 controls=1' \
   <<< "$bigbox_game_details_media_output"; then
   printf '%s\n' "$bigbox_game_details_media_output" >&2
   echo "BigBox did not validate its full-screen selected-game media controls." >&2
@@ -1203,7 +1279,7 @@ bigbox_image_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=6 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  'BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=8 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
   <<< "$bigbox_image_viewer_output"; then
   printf '%s\n' "$bigbox_image_viewer_output" >&2
   echo "BigBox did not validate its standalone full-screen image viewer." >&2

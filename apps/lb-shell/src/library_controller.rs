@@ -3,6 +3,8 @@ pub mod qobject {
     unsafe extern "C++" {
         include!("QtCore/QAbstractListModel");
         type QAbstractListModel;
+        include!("QtCore/QObject");
+        type QObject;
 
         include!("cxx-qt-lib/qbytearray.h");
         type QByteArray = cxx_qt_lib::QByteArray;
@@ -18,6 +20,18 @@ pub mod qobject {
         type QUrl = cxx_qt_lib::QUrl;
         include!("cxx-qt-lib/qvariant.h");
         type QVariant = cxx_qt_lib::QVariant;
+
+        include!("host_screens.h");
+        #[cxx_name = "host_screen_count"]
+        fn cpp_host_screen_count() -> i32;
+        #[cxx_name = "host_screen_name_at"]
+        fn cpp_host_screen_name_at(index: i32) -> QString;
+        #[cxx_name = "host_screen_width_at"]
+        fn cpp_host_screen_width_at(index: i32) -> i32;
+        #[cxx_name = "host_screen_height_at"]
+        fn cpp_host_screen_height_at(index: i32) -> i32;
+        #[cxx_name = "route_window_to_host_screen"]
+        unsafe fn cpp_route_window_to_host_screen(object: *mut QObject, index: i32) -> bool;
     }
 
     unsafe extern "RustQt" {
@@ -130,6 +144,13 @@ pub mod qobject {
         #[qproperty(i32, big_box_screensaver_video_volume_percent)]
         #[qproperty(i32, big_box_screensaver_master_volume_percent)]
         #[qproperty(i32, big_box_screensaver_candidate_count)]
+        #[qproperty(i32, big_box_primary_monitor_index)]
+        #[qproperty(i32, big_box_marquee_monitor_index)]
+        #[qproperty(bool, big_box_marquee_ignore_theme_views)]
+        #[qproperty(bool, big_box_marquee_stretch_images)]
+        #[qproperty(QString, big_box_marquee_compatibility_mode)]
+        #[qproperty(i32, big_box_marquee_settings_revision)]
+        #[qproperty(i32, big_box_platform_marquee_count)]
         #[qproperty(bool, big_box_gamepad_enabled)]
         #[qproperty(bool, big_box_use_all_controllers)]
         #[qproperty(i32, big_box_gamepad_connected_count)]
@@ -384,6 +405,91 @@ pub mod qobject {
 
         #[qinvokable]
         fn big_box_wpf_key_label(self: &LibraryController, wpf_key: i32) -> QString;
+
+        #[qinvokable]
+        fn host_screen_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn host_screen_name_at(self: &LibraryController, screen_index: i32) -> QString;
+
+        #[qinvokable]
+        fn host_screen_width_at(self: &LibraryController, screen_index: i32) -> i32;
+
+        #[qinvokable]
+        fn host_screen_height_at(self: &LibraryController, screen_index: i32) -> i32;
+
+        #[qinvokable]
+        fn route_window_to_host_screen(
+            self: &LibraryController,
+            object: *mut QObject,
+            screen_index: i32,
+        ) -> bool;
+
+        #[qinvokable]
+        fn big_box_marquee_compatibility_mode_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn big_box_marquee_compatibility_mode_key_at(
+            self: &LibraryController,
+            mode_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn big_box_marquee_compatibility_mode_label_at(
+            self: &LibraryController,
+            mode_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn big_box_game_marquee_video_url(self: &LibraryController, game_id: QString) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_game_marquee_image_url(self: &LibraryController, game_id: QString) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_game_marquee_clear_logo_url(self: &LibraryController, game_id: QString) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_game_marquee_box_art_url(self: &LibraryController, game_id: QString) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_game_marquee_background_url(self: &LibraryController, game_id: QString) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_platform_marquee_banner_url(
+            self: &LibraryController,
+            platform_name: QString,
+        ) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_platform_marquee_clear_logo_url(
+            self: &LibraryController,
+            platform_name: QString,
+        ) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_platform_marquee_background_url(
+            self: &LibraryController,
+            platform_name: QString,
+        ) -> QUrl;
+
+        #[qinvokable]
+        fn save_big_box_marquee_settings(
+            self: Pin<&mut LibraryController>,
+            request_payload: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_big_box_marquee_smoke_success(
+            self: &LibraryController,
+            screen_count: i32,
+            resolved_monitor_index: i32,
+            game_id: QString,
+            platform_name: QString,
+            game_video_url: QString,
+            game_image_url: QString,
+            platform_banner_url: QString,
+        ) -> bool;
 
         #[qinvokable]
         fn save_big_box_input_settings(
@@ -1656,22 +1762,24 @@ use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
 use lb_platform::{
     background_music_context_key, default_host_path_mappings_path, default_launchbox_ui_state_path,
     default_model_viewer_state_path, default_platform_folders, execute_launch_sequence_controlled,
-    index_big_box_startup_presentation, index_game_media, index_game_supplemental_media,
-    navigation_document_file_name, platform_document_file_name, portable_storage_name,
-    prepare_game_launch_sequence_with_mounts_context_and_resolver,
+    index_big_box_platform_marquee_media, index_big_box_startup_presentation, index_game_media,
+    index_game_supplemental_media, navigation_document_file_name, platform_document_file_name,
+    portable_storage_name, prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     project_big_box_screensaver_candidates, qt_key_to_wpf_key_with_modifiers,
     select_big_box_screensaver_candidate as select_screensaver_candidate_index,
     select_emulator_for_game, wpf_key_to_qt_portable_text, ArchiveExtractor,
-    BigBoxAttractModePolicy, BigBoxBackgroundMusicPolicy, BigBoxInputAction, BigBoxInputEngine,
-    BigBoxInputPolicy, BigBoxMusicPolicy, BigBoxScreensaverCandidate, BigBoxScreensaverPolicy,
-    BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, ControllerBinding,
-    FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy, GameDetailsMediaPolicy,
-    GameDetailsWindowState, GameMediaItem, GameMediaKind, GamepadInputEvent, HostPathMappings,
-    HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
-    LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
-    LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
-    ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS,
+    BigBoxAttractModePolicy, BigBoxBackgroundMusicPolicy, BigBoxGameMarqueeMedia,
+    BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy, BigBoxMarqueeCompatibilityMode,
+    BigBoxMarqueePolicy, BigBoxMusicPolicy, BigBoxPlatformMarqueeMedia, BigBoxScreensaverCandidate,
+    BigBoxScreensaverPolicy, BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy,
+    ControllerBinding, FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy,
+    GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem, GameMediaKind,
+    GamepadInputEvent, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState,
+    LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy,
+    LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy,
+    LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
+    BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
@@ -1976,6 +2084,13 @@ pub struct LibraryControllerRust {
     big_box_screensaver_video_volume_percent: i32,
     big_box_screensaver_master_volume_percent: i32,
     big_box_screensaver_candidate_count: i32,
+    big_box_primary_monitor_index: i32,
+    big_box_marquee_monitor_index: i32,
+    big_box_marquee_ignore_theme_views: bool,
+    big_box_marquee_stretch_images: bool,
+    big_box_marquee_compatibility_mode: QString,
+    big_box_marquee_settings_revision: i32,
+    big_box_platform_marquee_count: i32,
     big_box_gamepad_enabled: bool,
     big_box_use_all_controllers: bool,
     big_box_gamepad_connected_count: i32,
@@ -2063,6 +2178,8 @@ pub struct LibraryControllerRust {
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_attract_mode_policy: BigBoxAttractModePolicy,
     big_box_screensaver_policy: BigBoxScreensaverPolicy,
+    big_box_marquee_policy: BigBoxMarqueePolicy,
+    big_box_platform_marquee_media: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
     big_box_input_engine: BigBoxInputEngine,
     big_box_screensaver_candidates: Vec<BigBoxScreensaverCandidate>,
     filtered_indices: Vec<usize>,
@@ -2205,6 +2322,8 @@ struct LoadedLibrary {
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_attract_mode_policy: BigBoxAttractModePolicy,
     big_box_screensaver_policy: BigBoxScreensaverPolicy,
+    big_box_marquee_policy: BigBoxMarqueePolicy,
+    big_box_platform_marquee_media: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
     big_box_input_policy: BigBoxInputPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
@@ -2256,6 +2375,8 @@ struct LibraryReplacement {
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_attract_mode_policy: BigBoxAttractModePolicy,
     big_box_screensaver_policy: BigBoxScreensaverPolicy,
+    big_box_marquee_policy: BigBoxMarqueePolicy,
+    big_box_platform_marquee_media: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
     big_box_input_policy: BigBoxInputPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
@@ -2351,6 +2472,8 @@ impl LoadedLibrary {
                 big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
                 big_box_attract_mode_policy: BigBoxAttractModePolicy::default(),
                 big_box_screensaver_policy: BigBoxScreensaverPolicy::default(),
+                big_box_marquee_policy: BigBoxMarqueePolicy::default(),
+                big_box_platform_marquee_media: BTreeMap::new(),
                 big_box_input_policy: BigBoxInputPolicy::default(),
                 big_box_show_game_menu_flip_box: true,
                 details_show_3d_model: true,
@@ -2437,6 +2560,8 @@ impl LoadedLibrary {
             data.settings(),
             path_resolver,
         );
+        let platform_marquee_index =
+            index_big_box_platform_marquee_media(&root, &platform_names, path_resolver);
         let supplemental_media_index = index_game_supplemental_media(
             &root,
             &games,
@@ -2496,6 +2621,8 @@ impl LoadedLibrary {
             BigBoxAttractModePolicy::from_settings(data.big_box_settings());
         let big_box_screensaver_policy =
             BigBoxScreensaverPolicy::from_settings(data.big_box_settings());
+        let big_box_marquee_policy = BigBoxMarqueePolicy::from_settings(data.big_box_settings());
+        let big_box_platform_marquee_media = platform_marquee_index.media_by_platform_key;
         let big_box_input_policy = if data.data_root().join("InputBindings.xml").is_file() {
             BigBoxInputPolicy::from_persisted_settings(
                 data.big_box_settings(),
@@ -2570,6 +2697,8 @@ impl LoadedLibrary {
             big_box_startup_presentation_policy,
             big_box_attract_mode_policy,
             big_box_screensaver_policy,
+            big_box_marquee_policy,
+            big_box_platform_marquee_media,
             big_box_input_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
@@ -3042,12 +3171,74 @@ impl BigBoxInputSettingsPayload {
     }
 }
 
+const BIG_BOX_MARQUEE_SETTINGS_PAYLOAD_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BigBoxMarqueeSettingsPayload {
+    version: u32,
+    primary_monitor_index: i32,
+    marquee_monitor_index: i32,
+    ignore_theme_views: bool,
+    stretch_images: bool,
+    compatibility_mode: String,
+}
+
+impl BigBoxMarqueeSettingsPayload {
+    fn validate(&self) -> Result<BigBoxMarqueePolicy, String> {
+        if self.version != BIG_BOX_MARQUEE_SETTINGS_PAYLOAD_VERSION {
+            return Err(format!(
+                "BigBox marquee settings version {} is unsupported",
+                self.version
+            ));
+        }
+        if !(0..=255).contains(&self.primary_monitor_index) {
+            return Err(format!(
+                "primary monitor index {} is outside the supported range 0-255",
+                self.primary_monitor_index
+            ));
+        }
+        if !(-1..=255).contains(&self.marquee_monitor_index) {
+            return Err(format!(
+                "marquee monitor index {} is outside the supported range -1-255",
+                self.marquee_monitor_index
+            ));
+        }
+        let Some(compatibility_mode) =
+            BigBoxMarqueeCompatibilityMode::from_key(&self.compatibility_mode)
+        else {
+            return Err(format!(
+                "unknown marquee screen compatibility mode: {}",
+                self.compatibility_mode
+            ));
+        };
+        Ok(BigBoxMarqueePolicy {
+            primary_monitor_index: self.primary_monitor_index,
+            marquee_monitor_index: self.marquee_monitor_index,
+            ignore_theme_views: self.ignore_theme_views,
+            stretch_images: self.stretch_images,
+            compatibility_mode,
+        })
+    }
+}
+
 struct BigBoxInputWriteSuccess {
     policy: BigBoxInputPolicy,
     backups: Vec<PathBuf>,
 }
 
 enum BigBoxInputWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Other(String),
+}
+
+struct BigBoxMarqueeWriteSuccess {
+    policy: BigBoxMarqueePolicy,
+    backup: PathBuf,
+}
+
+enum BigBoxMarqueeWriteFailure {
     Conflict(String),
     PendingRecovery { count: usize, message: String },
     Other(String),
@@ -5635,6 +5826,70 @@ fn write_big_box_input_settings(
         BigBoxInputPolicy::from_settings(settings.as_ref(), &bindings)
     };
     Ok(BigBoxInputWriteSuccess { policy, backups })
+}
+
+fn write_big_box_marquee_settings(
+    root: PathBuf,
+    payload: BigBoxMarqueeSettingsPayload,
+) -> Result<BigBoxMarqueeWriteSuccess, BigBoxMarqueeWriteFailure> {
+    let requested = payload
+        .validate()
+        .map_err(BigBoxMarqueeWriteFailure::Other)?;
+    let settings_path = root.join("Data").join("BigBoxSettings.xml");
+    let mut settings = AuxiliaryDocument::load(&settings_path)
+        .map_err(|error| BigBoxMarqueeWriteFailure::Other(error.to_string()))?;
+    for (key, value) in [
+        (
+            "PrimaryMonitorIndex",
+            requested.primary_monitor_index.to_string(),
+        ),
+        (
+            "MarqueeMonitorIndex",
+            requested.marquee_monitor_index.to_string(),
+        ),
+        (
+            "MarqueeIgnoreThemeViews",
+            requested.ignore_theme_views.to_string(),
+        ),
+        ("MarqueeStretchImages", requested.stretch_images.to_string()),
+        (
+            "MarqueeScreenCompatibilityMode",
+            requested.compatibility_mode.key().to_string(),
+        ),
+    ] {
+        settings
+            .set_single_record_field("BigBoxSettings", key, &value)
+            .map_err(|error| BigBoxMarqueeWriteFailure::Other(error.to_string()))?;
+    }
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_big_box_marquee_transaction_error)?;
+    transaction
+        .stage_auxiliary(&settings)
+        .map_err(classify_big_box_marquee_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_big_box_marquee_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == settings_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            BigBoxMarqueeWriteFailure::Other(
+                "marquee settings transaction reported no BigBoxSettings.xml write".into(),
+            )
+        })?;
+
+    let settings = load_big_box_settings_file(&settings_path)
+        .map_err(|error| BigBoxMarqueeWriteFailure::Other(error.to_string()))?;
+    let policy = BigBoxMarqueePolicy::from_settings(settings.as_ref());
+    if policy != requested {
+        return Err(BigBoxMarqueeWriteFailure::Other(
+            "committed marquee settings did not round-trip to the requested policy".into(),
+        ));
+    }
+    Ok(BigBoxMarqueeWriteSuccess { policy, backup })
 }
 
 fn write_list_view_setting(
@@ -15905,6 +16160,29 @@ fn classify_big_box_input_transaction_error(error: TransactionError) -> BigBoxIn
     }
 }
 
+fn classify_big_box_marquee_transaction_error(
+    error: TransactionError,
+) -> BigBoxMarqueeWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::SourceConflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            BigBoxMarqueeWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            BigBoxMarqueeWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            BigBoxMarqueeWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => BigBoxMarqueeWriteFailure::Other(message),
+    }
+}
+
 fn classify_list_view_transaction_error(error: TransactionError) -> ListViewWriteFailure {
     let message = error.to_string();
     match error {
@@ -16605,6 +16883,8 @@ impl qobject::LibraryController {
                     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
                     big_box_attract_mode_policy: BigBoxAttractModePolicy::default(),
                     big_box_screensaver_policy: BigBoxScreensaverPolicy::default(),
+                    big_box_marquee_policy: BigBoxMarqueePolicy::default(),
+                    big_box_platform_marquee_media: BTreeMap::new(),
                     big_box_input_policy: BigBoxInputPolicy::default(),
                     big_box_show_game_menu_flip_box: true,
                     details_show_3d_model: true,
@@ -17086,6 +17366,166 @@ impl qobject::LibraryController {
             wpf_key_to_qt_portable_text(i64::from(wpf_key))
                 .unwrap_or_else(|| format!("Unknown ({wpf_key})")),
         )
+    }
+
+    pub fn host_screen_count(&self) -> i32 {
+        qobject::cpp_host_screen_count()
+    }
+
+    pub fn host_screen_name_at(&self, screen_index: i32) -> QString {
+        qobject::cpp_host_screen_name_at(screen_index)
+    }
+
+    pub fn host_screen_width_at(&self, screen_index: i32) -> i32 {
+        qobject::cpp_host_screen_width_at(screen_index)
+    }
+
+    pub fn host_screen_height_at(&self, screen_index: i32) -> i32 {
+        qobject::cpp_host_screen_height_at(screen_index)
+    }
+
+    pub fn route_window_to_host_screen(
+        &self,
+        object: *mut qobject::QObject,
+        screen_index: i32,
+    ) -> bool {
+        // The QML engine owns the object. The native helper only checks its
+        // dynamic type and calls QWindow::setScreen synchronously.
+        unsafe { qobject::cpp_route_window_to_host_screen(object, screen_index) }
+    }
+
+    pub fn big_box_marquee_compatibility_mode_count(&self) -> i32 {
+        saturating_i32(BigBoxMarqueeCompatibilityMode::ALL.len())
+    }
+
+    pub fn big_box_marquee_compatibility_mode_key_at(&self, mode_index: i32) -> QString {
+        usize::try_from(mode_index)
+            .ok()
+            .and_then(|index| BigBoxMarqueeCompatibilityMode::ALL.get(index))
+            .map(|mode| qstring(mode.key()))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_marquee_compatibility_mode_label_at(&self, mode_index: i32) -> QString {
+        usize::try_from(mode_index)
+            .ok()
+            .and_then(|index| BigBoxMarqueeCompatibilityMode::ALL.get(index))
+            .map(|mode| qstring(mode.label()))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_game_marquee_video_url(&self, game_id: QString) -> QUrl {
+        self.big_box_game_marquee_media(&game_id.to_string())
+            .and_then(|media| media.video_path)
+            .map(|path| local_file_url(&path))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_game_marquee_image_url(&self, game_id: QString) -> QUrl {
+        self.big_box_game_marquee_media(&game_id.to_string())
+            .and_then(|media| media.marquee_image_path)
+            .map(|path| local_file_url(&path))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_game_marquee_clear_logo_url(&self, game_id: QString) -> QUrl {
+        self.big_box_game_marquee_media(&game_id.to_string())
+            .and_then(|media| media.clear_logo_path)
+            .map(|path| local_file_url(&path))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_game_marquee_box_art_url(&self, game_id: QString) -> QUrl {
+        self.big_box_game_marquee_media(&game_id.to_string())
+            .and_then(|media| media.box_art_path)
+            .map(|path| local_file_url(&path))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_game_marquee_background_url(&self, game_id: QString) -> QUrl {
+        self.big_box_game_marquee_media(&game_id.to_string())
+            .and_then(|media| media.background_path)
+            .map(|path| local_file_url(&path))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_platform_marquee_banner_url(&self, platform_name: QString) -> QUrl {
+        self.big_box_platform_marquee_media(&platform_name.to_string())
+            .and_then(|media| media.banner_path.as_deref())
+            .map(local_file_url)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_platform_marquee_clear_logo_url(&self, platform_name: QString) -> QUrl {
+        self.big_box_platform_marquee_media(&platform_name.to_string())
+            .and_then(|media| media.clear_logo_path.as_deref())
+            .map(local_file_url)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_platform_marquee_background_url(&self, platform_name: QString) -> QUrl {
+        self.big_box_platform_marquee_media(&platform_name.to_string())
+            .and_then(|media| media.background_path.as_deref())
+            .map(local_file_url)
+            .unwrap_or_default()
+    }
+
+    pub fn save_big_box_marquee_settings(
+        mut self: Pin<&mut Self>,
+        request_payload: QString,
+    ) -> bool {
+        let payload = match serde_json::from_str::<BigBoxMarqueeSettingsPayload>(
+            &request_payload.to_string(),
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not decode BigBox marquee settings: {error}"
+                )));
+                return false;
+            }
+        };
+        if let Err(error) = payload.validate() {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not apply BigBox marquee settings: {error}"
+            )));
+            return false;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut()
+                .set_status_message(qstring("Load a LaunchBox library before editing marquees."));
+            return false;
+        };
+        if !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Saving BigBox marquee settings in the background...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("bigbox-marquee-settings-write".into())
+            .spawn(move || {
+                let result = write_big_box_marquee_settings(root, payload);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_big_box_marquee_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the BigBox marquee settings writer: {error}"
+            )));
+            return false;
+        }
+        true
     }
 
     pub fn save_big_box_input_settings(mut self: Pin<&mut Self>, request_payload: QString) -> bool {
@@ -20716,6 +21156,77 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_big_box_marquee_smoke_success(
+        &self,
+        screen_count: i32,
+        resolved_monitor_index: i32,
+        game_id: QString,
+        platform_name: QString,
+        game_video_url: QString,
+        game_image_url: QString,
+        platform_banner_url: QString,
+    ) -> bool {
+        let game_id = game_id.to_string();
+        let platform_name = platform_name.to_string();
+        let expected_game = self.big_box_game_marquee_media(&game_id);
+        let expected_platform = self.big_box_platform_marquee_media(&platform_name);
+        let local_file = |value: QString| {
+            QUrl::from_user_input(&value, &QString::default())
+                .to_local_file()
+                .map(|path| PathBuf::from(path.to_string()))
+        };
+        let safe_regular_file = |path: &Path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        };
+        let video = local_file(game_video_url);
+        let image = local_file(game_image_url);
+        let banner = local_file(platform_banner_url);
+        let policy = &self.rust().big_box_marquee_policy;
+        let success = screen_count >= 1
+            && resolved_monitor_index == 0
+            && game_id == "fixture-adventure"
+            && platform_name == "Fixture Console"
+            && expected_game.as_ref().is_some_and(|media| {
+                video.as_ref() == media.video_path.as_ref()
+                    && image.as_ref() == media.marquee_image_path.as_ref()
+                    && media.has_direct_media()
+            })
+            && expected_platform.is_some_and(|media| banner.as_ref() == media.banner_path.as_ref())
+            && video.as_deref().is_some_and(safe_regular_file)
+            && image.as_deref().is_some_and(safe_regular_file)
+            && banner.as_deref().is_some_and(safe_regular_file)
+            && policy.primary_monitor_index == 0
+            && policy.marquee_monitor_index == 0
+            && policy.ignore_theme_views
+            && policy.stretch_images
+            && policy.compatibility_mode == BigBoxMarqueeCompatibilityMode::TopHalfCutOff
+            && *self.big_box_primary_monitor_index() == 0
+            && *self.big_box_marquee_monitor_index() == 0
+            && *self.big_box_marquee_ignore_theme_views()
+            && *self.big_box_marquee_stretch_images()
+            && self.big_box_marquee_compatibility_mode().to_string() == "TopHalfCutOff"
+            && *self.big_box_marquee_settings_revision() > 1
+            && *self.big_box_platform_marquee_count() == 1
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            eprintln!(
+                "BIGBOX_MARQUEE_SMOKE_COMPLETE screens={screen_count} monitor=0 game=fixture-adventure video=mp4 image=svg platform=Fixture Console banner=svg stretch=1 theme_override=1 compatibility=TopHalfCutOff transaction=1 revision={}",
+                self.big_box_marquee_settings_revision()
+            );
+        } else {
+            eprintln!(
+                "BIGBOX_MARQUEE_SMOKE_INCOMPLETE screens={screen_count} resolved={resolved_monitor_index} game={game_id} platform={platform_name} video={video:?} image={image:?} banner={banner:?} policy={policy:?} platform_media={} revision={} loading={} writing={}",
+                self.big_box_platform_marquee_count(),
+                self.big_box_marquee_settings_revision(),
+                self.loading(),
+                self.writing()
+            );
+        }
+        success
+    }
+
     pub fn report_big_box_input_editor_smoke_success(&self) -> bool {
         let policy = self.rust().big_box_input_engine.policy();
         let edited_rule = (0..policy.controller_rule_count()).any(|index| {
@@ -21019,8 +21530,8 @@ impl qobject::LibraryController {
                     })
             });
         let success = game_id == "fixture-adventure"
-            && items.len() == 7
-            && *self.indexed_media_count() == 7
+            && items.len() == 10
+            && *self.indexed_media_count() == 10
             && image.kind == GameMediaKind::Image
             && image.media_type == "Box - Front"
             && image.path == image_file
@@ -21037,7 +21548,7 @@ impl qobject::LibraryController {
             && !*self.writing();
         if success {
             eprintln!(
-                "GAME_DETAILS_MEDIA_SMOKE_COMPLETE id={game_id} items=7 image=Box-Front full=Box-Full video=Video-Snap autoplay=1"
+                "GAME_DETAILS_MEDIA_SMOKE_COMPLETE id={game_id} items=10 image=Box-Front full=Box-Full video=Video-Snap autoplay=1"
             );
         }
         success
@@ -21060,7 +21571,7 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=7 image=Box-Front full=Box-Full video=Video-Snap autoplay=1 controls=1"
+                "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=10 image=Box-Front full=Box-Full video=Video-Snap autoplay=1 controls=1"
             );
         }
         success
@@ -21083,7 +21594,7 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=6 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
+                "BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=8 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
             );
         }
         success
@@ -21106,7 +21617,7 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=6 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
+                "LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=8 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
             );
         }
         success
@@ -25181,6 +25692,8 @@ impl qobject::LibraryController {
                     big_box_startup_presentation_policy: loaded.big_box_startup_presentation_policy,
                     big_box_attract_mode_policy: loaded.big_box_attract_mode_policy,
                     big_box_screensaver_policy: loaded.big_box_screensaver_policy,
+                    big_box_marquee_policy: loaded.big_box_marquee_policy,
+                    big_box_platform_marquee_media: loaded.big_box_platform_marquee_media,
                     big_box_input_policy: loaded.big_box_input_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     details_show_3d_model: loaded.details_show_3d_model,
@@ -25434,6 +25947,66 @@ impl qobject::LibraryController {
             Err(BigBoxInputWriteFailure::Other(message)) => {
                 self.as_mut().set_status_message(qstring(format!(
                     "Could not save BigBox input settings: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_big_box_marquee_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<BigBoxMarqueeWriteSuccess, BigBoxMarqueeWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(written) => {
+                let primary_monitor_index = written.policy.primary_monitor_index;
+                let marquee_monitor_index = written.policy.marquee_monitor_index;
+                let ignore_theme_views = written.policy.ignore_theme_views;
+                let stretch_images = written.policy.stretch_images;
+                let compatibility_mode = qstring(written.policy.compatibility_mode.key());
+                self.as_mut().rust_mut().big_box_marquee_policy = written.policy;
+                self.as_mut()
+                    .set_big_box_primary_monitor_index(primary_monitor_index);
+                self.as_mut()
+                    .set_big_box_marquee_monitor_index(marquee_monitor_index);
+                self.as_mut()
+                    .set_big_box_marquee_ignore_theme_views(ignore_theme_views);
+                self.as_mut()
+                    .set_big_box_marquee_stretch_images(stretch_images);
+                self.as_mut()
+                    .set_big_box_marquee_compatibility_mode(compatibility_mode);
+                let revision = self
+                    .as_ref()
+                    .big_box_marquee_settings_revision()
+                    .wrapping_add(1);
+                self.as_mut()
+                    .set_big_box_marquee_settings_revision(revision);
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved BigBox marquee settings. Exact backup: {}",
+                    written.backup.display()
+                )));
+            }
+            Err(BigBoxMarqueeWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(BigBoxMarqueeWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(BigBoxMarqueeWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save BigBox marquee settings: {message}"
                 )));
             }
         }
@@ -28943,6 +29516,8 @@ impl qobject::LibraryController {
             big_box_startup_presentation_policy,
             big_box_attract_mode_policy,
             big_box_screensaver_policy,
+            big_box_marquee_policy,
+            big_box_platform_marquee_media,
             big_box_input_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
@@ -29007,6 +29582,13 @@ impl qobject::LibraryController {
         );
         let big_box_screensaver_candidate_count =
             saturating_i32(big_box_screensaver_candidates.len());
+        let big_box_primary_monitor_index = big_box_marquee_policy.primary_monitor_index;
+        let big_box_marquee_monitor_index = big_box_marquee_policy.marquee_monitor_index;
+        let big_box_marquee_ignore_theme_views = big_box_marquee_policy.ignore_theme_views;
+        let big_box_marquee_stretch_images = big_box_marquee_policy.stretch_images;
+        let big_box_marquee_compatibility_mode =
+            qstring(big_box_marquee_policy.compatibility_mode.key());
+        let big_box_platform_marquee_count = saturating_i32(big_box_platform_marquee_media.len());
         let big_box_gamepad_enabled = big_box_input_policy.gamepad_enabled;
         let big_box_use_all_controllers = big_box_input_policy.use_all_controllers;
         let big_box_controller_rule_count =
@@ -29061,6 +29643,8 @@ impl qobject::LibraryController {
             rust.big_box_startup_presentation_policy = big_box_startup_presentation_policy;
             rust.big_box_attract_mode_policy = big_box_attract_mode_policy;
             rust.big_box_screensaver_policy = big_box_screensaver_policy;
+            rust.big_box_marquee_policy = big_box_marquee_policy;
+            rust.big_box_platform_marquee_media = big_box_platform_marquee_media;
             rust.big_box_input_engine.set_policy(big_box_input_policy);
             rust.big_box_screensaver_candidates = big_box_screensaver_candidates;
             rust.list_view_column_layout = list_view_column_layout;
@@ -29331,6 +29915,24 @@ impl qobject::LibraryController {
         self.as_mut()
             .set_big_box_screensaver_candidate_count(big_box_screensaver_candidate_count);
         self.as_mut()
+            .set_big_box_primary_monitor_index(big_box_primary_monitor_index);
+        self.as_mut()
+            .set_big_box_marquee_monitor_index(big_box_marquee_monitor_index);
+        self.as_mut()
+            .set_big_box_marquee_ignore_theme_views(big_box_marquee_ignore_theme_views);
+        self.as_mut()
+            .set_big_box_marquee_stretch_images(big_box_marquee_stretch_images);
+        self.as_mut()
+            .set_big_box_marquee_compatibility_mode(big_box_marquee_compatibility_mode);
+        self.as_mut()
+            .set_big_box_platform_marquee_count(big_box_platform_marquee_count);
+        let marquee_revision = self
+            .as_ref()
+            .big_box_marquee_settings_revision()
+            .wrapping_add(1);
+        self.as_mut()
+            .set_big_box_marquee_settings_revision(marquee_revision);
+        self.as_mut()
             .set_big_box_show_game_menu_flip_box(big_box_show_game_menu_flip_box);
         self.as_mut()
             .set_details_show_3d_model(details_show_3d_model);
@@ -29474,6 +30076,21 @@ impl qobject::LibraryController {
             .and_then(|items| items.get(index))
     }
 
+    fn big_box_game_marquee_media(&self, game_id: &str) -> Option<BigBoxGameMarqueeMedia> {
+        self.rust()
+            .game_media_by_game_id
+            .get(game_id)
+            .map(|items| BigBoxGameMarqueeMedia::from_items(items))
+    }
+
+    fn big_box_platform_marquee_media(
+        &self,
+        platform_name: &str,
+    ) -> Option<&BigBoxPlatformMarqueeMedia> {
+        let key = background_music_context_key(platform_name);
+        self.rust().big_box_platform_marquee_media.get(&key)
+    }
+
     fn game_music_path(&self, game_id: &str, track_index: i32) -> Option<&PathBuf> {
         let track_index = usize::try_from(track_index).ok()?;
         self.rust()
@@ -29586,14 +30203,16 @@ impl qobject::LibraryController {
                 .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
         };
         game_id == "fixture-adventure"
-            && items.len() == 7
-            && self.game_image_count_for_game(qstring(game_id)) == 6
+            && items.len() == 10
+            && self.game_image_count_for_game(qstring(game_id)) == 8
             && self.game_image_media_index_at(qstring(game_id), 0) == first_media_index
             && self.game_image_media_index_at(qstring(game_id), 1) == next_media_index
             && self.game_image_media_index_at(qstring(game_id), 2) == 2
             && self.game_image_media_index_at(qstring(game_id), 3) == 3
             && self.game_image_media_index_at(qstring(game_id), 4) == 4
             && self.game_image_media_index_at(qstring(game_id), 5) == 5
+            && self.game_image_media_index_at(qstring(game_id), 6) == 6
+            && self.game_image_media_index_at(qstring(game_id), 7) == 7
             && first_image.kind == GameMediaKind::Image
             && first_image.media_type == "Box - Front"
             && first_image.path == first_file
@@ -29603,11 +30222,15 @@ impl qobject::LibraryController {
             && next_image.path == next_file
             && safe_regular_file(&next_file)
             && items[3].kind == GameMediaKind::Image
-            && items[3].media_type == "Box - Back"
+            && items[3].media_type == "Arcade - Marquee"
             && items[4].kind == GameMediaKind::Image
-            && items[4].media_type == "Box - Full"
+            && items[4].media_type == "Box - Back"
             && items[5].kind == GameMediaKind::Image
-            && items[5].media_type == "Box - Spine"
+            && items[5].media_type == "Box - Full"
+            && items[6].kind == GameMediaKind::Image
+            && items[6].media_type == "Box - Spine"
+            && items[7].kind == GameMediaKind::Image
+            && items[7].media_type == "Clear Logo"
             && !*self.loading()
             && !*self.writing()
     }
@@ -29651,8 +30274,8 @@ impl qobject::LibraryController {
             })
         };
         game_id == "fixture-adventure"
-            && items.len() == 7
-            && self.game_image_count_for_game(qstring(game_id)) == 6
+            && items.len() == 10
+            && self.game_image_count_for_game(qstring(game_id)) == 8
             && self.rust().front_image_paths.len() == 1
             && self.rust().back_image_paths.len() == 1
             && front_path == &front_file
@@ -29735,8 +30358,8 @@ impl qobject::LibraryController {
             return false;
         };
         game_id == "fixture-adventure"
-            && items.len() == 7
-            && self.game_image_count_for_game(qstring(game_id)) == 6
+            && items.len() == 10
+            && self.game_image_count_for_game(qstring(game_id)) == 8
             && self.rust().front_image_paths.len() == 1
             && self.rust().back_image_paths.len() == 1
             && self.rust().spine_image_paths.len() == 1
@@ -30939,6 +31562,82 @@ mod tests {
         );
         let bindings = fs::read_to_string(bindings_path).expect("read bindings");
         assert!(!bindings.contains("<InputBinding>"));
+    }
+
+    #[test]
+    fn big_box_marquee_writer_is_typed_transactional_and_lossless() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data directory");
+        let settings_path = data.join("BigBoxSettings.xml");
+        let original = include_bytes!("../../../fixtures/launchbox/Data/BigBoxSettings.xml");
+        fs::write(&settings_path, original).expect("write settings fixture");
+
+        let written = write_big_box_marquee_settings(
+            directory.path().to_path_buf(),
+            BigBoxMarqueeSettingsPayload {
+                version: BIG_BOX_MARQUEE_SETTINGS_PAYLOAD_VERSION,
+                primary_monitor_index: 0,
+                marquee_monitor_index: 0,
+                ignore_theme_views: true,
+                stretch_images: true,
+                compatibility_mode: "TopHalfCutOff".into(),
+            },
+        )
+        .unwrap_or_else(|error| match error {
+            BigBoxMarqueeWriteFailure::Conflict(message)
+            | BigBoxMarqueeWriteFailure::Other(message)
+            | BigBoxMarqueeWriteFailure::PendingRecovery { message, .. } => {
+                panic!("write BigBox marquee settings: {message}")
+            }
+        });
+
+        assert_eq!(
+            fs::read(&written.backup).expect("read exact backup"),
+            original
+        );
+        assert_eq!(
+            written.policy,
+            BigBoxMarqueePolicy {
+                primary_monitor_index: 0,
+                marquee_monitor_index: 0,
+                ignore_theme_views: true,
+                stretch_images: true,
+                compatibility_mode: BigBoxMarqueeCompatibilityMode::TopHalfCutOff,
+            }
+        );
+        let updated = fs::read_to_string(settings_path).expect("read settings");
+        assert!(updated.contains("<PrimaryMonitorIndex>0</PrimaryMonitorIndex>"));
+        assert!(updated.contains("<MarqueeMonitorIndex>0</MarqueeMonitorIndex>"));
+        assert!(updated.contains("<MarqueeIgnoreThemeViews>true</MarqueeIgnoreThemeViews>"));
+        assert!(updated.contains("<MarqueeStretchImages>true</MarqueeStretchImages>"));
+        assert!(updated.contains(
+            "<MarqueeScreenCompatibilityMode>TopHalfCutOff</MarqueeScreenCompatibilityMode>"
+        ));
+        assert!(updated.contains("<Theme>Fixture BigBox Theme</Theme>"));
+    }
+
+    #[test]
+    fn big_box_marquee_payload_rejects_future_modes_and_monitor_overflow() {
+        let valid = BigBoxMarqueeSettingsPayload {
+            version: BIG_BOX_MARQUEE_SETTINGS_PAYLOAD_VERSION,
+            primary_monitor_index: 0,
+            marquee_monitor_index: -1,
+            ignore_theme_views: false,
+            stretch_images: false,
+            compatibility_mode: "None".into(),
+        };
+        assert_eq!(valid.validate(), Ok(BigBoxMarqueePolicy::default()));
+
+        let mut invalid = valid.clone();
+        invalid.marquee_monitor_index = 256;
+        assert!(invalid.validate().is_err());
+        invalid = valid.clone();
+        invalid.compatibility_mode = "FutureMode".into();
+        assert!(invalid.validate().is_err());
+        invalid = valid;
+        invalid.version += 1;
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
@@ -34351,7 +35050,7 @@ mod tests {
             payload,
         )
         .unwrap();
-        assert_eq!(edited.folder_count, 9);
+        assert_eq!(edited.folder_count, 11);
         assert_eq!(
             fs::read(&edited.catalog_backup).unwrap(),
             original_catalog.as_bytes()
