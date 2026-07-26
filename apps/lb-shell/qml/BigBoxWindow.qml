@@ -843,6 +843,25 @@ ApplicationWindow {
                         || bigBoxModelViewer.rotationX !== -8
                         || bigBoxModelViewer.rotationY !== -22)
                     return
+                if (bigBoxModelViewer.modelType
+                        !== "jewelCase"
+                        || bigBoxModelViewer.modelTypeDisplay
+                           !== "Jewel Case"
+                        || bigBoxModelViewer.modelSettingsSource
+                           !== "gameOverride"
+                        || bigBoxModelViewer.modelWidth !== 260
+                        || bigBoxModelViewer.modelHeight !== 230
+                        || bigBoxModelViewer.modelDepth !== 20) {
+                    console.error(
+                        "BIGBOX_MODEL_SETTINGS_MISMATCH type="
+                        + bigBoxModelViewer.modelType + " source="
+                        + bigBoxModelViewer.modelSettingsSource + " size="
+                        + bigBoxModelViewer.modelWidth + "x"
+                        + bigBoxModelViewer.modelHeight + "x"
+                        + bigBoxModelViewer.modelDepth)
+                    Qt.exit(563)
+                    return
+                }
                 bigBoxModelViewer.activateRotateUpControl()
                 if (!bigBoxModelViewer
                         .activateRotateRightControl()) {

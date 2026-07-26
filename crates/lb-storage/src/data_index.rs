@@ -1,9 +1,9 @@
 use super::{LibraryIndex, StorageError};
 use lb_domain::{
-    Emulator, EmulatorConfiguration, EmulatorPlatform, FrontendSettings, GameController,
-    ImageTypeSetting, InputBinding, ListCacheItem, NavigationMetadata, ParentRelationship,
-    PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
-    PlaylistDocument, PlaylistFilter, PlaylistGame, SettingEntry,
+    ArgbColor, Emulator, EmulatorConfiguration, EmulatorPlatform, FrontendSettings, GameController,
+    ImageTypeSetting, InputBinding, ListCacheItem, ModelSettings, ModelSize, ModelType,
+    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
+    PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame, SettingEntry,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -393,14 +393,68 @@ pub(crate) fn parse_platform_catalog(
             })
         })
         .collect::<Result<Vec<_>, StorageError>>()?;
+    let model_settings = elements_named(root, "ModelSettings")
+        .map(parse_model_settings)
+        .collect::<Result<Vec<_>, StorageError>>()?;
     let catalog = PlatformCatalog {
         source_path: path.to_path_buf(),
         platforms,
         categories,
         folders,
+        model_settings,
     };
     catalog.validate()?;
     Ok(catalog)
+}
+
+fn parse_model_settings(element: &Element) -> Result<ModelSettings, StorageError> {
+    let mut settings = ModelSettings::default();
+    settings.case_color = optional_number::<i32>(
+        element,
+        "ModelSettings",
+        "CaseColor",
+        "signed 32-bit integer",
+    )?
+    .map(ArgbColor::from_raw);
+    settings.cover_color = optional_number::<i32>(
+        element,
+        "ModelSettings",
+        "CoverColor",
+        "signed 32-bit integer",
+    )?
+    .map(ArgbColor::from_raw);
+    settings.front_spine_image = optional_text(element, "FrontSpineImage");
+    settings.front_spine_is_clear =
+        optional_bool_field(element, "ModelSettings", "FrontSpineIsClear")?.unwrap_or(false);
+    if let Some(width) = optional_number::<f64>(
+        element,
+        "ModelSettings",
+        "FullImageSpineWidth",
+        "floating-point number",
+    )? {
+        settings.full_image_spine_width = width;
+    }
+    settings.full_scan_is_landscape =
+        optional_bool_field(element, "ModelSettings", "FullScanIsLandscape")?.unwrap_or(false);
+    settings.game_id = optional_text(element, "GameId");
+    settings.logo_font = optional_text(element, "LogoFont");
+    if let Some(rotation) = text(element, "LogoRotation") {
+        settings.logo_rotation = rotation;
+    }
+    settings.model_size = optional_text(element, "ModelSizeString")
+        .as_deref()
+        .map(ModelSize::parse_launchbox)
+        .transpose()?;
+    settings.model_type =
+        optional_text(element, "ModelType").map(|value| ModelType::from_key(&value));
+    settings.platform_name = optional_text(element, "PlatformName");
+    if let Some(rotation) = text(element, "SpineRotation") {
+        settings.spine_rotation = rotation;
+    }
+    settings.use_full_scan_images =
+        optional_bool_field(element, "ModelSettings", "UseFullScanImages")?.unwrap_or(false);
+    settings.validate()?;
+    Ok(settings)
 }
 
 fn parse_navigation_metadata(
@@ -941,6 +995,7 @@ mod tests {
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         assert_eq!(index.platforms().platforms().len(), 1);
         assert_eq!(index.platforms().games().count(), 3);
+        assert_eq!(index.platforms().model_settings().count(), 1);
         assert_eq!(index.playlists().len(), 1);
         assert_eq!(index.playlist_filters().count(), 1);
         assert_eq!(index.playlist_games().count(), 1);
@@ -957,6 +1012,15 @@ mod tests {
         assert_eq!(catalog.platforms.len(), 1);
         assert_eq!(catalog.categories.len(), 1);
         assert_eq!(catalog.folders.len(), 6);
+        assert_eq!(catalog.model_settings.len(), 1);
+        assert_eq!(
+            catalog.model_settings[0].platform_name.as_deref(),
+            Some("Fixture Console")
+        );
+        assert_eq!(
+            catalog.model_settings[0].model_type,
+            Some(ModelType::DvdCase)
+        );
         assert_eq!(catalog.platforms[0].release_date.as_deref(), Some("1999"));
 
         assert_eq!(index.parents().len(), 2);

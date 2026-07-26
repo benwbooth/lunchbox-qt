@@ -1,10 +1,11 @@
 use lb_domain::{
     is_unassigned_emulator_id, AdditionalApplication, AdditionalApplicationEdit, AlternateName,
-    CatalogValidationError, CustomField, Emulator, EmulatorConfiguration, EmulatorPlatform, Game,
-    GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit,
-    Mount, NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory,
-    PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument,
-    PlaylistFilter, PlaylistGame, ValidationError,
+    ArgbColor, CatalogValidationError, CustomField, Emulator, EmulatorConfiguration,
+    EmulatorPlatform, Game, GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave,
+    GameSaveMetadataEdit, ModelSettings, ModelSettingsError, ModelSize, ModelType, Mount,
+    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
+    PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
+    ValidationError,
 };
 #[cfg(test)]
 use lb_domain::{
@@ -72,6 +73,12 @@ impl LibraryIndex {
         self.platforms
             .iter()
             .flat_map(|platform| platform.games.iter())
+    }
+
+    pub fn model_settings(&self) -> impl Iterator<Item = &ModelSettings> {
+        self.platforms
+            .iter()
+            .flat_map(|platform| platform.model_settings.iter())
     }
 
     pub fn additional_applications(&self) -> impl Iterator<Item = &AdditionalApplication> {
@@ -2849,6 +2856,7 @@ impl PlatformDocument {
             name: platform_name.into(),
             source_path: source_path.clone(),
             games: Vec::new(),
+            model_settings: Vec::new(),
             additional_applications: Vec::new(),
             mounts: Vec::new(),
             alternate_names: Vec::new(),
@@ -2939,6 +2947,9 @@ impl PlatformDocument {
             .filter(|element| element.name == "Game")
             .map(|element| parse_game(element, &fallback_platform))
             .collect::<Result<Vec<_>, _>>()?;
+        let model_settings = elements_named(&root, "ModelSettings")
+            .map(parse_model_settings)
+            .collect::<Result<Vec<_>, _>>()?;
         let additional_applications = elements_named(&root, "AdditionalApplication")
             .map(parse_additional_application)
             .collect::<Result<Vec<_>, _>>()?;
@@ -2966,6 +2977,7 @@ impl PlatformDocument {
                 .unwrap_or(fallback_platform),
             source_path: source_path.clone(),
             games,
+            model_settings,
             additional_applications,
             mounts,
             alternate_names,
@@ -5969,6 +5981,8 @@ fn platform_files(platform_dir: &Path) -> Result<Vec<PathBuf>, StorageError> {
 struct RawLaunchBox {
     #[serde(rename = "Game", default)]
     games: Vec<RawGame>,
+    #[serde(rename = "ModelSettings", default)]
+    model_settings: Vec<RawModelSettings>,
     #[serde(rename = "AdditionalApplication", default)]
     additional_applications: Vec<RawAdditionalApplication>,
     #[serde(rename = "Mount", default)]
@@ -5981,6 +5995,71 @@ struct RawLaunchBox {
     controller_support: Vec<RawGameControllerSupport>,
     #[serde(rename = "GameSave", default)]
     game_saves: Vec<RawGameSave>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawModelSettings {
+    #[serde(rename = "CaseColor")]
+    case_color: Option<i32>,
+    #[serde(rename = "CoverColor")]
+    cover_color: Option<i32>,
+    #[serde(rename = "FrontSpineImage")]
+    front_spine_image: Option<String>,
+    #[serde(rename = "FrontSpineIsClear")]
+    front_spine_is_clear: Option<bool>,
+    #[serde(rename = "FullImageSpineWidth")]
+    full_image_spine_width: Option<f64>,
+    #[serde(rename = "FullScanIsLandscape")]
+    full_scan_is_landscape: Option<bool>,
+    #[serde(rename = "GameId")]
+    game_id: Option<String>,
+    #[serde(rename = "LogoFont")]
+    logo_font: Option<String>,
+    #[serde(rename = "LogoRotation")]
+    logo_rotation: Option<String>,
+    #[serde(rename = "ModelSizeString")]
+    model_size_string: Option<String>,
+    #[serde(rename = "ModelType")]
+    model_type: Option<String>,
+    #[serde(rename = "PlatformName")]
+    platform_name: Option<String>,
+    #[serde(rename = "SpineRotation")]
+    spine_rotation: Option<String>,
+    #[serde(rename = "UseFullScanImages")]
+    use_full_scan_images: Option<bool>,
+}
+
+impl RawModelSettings {
+    fn into_domain(self) -> Result<ModelSettings, StorageError> {
+        let mut settings = ModelSettings::default();
+        settings.case_color = self.case_color.map(ArgbColor::from_raw);
+        settings.cover_color = self.cover_color.map(ArgbColor::from_raw);
+        settings.front_spine_image = self.front_spine_image;
+        settings.front_spine_is_clear = self.front_spine_is_clear.unwrap_or(false);
+        if let Some(width) = self.full_image_spine_width {
+            settings.full_image_spine_width = width;
+        }
+        settings.full_scan_is_landscape = self.full_scan_is_landscape.unwrap_or(false);
+        settings.game_id = self.game_id;
+        settings.logo_font = self.logo_font;
+        if let Some(rotation) = self.logo_rotation {
+            settings.logo_rotation = rotation;
+        }
+        settings.model_size = self
+            .model_size_string
+            .as_deref()
+            .map(ModelSize::parse_launchbox)
+            .transpose()?;
+        settings.model_type = self.model_type.map(|value| ModelType::from_key(&value));
+        settings.platform_name = self.platform_name;
+        if let Some(rotation) = self.spine_rotation {
+            settings.spine_rotation = rotation;
+        }
+        settings.use_full_scan_images = self.use_full_scan_images.unwrap_or(false);
+        settings.validate()?;
+        Ok(settings)
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -6373,6 +6452,11 @@ fn load_platform_index(path: &Path) -> Result<PlatformLibrary, StorageError> {
         .into_iter()
         .map(|raw| raw.into_game(&fallback_platform))
         .collect::<Result<Vec<_>, _>>()?;
+    let model_settings = raw
+        .model_settings
+        .into_iter()
+        .map(RawModelSettings::into_domain)
+        .collect::<Result<Vec<_>, _>>()?;
     let additional_applications = raw
         .additional_applications
         .into_iter()
@@ -6411,6 +6495,7 @@ fn load_platform_index(path: &Path) -> Result<PlatformLibrary, StorageError> {
             .unwrap_or(fallback_platform),
         source_path: path.to_path_buf(),
         games,
+        model_settings,
         additional_applications,
         mounts,
         alternate_names,
@@ -6689,6 +6774,18 @@ fn parse_game(element: &Element, fallback_platform: &str) -> Result<Game, Storag
         }
     })?;
     raw.into_game(fallback_platform)
+}
+
+fn parse_model_settings(element: &Element) -> Result<ModelSettings, StorageError> {
+    let mut bytes = Vec::new();
+    element.write(&mut bytes).map_err(StorageError::WriteXml)?;
+    let raw: RawModelSettings = quick_xml::de::from_reader(bytes.as_slice()).map_err(|source| {
+        StorageError::ReadEmbeddedRecord {
+            record: "ModelSettings",
+            source,
+        }
+    })?;
+    raw.into_domain()
 }
 
 fn elements_named<'a>(root: &'a Element, name: &'a str) -> impl Iterator<Item = &'a Element> {
@@ -7713,6 +7810,8 @@ pub enum StorageError {
     #[error(transparent)]
     InvalidDomain(#[from] ValidationError),
     #[error(transparent)]
+    InvalidModelSettings(#[from] ModelSettingsError),
+    #[error(transparent)]
     InvalidCatalog(#[from] CatalogValidationError),
     #[error("no LaunchBox platform directory found under {path}")]
     NoPlatformDirectory { path: PathBuf },
@@ -7971,6 +8070,16 @@ mod tests {
         assert_eq!(document.library().games.len(), 3);
         assert_eq!(document.library().games[0].id, "fixture-adventure");
         assert!(document.library().games[0].favorite);
+        assert_eq!(document.library().model_settings.len(), 1);
+        let model = &document.library().model_settings[0];
+        assert_eq!(model.game_id.as_deref(), Some("fixture-adventure"));
+        assert_eq!(model.model_type, Some(ModelType::JewelCase));
+        assert_eq!(model.case_color, Some(ArgbColor::from_raw(-15_654_349)));
+        assert_eq!(
+            model.front_spine_image.as_deref(),
+            Some(r"{Resources}\Fixture Jewel Spine")
+        );
+        assert_eq!(model.full_image_spine_width, 0.143);
         assert_eq!(document.library().additional_applications.len(), 1);
         assert_eq!(
             document.library().additional_applications[0].id,
@@ -7980,6 +8089,11 @@ mod tests {
         assert_eq!(document.library().custom_fields.len(), 1);
         assert_eq!(document.library().controller_support.len(), 1);
         assert_eq!(document.library().game_saves.len(), 1);
+        let serialized =
+            String::from_utf8(document.to_xml_bytes().expect("serialize fixture")).unwrap();
+        assert!(serialized.contains(
+            "<FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>"
+        ));
     }
 
     #[test]
@@ -8906,8 +9020,8 @@ mod tests {
     #[test]
     fn additional_application_removal_refuses_game_save_references() {
         let referenced = FIXTURE.replacen(
-            "<GameId>fixture-adventure</GameId>",
-            "<GameId>fixture-adventure</GameId><AdditionalApplicationId>fixture-adventure-manual</AdditionalApplicationId>",
+            "  <GameSave>\n    <EmulatorCore>",
+            "  <GameSave>\n    <AdditionalApplicationId>fixture-adventure-manual</AdditionalApplicationId>\n    <EmulatorCore>",
             1,
         );
         let mut document =

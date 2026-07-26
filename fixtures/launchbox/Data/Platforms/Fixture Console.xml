@@ -135,6 +135,21 @@
     <PlayTime>0</PlayTime>
     <Title>Fixture Puzzle</Title>
   </Game>
+  <ModelSettings>
+    <CaseColor>-15654349</CaseColor>
+    <CoverColor>-12298906</CoverColor>
+    <FrontSpineImage>{Resources}\Fixture Jewel Spine</FrontSpineImage>
+    <FrontSpineIsClear>true</FrontSpineIsClear>
+    <FullImageSpineWidth>0.143</FullImageSpineWidth>
+    <FullScanIsLandscape>false</FullScanIsLandscape>
+    <GameId>fixture-adventure</GameId>
+    <LogoFont>Fixture Font</LogoFont>
+    <LogoRotation>0,,0,</LogoRotation>
+    <ModelType>jewelCase</ModelType>
+    <SpineRotation>0,,0,</SpineRotation>
+    <UseFullScanImages>false</UseFullScanImages>
+    <FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>
+  </ModelSettings>
   <AdditionalApplication>
     <ApplicationPath>Games\Fixture Adventure\manual.pdf</ApplicationPath>
     <AutoRunAfter>false</AutoRunAfter>

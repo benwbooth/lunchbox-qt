@@ -12,6 +12,85 @@ Popup {
     property string gameTitle: ""
     property Item returnFocusItem: null
     readonly property int mediaRevision: controller.game_media_revision
+    readonly property string modelSettingsJson:
+        gameId.length > 0
+        ? controller.game_model_settings_json_for_game(gameId) : ""
+    readonly property var modelSettings: {
+        if (modelSettingsJson.length > 0) {
+            try {
+                const decoded = JSON.parse(modelSettingsJson)
+                if (decoded.version === 1)
+                    return decoded
+            } catch (error) {
+                console.warn("Could not decode model settings:", error)
+            }
+        }
+        return {
+            "version": 1,
+            "source": "boxFallback",
+            "modelType": "box",
+            "modelTypeDisplay": "Box",
+            "caseColor": null,
+            "coverColor": null,
+            "modelSize": null,
+            "useFullScanImages": true
+        }
+    }
+    readonly property string modelType: modelSettings.modelType
+    readonly property string modelTypeDisplay:
+        modelSettings.modelTypeDisplay
+    readonly property string modelSettingsSource: modelSettings.source
+    readonly property bool isJewelCase:
+        modelType === "jewelCase" || modelType === "longJewelCase"
+    readonly property real modelHeight: {
+        if (modelSettings.modelSize)
+            return 260
+        return modelType === "jewelCase" ? 230 : 260
+    }
+    readonly property real modelWidth: {
+        if (modelSettings.modelSize) {
+            return clamp(modelSettings.modelSize[0]
+                         / modelSettings.modelSize[1] * 260, 80, 360)
+        }
+        if (modelType === "dvd")
+            return 182
+        if (modelType === "jewelCase")
+            return 260
+        if (modelType === "longJewelCase")
+            return 148
+        return 180
+    }
+    readonly property real modelDepth: {
+        if (modelSettings.modelSize) {
+            return clamp(modelSettings.modelSize[2]
+                         / modelSettings.modelSize[1] * 260, 8, 90)
+        }
+        if (modelType === "dvd")
+            return 17
+        if (modelType === "jewelCase")
+            return 20
+        if (modelType === "longJewelCase")
+            return 18
+        return 42
+    }
+    readonly property color caseColor: {
+        if (modelSettings.caseColor)
+            return modelSettings.caseColor
+        if (modelType === "dvd")
+            return "#ff101820"
+        if (isJewelCase)
+            return "#ff607080"
+        return "#ff244e78"
+    }
+    readonly property color coverColor: {
+        if (modelSettings.coverColor)
+            return modelSettings.coverColor
+        if (modelType === "dvd")
+            return "#fff7f7f2"
+        if (isJewelCase)
+            return "#ff101010"
+        return "#ff13243a"
+    }
     readonly property url frontSource: {
         const revision = mediaRevision
         return gameId.length > 0
@@ -286,7 +365,8 @@ Popup {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: "INTERACTIVE 3D BOX MODEL"
+                        text: "INTERACTIVE 3D "
+                              + viewer.modelTypeDisplay.toUpperCase()
                         color: "#67b3ff"
                         font.pixelSize: 15
                         font.bold: true
@@ -302,6 +382,17 @@ Popup {
                             : "FRONT"
                     color: "#9eb0c5"
                     font.pixelSize: 13
+                    font.bold: true
+                }
+                Label {
+                    text: viewer.modelSettingsSource === "gameOverride"
+                          ? "GAME OVERRIDE"
+                          : viewer.modelSettingsSource === "platformOverride"
+                            ? "PLATFORM OVERRIDE"
+                            : viewer.modelSettingsSource === "builtInPlatform"
+                              ? "LAUNCHBOX DEFAULT" : "BOX DEFAULT"
+                    color: "#67b3ff"
+                    font.pixelSize: 11
                     font.bold: true
                 }
             }
@@ -374,8 +465,10 @@ Popup {
 
                         Model {
                             source: "#Rectangle"
-                            z: 21
-                            scale: Qt.vector3d(1.8, 2.6, 1)
+                            z: viewer.modelDepth / 2
+                            scale: Qt.vector3d(
+                                       viewer.modelWidth / 100,
+                                       viewer.modelHeight / 100, 1)
                             castsShadows: true
                             receivesShadows: true
                             materials: PrincipledMaterial {
@@ -386,14 +479,16 @@ Popup {
                         }
                         Model {
                             source: "#Rectangle"
-                            z: -21
+                            z: -viewer.modelDepth / 2
                             eulerRotation.y: 180
-                            scale: Qt.vector3d(1.8, 2.6, 1)
+                            scale: Qt.vector3d(
+                                       viewer.modelWidth / 100,
+                                       viewer.modelHeight / 100, 1)
                             castsShadows: true
                             receivesShadows: true
                             materials: PrincipledMaterial {
                                 baseColor: viewer.hasBack
-                                           ? "#ffffff" : "#13243a"
+                                           ? "#ffffff" : viewer.coverColor
                                 baseColorMap: viewer.hasBack
                                               ? backTexture : null
                                 roughness: 0.52
@@ -401,14 +496,16 @@ Popup {
                         }
                         Model {
                             source: "#Rectangle"
-                            x: -90
+                            x: -viewer.modelWidth / 2
                             eulerRotation.y: -90
-                            scale: Qt.vector3d(0.42, 2.6, 1)
+                            scale: Qt.vector3d(
+                                       viewer.modelDepth / 100,
+                                       viewer.modelHeight / 100, 1)
                             castsShadows: true
                             receivesShadows: true
                             materials: PrincipledMaterial {
                                 baseColor: viewer.hasSpine
-                                           ? "#ffffff" : "#244e78"
+                                           ? "#ffffff" : viewer.caseColor
                                 baseColorMap: viewer.hasSpine
                                               ? spineTexture : null
                                 roughness: 0.5
@@ -416,14 +513,16 @@ Popup {
                         }
                         Model {
                             source: "#Rectangle"
-                            x: 90
+                            x: viewer.modelWidth / 2
                             eulerRotation.y: 90
-                            scale: Qt.vector3d(0.42, 2.6, 1)
+                            scale: Qt.vector3d(
+                                       viewer.modelDepth / 100,
+                                       viewer.modelHeight / 100, 1)
                             castsShadows: true
                             receivesShadows: true
                             materials: PrincipledMaterial {
                                 baseColor: viewer.hasSpine
-                                           ? "#ffffff" : "#244e78"
+                                           ? "#ffffff" : viewer.caseColor
                                 baseColorMap: viewer.hasSpine
                                               ? spineTexture : null
                                 roughness: 0.5
@@ -431,26 +530,101 @@ Popup {
                         }
                         Model {
                             source: "#Rectangle"
-                            y: 130
+                            y: viewer.modelHeight / 2
                             eulerRotation.x: -90
-                            scale: Qt.vector3d(1.8, 0.42, 1)
+                            scale: Qt.vector3d(
+                                       viewer.modelWidth / 100,
+                                       viewer.modelDepth / 100, 1)
                             castsShadows: true
                             receivesShadows: true
                             materials: PrincipledMaterial {
-                                baseColor: "#1b3552"
+                                baseColor: viewer.caseColor
                                 roughness: 0.56
                             }
                         }
                         Model {
                             source: "#Rectangle"
-                            y: -130
+                            y: -viewer.modelHeight / 2
                             eulerRotation.x: 90
-                            scale: Qt.vector3d(1.8, 0.42, 1)
+                            scale: Qt.vector3d(
+                                       viewer.modelWidth / 100,
+                                       viewer.modelDepth / 100, 1)
                             castsShadows: true
                             receivesShadows: true
                             materials: PrincipledMaterial {
-                                baseColor: "#102238"
+                                baseColor: viewer.caseColor
                                 roughness: 0.56
+                            }
+                        }
+
+                        // Jewel cases have a visible translucent tray/lip
+                        // around the cover. Long-jewel uses the same material
+                        // treatment with its distinct narrow/tall dimensions.
+                        Model {
+                            visible: viewer.isJewelCase
+                            source: "#Rectangle"
+                            y: viewer.modelHeight / 2 - 5
+                            z: viewer.modelDepth / 2 + 1
+                            scale: Qt.vector3d(
+                                       viewer.modelWidth / 100, 0.09, 1)
+                            opacity: 0.62
+                            materials: PrincipledMaterial {
+                                baseColor: viewer.caseColor
+                                roughness: 0.32
+                            }
+                        }
+                        Model {
+                            visible: viewer.isJewelCase
+                            source: "#Rectangle"
+                            y: -viewer.modelHeight / 2 + 5
+                            z: viewer.modelDepth / 2 + 1
+                            scale: Qt.vector3d(
+                                       viewer.modelWidth / 100, 0.09, 1)
+                            opacity: 0.62
+                            materials: PrincipledMaterial {
+                                baseColor: viewer.caseColor
+                                roughness: 0.32
+                            }
+                        }
+                        Model {
+                            visible: viewer.isJewelCase
+                            source: "#Rectangle"
+                            x: -viewer.modelWidth / 2 + 5
+                            z: viewer.modelDepth / 2 + 1
+                            scale: Qt.vector3d(
+                                       0.09, viewer.modelHeight / 100, 1)
+                            opacity: 0.62
+                            materials: PrincipledMaterial {
+                                baseColor: viewer.caseColor
+                                roughness: 0.32
+                            }
+                        }
+                        Model {
+                            visible: viewer.isJewelCase
+                            source: "#Rectangle"
+                            x: viewer.modelWidth / 2 - 5
+                            z: viewer.modelDepth / 2 + 1
+                            scale: Qt.vector3d(
+                                       0.09, viewer.modelHeight / 100, 1)
+                            opacity: 0.62
+                            materials: PrincipledMaterial {
+                                baseColor: viewer.caseColor
+                                roughness: 0.32
+                            }
+                        }
+
+                        // DVD cases expose the characteristic left hinge band.
+                        Model {
+                            visible: viewer.modelType === "dvd"
+                            source: "#Rectangle"
+                            x: -viewer.modelWidth / 2 + 7
+                            z: viewer.modelDepth / 2 + 1
+                            scale: Qt.vector3d(
+                                       0.11, viewer.modelHeight / 100, 1)
+                            opacity: 0.58
+                            materials: PrincipledMaterial {
+                                baseColor: viewer.caseColor
+                                roughness: 0.38
                             }
                         }
                     }
@@ -495,7 +669,7 @@ Popup {
                     anchors.centerIn: parent
                     visible: viewer.opened && !viewer.sceneReady
                     text: viewer.hasFront
-                          ? "Loading 3D box textures…"
+                          ? "Loading 3D model textures…"
                           : "No front box image is available."
                     color: "#9eb0c5"
                     font.pixelSize: 18

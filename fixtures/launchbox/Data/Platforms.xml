@@ -48,4 +48,16 @@
     <MediaType>Fanart - Background</MediaType>
     <FolderPath>Images\Fixture Console\Fanart - Background</FolderPath>
   </PlatformFolder>
+  <ModelSettings>
+    <CaseColor>-16737946</CaseColor>
+    <CoverColor>-1</CoverColor>
+    <FrontSpineIsClear>false</FrontSpineIsClear>
+    <FullImageSpineWidth>0.065</FullImageSpineWidth>
+    <FullScanIsLandscape>false</FullScanIsLandscape>
+    <LogoRotation>0,,,</LogoRotation>
+    <ModelType>dvd</ModelType>
+    <PlatformName>Fixture Console</PlatformName>
+    <SpineRotation>0,,,</SpineRotation>
+    <UseFullScanImages>true</UseFullScanImages>
+  </ModelSettings>
 </LaunchBox>

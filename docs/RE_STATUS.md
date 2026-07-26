@@ -18,9 +18,16 @@ isolated workspace-local prefix.
 
 The setup payload completed before the automatically launched LaunchBox process
 threw a managed Wine exception. That launch failure does not invalidate the
-installed files, but it means a usable Wine runtime oracle is not yet proven.
-A supported Windows VM is the fallback oracle if Wine cannot run the protected
-WPF application reliably.
+installed files. The complete WPF LaunchBox/BigBox application is still not a
+reliable Wine UI oracle, so end-to-end visual and workflow comparison requires
+a supported Windows VM.
+
+Wine is now a proven limited managed-code oracle. A temporary self-contained
+.NET 9 `win-x64` reflection host was placed beside the installed first-party
+assemblies and run inside the isolated prefix. It loaded and invoked protected
+13.27 model-settings code successfully. The probe and copied host artifacts
+were removed after recording the non-user-specific contract below; no
+proprietary binaries or probe output are checked in.
 
 ## Older real installation schema
 
@@ -74,15 +81,46 @@ Observed front art used JPG, PNG, GIF, and TIF files beneath media-type and
 optional region directories. This is evidence from the older 13.24 library,
 not a claim that every 13.27 priority or naming edge case is recovered.
 
-The model-preview boundary now has a separate evidence record. The recovered
-13.27 desktop `FullscreenModelPreviewViewModel` and BigBox
+The model-preview boundary now has static and managed-runtime evidence. The
+recovered 13.27 desktop `FullscreenModelPreviewViewModel` and BigBox
 `ModelPreviewViewModel` expose rotate, translate, zoom-in, and zoom-out
 operations; `FlowModelRotationLockMode` has `None`, `LockToY`, and `LockToX`.
-The shared `ModelSettings` contract retains model type, size, case/cover color,
-front-spine image, spine/logo rotation, landscape/full-scan flags, and
-game/platform identity. `ModelType` names Box, DVD Case, Jewel Case, and Long
-Jewel Case. These contracts establish the feature shape, not protected camera,
-geometry, material, timing, or default behavior.
+The runtime probe recovered the exact persisted `ModelType` key/display pairs:
+`box`/Box, `dvd`/DVD Case, `jewelCase`/Jewel Case, and
+`longJewelCase`/Long Jewel Case.
+
+A newly constructed `ModelSettings` has nullable colors, image, font, model
+type, identity, and size; `FrontSpineIsClear=false`;
+`FullImageSpineWidth=0.143`; `FullScanIsLandscape=false`;
+`LogoRotation=0,0,0,`; `SpineRotation=0,,0,`; and
+`UseFullScanImages=false`. The four editor defaults are:
+
+- Box: black case, full scans enabled, spine width `0.088`, no forced size.
+- DVD: black case, white cover, full scans enabled, spine width `0.065`;
+  the visible size controls start at `0.7,1,0.065` but forced size is off.
+- Jewel and long-jewel: black cover, white text, Segoe UI, full scans off,
+  and spine width `0.143`.
+
+The persisted record is a root-level `<ModelSettings>` element. Its recovered
+fields are `CaseColor`, `CoverColor`, `FrontSpineImage`,
+`FrontSpineIsClear`, `FullImageSpineWidth`, `FullScanIsLandscape`,
+`GameId`, `LogoFont`, `LogoRotation`, `ModelSizeString`, `ModelType`,
+`PlatformName`, `SpineRotation`, and `UseFullScanImages`. Colors are signed
+32-bit ARGB integers and forced sizes are three positive semicolon-separated
+numbers such as `5;7.165;1`; rotation strings and `{Resources}\...` values are
+opaque LaunchBox data, not host paths.
+
+Resolution is whole-record precedence: a matching per-game record in its
+platform document wins over a matching per-platform record in
+`Data/Platforms.xml`, followed by the built-in platform name, then its
+`ScrapeAs`, then a box fallback. The runtime probe enumerated all 41 built-in
+platform names. It distinguishes jewel cases for Amiga CD32, CDTV,
+TurboGrafx-CD, CD-i, Dreamcast, Neo Geo CD, and PlayStation; long jewel cases
+for Sega CD and Saturn; and DVD cases for the other mapped platforms. It also
+recovered platform colors, the forced `5;7.165;1` Genesis/Master System size,
+and the clear `{Resources}\{platform}` front-spine value for Dreamcast and
+PlayStation. Domain tests require every recovered platform to resolve and
+freeze the exceptional values.
 
 The read-only 13.24 installation currently contains 20,658 PNG and 7 JPEG files
 under its configured `Box - 3D` directories. Its settings retain
@@ -94,14 +132,22 @@ under its configured `Box - 3D` directories. Its settings retain
 geometry contract and from the separate front/back/spine inputs used by the
 first port model vertical.
 
-The implemented baseline deliberately uses one generic six-face Qt model with
-distinct selected `Box - Front`, `Box - Back`, and `Box - Spine` textures.
-Its free/horizontal/vertical lock names are a port-owned strict state contract
-mapped to the recovered axis concept. Specialized DVD/jewel geometry,
-full-scan construction, colors, sizes, rotations, per-platform/per-game
-overrides, CoverFlow/image-view integration, and original camera/default input
-behavior remain runtime-oracle work and are not inferred from the protected
-method bodies.
+The port now losslessly reads these records through both platform readers and
+the catalog reader, retains unknown future model keys/elements, validates
+signed colors/sizes, and resolves game/platform/built-in/fallback settings once
+at the Rust controller boundary. QML receives a versioned typed presentation;
+it never interprets LaunchBox path syntax. The shared viewer applies recovered
+case/cover colors and forced aspect/depth, and presents distinct functional
+box, DVD, jewel, and long-jewel proportions with jewel tray lips and a DVD
+hinge band. LaunchBox and BigBox runtime smokes require the fixture's game-level
+jewel override to beat its platform DVD override and require exact port-owned
+`260x230x20` jewel geometry before accepting the rendered interaction.
+
+These Qt shapes are a functional cross-platform presentation, not a claim of
+original WPF mesh or camera parity. Full-scan image construction,
+front-spine/logo/rotation rendering, editable model settings, CoverFlow and
+image-view integration, exact materials/meshes/camera/timing/default input,
+native controller bindings, and real Windows/macOS UI execution remain open.
 
 The recovered 13.27 stock `GameDetailsView.xaml` binds `MediaList.SelectedItem`
 to `MediaPreview.MediaItem`; the concrete `MediaItem` exposes location, preview,
@@ -641,7 +687,9 @@ Therefore:
 
 ## Next reverse-engineering work
 
-1. Establish a working runtime oracle in Wine or a disposable Windows VM.
+1. Establish the complete WPF runtime oracle in a disposable supported Windows
+   VM; continue using the isolated Wine prefix only for managed probes that
+   produce independently checkable, non-user-specific contracts.
 2. Create a tiny deterministic library fixture and capture first-run files,
    XML/SQLite schemas, settings, screenshots, process launches, and file diffs.
 3. Turn every feature-matrix row into one or more repeatable oracle scenarios.

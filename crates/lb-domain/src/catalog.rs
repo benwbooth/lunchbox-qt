@@ -1,3 +1,4 @@
+use crate::ModelSettings;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -97,12 +98,13 @@ impl PlatformFolder {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlatformCatalog {
     pub source_path: PathBuf,
     pub platforms: Vec<PlatformDefinition>,
     pub categories: Vec<PlatformCategory>,
     pub folders: Vec<PlatformFolder>,
+    pub model_settings: Vec<ModelSettings>,
 }
 
 impl PlatformCatalog {
@@ -131,6 +133,13 @@ impl PlatformCatalog {
         }
         for folder in &self.folders {
             folder.validate()?;
+        }
+        for settings in &self.model_settings {
+            settings
+                .validate()
+                .map_err(|error| CatalogValidationError::InvalidModelSettings {
+                    reason: error.to_string(),
+                })?;
         }
         Ok(())
     }
@@ -516,6 +525,8 @@ fn require_field(
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum CatalogValidationError {
+    #[error("invalid model settings: {reason}")]
+    InvalidModelSettings { reason: String },
     #[error("{record} is missing its name")]
     MissingName { record: &'static str },
     #[error("{record} is missing required {field}")]

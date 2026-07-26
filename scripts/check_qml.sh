@@ -496,10 +496,10 @@ launchbox_model_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'LAUNCHBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 lock=horizontal controls=1' \
+  'LAUNCHBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 lock=horizontal controls=1' \
   <<< "$launchbox_model_viewer_output"; then
   printf '%s\n' "$launchbox_model_viewer_output" >&2
-  echo "LaunchBox did not validate its interactive 3D box-model viewer." >&2
+  echo "LaunchBox did not validate its resolved interactive 3D model viewer." >&2
   exit 1
 fi
 if "$model_viewer_visual_smoke"; then
@@ -508,7 +508,7 @@ if "$model_viewer_visual_smoke"; then
     || [[ $(od -An -tx1 -N8 "$launchbox_model_viewer_screenshot" \
         | tr -d ' \n') != 89504e470d0a1a0a ]]; then
     printf '%s\n' "$launchbox_model_viewer_output" >&2
-    echo "LaunchBox did not render a valid interactive 3D box-model PNG." >&2
+    echo "LaunchBox did not render a valid interactive 3D model PNG." >&2
     exit 1
   fi
   validate_rendered_model_viewport "$launchbox_model_viewer_screenshot"
@@ -528,7 +528,7 @@ cmp "$box_flip_bigbox_settings.before-box-flip-smoke" \
   sha256sum --check "$media_files_manifest"
 ) >/dev/null
 
-echo "LaunchBox six-face Qt Quick 3D box geometry, front/back/spine textures, actual details entry, rotation, translation, zoom, horizontal lock, focus return, and read-only media behavior validated."
+echo "LaunchBox resolved game-over-platform jewel settings, exact port geometry, six-face Qt Quick 3D textures, actual details entry, rotation, translation, zoom, horizontal lock, focus return, and read-only media behavior validated."
 
 bigbox_model_viewer_screenshot="$test_config_root/bigbox-model-viewer.png"
 bigbox_model_viewer_args=(
@@ -552,10 +552,10 @@ bigbox_model_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 restored=horizontal lock=vertical controls=1' \
+  'BIGBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 restored=horizontal lock=vertical controls=1' \
   <<< "$bigbox_model_viewer_output"; then
   printf '%s\n' "$bigbox_model_viewer_output" >&2
-  echo "BigBox did not validate its interactive 3D box-model viewer." >&2
+  echo "BigBox did not validate its resolved interactive 3D model viewer." >&2
   exit 1
 fi
 if "$model_viewer_visual_smoke"; then
@@ -564,7 +564,7 @@ if "$model_viewer_visual_smoke"; then
     || [[ $(od -An -tx1 -N8 "$bigbox_model_viewer_screenshot" \
         | tr -d ' \n') != 89504e470d0a1a0a ]]; then
     printf '%s\n' "$bigbox_model_viewer_output" >&2
-    echo "BigBox did not render a valid interactive 3D box-model PNG." >&2
+    echo "BigBox did not render a valid interactive 3D model PNG." >&2
     exit 1
   fi
   validate_rendered_model_viewport "$bigbox_model_viewer_screenshot"
@@ -588,7 +588,7 @@ cmp "$box_flip_bigbox_settings.before-box-flip-smoke" \
   sha256sum --check "$media_files_manifest"
 ) >/dev/null
 
-echo "BigBox six-face Qt Quick 3D box geometry, game-menu entry, restored horizontal lock, vertical lock replacement, keyboard/pointer control surface, focus return, and read-only media behavior validated."
+echo "BigBox resolved game-over-platform jewel settings, exact port geometry, six-face Qt Quick 3D textures, game-menu entry, restored horizontal lock, vertical lock replacement, keyboard/pointer control surface, focus return, and read-only media behavior validated."
 if ! "$model_viewer_visual_smoke"; then
   echo "Qt Quick 3D rendered-pixel capture is unavailable inside the Nix sandbox; run scripts/check_qml.sh from nix develop for the visual gate."
 fi

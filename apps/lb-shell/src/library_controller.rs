@@ -189,6 +189,10 @@ pub mod qobject {
         fn game_box_spine_url_for_game(self: &LibraryController, game_id: QString) -> QUrl;
 
         #[qinvokable]
+        fn game_model_settings_json_for_game(self: &LibraryController, game_id: QString)
+            -> QString;
+
+        #[qinvokable]
         fn game_media_url_at(self: &LibraryController, game_id: QString, index: i32) -> QUrl;
 
         #[qinvokable]
@@ -1218,11 +1222,12 @@ use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QUrl, QVariant,
 };
 use lb_domain::{
-    AdditionalApplication, AdditionalApplicationEdit, AlternateName, BoxSize, CustomField,
-    Emulator, EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game,
-    GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit, ListViewColumnLayout,
-    Mount, NavigationMetadata, ParentRelationship, PlatformCategory, PlatformDefinition,
-    PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
+    resolve_model_settings, AdditionalApplication, AdditionalApplicationEdit, AlternateName,
+    BoxSize, CustomField, Emulator, EmulatorConfiguration, EmulatorPlatform, FrontendSettings,
+    Game, GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit,
+    ListViewColumnLayout, ModelSettingsSource, ModelType, Mount, NavigationMetadata,
+    ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder,
+    Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame, ResolvedModelSettings,
     UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
@@ -1605,6 +1610,7 @@ pub struct LibraryControllerRust {
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
+    resolved_model_settings_by_game: BTreeMap<String, ResolvedModelSettings>,
     front_image_paths: BTreeMap<String, PathBuf>,
     back_image_paths: BTreeMap<String, PathBuf>,
     spine_image_paths: BTreeMap<String, PathBuf>,
@@ -1728,6 +1734,7 @@ struct LoadedLibrary {
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
+    resolved_model_settings_by_game: BTreeMap<String, ResolvedModelSettings>,
     front_image_paths: BTreeMap<String, PathBuf>,
     back_image_paths: BTreeMap<String, PathBuf>,
     spine_image_paths: BTreeMap<String, PathBuf>,
@@ -1761,6 +1768,7 @@ struct LibraryReplacement {
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
+    resolved_model_settings_by_game: BTreeMap<String, ResolvedModelSettings>,
     front_image_paths: BTreeMap<String, PathBuf>,
     back_image_paths: BTreeMap<String, PathBuf>,
     spine_image_paths: BTreeMap<String, PathBuf>,
@@ -1796,6 +1804,7 @@ impl LoadedLibrary {
             let library = LibraryIndex::load(&path).map_err(|error| error.to_string())?;
             let platform_count = library.platforms().len();
             let (games, game_sources) = collect_games_and_sources(&library);
+            let resolved_model_settings_by_game = collect_resolved_model_settings(&library, None);
             let additional_applications_by_game = collect_additional_applications_by_game(&library);
             let additional_application_count = additional_applications_by_game
                 .values()
@@ -1837,6 +1846,7 @@ impl LoadedLibrary {
                 alternate_names_by_game,
                 custom_fields_by_game,
                 game_saves_by_game,
+                resolved_model_settings_by_game,
                 front_image_paths: BTreeMap::new(),
                 back_image_paths: BTreeMap::new(),
                 spine_image_paths: BTreeMap::new(),
@@ -1902,6 +1912,8 @@ impl LoadedLibrary {
         };
         let platform_count = platform_names.len();
         let (games, game_sources) = collect_games_and_sources(data.platforms());
+        let resolved_model_settings_by_game =
+            collect_resolved_model_settings(data.platforms(), data.platform_catalog());
         let additional_applications_by_game =
             collect_additional_applications_by_game(data.platforms());
         let additional_application_count = additional_applications_by_game
@@ -1973,6 +1985,7 @@ impl LoadedLibrary {
             alternate_names_by_game,
             custom_fields_by_game,
             game_saves_by_game,
+            resolved_model_settings_by_game,
             front_image_paths,
             back_image_paths,
             spine_image_paths,
@@ -2109,6 +2122,39 @@ fn collect_games_and_sources(library: &LibraryIndex) -> (Vec<Game>, Vec<PathBuf>
         }
     }
     (games, sources)
+}
+
+fn collect_resolved_model_settings(
+    library: &LibraryIndex,
+    catalog: Option<&PlatformCatalog>,
+) -> BTreeMap<String, ResolvedModelSettings> {
+    let game_records = library.model_settings().cloned().collect::<Vec<_>>();
+    let platform_records = catalog
+        .map(|catalog| catalog.model_settings.as_slice())
+        .unwrap_or(&[]);
+    library
+        .games()
+        .map(|game| {
+            let scrape_as = catalog
+                .and_then(|catalog| {
+                    catalog
+                        .platforms
+                        .iter()
+                        .find(|platform| platform.metadata.name == game.platform)
+                })
+                .and_then(|platform| platform.metadata.scrape_as.as_deref());
+            (
+                game.id.clone(),
+                resolve_model_settings(
+                    &game.id,
+                    &game.platform,
+                    scrape_as,
+                    &game_records,
+                    platform_records,
+                ),
+            )
+        })
+        .collect()
 }
 
 fn collect_additional_applications_by_game(
@@ -2752,6 +2798,51 @@ struct GameEditPayload {
     favorite: bool,
     completed: bool,
     star_rating: u8,
+}
+
+const MODEL_SETTINGS_PAYLOAD_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelSettingsPresentationPayload {
+    version: u32,
+    source: &'static str,
+    model_type: String,
+    model_type_display: String,
+    case_color: Option<String>,
+    cover_color: Option<String>,
+    front_spine_image: Option<String>,
+    front_spine_is_clear: bool,
+    full_image_spine_width: f64,
+    full_scan_is_landscape: bool,
+    model_size: Option<[f64; 3]>,
+    use_full_scan_images: bool,
+}
+
+impl From<&ResolvedModelSettings> for ModelSettingsPresentationPayload {
+    fn from(resolved: &ResolvedModelSettings) -> Self {
+        let settings = &resolved.settings;
+        let model_type = settings.effective_model_type();
+        Self {
+            version: MODEL_SETTINGS_PAYLOAD_VERSION,
+            source: match resolved.source {
+                ModelSettingsSource::GameOverride => "gameOverride",
+                ModelSettingsSource::PlatformOverride => "platformOverride",
+                ModelSettingsSource::BuiltInPlatform => "builtInPlatform",
+                ModelSettingsSource::BoxFallback => "boxFallback",
+            },
+            model_type: model_type.key().to_string(),
+            model_type_display: model_type.display_name().to_string(),
+            case_color: settings.case_color.map(|color| color.qt_hex()),
+            cover_color: settings.cover_color.map(|color| color.qt_hex()),
+            front_spine_image: settings.front_spine_image.clone(),
+            front_spine_is_clear: settings.front_spine_is_clear,
+            full_image_spine_width: settings.full_image_spine_width,
+            full_scan_is_landscape: settings.full_scan_is_landscape,
+            model_size: settings.model_size.map(|size| [size.x, size.y, size.z]),
+            use_full_scan_images: settings.use_full_scan_images,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -15446,6 +15537,21 @@ impl qobject::LibraryController {
                 let custom_fields_by_game =
                     index_custom_fields(document.library().custom_fields.iter());
                 let game_saves_by_game = index_game_saves(document.library().game_saves.iter());
+                let resolved_model_settings_by_game = games
+                    .iter()
+                    .map(|game| {
+                        (
+                            game.id.clone(),
+                            resolve_model_settings(
+                                &game.id,
+                                &game.platform,
+                                None,
+                                &document.library().model_settings,
+                                &[],
+                            ),
+                        )
+                    })
+                    .collect();
                 self.as_mut().replace_library(LibraryReplacement {
                     games,
                     game_sources: Vec::new(),
@@ -15454,6 +15560,7 @@ impl qobject::LibraryController {
                     alternate_names_by_game,
                     custom_fields_by_game,
                     game_saves_by_game,
+                    resolved_model_settings_by_game,
                     front_image_paths: BTreeMap::new(),
                     back_image_paths: BTreeMap::new(),
                     spine_image_paths: BTreeMap::new(),
@@ -15605,6 +15712,16 @@ impl qobject::LibraryController {
             .spine_image_paths
             .get(&game_id.to_string())
             .map(|path| QUrl::from_local_file(&qstring(path.to_string_lossy())))
+            .unwrap_or_default()
+    }
+
+    pub fn game_model_settings_json_for_game(&self, game_id: QString) -> QString {
+        self.rust()
+            .resolved_model_settings_by_game
+            .get(&game_id.to_string())
+            .map(ModelSettingsPresentationPayload::from)
+            .and_then(|payload| serde_json::to_string(&payload).ok())
+            .map(qstring)
             .unwrap_or_default()
     }
 
@@ -18870,7 +18987,7 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "LAUNCHBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 lock=horizontal controls=1"
+                "LAUNCHBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 lock=horizontal controls=1"
             );
         }
         success
@@ -18894,7 +19011,7 @@ impl qobject::LibraryController {
             );
         if success {
             eprintln!(
-                "BIGBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 restored=horizontal lock=vertical controls=1"
+                "BIGBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 restored=horizontal lock=vertical controls=1"
             );
         }
         success
@@ -22841,6 +22958,7 @@ impl qobject::LibraryController {
                     alternate_names_by_game: loaded.alternate_names_by_game,
                     custom_fields_by_game: loaded.custom_fields_by_game,
                     game_saves_by_game: loaded.game_saves_by_game,
+                    resolved_model_settings_by_game: loaded.resolved_model_settings_by_game,
                     front_image_paths: loaded.front_image_paths,
                     back_image_paths: loaded.back_image_paths,
                     spine_image_paths: loaded.spine_image_paths,
@@ -26445,6 +26563,7 @@ impl qobject::LibraryController {
             alternate_names_by_game,
             custom_fields_by_game,
             game_saves_by_game,
+            resolved_model_settings_by_game,
             front_image_paths,
             back_image_paths,
             spine_image_paths,
@@ -26503,6 +26622,7 @@ impl qobject::LibraryController {
             rust.alternate_names_by_game = alternate_names_by_game;
             rust.custom_fields_by_game = custom_fields_by_game;
             rust.game_saves_by_game = game_saves_by_game;
+            rust.resolved_model_settings_by_game = resolved_model_settings_by_game;
             rust.front_image_paths = front_image_paths;
             rust.back_image_paths = back_image_paths;
             rust.spine_image_paths = spine_image_paths;
@@ -26897,6 +27017,16 @@ impl qobject::LibraryController {
             .as_deref()
             .and_then(|path| ModelViewerState::load(path).ok())
             .map(|state| state.rotation_lock);
+        let Some(game_model) = self.rust().resolved_model_settings_by_game.get(game_id) else {
+            return false;
+        };
+        let Some(platform_model) = self
+            .rust()
+            .resolved_model_settings_by_game
+            .get("fixture-racer")
+        else {
+            return false;
+        };
         game_id == "fixture-adventure"
             && items.len() == 6
             && self.game_image_count_for_game(qstring(game_id)) == 5
@@ -26915,6 +27045,23 @@ impl qobject::LibraryController {
             && has_media("Box - Front", &front_file)
             && has_media("Box - Back", &back_file)
             && has_media("Box - Spine", &spine_file)
+            && game_model.source == ModelSettingsSource::GameOverride
+            && game_model.settings.effective_model_type() == &ModelType::JewelCase
+            && game_model
+                .settings
+                .case_color
+                .is_some_and(|color| color.raw() == -15_654_349)
+            && game_model
+                .settings
+                .cover_color
+                .is_some_and(|color| color.raw() == -12_298_906)
+            && game_model.settings.front_spine_image.as_deref()
+                == Some(r"{Resources}\Fixture Jewel Spine")
+            && game_model.settings.front_spine_is_clear
+            && (game_model.settings.full_image_spine_width - 0.143).abs() < f64::EPSILON
+            && !game_model.settings.use_full_scan_images
+            && platform_model.source == ModelSettingsSource::PlatformOverride
+            && platform_model.settings.effective_model_type() == &ModelType::DvdCase
             && self.rust().model_viewer_state.rotation_lock == expected_lock
             && persisted_lock == Some(expected_lock)
             && self.model_rotation_lock().to_string() == expected_lock.key()
@@ -27771,6 +27918,53 @@ mod tests {
         assert!(big_box_show_game_menu_model_from_settings(Some(&invalid)));
         assert!(details_show_3d_model_from_settings(None));
         assert!(big_box_show_game_menu_model_from_settings(None));
+    }
+
+    #[test]
+    fn model_settings_fixture_resolves_and_serializes_game_over_platform() {
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox");
+        let data = LaunchBoxDataIndex::load(&fixture_root).expect("load complete fixture");
+        let models = collect_resolved_model_settings(data.platforms(), data.platform_catalog());
+
+        assert_eq!(models.len(), data.platforms().games().count());
+        let game = models
+            .get("fixture-adventure")
+            .expect("fixture game model settings");
+        assert_eq!(game.source, ModelSettingsSource::GameOverride);
+        assert_eq!(game.settings.effective_model_type(), &ModelType::JewelCase);
+        assert_eq!(
+            game.settings.case_color.map(|color| color.raw()),
+            Some(-15_654_349)
+        );
+        assert_eq!(
+            game.settings.cover_color.map(|color| color.raw()),
+            Some(-12_298_906)
+        );
+
+        let peer = models
+            .get("fixture-racer")
+            .expect("fixture platform model settings");
+        assert_eq!(peer.source, ModelSettingsSource::PlatformOverride);
+        assert_eq!(peer.settings.effective_model_type(), &ModelType::DvdCase);
+
+        assert_eq!(
+            serde_json::to_value(ModelSettingsPresentationPayload::from(game))
+                .expect("serialize model settings presentation"),
+            serde_json::json!({
+                "version": 1,
+                "source": "gameOverride",
+                "modelType": "jewelCase",
+                "modelTypeDisplay": "Jewel Case",
+                "caseColor": "#ff112233",
+                "coverColor": "#ff445566",
+                "frontSpineImage": r"{Resources}\Fixture Jewel Spine",
+                "frontSpineIsClear": true,
+                "fullImageSpineWidth": 0.143,
+                "fullScanIsLandscape": false,
+                "modelSize": null,
+                "useFullScanImages": false
+            })
+        );
     }
 
     #[test]

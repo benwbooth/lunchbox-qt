@@ -298,8 +298,9 @@ byte-identical media and library documents. Native Windows and Intel/Apple
 Silicon macOS Qt
 interaction and Qt Multimedia execution remain explicit real-host gates, and
 all media mutation, download, manual/music playback, platform-video
-management, specialized 3D models, related/document/application panes, custom
-BigBox theme layouts/transitions, cleanup, and migration work remains open.
+management, full-scan/model-detail rendering and model-settings editing,
+related/document/application panes, custom BigBox theme layouts/transitions,
+cleanup, and migration work remains open.
 The current `DESK-004`/`BB-004` media vertical adds settings-prioritized box
 backs and one shared front/back Qt presenter to the LaunchBox grid and BigBox
 wheel. The exact recovered back priority is applied at the native-path index
@@ -315,12 +316,12 @@ entire fixture media/XML tree. The protected 13.27 transition duration remains
 unknown, so the shared 220 ms animation is an explicit cross-platform Qt
 policy. Native Windows and Intel/Apple Silicon macOS interaction remains a
 real-host gate.
-The first `MED-009` model vertical uses one Qt Quick 3D preview in both
-frontends. It builds a true six-face rectangular model and maps the safely
-indexed front, back, and `Box - Spine` files to distinct faces while keeping
-top and bottom as solid materials. LaunchBox honors `ShowDetails3dModel` and
-enters from Details or `M`; BigBox honors
-`ShowGameMenuViewModelFullscreen` and enters from the game menu or `M`.
+The current `MED-009` model vertical uses one Qt Quick 3D preview in both
+frontends. It builds a true six-face model and maps the safely indexed front,
+back, and `Box - Spine` files to distinct faces while keeping top and bottom
+as solid materials. LaunchBox honors `ShowDetails3dModel` and enters from
+Details or `M`; BigBox honors `ShowGameMenuViewModelFullscreen` and enters
+from the game menu or `M`.
 Pointer drag, right-drag, wheel, directional/Shift-directional/Page/Home keys,
 and visible buttons cover rotation, translation, zoom, and reset. A strict
 versioned state document in the native Linux, Windows, or macOS user
@@ -329,12 +330,24 @@ lock, so one frontend restores changes made by the other without touching
 shared LaunchBox XML. Sequential compiled scenarios activate the real entry and
 control buttons, prove each lock axis, decode three distinct native regular
 textures, render both model surfaces, restore focus, compare the exact
-persisted state, and hash the media/XML tree. The recovered `ModelType` set
-(box, DVD, jewel, and long-jewel), `ModelSettings`
-colors/sizes/rotations/full-scan construction and platform/game overrides,
-`Use3dModelImageView`/CoverFlow paths, original camera and timing, native
-controller bindings, and native Windows/Intel/Apple Silicon macOS interaction
-remain explicit later gates.
+persisted state, and hash the media/XML tree.
+
+A limited managed 13.27 Wine probe recovered the exact
+`box`/`dvd`/`jewelCase`/`longJewelCase` keys, constructor and editor defaults,
+root-level XML schema, signed ARGB and semicolon-size representations,
+game/platform/built-in precedence, and 41 built-in platform mappings. Both XML
+read paths and `Data/Platforms.xml` now retain typed `ModelSettings` plus
+unknown future data. A platform-neutral resolver computes a complete setting
+for each game before the CXX-Qt boundary. The viewer applies colors and forced
+size and uses distinct functional box/DVD/jewel/long-jewel proportions with
+jewel lips and a DVD hinge. Compiled LaunchBox and BigBox scenarios require a
+game-level jewel fixture to beat its platform DVD setting and require the
+expected port geometry before reporting success.
+
+Full-scan construction, front-spine/logo/rotation rendering, settings editing,
+`Use3dModelImageView`/CoverFlow paths, exact original meshes/materials/camera
+and timing, native controller bindings, and native Windows/Intel/Apple Silicon
+macOS interaction remain explicit later gates.
 The first three `DESK-002` verticals add a resizable LaunchBox selected-game
 details pane over the shared virtualized model plus hide/show and native
 pop-out/dock behavior. Its stable-ID selection contract survives filter and

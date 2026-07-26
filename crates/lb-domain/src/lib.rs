@@ -5,10 +5,12 @@ use thiserror::Error;
 mod box_size;
 mod catalog;
 mod list_view;
+mod model_settings;
 
 pub use box_size::*;
 pub use catalog::*;
 pub use list_view::*;
+pub use model_settings::*;
 
 /// LaunchBox persists this ID when a game is explicitly configured not to use
 /// an emulator. It is distinct from a missing `<Emulator>` field, which allows
@@ -886,6 +888,7 @@ pub struct PlatformLibrary {
     pub name: String,
     pub source_path: PathBuf,
     pub games: Vec<Game>,
+    pub model_settings: Vec<ModelSettings>,
     pub additional_applications: Vec<AdditionalApplication>,
     pub mounts: Vec<Mount>,
     pub alternate_names: Vec<AlternateName>,
@@ -901,6 +904,13 @@ impl PlatformLibrary {
         }
         for game in &self.games {
             game.validate()?;
+        }
+        for settings in &self.model_settings {
+            settings
+                .validate()
+                .map_err(|error| ValidationError::InvalidModelSettings {
+                    reason: error.to_string(),
+                })?;
         }
         for application in &self.additional_applications {
             application.validate()?;
@@ -926,6 +936,8 @@ impl PlatformLibrary {
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ValidationError {
+    #[error("invalid model settings: {reason}")]
+    InvalidModelSettings { reason: String },
     #[error("game ID is missing")]
     MissingGameId,
     #[error("game {id} has no title")]
