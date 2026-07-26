@@ -9,6 +9,7 @@ mod path;
 mod path_settings;
 mod screensaver;
 mod scummvm;
+mod security;
 mod ui_state;
 
 pub use archive::{
@@ -52,6 +53,10 @@ pub use screensaver::{
     BigBoxScreensaverView,
 };
 pub use scummvm::ScummVmPlanError;
+pub use security::{
+    valid_pin as valid_big_box_pin, BigBoxSecurityPermission, BigBoxSecurityPolicy,
+    BIG_BOX_PIN_MAX_DIGITS, BIG_BOX_SECURITY_PERMISSIONS,
+};
 pub use ui_state::{
     default_launchbox_ui_state_path, default_list_view_column_widths, GameDetailsWindowState,
     LaunchBoxUiState, LaunchBoxUiStateError, LAUNCHBOX_UI_STATE_VERSION,

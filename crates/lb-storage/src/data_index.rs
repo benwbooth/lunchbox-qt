@@ -1110,7 +1110,7 @@ mod tests {
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 65);
+        assert_eq!(big_box.entries.len(), 98);
         assert_eq!(big_box.get_bool("EnableScreensaver"), Some(true));
         assert_eq!(big_box.get_i64("ScreensaverDelay"), Some(300));
         assert_eq!(big_box.get_i64("ScreensaverMinimumSwapTime"), Some(30_000));

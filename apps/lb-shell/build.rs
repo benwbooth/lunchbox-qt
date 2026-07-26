@@ -18,6 +18,8 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/BigBoxInputRouter.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxInputSettings.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxMarqueeSettings.qml");
+    println!("cargo:rerun-if-changed=qml/BigBoxPinPopup.qml");
+    println!("cargo:rerun-if-changed=qml/BigBoxSecuritySettings.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxMarqueeWindow.qml");
     println!("cargo:rerun-if-changed=qml/LaunchStartupOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchShutdownOverlay.qml");
@@ -44,6 +46,8 @@ fn main() {
                 "qml/BigBoxInputRouter.qml",
                 "qml/BigBoxInputSettings.qml",
                 "qml/BigBoxMarqueeSettings.qml",
+                "qml/BigBoxPinPopup.qml",
+                "qml/BigBoxSecuritySettings.qml",
                 "qml/BigBoxMarqueeWindow.qml",
                 "qml/LaunchStartupOverlay.qml",
                 "qml/LaunchShutdownOverlay.qml",

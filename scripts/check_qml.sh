@@ -39,6 +39,8 @@ diagnostics=$(
     apps/lb-shell/qml/BigBoxInputRouter.qml \
     apps/lb-shell/qml/BigBoxInputSettings.qml \
     apps/lb-shell/qml/BigBoxMarqueeSettings.qml \
+    apps/lb-shell/qml/BigBoxPinPopup.qml \
+    apps/lb-shell/qml/BigBoxSecuritySettings.qml \
     apps/lb-shell/qml/BigBoxMarqueeWindow.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
@@ -381,6 +383,101 @@ if [[ ! "$input_editor_colors" =~ ^[0-9]+$ ]] \
 fi
 
 echo "BigBox rendered Qt input editor, logical key capture, controller/hold editing, two-document transaction, exact backups, and committed live-policy reload validated."
+
+security_root="$test_config_root/security-library"
+mkdir -p "$security_root"
+cp -a fixtures/launchbox/. "$security_root/"
+security_settings="$security_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<AllowChangeFilterPlatformsWhileLocked>true</AllowChangeFilterPlatformsWhileLocked>#<AllowChangeFilterPlatformsWhileLocked>false</AllowChangeFilterPlatformsWhileLocked>#' \
+  "$security_settings"
+sed -i \
+  '/<ShowGameLockUnlock>true<\/ShowGameLockUnlock>/a\    <LockPin>2580</LockPin>' \
+  "$security_settings"
+security_settings_before="$test_config_root/BigBoxSettings.before-security.xml"
+security_pin_screenshot="$test_config_root/bigbox-security-pin.png"
+security_editor_screenshot="$test_config_root/bigbox-security-editor.png"
+cp "$security_settings" "$security_settings_before"
+security_immutable_manifest="$test_config_root/security-immutable.before.sha256"
+(
+  cd "$security_root"
+  find Data Images Metadata Music -type f \
+    ! -path 'Data/BigBoxSettings.xml' -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$security_immutable_manifest"
+output=$(run_software_rendered_smoke \
+  "$binary_dir/bigbox" \
+    --library "$security_root" \
+    --bigbox-security-smoke-test \
+    --bigbox-security-pin-screenshot "$security_pin_screenshot" \
+    --bigbox-security-editor-screenshot "$security_editor_screenshot" \
+    --windowed \
+    --path-mappings-file "$empty_path_mappings" 2>&1) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_SECURITY_SMOKE_COMPLETE permissions=32 blocked=2 failures=2 unlocks=2 writes=1 pin=configured locked=0 revision=' \
+  <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox did not complete its locked-mode, keypad, PIN replacement, and permission transaction flow." >&2
+  exit 1
+fi
+if rg -q '2580|8642|0000' <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox exposed a PIN value in runtime diagnostics." >&2
+  exit 1
+fi
+if ! rg -q '<LockPin>8642</LockPin>' "$security_settings" \
+  || rg -q '<LockPin>2580</LockPin>' "$security_settings" \
+  || ! rg -q '<ShowGameLockUnlock>true</ShowGameLockUnlock>' \
+    "$security_settings" \
+  || ! rg -q '<AllowExitWhileUnlocked>true</AllowExitWhileUnlocked>' \
+    "$security_settings" \
+  || ! rg -q \
+    '<AllowChangeFilterPlatformsWhileLocked>false</AllowChangeFilterPlatformsWhileLocked>' \
+    "$security_settings" \
+  || [[ $(rg -c '    <Allow' "$security_settings") -ne 32 ]] \
+  || ! rg -q '<Theme>Fixture BigBox Theme</Theme>' "$security_settings"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox security did not persist the complete expected LaunchBox XML contract." >&2
+  exit 1
+fi
+security_backups=(
+  "$security_root"/Data/BigBoxSettings.xml.lbport-transaction-backup-*
+)
+if [[ ${#security_backups[@]} -ne 1 ]]; then
+  echo "BigBox security did not retain exactly one transaction backup." >&2
+  exit 1
+fi
+cmp "$security_settings_before" "${security_backups[0]}"
+for screenshot in \
+  "$security_pin_screenshot" \
+  "$security_editor_screenshot"; do
+  if [[ ! -s "$screenshot" ]] \
+    || [[ $(wc -c < "$screenshot") -lt 4096 ]]; then
+    echo "BigBox security did not save a rendered screenshot: $screenshot" >&2
+    exit 1
+  fi
+  security_colors=$(magick "$screenshot" -format '%k' info:)
+  if [[ ! "$security_colors" =~ ^[0-9]+$ ]] \
+    || ((security_colors < 64)); then
+    echo "BigBox security screenshot is blank or insufficiently rendered: $screenshot ($security_colors colors)." >&2
+    exit 1
+  fi
+done
+(
+  cd "$security_root"
+  sha256sum --check "$security_immutable_manifest"
+) >/dev/null
+if find "$security_root" -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "BigBox security left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "BigBox native PIN keypad, startup lock, per-action and navigation gates, wrong/correct unlocks, rendered security editor, PIN replacement, 32-permission transaction, exact backup, redacted diagnostics, and immutable peer data validated."
 
 marquee_root="$test_config_root/marquee-library"
 mkdir -p "$marquee_root"

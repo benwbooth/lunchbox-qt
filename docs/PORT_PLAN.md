@@ -372,6 +372,33 @@ bounded swaps, disabled-auto behavior, stable selection, and whole-tree
 immutability. Exact protected random rounding, transition/controller-binding
 behavior, custom themes, and native Windows/macOS multimedia remain later
 parity work.
+The current `BB-011` slice implements the recovered BigBox PIN/security
+contract. A typed Rust policy owns the optional numeric PIN, the exact 32
+permission keys and fresh-install defaults, `ShowGameLockUnlock`, redacted
+verification, and action/navigation mapping. BigBox automatically starts
+locked when a valid PIN exists. One central dispatcher gates implemented Exit
+and window close, view/image changes, discovery/search/filter commands, and
+all-game/platform/category/playlist navigation; unavailable rows are skipped
+and unknown navigation kinds fail closed. A native Qt keypad uses the recovered
+7-8-9/4-5-6/1-2-3/0-Delete-Done layout with masked input, while a complete
+editor implements set/repeat/mismatch, clear intent, the visible Lock/Unlock
+setting, and all permissions. The PIN remains private Rust/QML call data and
+never becomes a controller property, model role, status, or diagnostic.
+
+The editor's strict complete payload updates only the singleton security fields
+through one recoverable lossless `BigBoxSettings.xml` transaction, retains an
+exact backup and unknown XML, rereads the committed document, and publishes
+the new policy/revision before write completion. Pure and controller tests
+freeze defaults, validation, redaction, mappings, payload completeness,
+set/clear removal, and exact backups. A compiled Xvfb interaction proves
+automatic locking, denied actions, real rendered keypad/editor surfaces,
+wrong/correct PIN flows, replacement and relock, old-PIN rejection, one atomic
+write, 32 persisted permissions, immutable peers, and PIN-free output. The
+32-digit maximum is documented port-owned defensive policy because the
+protected length rule is unavailable. Premium entitlement is deliberately not
+bypassed; permissions for features not yet ported and native Windows/macOS Qt
+interaction remain later parity work. The evidence boundary is recorded in
+`analysis/security-13.27.md`.
 The current `BB-012` slice recovers the complete 59-action BigBox input
 vocabulary, every action-specific zero/one/four keyboard-slot contract, the
 raw WPF key-number contract, gamepad enable/all-controller settings, all 46

@@ -158,6 +158,10 @@ pub mod qobject {
         #[qproperty(i32, big_box_controller_rule_count)]
         #[qproperty(i32, big_box_unsupported_controller_rule_count)]
         #[qproperty(i32, big_box_input_revision)]
+        #[qproperty(bool, big_box_pin_configured)]
+        #[qproperty(bool, big_box_locked)]
+        #[qproperty(bool, big_box_show_game_lock_unlock)]
+        #[qproperty(i32, big_box_security_settings_revision)]
         #[qproperty(bool, big_box_show_game_menu_flip_box)]
         #[qproperty(bool, big_box_show_game_menu_model)]
         #[qproperty(i32, filtered_count)]
@@ -477,6 +481,63 @@ pub mod qobject {
         fn save_big_box_marquee_settings(
             self: Pin<&mut LibraryController>,
             request_payload: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn big_box_security_permission_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn big_box_security_permission_key_at(
+            self: &LibraryController,
+            permission_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn big_box_security_permission_label_at(
+            self: &LibraryController,
+            permission_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn big_box_security_permission_allowed_at(
+            self: &LibraryController,
+            permission_index: i32,
+        ) -> bool;
+
+        #[qinvokable]
+        fn big_box_action_allowed_while_locked(
+            self: &LibraryController,
+            action_key: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn big_box_navigation_allowed_while_locked(
+            self: &LibraryController,
+            navigation_kind: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn note_big_box_locked_action(self: Pin<&mut LibraryController>, action_key: QString);
+
+        #[qinvokable]
+        fn lock_big_box(self: Pin<&mut LibraryController>) -> bool;
+
+        #[qinvokable]
+        fn unlock_big_box(self: Pin<&mut LibraryController>, pin: QString) -> bool;
+
+        #[qinvokable]
+        fn save_big_box_security_settings(
+            self: Pin<&mut LibraryController>,
+            request_payload: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_big_box_security_smoke_success(
+            self: &LibraryController,
+            initial_revision: i32,
+            blocked_actions: i32,
+            failed_unlocks: i32,
+            successful_unlocks: i32,
         ) -> bool;
 
         #[qinvokable]
@@ -1772,14 +1833,15 @@ use lb_platform::{
     BigBoxAttractModePolicy, BigBoxBackgroundMusicPolicy, BigBoxGameMarqueeMedia,
     BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy, BigBoxMarqueeCompatibilityMode,
     BigBoxMarqueePolicy, BigBoxMusicPolicy, BigBoxPlatformMarqueeMedia, BigBoxScreensaverCandidate,
-    BigBoxScreensaverPolicy, BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy,
-    ControllerBinding, FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy,
-    GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem, GameMediaKind,
-    GamepadInputEvent, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState,
-    LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy,
-    LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy,
-    LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
-    BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS,
+    BigBoxScreensaverPolicy, BigBoxSecurityPermission, BigBoxSecurityPolicy,
+    BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, ControllerBinding,
+    FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy, GameDetailsMediaPolicy,
+    GameDetailsWindowState, GameMediaItem, GameMediaKind, GamepadInputEvent, HostPathMappings,
+    HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
+    LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
+    LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
+    ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS,
+    BIG_BOX_SECURITY_PERMISSIONS,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
@@ -2098,6 +2160,10 @@ pub struct LibraryControllerRust {
     big_box_controller_rule_count: i32,
     big_box_unsupported_controller_rule_count: i32,
     big_box_input_revision: i32,
+    big_box_pin_configured: bool,
+    big_box_locked: bool,
+    big_box_show_game_lock_unlock: bool,
+    big_box_security_settings_revision: i32,
     big_box_show_game_menu_flip_box: bool,
     big_box_show_game_menu_model: bool,
     filtered_count: i32,
@@ -2181,6 +2247,7 @@ pub struct LibraryControllerRust {
     big_box_marquee_policy: BigBoxMarqueePolicy,
     big_box_platform_marquee_media: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
     big_box_input_engine: BigBoxInputEngine,
+    big_box_security_policy: BigBoxSecurityPolicy,
     big_box_screensaver_candidates: Vec<BigBoxScreensaverCandidate>,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
@@ -2239,6 +2306,10 @@ pub struct LibraryControllerRust {
     pause_screen_presentations: u64,
     pause_process_suspensions: u64,
     pause_process_resumptions: u64,
+    big_box_security_blocked_actions: u64,
+    big_box_security_failed_unlocks: u64,
+    big_box_security_successful_unlocks: u64,
+    big_box_security_write_notifications: u64,
     delegated_session_completions: u64,
     session_stats_writes: u64,
     session_stats_error: Option<String>,
@@ -2325,6 +2396,7 @@ struct LoadedLibrary {
     big_box_marquee_policy: BigBoxMarqueePolicy,
     big_box_platform_marquee_media: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
     big_box_input_policy: BigBoxInputPolicy,
+    big_box_security_policy: BigBoxSecurityPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2378,6 +2450,7 @@ struct LibraryReplacement {
     big_box_marquee_policy: BigBoxMarqueePolicy,
     big_box_platform_marquee_media: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
     big_box_input_policy: BigBoxInputPolicy,
+    big_box_security_policy: BigBoxSecurityPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2475,6 +2548,7 @@ impl LoadedLibrary {
                 big_box_marquee_policy: BigBoxMarqueePolicy::default(),
                 big_box_platform_marquee_media: BTreeMap::new(),
                 big_box_input_policy: BigBoxInputPolicy::default(),
+                big_box_security_policy: BigBoxSecurityPolicy::default(),
                 big_box_show_game_menu_flip_box: true,
                 details_show_3d_model: true,
                 big_box_show_game_menu_model: true,
@@ -2631,6 +2705,7 @@ impl LoadedLibrary {
         } else {
             BigBoxInputPolicy::from_settings(data.big_box_settings(), data.input_bindings())
         };
+        let big_box_security_policy = BigBoxSecurityPolicy::from_settings(data.big_box_settings());
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
@@ -2700,6 +2775,7 @@ impl LoadedLibrary {
             big_box_marquee_policy,
             big_box_platform_marquee_media,
             big_box_input_policy,
+            big_box_security_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -3222,6 +3298,82 @@ impl BigBoxMarqueeSettingsPayload {
     }
 }
 
+const BIG_BOX_SECURITY_SETTINGS_PAYLOAD_VERSION: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum BigBoxPinChange {
+    Keep,
+    Set,
+    Clear,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BigBoxSecurityPermissionPayload {
+    key: String,
+    allowed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BigBoxSecuritySettingsPayload {
+    version: u32,
+    pin_change: BigBoxPinChange,
+    pin: String,
+    show_game_lock_unlock: bool,
+    permissions: Vec<BigBoxSecurityPermissionPayload>,
+}
+
+impl BigBoxSecuritySettingsPayload {
+    fn validate(&self, current: &BigBoxSecurityPolicy) -> Result<BigBoxSecurityPolicy, String> {
+        if self.version != BIG_BOX_SECURITY_SETTINGS_PAYLOAD_VERSION {
+            return Err(format!(
+                "BigBox security settings version {} is unsupported",
+                self.version
+            ));
+        }
+        let mut requested = current.clone();
+        requested.show_game_lock_unlock = self.show_game_lock_unlock;
+        let mut seen = BTreeSet::new();
+        for entry in &self.permissions {
+            let Some(permission) = BigBoxSecurityPermission::from_setting_key(entry.key.trim())
+            else {
+                return Err(format!("unknown BigBox security permission: {}", entry.key));
+            };
+            if !seen.insert(permission) {
+                return Err(format!(
+                    "duplicate BigBox security permission: {}",
+                    entry.key
+                ));
+            }
+            requested.set_permission(permission, entry.allowed);
+        }
+        if seen.len() != BIG_BOX_SECURITY_PERMISSIONS.len() {
+            return Err(format!(
+                "BigBox security payload contains {} permissions; expected {}",
+                seen.len(),
+                BIG_BOX_SECURITY_PERMISSIONS.len()
+            ));
+        }
+        match self.pin_change {
+            BigBoxPinChange::Keep => {
+                if !self.pin.is_empty() {
+                    return Err("keep PIN requests must not include PIN digits".into());
+                }
+            }
+            BigBoxPinChange::Set => requested.set_pin(&self.pin)?,
+            BigBoxPinChange::Clear => {
+                if !self.pin.is_empty() {
+                    return Err("clear PIN requests must not include PIN digits".into());
+                }
+                requested.clear_pin();
+            }
+        }
+        Ok(requested)
+    }
+}
+
 struct BigBoxInputWriteSuccess {
     policy: BigBoxInputPolicy,
     backups: Vec<PathBuf>,
@@ -3239,6 +3391,18 @@ struct BigBoxMarqueeWriteSuccess {
 }
 
 enum BigBoxMarqueeWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Other(String),
+}
+
+struct BigBoxSecurityWriteSuccess {
+    policy: BigBoxSecurityPolicy,
+    backup: PathBuf,
+    pin_change: BigBoxPinChange,
+}
+
+enum BigBoxSecurityWriteFailure {
     Conflict(String),
     PendingRecovery { count: usize, message: String },
     Other(String),
@@ -5890,6 +6054,79 @@ fn write_big_box_marquee_settings(
         ));
     }
     Ok(BigBoxMarqueeWriteSuccess { policy, backup })
+}
+
+fn write_big_box_security_settings(
+    root: PathBuf,
+    payload: BigBoxSecuritySettingsPayload,
+) -> Result<BigBoxSecurityWriteSuccess, BigBoxSecurityWriteFailure> {
+    let settings_path = root.join("Data").join("BigBoxSettings.xml");
+    let current_settings = load_big_box_settings_file(&settings_path)
+        .map_err(|error| BigBoxSecurityWriteFailure::Other(error.to_string()))?;
+    let current = BigBoxSecurityPolicy::from_settings(current_settings.as_ref());
+    let requested = payload
+        .validate(&current)
+        .map_err(BigBoxSecurityWriteFailure::Other)?;
+    let mut settings = AuxiliaryDocument::load(&settings_path)
+        .map_err(|error| BigBoxSecurityWriteFailure::Other(error.to_string()))?;
+    settings
+        .set_single_record_field(
+            "BigBoxSettings",
+            "ShowGameLockUnlock",
+            &requested.show_game_lock_unlock.to_string(),
+        )
+        .map_err(|error| BigBoxSecurityWriteFailure::Other(error.to_string()))?;
+    for permission in BIG_BOX_SECURITY_PERMISSIONS {
+        settings
+            .set_single_record_field(
+                "BigBoxSettings",
+                permission.setting_key(),
+                &requested.permission_allowed(*permission).to_string(),
+            )
+            .map_err(|error| BigBoxSecurityWriteFailure::Other(error.to_string()))?;
+    }
+    match payload.pin_change {
+        BigBoxPinChange::Keep => {}
+        BigBoxPinChange::Set => settings
+            .set_single_record_field("BigBoxSettings", "LockPin", &payload.pin)
+            .map_err(|error| BigBoxSecurityWriteFailure::Other(error.to_string()))?,
+        BigBoxPinChange::Clear => settings
+            .remove_single_record_field("BigBoxSettings", "LockPin")
+            .map_err(|error| BigBoxSecurityWriteFailure::Other(error.to_string()))?,
+    }
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_big_box_security_transaction_error)?;
+    transaction
+        .stage_auxiliary(&settings)
+        .map_err(classify_big_box_security_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_big_box_security_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == settings_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            BigBoxSecurityWriteFailure::Other(
+                "security settings transaction reported no BigBoxSettings.xml write".into(),
+            )
+        })?;
+
+    let committed = load_big_box_settings_file(&settings_path)
+        .map_err(|error| BigBoxSecurityWriteFailure::Other(error.to_string()))?;
+    let policy = BigBoxSecurityPolicy::from_settings(committed.as_ref());
+    if policy != requested {
+        return Err(BigBoxSecurityWriteFailure::Other(
+            "committed security settings did not round-trip to the requested policy".into(),
+        ));
+    }
+    Ok(BigBoxSecurityWriteSuccess {
+        policy,
+        backup,
+        pin_change: payload.pin_change,
+    })
 }
 
 fn write_list_view_setting(
@@ -16183,6 +16420,29 @@ fn classify_big_box_marquee_transaction_error(
     }
 }
 
+fn classify_big_box_security_transaction_error(
+    error: TransactionError,
+) -> BigBoxSecurityWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::SourceConflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            BigBoxSecurityWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            BigBoxSecurityWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            BigBoxSecurityWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => BigBoxSecurityWriteFailure::Other(message),
+    }
+}
+
 fn classify_list_view_transaction_error(error: TransactionError) -> ListViewWriteFailure {
     let message = error.to_string();
     match error {
@@ -16886,6 +17146,7 @@ impl qobject::LibraryController {
                     big_box_marquee_policy: BigBoxMarqueePolicy::default(),
                     big_box_platform_marquee_media: BTreeMap::new(),
                     big_box_input_policy: BigBoxInputPolicy::default(),
+                    big_box_security_policy: BigBoxSecurityPolicy::default(),
                     big_box_show_game_menu_flip_box: true,
                     details_show_3d_model: true,
                     big_box_show_game_menu_model: true,
@@ -17468,6 +17729,189 @@ impl qobject::LibraryController {
             .and_then(|media| media.background_path.as_deref())
             .map(local_file_url)
             .unwrap_or_default()
+    }
+
+    pub fn big_box_security_permission_count(&self) -> i32 {
+        saturating_i32(BIG_BOX_SECURITY_PERMISSIONS.len())
+    }
+
+    pub fn big_box_security_permission_key_at(&self, permission_index: i32) -> QString {
+        big_box_security_permission_at(permission_index)
+            .map(BigBoxSecurityPermission::setting_key)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_security_permission_label_at(&self, permission_index: i32) -> QString {
+        big_box_security_permission_at(permission_index)
+            .map(BigBoxSecurityPermission::label)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_security_permission_allowed_at(&self, permission_index: i32) -> bool {
+        big_box_security_permission_at(permission_index).is_some_and(|permission| {
+            self.rust()
+                .big_box_security_policy
+                .permission_allowed(permission)
+        })
+    }
+
+    pub fn big_box_action_allowed_while_locked(&self, action_key: QString) -> bool {
+        if !*self.big_box_locked() {
+            return true;
+        }
+        BigBoxInputAction::from_key(action_key.to_string().trim()).is_some_and(|action| {
+            self.rust()
+                .big_box_security_policy
+                .allows_input_action(action)
+        })
+    }
+
+    pub fn big_box_navigation_allowed_while_locked(&self, navigation_kind: QString) -> bool {
+        if !*self.big_box_locked() {
+            return true;
+        }
+        self.rust()
+            .big_box_security_policy
+            .allows_navigation_kind(navigation_kind.to_string().trim())
+    }
+
+    pub fn note_big_box_locked_action(mut self: Pin<&mut Self>, action_key: QString) {
+        if !*self.as_ref().big_box_locked() {
+            return;
+        }
+        self.as_mut().rust_mut().big_box_security_blocked_actions = self
+            .as_ref()
+            .rust()
+            .big_box_security_blocked_actions
+            .saturating_add(1);
+        let key = action_key.to_string();
+        let label = BigBoxInputAction::from_key(key.trim())
+            .map(|action| humanize_pascal_case(action.key().trim_start_matches("BigBox")))
+            .unwrap_or_else(|| humanize_pascal_case(key.trim()));
+        self.as_mut()
+            .set_status_message(qstring(format!("Unlock BigBox to use {label}.")));
+    }
+
+    pub fn lock_big_box(mut self: Pin<&mut Self>) -> bool {
+        if !self
+            .as_ref()
+            .rust()
+            .big_box_security_policy
+            .pin_configured()
+        {
+            self.as_mut()
+                .set_status_message(qstring("Set a BigBox PIN before entering locked mode."));
+            return false;
+        }
+        self.as_mut().set_big_box_locked(true);
+        self.as_mut()
+            .set_status_message(qstring("BigBox is now locked."));
+        true
+    }
+
+    pub fn unlock_big_box(mut self: Pin<&mut Self>, pin: QString) -> bool {
+        if !self
+            .as_ref()
+            .rust()
+            .big_box_security_policy
+            .pin_configured()
+        {
+            self.as_mut().set_big_box_locked(false);
+            return true;
+        }
+        if self
+            .as_ref()
+            .rust()
+            .big_box_security_policy
+            .verify_pin(&pin.to_string())
+        {
+            let successful_unlocks = self
+                .as_ref()
+                .rust()
+                .big_box_security_successful_unlocks
+                .saturating_add(1);
+            self.as_mut().rust_mut().big_box_security_successful_unlocks = successful_unlocks;
+            self.as_mut().set_big_box_locked(false);
+            self.as_mut()
+                .set_status_message(qstring("BigBox is now unlocked."));
+            true
+        } else {
+            let failed_unlocks = self
+                .as_ref()
+                .rust()
+                .big_box_security_failed_unlocks
+                .saturating_add(1);
+            self.as_mut().rust_mut().big_box_security_failed_unlocks = failed_unlocks;
+            self.as_mut()
+                .set_status_message(qstring("Incorrect BigBox PIN."));
+            false
+        }
+    }
+
+    pub fn save_big_box_security_settings(
+        mut self: Pin<&mut Self>,
+        request_payload: QString,
+    ) -> bool {
+        if *self.as_ref().big_box_locked() {
+            self.as_mut()
+                .set_status_message(qstring("Unlock BigBox before editing security settings."));
+            return false;
+        }
+        let payload = match serde_json::from_str::<BigBoxSecuritySettingsPayload>(
+            &request_payload.to_string(),
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not decode BigBox security settings: {error}"
+                )));
+                return false;
+            }
+        };
+        if let Err(error) = payload.validate(&self.as_ref().rust().big_box_security_policy) {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not apply BigBox security settings: {error}"
+            )));
+            return false;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Load a LaunchBox library before editing BigBox security.",
+            ));
+            return false;
+        };
+        if !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Saving BigBox security settings in the background...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("bigbox-security-settings-write".into())
+            .spawn(move || {
+                let result = write_big_box_security_settings(root, payload);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_big_box_security_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the BigBox security settings writer: {error}"
+            )));
+            return false;
+        }
+        true
     }
 
     pub fn save_big_box_marquee_settings(
@@ -21220,6 +21664,62 @@ impl qobject::LibraryController {
                 "BIGBOX_MARQUEE_SMOKE_INCOMPLETE screens={screen_count} resolved={resolved_monitor_index} game={game_id} platform={platform_name} video={video:?} image={image:?} banner={banner:?} policy={policy:?} platform_media={} revision={} loading={} writing={}",
                 self.big_box_platform_marquee_count(),
                 self.big_box_marquee_settings_revision(),
+                self.loading(),
+                self.writing()
+            );
+        }
+        success
+    }
+
+    pub fn report_big_box_security_smoke_success(
+        &self,
+        initial_revision: i32,
+        blocked_actions: i32,
+        failed_unlocks: i32,
+        successful_unlocks: i32,
+    ) -> bool {
+        let policy = &self.rust().big_box_security_policy;
+        let expected_revision = initial_revision.wrapping_add(1);
+        let counters_match = usize::try_from(blocked_actions)
+            .is_ok_and(|count| self.rust().big_box_security_blocked_actions == count as u64)
+            && usize::try_from(failed_unlocks)
+                .is_ok_and(|count| self.rust().big_box_security_failed_unlocks == count as u64)
+            && usize::try_from(successful_unlocks)
+                .is_ok_and(|count| self.rust().big_box_security_successful_unlocks == count as u64);
+        let success = policy.pin_configured()
+            && policy.show_game_lock_unlock
+            && policy.permission_allowed(BigBoxSecurityPermission::Exit)
+            && !policy.permission_allowed(BigBoxSecurityPermission::ChangeFilterPlatforms)
+            && *self.big_box_pin_configured()
+            && !*self.big_box_locked()
+            && *self.big_box_show_game_lock_unlock()
+            && *self.big_box_security_settings_revision() == expected_revision
+            && self.big_box_security_permission_count()
+                == saturating_i32(BIG_BOX_SECURITY_PERMISSIONS.len())
+            && self.rust().big_box_security_write_notifications == 1
+            && counters_match
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            eprintln!(
+                "BIGBOX_SECURITY_SMOKE_COMPLETE permissions={} blocked={blocked_actions} failures={failed_unlocks} unlocks={successful_unlocks} writes=1 pin=configured locked=0 revision={}",
+                BIG_BOX_SECURITY_PERMISSIONS.len(),
+                self.big_box_security_settings_revision()
+            );
+        } else {
+            eprintln!(
+                "BIGBOX_SECURITY_SMOKE_INCOMPLETE configured={} locked={} show_lock={} exit={} platforms={} permissions={} blocked={} failures={} unlocks={} writes={} initial_revision={initial_revision} revision={} loading={} writing={}",
+                policy.pin_configured(),
+                self.big_box_locked(),
+                policy.show_game_lock_unlock,
+                policy.permission_allowed(BigBoxSecurityPermission::Exit),
+                policy.permission_allowed(BigBoxSecurityPermission::ChangeFilterPlatforms),
+                self.big_box_security_permission_count(),
+                self.rust().big_box_security_blocked_actions,
+                self.rust().big_box_security_failed_unlocks,
+                self.rust().big_box_security_successful_unlocks,
+                self.rust().big_box_security_write_notifications,
+                self.big_box_security_settings_revision(),
                 self.loading(),
                 self.writing()
             );
@@ -25695,6 +26195,7 @@ impl qobject::LibraryController {
                     big_box_marquee_policy: loaded.big_box_marquee_policy,
                     big_box_platform_marquee_media: loaded.big_box_platform_marquee_media,
                     big_box_input_policy: loaded.big_box_input_policy,
+                    big_box_security_policy: loaded.big_box_security_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     details_show_3d_model: loaded.details_show_3d_model,
                     big_box_show_game_menu_model: loaded.big_box_show_game_menu_model,
@@ -26010,6 +26511,63 @@ impl qobject::LibraryController {
                 )));
             }
         }
+    }
+
+    fn finish_big_box_security_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<BigBoxSecurityWriteSuccess, BigBoxSecurityWriteFailure>,
+    ) {
+        if self.as_ref().rust().request_generation != generation {
+            self.as_mut().set_writing(false);
+            return;
+        }
+        match result {
+            Ok(written) => {
+                let pin_configured = written.policy.pin_configured();
+                let show_game_lock_unlock = written.policy.show_game_lock_unlock;
+                self.as_mut().rust_mut().big_box_security_policy = written.policy;
+                self.as_mut().set_big_box_pin_configured(pin_configured);
+                self.as_mut()
+                    .set_big_box_show_game_lock_unlock(show_game_lock_unlock);
+                if written.pin_change == BigBoxPinChange::Clear {
+                    self.as_mut().set_big_box_locked(false);
+                }
+                let revision = self
+                    .as_ref()
+                    .big_box_security_settings_revision()
+                    .wrapping_add(1);
+                self.as_mut()
+                    .set_big_box_security_settings_revision(revision);
+                self.as_mut()
+                    .rust_mut()
+                    .big_box_security_write_notifications += 1;
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved BigBox security settings. Exact backup: {}",
+                    written.backup.display()
+                )));
+            }
+            Err(BigBoxSecurityWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(BigBoxSecurityWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(BigBoxSecurityWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save BigBox security settings: {message}"
+                )));
+            }
+        }
+        self.as_mut().set_writing(false);
     }
 
     fn finish_list_view_write(
@@ -29519,6 +30077,7 @@ impl qobject::LibraryController {
             big_box_marquee_policy,
             big_box_platform_marquee_media,
             big_box_input_policy,
+            big_box_security_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -29595,6 +30154,8 @@ impl qobject::LibraryController {
             saturating_i32(big_box_input_policy.controller_rule_count());
         let big_box_unsupported_controller_rule_count =
             saturating_i32(big_box_input_policy.unsupported_controller_rule_count);
+        let big_box_pin_configured = big_box_security_policy.pin_configured();
+        let big_box_show_game_lock_unlock = big_box_security_policy.show_game_lock_unlock;
         let details_show_video = game_details_media_policy.show_video;
         let details_auto_play_video = game_details_media_policy.auto_play_video;
         let platform_counts = collect_platform_counts(&games, &platform_names);
@@ -29646,6 +30207,7 @@ impl qobject::LibraryController {
             rust.big_box_marquee_policy = big_box_marquee_policy;
             rust.big_box_platform_marquee_media = big_box_platform_marquee_media;
             rust.big_box_input_engine.set_policy(big_box_input_policy);
+            rust.big_box_security_policy = big_box_security_policy;
             rust.big_box_screensaver_candidates = big_box_screensaver_candidates;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
@@ -29695,6 +30257,10 @@ impl qobject::LibraryController {
             rust.pause_screen_presentations = 0;
             rust.pause_process_suspensions = 0;
             rust.pause_process_resumptions = 0;
+            rust.big_box_security_blocked_actions = 0;
+            rust.big_box_security_failed_unlocks = 0;
+            rust.big_box_security_successful_unlocks = 0;
+            rust.big_box_security_write_notifications = 0;
             rust.delegated_session_completions = 0;
             rust.pending_shutdown_screen = None;
             rust.emulator_write_notifications = 0;
@@ -29772,6 +30338,18 @@ impl qobject::LibraryController {
         let big_box_input_revision = self.as_ref().big_box_input_revision().wrapping_add(1);
         self.as_mut()
             .set_big_box_input_revision(big_box_input_revision);
+        self.as_mut()
+            .set_big_box_pin_configured(big_box_pin_configured);
+        let start_big_box_locked = *self.as_ref().frontend_is_big_box() && big_box_pin_configured;
+        self.as_mut().set_big_box_locked(start_big_box_locked);
+        self.as_mut()
+            .set_big_box_show_game_lock_unlock(big_box_show_game_lock_unlock);
+        let security_revision = self
+            .as_ref()
+            .big_box_security_settings_revision()
+            .wrapping_add(1);
+        self.as_mut()
+            .set_big_box_security_settings_revision(security_revision);
         self.as_mut().set_startup_presentation_ready(true);
         let game_media_revision = self.as_ref().game_media_revision().wrapping_add(1);
         self.as_mut().set_game_media_revision(game_media_revision);
@@ -31077,6 +31655,12 @@ fn big_box_input_action_at(index: i32) -> Option<BigBoxInputAction> {
         .copied()
 }
 
+fn big_box_security_permission_at(index: i32) -> Option<BigBoxSecurityPermission> {
+    BIG_BOX_SECURITY_PERMISSIONS
+        .get(usize::try_from(index).ok()?)
+        .copied()
+}
+
 fn controller_binding_option(index: i32) -> Option<ControllerBinding> {
     let index = usize::try_from(index).ok()?;
     if index < 32 {
@@ -31638,6 +32222,148 @@ mod tests {
         invalid = valid;
         invalid.version += 1;
         assert!(invalid.validate().is_err());
+    }
+
+    fn security_permission_payload(
+        permission: BigBoxSecurityPermission,
+    ) -> BigBoxSecurityPermissionPayload {
+        BigBoxSecurityPermissionPayload {
+            key: permission.setting_key().into(),
+            allowed: match permission {
+                BigBoxSecurityPermission::Exit => true,
+                BigBoxSecurityPermission::ChangeFilterPlatforms => false,
+                permission => permission.default_allowed(),
+            },
+        }
+    }
+
+    #[test]
+    fn big_box_security_writer_sets_and_clears_pin_transactionally_and_losslessly() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data directory");
+        let settings_path = data.join("BigBoxSettings.xml");
+        let original = include_bytes!("../../../fixtures/launchbox/Data/BigBoxSettings.xml");
+        fs::write(&settings_path, original).expect("write settings fixture");
+
+        let written = write_big_box_security_settings(
+            directory.path().to_path_buf(),
+            BigBoxSecuritySettingsPayload {
+                version: BIG_BOX_SECURITY_SETTINGS_PAYLOAD_VERSION,
+                pin_change: BigBoxPinChange::Set,
+                pin: "8642".into(),
+                show_game_lock_unlock: true,
+                permissions: BIG_BOX_SECURITY_PERMISSIONS
+                    .iter()
+                    .copied()
+                    .map(security_permission_payload)
+                    .collect(),
+            },
+        )
+        .unwrap_or_else(|error| match error {
+            BigBoxSecurityWriteFailure::Conflict(message)
+            | BigBoxSecurityWriteFailure::Other(message)
+            | BigBoxSecurityWriteFailure::PendingRecovery { message, .. } => {
+                panic!("write BigBox security settings: {message}")
+            }
+        });
+
+        assert_eq!(
+            fs::read(&written.backup).expect("read exact backup"),
+            original
+        );
+        assert_eq!(written.pin_change, BigBoxPinChange::Set);
+        assert!(written.policy.pin_configured());
+        assert!(written.policy.verify_pin("8642"));
+        assert!(written
+            .policy
+            .permission_allowed(BigBoxSecurityPermission::Exit));
+        assert!(!written
+            .policy
+            .permission_allowed(BigBoxSecurityPermission::ChangeFilterPlatforms));
+        let set_bytes = fs::read(&settings_path).expect("read settings with PIN");
+        let set_xml = String::from_utf8(set_bytes.clone()).expect("UTF-8 settings");
+        assert!(set_xml.contains("<LockPin>8642</LockPin>"));
+        assert!(set_xml.contains("<AllowExitWhileUnlocked>true</AllowExitWhileUnlocked>"));
+        assert!(set_xml.contains(
+            "<AllowChangeFilterPlatformsWhileLocked>false</AllowChangeFilterPlatformsWhileLocked>"
+        ));
+        assert!(set_xml.contains("<Theme>Fixture BigBox Theme</Theme>"));
+        for permission in BIG_BOX_SECURITY_PERMISSIONS {
+            assert!(
+                set_xml.contains(&format!("<{}>", permission.setting_key())),
+                "missing serialized security permission {}",
+                permission.setting_key()
+            );
+        }
+
+        let cleared = write_big_box_security_settings(
+            directory.path().to_path_buf(),
+            BigBoxSecuritySettingsPayload {
+                version: BIG_BOX_SECURITY_SETTINGS_PAYLOAD_VERSION,
+                pin_change: BigBoxPinChange::Clear,
+                pin: String::new(),
+                show_game_lock_unlock: true,
+                permissions: BIG_BOX_SECURITY_PERMISSIONS
+                    .iter()
+                    .copied()
+                    .map(security_permission_payload)
+                    .collect(),
+            },
+        )
+        .unwrap_or_else(|error| match error {
+            BigBoxSecurityWriteFailure::Conflict(message)
+            | BigBoxSecurityWriteFailure::Other(message)
+            | BigBoxSecurityWriteFailure::PendingRecovery { message, .. } => {
+                panic!("clear BigBox PIN: {message}")
+            }
+        });
+        assert_eq!(
+            fs::read(&cleared.backup).expect("read exact set-state backup"),
+            set_bytes
+        );
+        assert_eq!(cleared.pin_change, BigBoxPinChange::Clear);
+        assert!(!cleared.policy.pin_configured());
+        let cleared_xml = fs::read_to_string(settings_path).expect("read cleared settings");
+        assert!(!cleared_xml.contains("<LockPin>"));
+        assert!(cleared_xml.contains("<Theme>Fixture BigBox Theme</Theme>"));
+    }
+
+    #[test]
+    fn big_box_security_payload_requires_complete_permissions_and_valid_pin_intent() {
+        let current = BigBoxSecurityPolicy::default();
+        let valid = BigBoxSecuritySettingsPayload {
+            version: BIG_BOX_SECURITY_SETTINGS_PAYLOAD_VERSION,
+            pin_change: BigBoxPinChange::Set,
+            pin: "8642".into(),
+            show_game_lock_unlock: true,
+            permissions: BIG_BOX_SECURITY_PERMISSIONS
+                .iter()
+                .copied()
+                .map(security_permission_payload)
+                .collect(),
+        };
+        assert!(valid.validate(&current).is_ok());
+
+        let mut invalid = valid.clone();
+        invalid.version += 1;
+        assert!(invalid.validate(&current).is_err());
+
+        invalid = valid.clone();
+        invalid.permissions.pop();
+        assert!(invalid.validate(&current).is_err());
+
+        invalid = valid.clone();
+        invalid.permissions[1] = invalid.permissions[0].clone();
+        assert!(invalid.validate(&current).is_err());
+
+        invalid = valid.clone();
+        invalid.pin = "12x4".into();
+        assert!(invalid.validate(&current).is_err());
+
+        invalid = valid;
+        invalid.pin_change = BigBoxPinChange::Keep;
+        assert!(invalid.validate(&current).is_err());
     }
 
     #[test]

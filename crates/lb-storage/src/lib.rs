@@ -2121,6 +2121,28 @@ impl AuxiliaryDocument {
         })
     }
 
+    /// Removes a field from the only record with `record_name`.
+    ///
+    /// This is distinct from writing an empty element. LaunchBox omits
+    /// optional singleton settings such as `LockPin` when they are cleared,
+    /// and callers need to preserve that lexical distinction without
+    /// rebuilding the surrounding settings document.
+    pub fn remove_single_record_field(
+        &mut self,
+        record_name: &str,
+        field: &str,
+    ) -> Result<(), StorageError> {
+        self.mutate(|root| {
+            let matches = record_indices(root, record_name, None);
+            let index = exactly_one_editable_record(record_name, None, &matches)?;
+            let record = root.children[index]
+                .as_mut_element()
+                .expect("record index always identifies an element");
+            set_optional_child_text(record, field, None);
+            Ok(())
+        })
+    }
+
     /// Updates a field on exactly one record selected by a child field/value.
     pub fn set_record_field(
         &mut self,

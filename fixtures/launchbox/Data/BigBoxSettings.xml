@@ -55,6 +55,39 @@
     <PlayVideoAudioWithBackgroundMusic>false</PlayVideoAudioWithBackgroundMusic>
     <ShowGameMenuFlipBox>true</ShowGameMenuFlipBox>
     <ShowGameMenuViewModelFullscreen>true</ShowGameMenuViewModelFullscreen>
+    <ShowGameLockUnlock>true</ShowGameLockUnlock>
+    <AllowExitWhileUnlocked>false</AllowExitWhileUnlocked>
+    <AllowSettingStarRatingsWhileLocked>false</AllowSettingStarRatingsWhileLocked>
+    <AllowOpeningGameFoldersWhileLocked>false</AllowOpeningGameFoldersWhileLocked>
+    <AllowOpeningGameImageFoldersWhileLocked>false</AllowOpeningGameImageFoldersWhileLocked>
+    <AllowOpeningEmulatorsWhileLocked>false</AllowOpeningEmulatorsWhileLocked>
+    <AllowFavoritingGamesWhileLocked>false</AllowFavoritingGamesWhileLocked>
+    <AllowHidingGamesWhileLocked>false</AllowHidingGamesWhileLocked>
+    <AllowMarkingGamesAsBrokenWhileLocked>false</AllowMarkingGamesAsBrokenWhileLocked>
+    <AllowModifyingProgressWhileLocked>false</AllowModifyingProgressWhileLocked>
+    <AllowSleepWhileLocked>false</AllowSleepWhileLocked>
+    <AllowShutDownWhileLocked>false</AllowShutDownWhileLocked>
+    <AllowRebootWhileLocked>false</AllowRebootWhileLocked>
+    <AllowChangeViewWhileLocked>false</AllowChangeViewWhileLocked>
+    <AllowChangeImageTypeWhileLocked>false</AllowChangeImageTypeWhileLocked>
+    <AllowNavigateToGameDiscoveryCenterWhileLocked>true</AllowNavigateToGameDiscoveryCenterWhileLocked>
+    <AllowChangeFilterAllGamesWhileLocked>true</AllowChangeFilterAllGamesWhileLocked>
+    <AllowChangeFilterPlatformsWhileLocked>true</AllowChangeFilterPlatformsWhileLocked>
+    <AllowChangeFilterPlatformCategoriesWhileLocked>true</AllowChangeFilterPlatformCategoriesWhileLocked>
+    <AllowViewRetroarchNetplayBrowserWhileLocked>true</AllowViewRetroarchNetplayBrowserWhileLocked>
+    <AllowChangeFilterPlaylistsWhileLocked>true</AllowChangeFilterPlaylistsWhileLocked>
+    <AllowChangeFilterGenresWhileLocked>true</AllowChangeFilterGenresWhileLocked>
+    <AllowChangeFilterDevelopersWhileLocked>true</AllowChangeFilterDevelopersWhileLocked>
+    <AllowChangeFilterPublishersWhileLocked>true</AllowChangeFilterPublishersWhileLocked>
+    <AllowChangeFilterSeriesWhileLocked>true</AllowChangeFilterSeriesWhileLocked>
+    <AllowChangeFilterStatusesWhileLocked>true</AllowChangeFilterStatusesWhileLocked>
+    <AllowChangeFilterSourcesWhileLocked>true</AllowChangeFilterSourcesWhileLocked>
+    <AllowChangeFilterRatingsWhileLocked>true</AllowChangeFilterRatingsWhileLocked>
+    <AllowChangeFilterPlayModesWhileLocked>true</AllowChangeFilterPlayModesWhileLocked>
+    <AllowChangeFilterRegionsWhileLocked>true</AllowChangeFilterRegionsWhileLocked>
+    <AllowThemesDemoWhileLocked>true</AllowThemesDemoWhileLocked>
+    <AllowSearchWhileLocked>true</AllowSearchWhileLocked>
+    <AllowViewAchievementProfileWhileLocked>false</AllowViewAchievementProfileWhileLocked>
     <EnableGamepad>true</EnableGamepad>
     <UseAllControllers>false</UseAllControllers>
     <KeyboardSelect>6</KeyboardSelect>

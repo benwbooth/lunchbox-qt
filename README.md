@@ -120,6 +120,20 @@ rule appears in QML. The exact protected compatibility transforms and custom
 theme views remain explicit parity gates; the current clean-room geometry and
 evidence boundary are documented in `analysis/marquee-13.27.md`.
 
+BigBox now also implements the recovered PIN/security lock. A configured PIN
+starts BigBox locked; the native masked keypad accepts keyboard, controller,
+or pointer input; and a visible editor covers Set/Repeat/Clear PIN,
+Show Lock/Unlock, and all 32 recovered permission values. Implemented
+exit/window, view/image, search/filter, and navigation actions pass through one
+typed Rust gate, with unavailable navigation rows skipped. The PIN never
+becomes a controller property, model role, status, or diagnostic. Saving uses
+one lossless `BigBoxSettings.xml` recovery transaction with an exact backup and
+committed reread. The cross-platform implementation contains no runtime shell,
+host path rule, credential-store dependency, or Windows-only security API.
+Premium entitlement remains separate and is not bypassed. Recovered defaults,
+the keypad evidence, clean-room 32-digit safety bound, and remaining parity
+gates are documented in `analysis/security-13.27.md`.
+
 LaunchBox also has a resizable selected-game details pane backed directly by
 that role model. Stable game IDs preserve selection through filtering, sorting,
 editing, insertion, and removal; when a game is filtered out the first visible

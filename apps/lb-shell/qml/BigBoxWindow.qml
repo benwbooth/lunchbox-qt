@@ -15,7 +15,12 @@ ApplicationWindow {
                 ? Window.Windowed : Window.FullScreen
     title: "BigBox Port"
     color: "#07090d"
-    onClosing: {
+    onClosing: function(close) {
+        if (!window.securitySmokeAborting
+                && !window.guardSecurityAction("BigBoxExit")) {
+            close.accepted = false
+            return
+        }
         bigBoxScreensaver.stopMode("frontend")
         bigBoxAttractMode.stopMode("frontend")
         startupPresentationOverlay.stopForFrontend()
@@ -170,6 +175,22 @@ ApplicationWindow {
         argumentValue("--bigbox-marquee-platform-screenshot")
     property string marqueeContextKind: "game"
     property string marqueeContextName: ""
+    property bool securitySmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-security-smoke-test") >= 0
+    property int securitySmokePhase: 0
+    property int securitySmokeStartRevision: -1
+    property int securitySmokeBlockedActions: 0
+    property int securitySmokeFailedUnlocks: 0
+    property int securitySmokeSuccessfulUnlocks: 0
+    property bool securitySmokeFinished: false
+    property bool securitySmokeAborting: false
+    property bool securityPinScreenshotRequested: false
+    property bool securityEditorScreenshotRequested: false
+    property string securityPinScreenshotPath:
+        argumentValue("--bigbox-security-pin-screenshot")
+    property string securityEditorScreenshotPath:
+        argumentValue("--bigbox-security-editor-screenshot")
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -368,12 +389,19 @@ ApplicationWindow {
         const count = controller.big_box_navigation_entry_count + 1
         if (count <= 0)
             return false
-        let row = (navigationList.currentIndex + offset) % count
-        if (row < 0)
-            row += count
-        navigationList.currentIndex = row
-        navigationList.positionViewAtIndex(row, ListView.Contain)
-        return true
+        let row = navigationList.currentIndex
+        for (let attempt = 0; attempt < count; ++attempt) {
+            row = (row + offset) % count
+            if (row < 0)
+                row += count
+            if (navigationRowAllowed(row)) {
+                navigationList.currentIndex = row
+                navigationList.positionViewAtIndex(
+                    row, ListView.Contain)
+                return true
+            }
+        }
+        return false
     }
 
     function moveFocusedControl(forward) {
@@ -412,8 +440,89 @@ ApplicationWindow {
         return false
     }
 
+    function securityActionAllowed(action) {
+        return !controller.big_box_locked
+               || controller.big_box_action_allowed_while_locked(action)
+    }
+
+    function guardSecurityAction(action) {
+        if (securityActionAllowed(action))
+            return true
+        controller.note_big_box_locked_action(action)
+        return false
+    }
+
+    function securityNavigationAction(kind) {
+        if (kind === "" || kind === "all")
+            return "BigBoxShowAllGames"
+        if (kind === "platform")
+            return "BigBoxShowPlatforms"
+        if (kind === "category")
+            return "BigBoxShowPlatformCategories"
+        if (kind === "playlist")
+            return "BigBoxShowPlaylists"
+        return "BigBoxFilter"
+    }
+
+    function guardSecurityNavigation(kind) {
+        if (!controller.big_box_locked
+                || controller.big_box_navigation_allowed_while_locked(kind))
+            return true
+        controller.note_big_box_locked_action(
+            securityNavigationAction(kind))
+        return false
+    }
+
+    function navigationAccessAvailable() {
+        return !controller.big_box_locked
+               || controller.big_box_navigation_allowed_while_locked("all")
+               || controller.big_box_navigation_allowed_while_locked(
+                   "platform")
+               || controller.big_box_navigation_allowed_while_locked(
+                   "category")
+               || controller.big_box_navigation_allowed_while_locked(
+                   "playlist")
+    }
+
+    function navigationRowAllowed(row) {
+        const kind = row <= 0 ? "all"
+            : controller.big_box_navigation_entry_kind_at(row - 1)
+        return !controller.big_box_locked
+               || controller
+                  .big_box_navigation_allowed_while_locked(kind)
+    }
+
+    function requestLockUnlock() {
+        if (!controller.big_box_pin_configured) {
+            return bigBoxSecuritySettings.openEditor()
+        }
+        if (controller.big_box_locked) {
+            bigBoxUnlockPopup.openForPrompt(
+                "Enter your PIN",
+                "Unlock BigBox to use protected features.")
+            return true
+        }
+        return controller.lock_big_box()
+    }
+
+    function failSecuritySmoke(message, exitCode) {
+        console.error(message
+                      + " phase=" + securitySmokePhase
+                      + " configured="
+                      + controller.big_box_pin_configured
+                      + " locked=" + controller.big_box_locked
+                      + " revision="
+                      + controller.big_box_security_settings_revision
+                      + " writing=" + controller.writing
+                      + " status=" + controller.status_message)
+        securitySmokeAborting = true
+        Qt.exit(exitCode)
+    }
+
     function closeBigBoxSurface() {
-        if (bigBoxMarqueeSettings.opened) {
+        if (bigBoxSecuritySettings.opened) {
+            bigBoxSecuritySettings.close()
+        } else if (bigBoxMarqueeSettings.opened) {
             bigBoxMarqueeSettings.close()
         } else if (bigBoxModelViewer.opened) {
             bigBoxModelViewer.close()
@@ -519,16 +628,28 @@ ApplicationWindow {
         if (startupPresentationPending)
             return false
 
+        if (bigBoxUnlockPopup.opened)
+            return bigBoxUnlockPopup.handleAction(action)
+        if (bigBoxSecuritySettings.opened)
+            return bigBoxSecuritySettings.handleAction(action)
+        if (action === "BigBoxLockUnlock")
+            return requestLockUnlock()
         if (action === "BigBoxBack") {
             if (closeBigBoxSurface())
+                return true
+            if (!guardSecurityAction("BigBoxExit"))
                 return true
             Qt.quit()
             return true
         }
         if (action === "BigBoxExit") {
+            if (!guardSecurityAction(action))
+                return true
             Qt.quit()
             return true
         }
+        if (!guardSecurityAction(action))
+            return true
         if (action === "BigBoxVolumeUp")
             return adjustRuntimeVolume(5)
         if (action === "BigBoxVolumeDown")
@@ -934,7 +1055,8 @@ ApplicationWindow {
     }
 
     function flipSelectedBox() {
-        if (!controller.big_box_show_game_menu_flip_box
+        if (!guardSecurityAction("BigBoxFlipBox")
+                || !controller.big_box_show_game_menu_flip_box
                 || selectedBigBoxGameId.length === 0
                 || selectedBigBoxGameBackImageUrl.toString().length === 0)
             return false
@@ -991,8 +1113,11 @@ ApplicationWindow {
     }
 
     function openAttributeFilters() {
+        if (!guardSecurityAction("BigBoxFilter"))
+            return false
         attributeFilterDrawer.open()
         bigBoxStateFilterCombo.forceActiveFocus()
+        return true
     }
 
     function applyAttributeFilters() {
@@ -1266,6 +1391,11 @@ ApplicationWindow {
     }
 
     function openNavigation() {
+        if (!navigationAccessAvailable()) {
+            controller.note_big_box_locked_action(
+                "BigBoxShowAllGames")
+            return false
+        }
         navigationDrawer.open()
         navigationList.currentIndex = 0
         for (let index = 0; index < controller.big_box_navigation_entry_count; ++index) {
@@ -1279,10 +1409,19 @@ ApplicationWindow {
         }
         navigationList.positionViewAtIndex(navigationList.currentIndex,
                                            ListView.Contain)
+        if (!navigationRowAllowed(navigationList.currentIndex)) {
+            navigationList.currentIndex = -1
+            moveNavigationSelection(1)
+        }
         navigationList.forceActiveFocus()
+        return true
     }
 
     function activateNavigationRow(row) {
+        const requestedKind = row <= 0 ? "all"
+            : controller.big_box_navigation_entry_kind_at(row - 1)
+        if (!guardSecurityNavigation(requestedKind))
+            return false
         if (row <= 0) {
             activeNavigationName = "All Games"
             backgroundMusicContextKind = ""
@@ -1302,11 +1441,12 @@ ApplicationWindow {
             else if (kind === "platform")
                 controller.apply_filters("", key)
             else
-                return
+                return false
         }
         navigationDrawer.close()
         gameList.currentIndex = gameList.count > 0 ? 0 : -1
         gameList.forceActiveFocus()
+        return true
     }
 
     function verifyModelRoles(index, gameId, gameTitle, gamePlatform, gameFavorite,
@@ -3351,6 +3491,266 @@ ApplicationWindow {
         }
     }
 
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.securitySmokeTest
+                 && !window.securitySmokeFinished
+        onTriggered: {
+            if (controller.loading
+                    || window.startupPresentationPending
+                    || controller.library_path.length === 0)
+                return
+            if (window.securitySmokePhase === 0) {
+                if (!controller.big_box_pin_configured
+                        || !controller.big_box_locked
+                        || controller
+                           .big_box_security_permission_count() !== 32
+                        || !controller
+                            .big_box_action_allowed_while_locked(
+                                "BigBoxPlayGame")
+                        || controller
+                           .big_box_action_allowed_while_locked(
+                               "BigBoxExit")
+                        || controller
+                           .big_box_navigation_allowed_while_locked(
+                               "platform")
+                        || !controller
+                            .big_box_navigation_allowed_while_locked(
+                                "all")) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_INITIAL_POLICY_MISMATCH",
+                        675)
+                    return
+                }
+                window.securitySmokeStartRevision =
+                    controller.big_box_security_settings_revision
+                if (window.guardSecurityAction("BigBoxExit")
+                        || window.guardSecurityNavigation("platform")) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_BLOCKED_ACTION_ESCAPED",
+                        676)
+                    return
+                }
+                window.securitySmokeBlockedActions = 2
+                if (!window.requestLockUnlock()) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_UNLOCK_POPUP_MISSING",
+                        677)
+                    return
+                }
+                window.securitySmokePhase = 1
+            } else if (window.securitySmokePhase === 1) {
+                if (!bigBoxUnlockPopup.opened)
+                    return
+                if (window.securityPinScreenshotPath.length === 0) {
+                    window.securitySmokePhase = 2
+                    return
+                }
+                if (window.securityPinScreenshotRequested)
+                    return
+                window.securityPinScreenshotRequested = true
+                bigBoxUnlockPopup.smokeCaptureTarget.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.securityPinScreenshotPath)) {
+                            window.failSecuritySmoke(
+                                "BIGBOX_SECURITY_PIN_SCREENSHOT_FAILED",
+                                678)
+                            return
+                        }
+                        window.securitySmokePhase = 2
+                    })
+            } else if (window.securitySmokePhase === 2) {
+                if (!bigBoxUnlockPopup.opened
+                        || !bigBoxUnlockPopup.runSmokeEntry("0000")) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_WRONG_PIN_ENTRY_FAILED",
+                        679)
+                    return
+                }
+                window.securitySmokeFailedUnlocks = 1
+                window.securitySmokePhase = 3
+            } else if (window.securitySmokePhase === 3) {
+                if (!bigBoxUnlockPopup.opened)
+                    return
+                if (!bigBoxUnlockPopup.runSmokeEntry("2580")) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_ORIGINAL_PIN_ENTRY_FAILED",
+                        680)
+                    return
+                }
+                window.securitySmokeSuccessfulUnlocks = 1
+                window.securitySmokePhase = 4
+            } else if (window.securitySmokePhase === 4) {
+                if (controller.big_box_locked
+                        || bigBoxUnlockPopup.opened)
+                    return
+                if (!bigBoxSecuritySettings.openEditor()) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_EDITOR_OPEN_FAILED",
+                        681)
+                    return
+                }
+                window.securitySmokePhase = 5
+            } else if (window.securitySmokePhase === 5) {
+                if (!bigBoxSecuritySettings.opened
+                        || controller
+                           .big_box_security_permission_count() !== 32)
+                    return
+                if (window.securityEditorScreenshotPath.length === 0) {
+                    window.securitySmokePhase = 6
+                    return
+                }
+                if (window.securityEditorScreenshotRequested)
+                    return
+                window.securityEditorScreenshotRequested = true
+                bigBoxSecuritySettings.smokeCaptureTarget.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.securityEditorScreenshotPath)) {
+                            window.failSecuritySmoke(
+                                "BIGBOX_SECURITY_EDITOR_SCREENSHOT_FAILED",
+                                682)
+                            return
+                        }
+                        window.securitySmokePhase = 6
+                    })
+            } else if (window.securitySmokePhase === 6) {
+                if (!bigBoxSecuritySettings.beginSetPin()) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_SET_PIN_POPUP_FAILED",
+                        683)
+                    return
+                }
+                window.securitySmokePhase = 7
+            } else if (window.securitySmokePhase === 7) {
+                if (!bigBoxSecuritySettings.pinPopup.opened)
+                    return
+                if (!bigBoxSecuritySettings.pinPopup
+                        .runSmokeEntry("8642")) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_FIRST_NEW_PIN_FAILED",
+                        684)
+                    return
+                }
+                window.securitySmokePhase = 8
+            } else if (window.securitySmokePhase === 8) {
+                if (!bigBoxSecuritySettings.pinPopup.opened
+                        || bigBoxSecuritySettings.pinPurpose
+                           !== "repeat")
+                    return
+                if (!bigBoxSecuritySettings.pinPopup
+                        .runSmokeEntry("8642")) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_REPEAT_NEW_PIN_FAILED",
+                        685)
+                    return
+                }
+                window.securitySmokePhase = 9
+            } else if (window.securitySmokePhase === 9) {
+                if (bigBoxSecuritySettings.pinPopup.opened
+                        || bigBoxSecuritySettings.pinChange !== "set")
+                    return
+                if (!bigBoxSecuritySettings.setPermission(
+                        "AllowExitWhileUnlocked", true)
+                        || !bigBoxSecuritySettings.setPermission(
+                            "AllowChangeFilterPlatformsWhileLocked",
+                            false)
+                        || !bigBoxSecuritySettings.saveChanges()) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_SAVE_START_FAILED",
+                        686)
+                    return
+                }
+                window.securitySmokePhase = 10
+            } else if (window.securitySmokePhase === 10) {
+                if (controller.writing
+                        || bigBoxSecuritySettings.opened)
+                    return
+                if (controller.big_box_security_settings_revision
+                        !== window.securitySmokeStartRevision + 1
+                        || controller.big_box_locked
+                        || !controller.big_box_pin_configured) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_COMMITTED_POLICY_MISMATCH",
+                        687)
+                    return
+                }
+                if (!controller.lock_big_box()) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_RELOCK_FAILED", 692)
+                    return
+                }
+                if (!controller
+                        .big_box_action_allowed_while_locked(
+                            "BigBoxExit")
+                        || controller
+                           .big_box_navigation_allowed_while_locked(
+                               "platform")) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_RELOCKED_POLICY_MISMATCH",
+                        694)
+                    return
+                }
+                if (!window.requestLockUnlock()) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_REPLACEMENT_POPUP_FAILED",
+                        693)
+                    return
+                }
+                window.securitySmokePhase = 11
+            } else if (window.securitySmokePhase === 11) {
+                if (!bigBoxUnlockPopup.opened)
+                    return
+                if (!bigBoxUnlockPopup.runSmokeEntry("2580")) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_REPLACED_PIN_ACCEPTED",
+                        688)
+                    return
+                }
+                window.securitySmokeFailedUnlocks = 2
+                window.securitySmokePhase = 12
+            } else if (window.securitySmokePhase === 12) {
+                if (!bigBoxUnlockPopup.opened)
+                    return
+                if (!bigBoxUnlockPopup.runSmokeEntry("8642")) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_NEW_PIN_ENTRY_FAILED",
+                        689)
+                    return
+                }
+                window.securitySmokeSuccessfulUnlocks = 2
+                window.securitySmokePhase = 13
+            } else if (window.securitySmokePhase === 13) {
+                if (controller.big_box_locked
+                        || bigBoxUnlockPopup.opened)
+                    return
+                if (!controller.report_big_box_security_smoke_success(
+                        window.securitySmokeStartRevision,
+                        window.securitySmokeBlockedActions,
+                        window.securitySmokeFailedUnlocks,
+                        window.securitySmokeSuccessfulUnlocks)) {
+                    window.failSecuritySmoke(
+                        "BIGBOX_SECURITY_CONTROLLER_REJECTED",
+                        690)
+                    return
+                }
+                window.securitySmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: window.securitySmokeTest
+                 && !window.securitySmokeFinished
+        onTriggered: window.failSecuritySmoke(
+            "BIGBOX_SECURITY_SMOKE_TIMEOUT",
+            700 + window.securitySmokePhase)
+    }
+
     Rectangle {
         anchors.fill: parent
         gradient: Gradient {
@@ -3446,8 +3846,14 @@ ApplicationWindow {
                         ? controller.navigation_filter_kind.length === 0
                         : controller.navigation_filter_kind === entryKind
                           && controller.navigation_filter_key === entryKey
+                    readonly property bool securityAllowed:
+                        !controller.big_box_locked
+                        || controller
+                           .big_box_navigation_allowed_while_locked(
+                               entryKind)
                     width: ListView.view.width
                     height: 62
+                    enabled: securityAllowed
                     leftPadding: 18 + entryDepth * 22
                     rightPadding: 16
                     highlighted: navigationList.currentIndex === index
@@ -3458,6 +3864,10 @@ ApplicationWindow {
                     font.pixelSize: 19
                     font.bold: activeEntry
                     Accessible.name: entryName + ", " + entryCount + " games"
+                    Accessible.description:
+                        securityAllowed
+                        ? "Available"
+                        : "Unlock BigBox to use this library filter"
                     onClicked: window.activateNavigationRow(index)
 
                     background: Rectangle {
@@ -3665,6 +4075,15 @@ ApplicationWindow {
                 text: controller.library_name
                 color: "#b8c5d6"
                 font.pixelSize: 20
+            }
+            Label {
+                visible: controller.big_box_locked
+                text: "LOCKED"
+                color: "#f0c04a"
+                font.pixelSize: 16
+                font.bold: true
+                font.letterSpacing: 2
+                Accessible.name: "BigBox locked mode active"
             }
             Label {
                 visible:
@@ -3947,24 +4366,48 @@ ApplicationWindow {
             Button {
                 text: "BROWSE: " + window.activeNavigationName.toUpperCase()
                 enabled: !controller.loading && !controller.writing
+                         && window.navigationAccessAvailable()
                 onClicked: window.openNavigation()
             }
             Button {
                 text: "GAME FILTERS"
                 enabled: !controller.loading && !controller.writing
+                         && window.securityActionAllowed("BigBoxFilter")
                 onClicked: window.openAttributeFilters()
             }
             Button {
                 text: "INPUT"
                 enabled: !controller.loading && !controller.writing
+                         && !controller.big_box_locked
                 Accessible.name: "Edit BigBox input settings"
                 onClicked: bigBoxInputSettings.openEditor()
             }
             Button {
                 text: "DISPLAYS"
                 enabled: !controller.loading && !controller.writing
+                         && !controller.big_box_locked
                 Accessible.name: "Edit BigBox display and marquee settings"
                 onClicked: bigBoxMarqueeSettings.openEditor()
+            }
+            Button {
+                text: "SECURITY"
+                visible: !controller.big_box_locked
+                enabled: visible
+                         && !controller.loading && !controller.writing
+                Accessible.name: "Edit BigBox PIN and locked mode permissions"
+                onClicked: bigBoxSecuritySettings.openEditor()
+            }
+            Button {
+                text: controller.big_box_locked ? "UNLOCK" : "LOCK"
+                visible:
+                    controller.big_box_pin_configured
+                    && controller.big_box_show_game_lock_unlock
+                enabled: visible
+                         && !controller.loading && !controller.writing
+                Accessible.name:
+                    controller.big_box_locked
+                    ? "Unlock BigBox" : "Lock BigBox"
+                onClicked: window.requestLockUnlock()
             }
             Button {
                 text: "RANDOM"
@@ -4075,6 +4518,8 @@ ApplicationWindow {
                 enabled: visible
                          && !controller.loading
                          && !controller.writing
+                         && window.securityActionAllowed(
+                             "BigBoxFlipBox")
 
                 function activate() {
                     if (!enabled)
@@ -4985,7 +5430,9 @@ ApplicationWindow {
         }
 
         function selectPreviousImage() {
-            if (imageCount === 0)
+            if (!window.guardSecurityAction(
+                    "BigBoxSwitchImageType")
+                    || imageCount === 0)
                 return false
             return selectImage(
                 selectedImageIndex <= 0
@@ -4993,7 +5440,9 @@ ApplicationWindow {
         }
 
         function selectNextImage() {
-            if (imageCount === 0)
+            if (!window.guardSecurityAction(
+                    "BigBoxSwitchImageType")
+                    || imageCount === 0)
                 return false
             return selectImage(
                 selectedImageIndex < 0
@@ -5347,6 +5796,8 @@ ApplicationWindow {
             || attributeFilterDrawer.opened
             || navigationDrawer.opened
             || launchWithDialog.opened
+            || bigBoxUnlockPopup.opened
+            || bigBoxSecuritySettings.opened
             || bigBoxAttractMode.active
         activationCallback: function() {
             bigBoxAttractMode.stopMode("screensaver")
@@ -5382,6 +5833,8 @@ ApplicationWindow {
             || attributeFilterDrawer.opened
             || navigationDrawer.opened
             || launchWithDialog.opened
+            || bigBoxUnlockPopup.opened
+            || bigBoxSecuritySettings.opened
             || bigBoxScreensaver.active
         advanceWheelCallback: window.advanceAttractWheel
         switchFilterCallback: window.switchAttractFilter
@@ -6410,6 +6863,29 @@ ApplicationWindow {
         controller: controller
     }
 
+    BigBoxSecuritySettings {
+        id: bigBoxSecuritySettings
+        controller: controller
+    }
+
+    BigBoxPinPopup {
+        id: bigBoxUnlockPopup
+
+        onSubmitted: function(pin) {
+            if (controller.unlock_big_box(pin)) {
+                gameList.forceActiveFocus()
+                return
+            }
+            Qt.callLater(function() {
+                bigBoxUnlockPopup.openForPrompt(
+                    "Enter your PIN",
+                    "Incorrect PIN. Try again.")
+            })
+        }
+
+        onCancelled: gameList.forceActiveFocus()
+    }
+
     BigBoxMarqueeWindow {
         id: bigBoxMarquee
         controller: controller
@@ -6447,6 +6923,8 @@ ApplicationWindow {
                  && !bigBoxModelViewer.opened
                  && !bigBoxInputSettings.opened
                  && !bigBoxMarqueeSettings.opened
+                 && !bigBoxSecuritySettings.opened
+                 && !bigBoxUnlockPopup.opened
         onActivated: window.showLaunchWithSelection()
     }
 
@@ -6457,6 +6935,9 @@ ApplicationWindow {
                  && !bigBoxModelViewer.opened
                  && !bigBoxInputSettings.opened
                  && !bigBoxMarqueeSettings.opened
+                 && !bigBoxSecuritySettings.opened
+                 && !bigBoxUnlockPopup.opened
+                 && window.navigationAccessAvailable()
         onActivated: {
             if (navigationDrawer.opened) {
                 navigationDrawer.close()
