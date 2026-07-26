@@ -17,6 +17,13 @@ pub struct ArchiveExtractor {
     executable: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArchiveExtractionLimits {
+    pub max_entries: usize,
+    pub max_member_bytes: u64,
+    pub max_total_bytes: u64,
+}
+
 impl ArchiveExtractor {
     pub fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
@@ -416,6 +423,30 @@ impl ArchiveExtractor {
         archive: &Path,
         destination: &Path,
     ) -> Result<Vec<PathBuf>, ArchiveExtractionError> {
+        self.extract_to_directory_with_limits(archive, destination, None)
+    }
+
+    /// Safely extracts an archive while enforcing its declared and resulting
+    /// member counts and sizes.
+    ///
+    /// The technical listing is checked before extraction, so a data archive
+    /// cannot silently expand beyond its configured boundary. The extracted
+    /// regular files are checked again before they are returned.
+    pub fn extract_to_directory_bounded(
+        &self,
+        archive: &Path,
+        destination: &Path,
+        limits: ArchiveExtractionLimits,
+    ) -> Result<Vec<PathBuf>, ArchiveExtractionError> {
+        self.extract_to_directory_with_limits(archive, destination, Some(limits))
+    }
+
+    fn extract_to_directory_with_limits(
+        &self,
+        archive: &Path,
+        destination: &Path,
+        limits: Option<ArchiveExtractionLimits>,
+    ) -> Result<Vec<PathBuf>, ArchiveExtractionError> {
         if !archive.is_file() {
             return Err(ArchiveExtractionError::ArchiveNotFound {
                 archive: archive.to_path_buf(),
@@ -423,6 +454,9 @@ impl ArchiveExtractor {
         }
         let entries = self.list_entries(archive)?;
         validate_entries(archive, &entries)?;
+        if let Some(limits) = limits {
+            validate_entry_limits(archive, &entries, limits)?;
+        }
         let metadata = fs::symlink_metadata(destination).map_err(|error| {
             ArchiveExtractionError::ExtractedTree {
                 archive: archive.to_path_buf(),
@@ -484,7 +518,11 @@ impl ArchiveExtractor {
                 message: tool_output_message(&output.stdout, &output.stderr),
             });
         }
-        audit_extracted_tree(archive, &destination)
+        let files = audit_extracted_tree(archive, &destination)?;
+        if let Some(limits) = limits {
+            validate_extracted_limits(archive, &files, limits)?;
+        }
+        Ok(files)
     }
 
     /// Extracts one bounded `.tar.xz` payload through two audited stages.
@@ -1081,19 +1119,30 @@ struct TemporaryLaunchResource {
 struct ArchiveEntry {
     path: String,
     encrypted: bool,
+    size: Option<u64>,
+    directory: bool,
 }
 
 fn parse_technical_listing(listing: &str) -> Vec<ArchiveEntry> {
     let mut entries = Vec::new();
     let mut path = None;
     let mut encrypted = false;
+    let mut size = None;
+    let mut directory = false;
     for raw_line in listing.lines().chain(std::iter::once("")) {
         let line = raw_line.trim_end_matches('\r');
         if line.is_empty() {
             if let Some(path) = path.take() {
-                entries.push(ArchiveEntry { path, encrypted });
+                entries.push(ArchiveEntry {
+                    path,
+                    encrypted,
+                    size,
+                    directory,
+                });
             }
             encrypted = false;
+            size = None;
+            directory = false;
             continue;
         }
         let Some((name, value)) = line.split_once(" = ") else {
@@ -1102,6 +1151,9 @@ fn parse_technical_listing(listing: &str) -> Vec<ArchiveEntry> {
         match name {
             "Path" => path = Some(value.to_string()),
             "Encrypted" => encrypted = value == "+",
+            "Size" => size = value.parse().ok(),
+            "Folder" => directory = value == "+",
+            "Attributes" => directory |= value.starts_with('D'),
             _ => {}
         }
     }
@@ -1210,6 +1262,7 @@ fn validate_entries(
     archive: &Path,
     entries: &[ArchiveEntry],
 ) -> Result<(), ArchiveExtractionError> {
+    let mut identities = BTreeSet::new();
     for entry in entries {
         if entry.encrypted {
             return Err(ArchiveExtractionError::EncryptedEntry {
@@ -1221,6 +1274,109 @@ fn validate_entries(
             return Err(ArchiveExtractionError::UnsafeEntry {
                 archive: archive.to_path_buf(),
                 entry: entry.path.clone(),
+            });
+        }
+        let identity = entry.path.replace('\\', "/").to_ascii_lowercase();
+        if !identities.insert(identity) {
+            return Err(ArchiveExtractionError::DuplicateEntry {
+                archive: archive.to_path_buf(),
+                entry: entry.path.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_entry_limits(
+    archive: &Path,
+    entries: &[ArchiveEntry],
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArchiveExtractionError> {
+    if entries.len() > limits.max_entries {
+        return Err(ArchiveExtractionError::EntryLimit {
+            archive: archive.to_path_buf(),
+            actual: entries.len(),
+            limit: limits.max_entries,
+        });
+    }
+    let mut total_bytes = 0_u64;
+    for entry in entries {
+        if entry.directory {
+            continue;
+        }
+        let size = entry
+            .size
+            .ok_or_else(|| ArchiveExtractionError::MissingEntrySize {
+                archive: archive.to_path_buf(),
+                entry: entry.path.clone(),
+            })?;
+        if size > limits.max_member_bytes {
+            return Err(ArchiveExtractionError::MemberSizeLimit {
+                archive: archive.to_path_buf(),
+                entry: entry.path.clone(),
+                actual: size,
+                limit: limits.max_member_bytes,
+            });
+        }
+        total_bytes = total_bytes.checked_add(size).ok_or_else(|| {
+            ArchiveExtractionError::TotalSizeLimit {
+                archive: archive.to_path_buf(),
+                actual: u64::MAX,
+                limit: limits.max_total_bytes,
+            }
+        })?;
+        if total_bytes > limits.max_total_bytes {
+            return Err(ArchiveExtractionError::TotalSizeLimit {
+                archive: archive.to_path_buf(),
+                actual: total_bytes,
+                limit: limits.max_total_bytes,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_extracted_limits(
+    archive: &Path,
+    files: &[PathBuf],
+    limits: ArchiveExtractionLimits,
+) -> Result<(), ArchiveExtractionError> {
+    if files.len() > limits.max_entries {
+        return Err(ArchiveExtractionError::EntryLimit {
+            archive: archive.to_path_buf(),
+            actual: files.len(),
+            limit: limits.max_entries,
+        });
+    }
+    let mut total_bytes = 0_u64;
+    for path in files {
+        let size = fs::symlink_metadata(path)
+            .map_err(|error| ArchiveExtractionError::ExtractedTree {
+                archive: archive.to_path_buf(),
+                path: path.clone(),
+                message: error.to_string(),
+            })?
+            .len();
+        if size > limits.max_member_bytes {
+            return Err(ArchiveExtractionError::MemberSizeLimit {
+                archive: archive.to_path_buf(),
+                entry: path.display().to_string(),
+                actual: size,
+                limit: limits.max_member_bytes,
+            });
+        }
+        total_bytes = total_bytes.checked_add(size).ok_or_else(|| {
+            ArchiveExtractionError::TotalSizeLimit {
+                archive: archive.to_path_buf(),
+                actual: u64::MAX,
+                limit: limits.max_total_bytes,
+            }
+        })?;
+        if total_bytes > limits.max_total_bytes {
+            return Err(ArchiveExtractionError::TotalSizeLimit {
+                archive: archive.to_path_buf(),
+                actual: total_bytes,
+                limit: limits.max_total_bytes,
             });
         }
     }
@@ -1477,8 +1633,35 @@ pub enum ArchiveExtractionError {
     },
     #[error("encrypted archive member is unsupported in {archive}: {entry}")]
     EncryptedEntry { archive: PathBuf, entry: String },
+    #[error("archive {archive} contains a case-insensitive duplicate member: {entry}")]
+    DuplicateEntry { archive: PathBuf, entry: String },
     #[error("unsafe archive member path in {archive}: {entry}")]
     UnsafeEntry { archive: PathBuf, entry: String },
+    #[error("archive {archive} contains {actual} entries, above the {limit}-entry limit")]
+    EntryLimit {
+        archive: PathBuf,
+        actual: usize,
+        limit: usize,
+    },
+    #[error("archive {archive} does not declare a size for regular member {entry}")]
+    MissingEntrySize { archive: PathBuf, entry: String },
+    #[error(
+        "archive member {entry} in {archive} is {actual} bytes, above the {limit}-byte member limit"
+    )]
+    MemberSizeLimit {
+        archive: PathBuf,
+        entry: String,
+        actual: u64,
+        limit: u64,
+    },
+    #[error(
+        "archive {archive} expands to at least {actual} bytes, above the {limit}-byte total limit"
+    )]
+    TotalSizeLimit {
+        archive: PathBuf,
+        actual: u64,
+        limit: u64,
+    },
     #[error("archive {archive} extracted a symbolic link: {path}")]
     ExtractedLink { archive: PathBuf, path: PathBuf },
     #[error("archive {archive} extracted an unsupported special file: {path}")]
@@ -1555,7 +1738,7 @@ mod tests {
     #[test]
     fn parses_7zip_technical_records() {
         let entries = parse_technical_listing(
-            "Path = Disc/Game.cue\r\nFolder = -\r\nEncrypted = -\r\n\r\nPath = Disc/track.bin\r\nFolder = -\r\nEncrypted = +\r\n",
+            "Path = Disc/Game.cue\r\nSize = 42\r\nFolder = -\r\nEncrypted = -\r\n\r\nPath = Disc/track.bin\r\nSize = 1024\r\nFolder = -\r\nEncrypted = +\r\n",
         );
         assert_eq!(
             entries,
@@ -1563,13 +1746,59 @@ mod tests {
                 ArchiveEntry {
                     path: "Disc/Game.cue".into(),
                     encrypted: false,
+                    size: Some(42),
+                    directory: false,
                 },
                 ArchiveEntry {
                     path: "Disc/track.bin".into(),
                     encrypted: true,
+                    size: Some(1024),
+                    directory: false,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn bounded_manifest_rejects_duplicates_and_oversized_members_before_extraction() {
+        let archive = Path::new("/tmp/data.7z");
+        let duplicate = [
+            ArchiveEntry {
+                path: "Platforms/Arcade.xml".into(),
+                encrypted: false,
+                size: Some(10),
+                directory: false,
+            },
+            ArchiveEntry {
+                path: "platforms/ARCADE.XML".into(),
+                encrypted: false,
+                size: Some(10),
+                directory: false,
+            },
+        ];
+        assert!(matches!(
+            validate_entries(archive, &duplicate),
+            Err(ArchiveExtractionError::DuplicateEntry { .. })
+        ));
+
+        let oversized = [ArchiveEntry {
+            path: "Platforms/Arcade.xml".into(),
+            encrypted: false,
+            size: Some(101),
+            directory: false,
+        }];
+        assert!(matches!(
+            validate_entry_limits(
+                archive,
+                &oversized,
+                ArchiveExtractionLimits {
+                    max_entries: 10,
+                    max_member_bytes: 100,
+                    max_total_bytes: 1_000,
+                },
+            ),
+            Err(ArchiveExtractionError::MemberSizeLimit { actual: 101, .. })
+        ));
     }
 
     #[test]

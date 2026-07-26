@@ -133,6 +133,14 @@ Deliverables:
 Exit gate: a user can import, organize, close/reopen, and launch a small fixture
 library on Windows, Linux, and macOS, with golden file and UI scenario parity.
 
+The first `LIB-018` manual backup/restore slice now passes the Linux compiled
+gate: a visible LaunchBox control creates the recovered root-shaped complete
+`Data` archive, re-extracts and content-verifies it under explicit limits, and
+atomically restores it through the shared cross-process lock while retaining
+the displaced tree. Automatic startup/shutdown scheduling, the persisted
+`AutoBackup` option, 25-file automatic retention, and native Windows/macOS
+interaction remain Phase 2 work.
+
 ### Phase 3: metadata, media, and importer breadth
 
 Deliverables:

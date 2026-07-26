@@ -47,6 +47,33 @@ assemblies and run inside the isolated prefix. It loaded and invoked protected
 were removed after recording the non-user-specific contract below; no
 proprietary binaries or probe output are checked in.
 
+## Application-data backup evidence
+
+The 13.27 desktop resources expose `_Create Data Backup...`, `_Restore Data
+Backup...`, one `AutoBackupLaunchBox` option, and text specifying that the
+contents of `LaunchBox\Data` are automatically archived on startup and
+shutdown of both frontends. The archives live under `LaunchBox\Backups` and up
+to 25 automatic archives may be retained. A fresh ignored 13.27 data tree has
+eight core root XML files plus `Platforms/` and `Playlists/`, with
+`AutoBackup=true`.
+
+Observed automatic `.7z` files use frontend/event/timestamp names. Their
+technical listings place `Data` contents directly at archive root, retain the
+two document directories, and carry optional and nested documents without an
+enclosing `Data/` folder. No user game/platform names, paths, or XML values are
+checked in. The protected create, restore, and options bodies remain stubs in
+the structural decompilation, so exact dialog/error sequencing and automatic
+scheduling are still unavailable.
+
+The first clean-room native subset uses those recovered storage facts for
+manual create/restore only. It retains unknown safe data, rejects links,
+traversal/collisions, malformed core XML, and bounded-size violations, calls
+7-Zip directly without a shell, re-extracts every new archive for exact
+content verification, and restores through a revision-checked atomic directory
+replacement with a retained recovery tree. The evidence, port-owned limits,
+compiled scenario, and remaining automatic-policy gap are recorded in
+`analysis/data-backup-13.27.md`.
+
 ## Older real installation schema
 
 A complete LaunchBox 13.24 installation was located on the owner's read-only

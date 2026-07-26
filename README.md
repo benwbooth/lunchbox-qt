@@ -18,6 +18,7 @@ port behavior.
 
 - [Reverse-engineering status](docs/RE_STATUS.md)
 - [LaunchBox 13.27 Wine oracle boundary](analysis/wine-oracle-13.27.md)
+- [LaunchBox 13.27 application-data backup contract](analysis/data-backup-13.27.md)
 - [Static feature matrix](docs/FEATURE_MATRIX.md)
 - [Port architecture and execution plan](docs/PORT_PLAN.md)
 - [Current implementation and verification status](docs/IMPLEMENTATION_STATUS.md)
@@ -85,6 +86,19 @@ cargo run -p lb-shell --bin launchbox -- \
   --map-windows-drive 'D=/mnt/windows-volume' \
   --map-windows-unc 'server/share=/mnt/network-share'
 ```
+
+LaunchBox now exposes native **Data Backup…** controls for the first
+`LIB-018` subset. Create writes the complete `Data` contents at `.7z` archive
+root, hashes the source, invokes 7-Zip directly, then boundedly re-extracts and
+byte-verifies the snapshot before reporting success. Restore validates the
+fresh-13.27 core XML/layout before mutation, takes the same cross-process lock
+as ordinary library transactions, atomically replaces the whole `Data` tree,
+retains the displaced tree as a recovery directory, and reloads the library.
+Unknown safe files remain lossless; ROMs and media siblings are never included.
+The compiled Qt scenario creates, independently extracts, mutates, restores,
+reloads, and exact-compares both active and recovery trees while hashing media
+peers unchanged. Automatic startup/shutdown backup and the recovered 25-file
+retention policy remain open.
 
 LaunchBox now includes the first native system-tray and notification-center
 slice. The visible editor reads and losslessly writes the exact five 13.27

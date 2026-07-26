@@ -154,6 +154,35 @@ pub struct RecoveryReport {
     pub restored_targets: Vec<PathBuf>,
 }
 
+/// Holds the same exclusive, cross-process library lock used by XML
+/// transactions while a broader recoverable filesystem operation runs.
+///
+/// Acquisition also refuses a library with a pending transaction manifest, so
+/// callers cannot replace application data while an earlier write still needs
+/// explicit recovery.
+pub struct LibraryWriteGuard {
+    _lock: TransactionLock,
+}
+
+impl LibraryWriteGuard {
+    pub fn acquire(root: impl AsRef<Path>) -> Result<Self, TransactionError> {
+        let supplied = root.as_ref();
+        let root = fs::canonicalize(supplied).map_err(|source| TransactionError::Io {
+            path: supplied.to_path_buf(),
+            source,
+        })?;
+        if !root.is_dir() {
+            return Err(TransactionError::RootNotDirectory { path: root });
+        }
+        let lock = TransactionLock::acquire(&root)?;
+        let manifests = pending_manifest_paths(&root)?;
+        if !manifests.is_empty() {
+            return Err(TransactionError::PendingRecovery { root, manifests });
+        }
+        Ok(Self { _lock: lock })
+    }
+}
+
 impl LibraryTransaction {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, TransactionError> {
         let supplied = root.as_ref();
@@ -1998,6 +2027,11 @@ mod tests {
             pending_transaction_manifests(directory.path()).unwrap(),
             vec![manifest.clone()]
         );
+        assert!(matches!(
+            LibraryWriteGuard::acquire(directory.path()),
+            Err(TransactionError::PendingRecovery { manifests, .. })
+                if manifests == vec![manifest.clone()]
+        ));
 
         let mut platform = PlatformDocument::load(&platform_path).unwrap();
         platform

@@ -211,6 +211,8 @@ pub mod qobject {
         #[qproperty(i32, last_game_grouping_removed_count)]
         #[qproperty(i32, last_game_grouping_created_count)]
         #[qproperty(i32, pending_recovery_count)]
+        #[qproperty(i32, data_backup_revision)]
+        #[qproperty(QString, last_data_backup_path)]
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
         #[qproperty(QString, last_added_game_id)]
@@ -276,6 +278,25 @@ pub mod qobject {
 
         #[qinvokable]
         fn load_library(self: Pin<&mut LibraryController>, path: QString);
+
+        #[qinvokable]
+        fn default_data_backup_url(self: &LibraryController) -> QUrl;
+
+        #[qinvokable]
+        fn data_backup_directory_url(self: &LibraryController) -> QUrl;
+
+        #[qinvokable]
+        fn create_data_backup(self: Pin<&mut LibraryController>, archive_path: QString) -> bool;
+
+        #[qinvokable]
+        fn restore_data_backup(self: Pin<&mut LibraryController>, archive_path: QString) -> bool;
+
+        #[qinvokable]
+        fn report_data_backup_smoke_success(
+            self: &LibraryController,
+            restored: bool,
+            expected_title: QString,
+        ) -> bool;
 
         #[qinvokable]
         fn desktop_tray_settings_json(self: &LibraryController) -> QString;
@@ -2029,13 +2050,13 @@ use lb_platform::{
     BigBoxMarqueeCompatibilityMode, BigBoxMarqueePolicy, BigBoxMusicPolicy,
     BigBoxPlatformMarqueeMedia, BigBoxScreensaverCandidate, BigBoxScreensaverPolicy,
     BigBoxSecurityPermission, BigBoxSecurityPolicy, BigBoxStartupPresentationIndex,
-    BigBoxStartupPresentationPolicy, ControllerBinding, FrontendHandoffActivity,
-    FrontendHandoffPlan, FrontendKind, FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy,
-    GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem, GameMediaKind,
-    GamepadInputEvent, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState,
-    LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy,
-    LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy,
-    LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
+    BigBoxStartupPresentationPolicy, ControllerBinding, DataBackupReport, DataBackupService,
+    FrontendHandoffActivity, FrontendHandoffPlan, FrontendKind, FrontendLaunchScreenPolicy,
+    FrontendPauseScreenPolicy, GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem,
+    GameMediaKind, GamepadInputEvent, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy,
+    LaunchBoxUiState, LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver,
+    LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport,
+    LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
     BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS, BIG_BOX_SECURITY_PERMISSIONS,
 };
 use lb_query::{
@@ -2052,8 +2073,9 @@ use lb_storage::{
     recover_pending_transactions, replace_directory_from_source_if_revisions,
     replace_regular_file_from_source_if_revisions, AuxiliaryDocument, DirectoryRevision,
     EmulatorReference, FileRevision, GameReference, IndexedGameSaveMetadataEdit,
-    IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame,
-    NewGameMetadata, PlatformDocument, PlatformReference, StorageError, TransactionError,
+    IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction,
+    LibraryWriteGuard, NewGame, NewGameMetadata, PlatformDocument, PlatformReference, StorageError,
+    TransactionError,
 };
 use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
@@ -2411,6 +2433,8 @@ pub struct LibraryControllerRust {
     last_game_grouping_removed_count: i32,
     last_game_grouping_created_count: i32,
     pending_recovery_count: i32,
+    data_backup_revision: i32,
+    last_data_backup_path: QString,
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
     last_added_game_id: QString,
@@ -3839,6 +3863,13 @@ struct BigBoxMarqueeWriteSuccess {
 struct DesktopTrayWriteSuccess {
     policy: DesktopTrayPolicy,
     backup: PathBuf,
+}
+
+struct DataRestoreSuccess {
+    archive: PathBuf,
+    launchbox_root: PathBuf,
+    recovery_directory: PathBuf,
+    file_count: u64,
 }
 
 enum DesktopTrayWriteFailure {
@@ -6586,6 +6617,67 @@ fn write_big_box_marquee_settings(
         ));
     }
     Ok(BigBoxMarqueeWriteSuccess { policy, backup })
+}
+
+fn create_launchbox_data_backup(
+    root: PathBuf,
+    archive: PathBuf,
+) -> Result<DataBackupReport, String> {
+    let default_backup_directory = root.join("Backups");
+    if archive.parent() == Some(default_backup_directory.as_path())
+        && !default_backup_directory.exists()
+    {
+        fs::create_dir(&default_backup_directory).map_err(|error| {
+            format!(
+                "could not create the LaunchBox backup directory {}: {error}",
+                default_backup_directory.display()
+            )
+        })?;
+    }
+    let _guard = LibraryWriteGuard::acquire(&root).map_err(|error| error.to_string())?;
+    DataBackupService::for_launchbox_root(&root)
+        .create(&root.join("Data"), &archive)
+        .map_err(|error| error.to_string())
+}
+
+fn restore_launchbox_data_backup(
+    root: PathBuf,
+    archive: PathBuf,
+) -> Result<DataRestoreSuccess, String> {
+    let archive_revision = FileRevision::read(&archive).map_err(|error| error.to_string())?;
+    let service = DataBackupService::for_launchbox_root(&root);
+    let prepared = service
+        .prepare_restore(&archive)
+        .map_err(|error| error.to_string())?;
+    let prepared_revision =
+        DirectoryRevision::read(prepared.data_directory()).map_err(|error| error.to_string())?;
+    let file_count = prepared.revision().file_count;
+
+    let _guard = LibraryWriteGuard::acquire(&root).map_err(|error| error.to_string())?;
+    let archive_actual = FileRevision::read(&archive).map_err(|error| error.to_string())?;
+    if archive_actual != archive_revision {
+        return Err(format!(
+            "restore archive {} changed while it was being validated",
+            archive.display()
+        ));
+    }
+    let data_directory = root.join("Data");
+    let active_revision =
+        DirectoryRevision::read(&data_directory).map_err(|error| error.to_string())?;
+    let report = replace_directory_from_source_if_revisions(
+        prepared.data_directory(),
+        &prepared_revision,
+        &data_directory,
+        &active_revision,
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok(DataRestoreSuccess {
+        archive,
+        launchbox_root: root,
+        recovery_directory: report.backup,
+        file_count,
+    })
 }
 
 fn write_desktop_tray_settings(
@@ -18180,6 +18272,175 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn default_data_backup_url(&self) -> QUrl {
+        let Some(root) = self.rust().launchbox_root.as_ref() else {
+            return QUrl::default();
+        };
+        let timestamp = Local::now().format("%Y-%m-%d %H-%M-%S");
+        let path = root
+            .join("Backups")
+            .join(format!("Manual Data Backup {timestamp}.7z"));
+        QUrl::from_local_file(&qstring(path.to_string_lossy()))
+    }
+
+    pub fn data_backup_directory_url(&self) -> QUrl {
+        self.rust()
+            .launchbox_root
+            .as_ref()
+            .map(|root| QUrl::from_local_file(&qstring(root.join("Backups").to_string_lossy())))
+            .unwrap_or_default()
+    }
+
+    pub fn create_data_backup(mut self: Pin<&mut Self>, archive_path: QString) -> bool {
+        let Some(root) = self.as_mut().begin_data_backup_operation() else {
+            return false;
+        };
+        let archive_path = archive_path.to_string();
+        let archive = PathBuf::from(archive_path.trim());
+        if archive.as_os_str().is_empty() || !archive.is_absolute() {
+            self.as_mut().set_status_message(qstring(
+                "Choose an absolute path for the new .7z data backup.",
+            ));
+            return false;
+        }
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Creating and verifying the data backup..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-data-backup-create".into())
+            .spawn(move || {
+                let result = create_launchbox_data_backup(root, archive);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_data_backup_create(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the data backup worker: {error}"
+            )));
+            return false;
+        }
+        true
+    }
+
+    pub fn restore_data_backup(mut self: Pin<&mut Self>, archive_path: QString) -> bool {
+        let Some(root) = self.as_mut().begin_data_backup_operation() else {
+            return false;
+        };
+        let archive_path = archive_path.to_string();
+        let archive = PathBuf::from(archive_path.trim());
+        if archive.as_os_str().is_empty() || !archive.is_absolute() {
+            self.as_mut().set_status_message(qstring(
+                "Choose an absolute .7z data backup path to restore.",
+            ));
+            return false;
+        }
+        let canonical_archive = match fs::canonicalize(&archive) {
+            Ok(path) => path,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not open data backup {}: {error}",
+                    archive.display()
+                )));
+                return false;
+            }
+        };
+        let canonical_data = match fs::canonicalize(root.join("Data")) {
+            Ok(path) => path,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not inspect the active Data directory: {error}"
+                )));
+                return false;
+            }
+        };
+        if canonical_archive.starts_with(&canonical_data) {
+            self.as_mut().set_status_message(qstring(
+                "A restore archive must be stored outside the active Data directory.",
+            ));
+            return false;
+        }
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Validating the archive and preparing an atomic data restore...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-data-backup-restore".into())
+            .spawn(move || {
+                let result = restore_launchbox_data_backup(root, canonical_archive);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_data_backup_restore(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the data restore worker: {error}"
+            )));
+            return false;
+        }
+        true
+    }
+
+    pub fn report_data_backup_smoke_success(
+        &self,
+        restored: bool,
+        expected_title: QString,
+    ) -> bool {
+        let expected_title = expected_title.to_string();
+        let status = self.status_message().to_string();
+        let last_path = self.last_data_backup_path().to_string();
+        let path_is_archive = Path::new(&last_path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"));
+        let operation_matches = if restored {
+            status.starts_with("Restored data backup ")
+                && self
+                    .rust()
+                    .games
+                    .iter()
+                    .any(|game| game.title == expected_title)
+        } else {
+            status.starts_with("Created data backup ") && Path::new(&last_path).is_file()
+        };
+        let success = operation_matches
+            && path_is_archive
+            && *self.data_backup_revision() == 1
+            && !*self.loading()
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "DATA_BACKUP_SMOKE_COMPLETE operation={} path={} title={}",
+                if restored { "restore" } else { "create" },
+                last_path,
+                if expected_title.is_empty() {
+                    "none"
+                } else {
+                    &expected_title
+                }
+            );
+        }
+        success
+    }
+
     pub fn desktop_tray_settings_json(&self) -> QString {
         let policy = self.rust().desktop_tray_policy;
         serde_json::to_string(&DesktopTraySettingsPayload {
@@ -28209,6 +28470,34 @@ impl qobject::LibraryController {
         true
     }
 
+    fn begin_data_backup_operation(mut self: Pin<&mut Self>) -> Option<PathBuf> {
+        if *self.as_ref().frontend_is_big_box() {
+            self.as_mut().set_status_message(qstring(
+                "Create and restore data backups from LaunchBox desktop mode.",
+            ));
+            return None;
+        }
+        if !self.as_mut().begin_library_mutation() {
+            return None;
+        }
+        if *self.as_ref().launch_session_active()
+            || *self.as_ref().startup_screen_active()
+            || *self.as_ref().pause_screen_active()
+        {
+            self.as_mut().set_status_message(qstring(
+                "Wait for the current game session to finish before changing data backups.",
+            ));
+            return None;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Load a LaunchBox library before creating or restoring a data backup.",
+            ));
+            return None;
+        };
+        Some(root)
+    }
+
     fn finish_background_load(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -28691,6 +28980,83 @@ impl qobject::LibraryController {
                 self.as_mut().set_status_message(qstring(format!(
                     "Could not save desktop tray settings: {message}"
                 )));
+            }
+        }
+    }
+
+    fn finish_data_backup_create(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<DataBackupReport, String>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(report) => {
+                let archive = report.archive.to_string_lossy().into_owned();
+                self.as_mut().set_last_data_backup_path(qstring(&archive));
+                let revision = self.as_ref().data_backup_revision().wrapping_add(1);
+                self.as_mut().set_data_backup_revision(revision);
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Created data backup {} with {} files ({} bytes), then re-extracted and verified it.",
+                    report.archive.display(),
+                    report.revision.file_count,
+                    report.revision.byte_len
+                )));
+                eprintln!(
+                    "DATA_BACKUP_CREATED path={} files={} directories={} bytes={} sha256={}",
+                    report.archive.display(),
+                    report.revision.file_count,
+                    report.revision.directory_count,
+                    report.revision.byte_len,
+                    report.revision.sha256
+                );
+            }
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not create data backup: {error}")));
+            }
+        }
+    }
+
+    fn finish_data_backup_restore(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<DataRestoreSuccess, String>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(restored) => {
+                let archive = restored.archive.to_string_lossy().into_owned();
+                self.as_mut().set_last_data_backup_path(qstring(&archive));
+                let revision = self.as_ref().data_backup_revision().wrapping_add(1);
+                self.as_mut().set_data_backup_revision(revision);
+                self.as_mut().set_write_conflict(false);
+                let message = format!(
+                    "Restored data backup {} with {} files. The replaced Data tree remains at {}.",
+                    restored.archive.display(),
+                    restored.file_count,
+                    restored.recovery_directory.display()
+                );
+                eprintln!(
+                    "DATA_BACKUP_RESTORED path={} files={} recovery={}",
+                    restored.archive.display(),
+                    restored.file_count,
+                    restored.recovery_directory.display()
+                );
+                self.as_mut().rust_mut().pending_post_reload_message = Some(message);
+                self.as_mut()
+                    .load_library(qstring(restored.launchbox_root.to_string_lossy()));
+            }
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not restore data backup: {error}")));
             }
         }
     }

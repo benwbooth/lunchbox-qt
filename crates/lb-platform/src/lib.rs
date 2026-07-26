@@ -1,5 +1,6 @@
 mod archive;
 mod attract;
+mod data_backup;
 mod dosbox;
 mod engagement;
 mod frontend_handoff;
@@ -15,9 +16,14 @@ mod security;
 mod ui_state;
 
 pub use archive::{
-    ArchiveCreationError, ArchiveExtractionError, ArchiveExtractor, LaunchResourceLease,
+    ArchiveCreationError, ArchiveExtractionError, ArchiveExtractionLimits, ArchiveExtractor,
+    LaunchResourceLease,
 };
 pub use attract::{BigBoxAttractModePolicy, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS};
+pub use data_backup::{
+    inspect_data_tree, DataBackupError, DataBackupLimits, DataBackupReport, DataBackupService,
+    DataTreeRevision, PreparedDataRestore,
+};
 pub use dosbox::DosBoxPlanError;
 pub use engagement::{
     normalize_big_box_star_rating, prioritize_favorite_game_indices, BigBoxGameActionPolicy,

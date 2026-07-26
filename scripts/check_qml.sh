@@ -393,6 +393,110 @@ cmp "$frontend_handoff_locked_settings.before" \
 
 echo "LaunchBox and BigBox direct-process handoffs preserved the live library, selected stable game, path mappings, and state files; dropped smoke/UI-only arguments; and enforced locked-mode exit permission without a shell."
 
+data_backup_root="$test_config_root/data-backup-library"
+data_backup_expected="$test_config_root/data-backup-expected"
+data_backup_mutated="$test_config_root/data-backup-mutated"
+data_backup_extracted="$test_config_root/data-backup-extracted"
+data_backup_archive="$data_backup_root/Backups/Manual Data Backup.7z"
+mkdir -p "$data_backup_root" "$data_backup_extracted"
+cp -a "$media_root/." "$data_backup_root/"
+cp -a "$data_backup_root/Data" "$data_backup_expected"
+mkdir -p "$data_backup_root/Backups"
+data_backup_peer_manifest="$test_config_root/data-backup-peer.before.sha256"
+(
+  cd "$data_backup_root"
+  find Images Metadata Music -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$data_backup_peer_manifest"
+
+output=$(
+  QT_QPA_PLATFORM=offscreen \
+    "$binary_dir/launchbox" \
+    --library "$data_backup_root" \
+    --data-backup-create-smoke-test \
+    --data-backup-path "$data_backup_archive" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'DATA_BACKUP_CREATED .*files=[0-9]+ directories=[0-9]+ bytes=[0-9]+ sha256=[0-9a-f]{64}' \
+  <<< "$output" \
+  || ! rg -q \
+    'DATA_BACKUP_SMOKE_COMPLETE operation=create .*title=none' \
+    <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "LaunchBox did not create and re-open its Data backup through the rendered control." >&2
+  exit 1
+fi
+if [[ ! -s "$data_backup_archive" ]]; then
+  echo "LaunchBox reported a Data backup without creating a non-empty archive." >&2
+  exit 1
+fi
+7z x -bd -bb0 -y "-o$data_backup_extracted" \
+  -- "$data_backup_archive" >/dev/null
+if [[ ! -f "$data_backup_extracted/Settings.xml" \
+  || -e "$data_backup_extracted/Data" ]]; then
+  echo "The Data backup does not use the recovered 13.27 archive-root layout." >&2
+  exit 1
+fi
+diff -r "$data_backup_expected" "$data_backup_extracted"
+(
+  cd "$data_backup_root"
+  sha256sum --check "$data_backup_peer_manifest"
+)
+
+sed -i \
+  's|<Title>Fixture Racer</Title>|<Title>Mutated Racer</Title>|' \
+  "$data_backup_root/Data/Platforms/Fixture Console.xml"
+if ! rg -q '<Title>Mutated Racer</Title>' \
+  "$data_backup_root/Data/Platforms/Fixture Console.xml"; then
+  echo "The Data restore test could not establish its mutated active state." >&2
+  exit 1
+fi
+cp -a "$data_backup_root/Data" "$data_backup_mutated"
+
+output=$(
+  QT_QPA_PLATFORM=offscreen \
+    "$binary_dir/launchbox" \
+    --library "$data_backup_root" \
+    --data-backup-restore-smoke-test \
+    --data-backup-path "$data_backup_archive" \
+    --data-backup-expected-title "Fixture Racer" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'DATA_BACKUP_RESTORED .*files=[0-9]+ recovery=.*Data\.lbport-directory-backup-' \
+  <<< "$output" \
+  || ! rg -q \
+    'DATA_BACKUP_SMOKE_COMPLETE operation=restore .*title=Fixture Racer' \
+    <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "LaunchBox did not atomically restore and reload its Data backup through the rendered control." >&2
+  exit 1
+fi
+diff -r "$data_backup_expected" "$data_backup_root/Data"
+mapfile -t data_backup_recoveries < <(
+  find "$data_backup_root" -mindepth 2 -maxdepth 2 -type d \
+    -path "$data_backup_root/Data.lbport-directory-backup-*/Data" -print
+)
+if [[ ${#data_backup_recoveries[@]} -ne 1 ]]; then
+  echo "Data restore did not retain exactly one complete recovery directory." >&2
+  exit 1
+fi
+diff -r "$data_backup_mutated" "${data_backup_recoveries[0]}"
+(
+  cd "$data_backup_root"
+  sha256sum --check "$data_backup_peer_manifest"
+)
+
+echo "LaunchBox rendered manual Data backup/restore controls, exact 13.27 archive-root shape, bounded re-extraction verification, atomic whole-tree replacement, live model reload, retained mutated recovery tree, and immutable media peers validated without a shell."
+
 input_settings="$media_root/Data/BigBoxSettings.xml"
 input_bindings="$media_root/Data/InputBindings.xml"
 cp "$input_settings" "$input_settings.before-input-smoke"

@@ -87,6 +87,23 @@ ApplicationWindow {
         return true
     }
 
+    function dataBackupControlsAvailable() {
+        return controller.library_path.length > 0
+            && !controller.loading
+            && !controller.import_scanning
+            && !controller.emulator_discovery_scanning
+            && !controller.emulator_bios_scanning
+            && !controller.emulator_release_checking
+            && !controller.emulator_managed_checking
+            && !controller.emulator_installing
+            && !controller.writing
+            && !controller.launching
+            && !controller.launch_session_active
+            && !controller.startup_screen_active
+            && !controller.shutdown_screen_active
+            && !controller.pause_screen_active
+    }
+
     property string selectedPlatform: ""
     property string selectedNavigationKind: "all"
     property string selectedNavigationKey: ""
@@ -212,6 +229,19 @@ ApplicationWindow {
     property bool frontendHandoffSmokeFinished: false
     readonly property string requestedFrontendSelection:
         argumentValue("--select-game-id")
+    property bool dataBackupCreateSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--data-backup-create-smoke-test") >= 0
+    property bool dataBackupRestoreSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--data-backup-restore-smoke-test") >= 0
+    property bool dataBackupSmokeStarted: false
+    property bool dataBackupSmokeFinished: false
+    property string pendingDataBackupRestorePath: ""
+    readonly property string requestedDataBackupPath:
+        argumentValue("--data-backup-path")
+    readonly property string expectedDataBackupTitle:
+        argumentValue("--data-backup-expected-title")
     property bool gameDetailsLayoutScreenshotRequested: false
     property string gameDetailsLayoutScreenshotPath:
         argumentValue("--game-details-layout-screenshot")
@@ -1679,6 +1709,88 @@ ApplicationWindow {
                 + " session=" + controller.launch_session_active
                 + " status=" + controller.status_message)
             Qt.exit(702)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: (window.dataBackupCreateSmokeTest
+                  || window.dataBackupRestoreSmokeTest)
+                 && !window.dataBackupSmokeFinished
+        onTriggered: {
+            if (window.requestedDataBackupPath.length === 0) {
+                console.error("DATA_BACKUP_SMOKE_MISSING_PATH")
+                Qt.exit(706)
+                return
+            }
+            if (!window.dataBackupSmokeStarted) {
+                if (controller.loading
+                        || !createDataBackupButton.enabled
+                        || !restoreDataBackupButton.enabled)
+                    return
+                if (!dataBackupMenuButton.activate()) {
+                    console.error(
+                        "DATA_BACKUP_SMOKE_MENU_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(707)
+                    return
+                }
+                const started = window.dataBackupRestoreSmokeTest
+                    ? restoreDataBackupButton.activate(
+                          window.requestedDataBackupPath, true)
+                    : createDataBackupButton.activate(
+                          window.requestedDataBackupPath)
+                if (!started) {
+                    console.error(
+                        "DATA_BACKUP_SMOKE_START_FAILED operation="
+                        + (window.dataBackupRestoreSmokeTest
+                           ? "restore" : "create")
+                        + " status=" + controller.status_message)
+                    Qt.exit(707)
+                    return
+                }
+                window.dataBackupSmokeStarted = true
+                return
+            }
+            if (controller.data_backup_revision !== 1
+                    || controller.loading || controller.writing)
+                return
+            if (!controller.report_data_backup_smoke_success(
+                    window.dataBackupRestoreSmokeTest,
+                    window.expectedDataBackupTitle)) {
+                console.error(
+                    "DATA_BACKUP_SMOKE_VERIFY_FAILED operation="
+                    + (window.dataBackupRestoreSmokeTest
+                       ? "restore" : "create")
+                    + " revision=" + controller.data_backup_revision
+                    + " status=" + controller.status_message)
+                Qt.exit(708)
+                return
+            }
+            window.dataBackupSmokeFinished = true
+            window.forceApplicationExit = true
+            window.finalizeApplicationExit()
+            Qt.quit()
+        }
+    }
+
+    Timer {
+        interval: 45000
+        running: (window.dataBackupCreateSmokeTest
+                  || window.dataBackupRestoreSmokeTest)
+                 && !window.dataBackupSmokeFinished
+        onTriggered: {
+            console.error(
+                "DATA_BACKUP_SMOKE_TIMEOUT operation="
+                + (window.dataBackupRestoreSmokeTest
+                   ? "restore" : "create")
+                + " started=" + window.dataBackupSmokeStarted
+                + " loading=" + controller.loading
+                + " writing=" + controller.writing
+                + " revision=" + controller.data_backup_revision
+                + " status=" + controller.status_message)
+            Qt.exit(709)
         }
     }
 
@@ -5594,6 +5706,141 @@ ApplicationWindow {
         }
     }
 
+    FileDialog {
+        id: createDataBackupFileDialog
+        title: "Create LaunchBox Data Backup"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "7z"
+        nameFilters: ["7-Zip data backups (*.7z)"]
+        onAccepted: {
+            createDataBackupButton.activate(
+                controller.local_path_from_url(
+                    selectedFile.toString()))
+        }
+    }
+
+    FileDialog {
+        id: restoreDataBackupFileDialog
+        title: "Restore LaunchBox Data Backup"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["7-Zip data backups (*.7z)"]
+        onAccepted: {
+            restoreDataBackupButton.activate(
+                controller.local_path_from_url(
+                    selectedFile.toString()), false)
+        }
+    }
+
+    Dialog {
+        id: restoreDataBackupConfirmDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "Restore Data Backup?"
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        onAccepted: {
+            restoreDataBackupButton.activate(
+                window.pendingDataBackupRestorePath, true)
+        }
+
+        Label {
+            width: Math.min(620, window.width - 80)
+            wrapMode: Text.WordWrap
+            text: "The selected archive will replace the complete LaunchBox Data folder, including LaunchBox and BigBox settings. Games, ROMs, emulators, media, manuals, music, and saves outside Data are untouched. The current Data tree is retained as an exact recovery directory."
+        }
+    }
+
+    Dialog {
+        id: dataBackupDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "LaunchBox Data Backups"
+        standardButtons: Dialog.Close
+
+        ColumnLayout {
+            width: Math.min(700, window.width - 80)
+            spacing: 12
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: "Create one verified .7z snapshot of the LaunchBox Data folder, or atomically restore one. Archives are bounded and checked for traversal, links, duplicate names, malformed core XML, and source changes. ROMs and media are never included."
+            }
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WrapAnywhere
+                color: "#aeb9c8"
+                text: controller.last_data_backup_path.length > 0
+                      ? "Last archive: "
+                        + controller.last_data_backup_path
+                      : "No data backup has been created or restored in this session."
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                Button {
+                    id: createDataBackupButton
+                    text: controller.writing
+                          ? "Working…" : "Create Data Backup…"
+                    Accessible.name: "Create LaunchBox Data Backup"
+                    enabled: window.dataBackupControlsAvailable()
+
+                    function activate(path) {
+                        if (!enabled)
+                            return false
+                        if (path === undefined || path.length === 0) {
+                            createDataBackupFileDialog.currentFile =
+                                controller.default_data_backup_url()
+                            createDataBackupFileDialog.open()
+                            return true
+                        }
+                        return controller.create_data_backup(path)
+                    }
+
+                    onClicked: activate("")
+                }
+
+                Button {
+                    id: restoreDataBackupButton
+                    text: controller.writing
+                          ? "Working…" : "Restore Data Backup…"
+                    Accessible.name: "Restore LaunchBox Data Backup"
+                    enabled: window.dataBackupControlsAvailable()
+
+                    function activate(path, confirmed) {
+                        if (!enabled)
+                            return false
+                        if (path === undefined || path.length === 0) {
+                            restoreDataBackupFileDialog.currentFolder =
+                                controller.data_backup_directory_url()
+                            restoreDataBackupFileDialog.open()
+                            return true
+                        }
+                        if (!confirmed) {
+                            window.pendingDataBackupRestorePath = path
+                            restoreDataBackupConfirmDialog.open()
+                            return true
+                        }
+                        return controller.restore_data_backup(path)
+                    }
+
+                    onClicked: activate("", false)
+                }
+
+                Item { Layout.fillWidth: true }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: controller.status_message.indexOf(
+                           "Could not") >= 0 ? "#ff8f8f" : "#c8d2df"
+                text: controller.status_message
+            }
+        }
+    }
+
     header: ToolBar {
         background: Rectangle { color: "#20252d" }
         RowLayout {
@@ -5664,6 +5911,22 @@ ApplicationWindow {
                 enabled: controller.library_path.length > 0
                          && !controller.loading && !controller.writing
                 onClicked: desktopTraySettingsDialog.prepare()
+            }
+            ToolButton {
+                id: dataBackupMenuButton
+                text: "Data Backup…"
+                Accessible.name: "LaunchBox Data Backup and Restore"
+                enabled: controller.library_path.length > 0
+                         && !controller.loading && !controller.writing
+
+                function activate() {
+                    if (!enabled)
+                        return false
+                    dataBackupDialog.open()
+                    return true
+                }
+
+                onClicked: activate()
             }
             ToolButton {
                 text: controller.desktop_unread_notification_count > 0
