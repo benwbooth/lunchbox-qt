@@ -107,6 +107,15 @@ boundaries. It does not establish exact protected transition timing, every
 configurable binding, theme-specific layout behavior, or
 3D/related/document/application panes.
 
+The same recovered `InputAction` contract separately names
+`LaunchBoxShowImages`, `LaunchBoxZoomIn`, `LaunchBoxZoomOut`,
+`LaunchBoxPageUp`, `LaunchBoxPageDown`, and `LaunchBoxFlipBox`, while
+`Settings.AlwaysShowImagesFullscreen` exposes the desktop presentation policy.
+This establishes desktop image entry, switching/navigation, zoom, and box-flip
+boundaries, but not the protected zoom constants, flip behavior, or every
+binding. The port's current desktop image viewer therefore shares the explicit
+bounded policy above; box flip remains unimplemented.
+
 The compiled port subsequently loaded that same read-only installation through
 the normal Qt worker transaction and selected 24,920 front images across the
 full 47-entry persisted fallback list. It scanned 161,968 supported files in

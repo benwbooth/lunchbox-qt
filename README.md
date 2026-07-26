@@ -135,6 +135,18 @@ exercises hide, dock, pop out, native popup rendering, exact state-file bytes,
 shutdown preservation, and fresh-process restoration without writing library
 XML or settings.
 
+LaunchBox also exposes the image-only viewer from an image in Details or the
+global `I` action. It filters video out, preserves the selected image when
+entered from Details, wraps through image families, and shares the explicit
+100–400% zoom, fit, bounded pan, wheel, drag, keyboard, and visible-control
+contract described below. The viewer is owned by the main window when Details
+is docked and by the native details window when popped out; closing it restores
+focus to the originating media row. Its compiled interaction drives the real
+thumbnail and View Image actions, zooms and pans at 150%, switches to the
+gameplay screenshot, resets to fit, closes through Back, renders a visually
+inspected PNG, validates native regular files in Rust, and hashes the complete
+media tree without writes.
+
 BigBox exposes the same stable-ID media collection through a dedicated
 full-screen game-details layer, matching the stock theme's separate image,
 image/video, and details presenters. Select **Details** or press `D`, then use

@@ -23,6 +23,7 @@ diagnostics=$(
   qmllint "${import_args[@]}" \
     apps/lb-shell/qml/LaunchBoxWindow.qml \
     apps/lb-shell/qml/BigBoxWindow.qml \
+    apps/lb-shell/qml/GameImageViewer.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -214,6 +215,42 @@ cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
 ) >/dev/null
 
 echo "LaunchBox selected-game image thumbnails, decoded H.264 video, autoplay, real play/pause controls, selection, and preview rendering validated without media or library writes."
+
+launchbox_image_viewer_screenshot="$test_config_root/launchbox-image-viewer.png"
+launchbox_image_viewer_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$media_root" \
+    --launchbox-image-viewer-smoke-test \
+    --launchbox-image-viewer-screenshot \
+    "$launchbox_image_viewer_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$launchbox_image_viewer_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=3 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  <<< "$launchbox_image_viewer_output"; then
+  printf '%s\n' "$launchbox_image_viewer_output" >&2
+  echo "LaunchBox did not validate its full-screen image viewer." >&2
+  exit 1
+fi
+if [[ ! -s "$launchbox_image_viewer_screenshot" ]] \
+  || [[ $(wc -c < "$launchbox_image_viewer_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$launchbox_image_viewer_screenshot" \
+      | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$launchbox_image_viewer_output" >&2
+  echo "LaunchBox did not render a valid zoomed full-screen image PNG." >&2
+  exit 1
+fi
+cmp "$media_platform.before-media-smoke" "$media_platform"
+cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
+(
+  cd "$media_root"
+  sha256sum --check "$media_files_manifest"
+) >/dev/null
+
+echo "LaunchBox full-screen image entry, image-type switching, bounded zoom, fit reset, pan, focus return, native-path rendering, and read-only media behavior validated."
 
 bigbox_game_details_media_screenshot="$test_config_root/bigbox-game-details-media.png"
 bigbox_game_details_media_output=$(

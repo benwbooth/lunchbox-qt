@@ -80,6 +80,18 @@ ApplicationWindow {
     property bool gameDetailsMediaScreenshotRequested: false
     property string gameDetailsMediaScreenshotPath:
         argumentValue("--game-details-media-screenshot")
+    property bool imageViewerSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--launchbox-image-viewer-smoke-test") >= 0
+    property int imageViewerSmokePhase: 0
+    property bool imageViewerSmokeFinished: false
+    property bool imageViewerScreenshotRequested: false
+    property string imageViewerScreenshotPath:
+        argumentValue("--launchbox-image-viewer-screenshot")
+    property bool imageViewerOpen: false
+    readonly property var imageViewerForDetails:
+        controller.game_details_popped_out
+        ? gameDetailsWindowImageViewer : launchBoxImageViewer
     property bool gameDetailsLayoutSmokeTest:
         Qt.application.arguments.indexOf(
             "--game-details-layout-smoke-test") >= 0
@@ -111,6 +123,11 @@ ApplicationWindow {
     property int detailsWindowNormalHeight: 640
     property bool detailsWindowMaximized: false
     property string selectedGameId: ""
+    readonly property int selectedGameImageCount: {
+        const revision = controller.game_media_revision
+        return selectedGameId.length > 0
+            ? controller.game_image_count_for_game(selectedGameId) : 0
+    }
     property bool gameSelectionResetPending: false
     property string listCurrentGameId: ""
     property string listCurrentGameTitle: ""
@@ -640,6 +657,42 @@ ApplicationWindow {
             return false
         selectedGameItem.openEditor()
         return true
+    }
+
+    function activeGameDetailsPane() {
+        if (controller.game_details_popped_out
+                && gameDetailsPopupLoader.item)
+            return gameDetailsPopupLoader.item
+        if (gameDetailsLoader.item)
+            return gameDetailsLoader.item
+        return null
+    }
+
+    function openSelectedGameImages() {
+        if (selectedGameId.length === 0
+                || selectedGameImageCount === 0
+                || controller.loading || controller.writing)
+            return false
+        const detailsPane = activeGameDetailsPane()
+        if (detailsPane) {
+            // qmllint disable missing-property
+            return detailsPane["openImageViewer"](-1)
+            // qmllint enable missing-property
+        }
+        const title = selectedGameItem
+                    ? selectedGameItem.gameTitle
+                    : listCurrentGameTitle
+        return launchBoxImageViewer.openForGame(
+                    selectedGameId, title, -1,
+                    controller.list_view ? gameList : gameGrid)
+    }
+
+    function openGameImagesFromDetails(gameId, gameTitle,
+                                       preferredMediaIndex,
+                                       returnFocusItem) {
+        return imageViewerForDetails.openForGame(
+                    gameId, gameTitle, preferredMediaIndex,
+                    returnFocusItem)
     }
 
     function finishLibraryListViewSmoke(reload) {
@@ -4645,6 +4698,8 @@ ApplicationWindow {
                                 detailsMediaPlayer.error
                             readonly property real mediaDuration:
                                 detailsMediaPlayer.duration
+                            readonly property var detailsImageViewer:
+                                window.imageViewerForDetails
 
                             function resetMediaSelection() {
                                 detailsMediaPlayer.stop()
@@ -4677,6 +4732,30 @@ ApplicationWindow {
                                     return false
                                 detailsMediaPlayPause.clicked()
                                 return true
+                            }
+
+                            function openImageViewer(preferredMediaIndex) {
+                                if (!game
+                                        || controller
+                                           .game_image_count_for_game(
+                                               mediaGameId) === 0)
+                                    return false
+                                detailsMediaPlayer.stop()
+                                return window.openGameImagesFromDetails(
+                                    mediaGameId, game.gameTitle,
+                                    preferredMediaIndex,
+                                    detailsMediaList)
+                            }
+
+                            function clickViewImageForSmoke() {
+                                if (!detailsViewImageButton.visible
+                                        || !detailsViewImageButton.enabled)
+                                    return false
+                                detailsViewImageButton
+                                    .imageViewerOpenSucceeded = false
+                                detailsViewImageButton.activate()
+                                return detailsViewImageButton
+                                    .imageViewerOpenSucceeded
                             }
 
                             onMediaGameIdChanged:
@@ -4849,6 +4928,273 @@ ApplicationWindow {
                                             true
                                         Qt.quit()
                                     }
+                                }
+                            }
+
+                            Timer {
+                                interval: 25
+                                repeat: true
+                                running:
+                                    window.imageViewerSmokeTest
+                                    && !window.imageViewerSmokeFinished
+                                onTriggered: {
+                                    if (controller.loading
+                                            || controller.library_path
+                                               .length === 0)
+                                        return
+                                    if (window.imageViewerSmokePhase === 0) {
+                                        window.setAttributeFilters(
+                                            "any", "none", true, true)
+                                        window.restoreGameSelection(
+                                            "fixture-adventure")
+                                        window.imageViewerSmokePhase = 1
+                                    } else if (
+                                            window.imageViewerSmokePhase
+                                            === 1) {
+                                        if (window.selectedGameId
+                                                !== "fixture-adventure"
+                                                || gameDetailsPane
+                                                   .mediaCount !== 4)
+                                            return
+                                        if (!gameDetailsPane
+                                                .clickMediaThumbnailForSmoke(
+                                                    0)) {
+                                            console.error(
+                                                "LAUNCHBOX_IMAGE_VIEWER_IMAGE_THUMBNAIL_MISSING")
+                                            Qt.exit(516)
+                                            return
+                                        }
+                                        window.imageViewerSmokePhase = 2
+                                    } else if (
+                                            window.imageViewerSmokePhase
+                                            === 2) {
+                                        if (gameDetailsPane
+                                                .selectedMediaIndex !== 0
+                                                || gameDetailsPane
+                                                   .selectedMediaKind
+                                                   !== "image")
+                                            return
+                                        if (!gameDetailsPane
+                                                .clickViewImageForSmoke()) {
+                                            console.error(
+                                                "LAUNCHBOX_IMAGE_VIEWER_CONTROL_MISSING")
+                                            Qt.exit(517)
+                                            return
+                                        }
+                                        window.imageViewerSmokePhase = 3
+                                    } else if (
+                                            window.imageViewerSmokePhase
+                                            === 3) {
+                                        if (!detailsImageViewer.opened
+                                                || !window.imageViewerOpen
+                                                || detailsImageViewer
+                                                   .gameId
+                                                   !== "fixture-adventure"
+                                                || detailsImageViewer
+                                                   .imageCount !== 3
+                                                || detailsImageViewer
+                                                   .selectedImageIndex !== 0
+                                                || detailsImageViewer
+                                                   .selectedMediaIndex !== 0
+                                                || detailsImageViewer
+                                                   .selectedMediaType
+                                                   !== "Box - Front"
+                                                || detailsImageViewer
+                                                   .imageStatus
+                                                   !== Image.Ready
+                                                || detailsImageViewer
+                                                   .zoomFactor !== 1
+                                                || gameDetailsPane
+                                                   .mediaPlaybackState
+                                                   !== MediaPlayer
+                                                      .StoppedState)
+                                            return
+                                        if (!detailsImageViewer
+                                                .activateZoomInControl()
+                                                || !detailsImageViewer
+                                                   .activateZoomInControl()) {
+                                            console.error(
+                                                "LAUNCHBOX_IMAGE_VIEWER_ZOOM_CONTROL_MISSING")
+                                            Qt.exit(518)
+                                            return
+                                        }
+                                        window.imageViewerSmokePhase = 4
+                                    } else if (
+                                            window.imageViewerSmokePhase
+                                            === 4) {
+                                        if (detailsImageViewer.zoomFactor
+                                                !== 1.5
+                                                || detailsImageViewer
+                                                   .panLimitY <= 0)
+                                            return
+                                        if (!detailsImageViewer
+                                                .activatePanDownControl()) {
+                                            console.error(
+                                                "LAUNCHBOX_IMAGE_VIEWER_PAN_CONTROL_MISSING")
+                                            Qt.exit(519)
+                                            return
+                                        }
+                                        window.imageViewerSmokePhase = 5
+                                    } else if (
+                                            window.imageViewerSmokePhase
+                                            === 5) {
+                                        if (detailsImageViewer.panY >= 0)
+                                            return
+                                        if (window
+                                                .imageViewerScreenshotRequested)
+                                            return
+                                        window
+                                            .imageViewerScreenshotRequested =
+                                            true
+                                        const continueWithNextImage =
+                                            function() {
+                                                if (!detailsImageViewer
+                                                        .activateNextControl()) {
+                                                    console.error(
+                                                        "LAUNCHBOX_IMAGE_VIEWER_NEXT_CONTROL_MISSING")
+                                                    Qt.exit(520)
+                                                    return
+                                                }
+                                                window.imageViewerSmokePhase =
+                                                    6
+                                            }
+                                        if (window
+                                                .imageViewerScreenshotPath
+                                                .length === 0) {
+                                            continueWithNextImage()
+                                            return
+                                        }
+                                        detailsImageViewer
+                                        .viewerContentItem.grabToImage(
+                                            function(result) {
+                                                if (!result.saveToFile(
+                                                        window
+                                                        .imageViewerScreenshotPath)) {
+                                                    console.error(
+                                                        "LAUNCHBOX_IMAGE_VIEWER_SCREENSHOT_SAVE_FAILED path="
+                                                        + window
+                                                          .imageViewerScreenshotPath)
+                                                    Qt.exit(521)
+                                                    return
+                                                }
+                                                continueWithNextImage()
+                                            })
+                                    } else if (
+                                            window.imageViewerSmokePhase
+                                            === 6) {
+                                        if (detailsImageViewer
+                                                .selectedImageIndex !== 1
+                                                || detailsImageViewer
+                                                   .selectedMediaIndex !== 1
+                                                || detailsImageViewer
+                                                   .selectedMediaType
+                                                   !== "Screenshot - Gameplay"
+                                                || detailsImageViewer
+                                                   .imageStatus
+                                                   !== Image.Ready
+                                                || detailsImageViewer
+                                                   .zoomFactor !== 1
+                                                || detailsImageViewer
+                                                   .panX !== 0
+                                                || detailsImageViewer
+                                                   .panY !== 0)
+                                            return
+                                        if (!detailsImageViewer
+                                                .activateZoomInControl()) {
+                                            console.error(
+                                                "LAUNCHBOX_IMAGE_VIEWER_SECOND_ZOOM_CONTROL_MISSING")
+                                            Qt.exit(522)
+                                            return
+                                        }
+                                        window.imageViewerSmokePhase = 7
+                                    } else if (
+                                            window.imageViewerSmokePhase
+                                            === 7) {
+                                        if (detailsImageViewer.zoomFactor
+                                                !== 1.25)
+                                            return
+                                        if (!detailsImageViewer
+                                                .activateFitControl()) {
+                                            console.error(
+                                                "LAUNCHBOX_IMAGE_VIEWER_FIT_CONTROL_MISSING")
+                                            Qt.exit(523)
+                                            return
+                                        }
+                                        window.imageViewerSmokePhase = 8
+                                    } else if (
+                                            window.imageViewerSmokePhase
+                                            === 8) {
+                                        if (detailsImageViewer.zoomFactor
+                                                !== 1
+                                                || detailsImageViewer
+                                                   .panX !== 0
+                                                || detailsImageViewer
+                                                   .panY !== 0)
+                                            return
+                                        detailsImageViewer
+                                            .activateBackControl()
+                                        window.imageViewerSmokePhase = 9
+                                    } else if (
+                                            window.imageViewerSmokePhase
+                                            === 9) {
+                                        if (detailsImageViewer.opened
+                                                || window.imageViewerOpen
+                                                || !detailsMediaList
+                                                   .activeFocus)
+                                            return
+                                        if (!controller
+                                                .report_launch_box_image_viewer_smoke_success(
+                                                    "fixture-adventure",
+                                                    0, 1,
+                                                    controller
+                                                    .game_media_url_at(
+                                                        "fixture-adventure",
+                                                        0).toString(),
+                                                    controller
+                                                    .game_media_url_at(
+                                                        "fixture-adventure",
+                                                        1).toString())) {
+                                            console.error(
+                                                "LAUNCHBOX_IMAGE_VIEWER_SMOKE_CONTROLLER_REJECTED")
+                                            Qt.exit(524)
+                                            return
+                                        }
+                                        window.imageViewerSmokeFinished = true
+                                        Qt.quit()
+                                    }
+                                }
+                            }
+
+                            Timer {
+                                interval: 20000
+                                running:
+                                    window.imageViewerSmokeTest
+                                    && !window.imageViewerSmokeFinished
+                                onTriggered: {
+                                    console.error(
+                                        "LAUNCHBOX_IMAGE_VIEWER_SMOKE_TIMEOUT phase="
+                                        + window.imageViewerSmokePhase
+                                        + " id=" + window.selectedGameId
+                                        + " viewer="
+                                        + detailsImageViewer.opened
+                                        + " images="
+                                        + detailsImageViewer.imageCount
+                                        + " selected="
+                                        + detailsImageViewer
+                                          .selectedImageIndex
+                                        + " media="
+                                        + detailsImageViewer
+                                          .selectedMediaIndex
+                                        + " imageStatus="
+                                        + detailsImageViewer.imageStatus
+                                        + " zoom="
+                                        + detailsImageViewer.zoomFactor
+                                        + " pan="
+                                        + detailsImageViewer.panX
+                                        + "," + detailsImageViewer.panY
+                                        + " status="
+                                        + controller.status_message)
+                                    Qt.exit(525)
                                 }
                             }
 
@@ -5025,10 +5371,43 @@ ApplicationWindow {
                                             visible:
                                                 gameDetailsPane.selectedMediaKind
                                                 === "video"
+                                                || gameDetailsPane
+                                                   .selectedMediaKind
+                                                   === "image"
 
+                                            Button {
+                                                id: detailsViewImageButton
+                                                property bool
+                                                    imageViewerOpenSucceeded:
+                                                    false
+                                                function activate() {
+                                                    detailsViewImageButton
+                                                        .imageViewerOpenSucceeded =
+                                                        gameDetailsPane
+                                                        .openImageViewer(
+                                                            gameDetailsPane
+                                                            .selectedMediaIndex)
+                                                    return detailsViewImageButton
+                                                        .imageViewerOpenSucceeded
+                                                }
+                                                Layout.fillWidth: true
+                                                visible:
+                                                    gameDetailsPane
+                                                    .selectedMediaKind
+                                                    === "image"
+                                                text: "View image"
+                                                enabled:
+                                                    gameDetailsPane
+                                                    .selectedMediaIndex >= 0
+                                                onClicked: activate()
+                                            }
                                             Button {
                                                 id: detailsMediaPlayPause
                                                 Layout.fillWidth: true
+                                                visible:
+                                                    gameDetailsPane
+                                                    .selectedMediaKind
+                                                    === "video"
                                                 text:
                                                     detailsMediaPlayer
                                                     .playbackState
@@ -5053,6 +5432,10 @@ ApplicationWindow {
                                                 }
                                             }
                                             Button {
+                                                visible:
+                                                    gameDetailsPane
+                                                    .selectedMediaKind
+                                                    === "video"
                                                 text: detailsMediaAudio.muted
                                                       ? "Unmute" : "Mute"
                                                 onClicked:
@@ -6806,6 +7189,18 @@ ApplicationWindow {
             anchors.fill: parent
             active: gameDetailsWindow.visible
             sourceComponent: gameDetailsPaneComponent
+        }
+
+        GameImageViewer {
+            id: gameDetailsWindowImageViewer
+            parent: gameDetailsWindow.contentItem
+            x: 0
+            y: 0
+            width: gameDetailsWindow.width
+            height: gameDetailsWindow.height
+            controller: controller
+            onOpened: window.imageViewerOpen = true
+            onClosed: window.imageViewerOpen = false
         }
     }
 
@@ -12623,6 +13018,18 @@ ApplicationWindow {
         }
     }
 
+    GameImageViewer {
+        id: launchBoxImageViewer
+        parent: Overlay.overlay
+        x: 0
+        y: 0
+        width: window.width
+        height: window.height
+        controller: controller
+        onOpened: window.imageViewerOpen = true
+        onClosed: window.imageViewerOpen = false
+    }
+
     LaunchStartupOverlay {
         id: launchStartupOverlay
         anchors.fill: parent
@@ -12644,6 +13051,15 @@ ApplicationWindow {
                  && !controller.pause_screen_active
         text: "Pause Game  Ctrl+P"
         onClicked: controller.pause_launch_session()
+    }
+
+    Shortcut {
+        sequence: "I"
+        enabled: !window.imageViewerOpen
+                 && window.selectedGameImageCount > 0
+                 && !controller.loading
+                 && !controller.writing
+        onActivated: window.openSelectedGameImages()
     }
 
     Shortcut {

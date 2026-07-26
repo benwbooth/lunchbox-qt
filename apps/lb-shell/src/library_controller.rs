@@ -777,6 +777,16 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_launch_box_image_viewer_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            first_media_index: i32,
+            next_media_index: i32,
+            first_image_url: QString,
+            next_image_url: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_game_details_layout_smoke_success(
             self: &LibraryController,
             reloaded: bool,
@@ -18557,56 +18567,39 @@ impl qobject::LibraryController {
         first_image_url: QString,
         next_image_url: QString,
     ) -> bool {
-        let game_id = game_id.to_string();
-        let Some(items) = self.rust().game_media_by_game_id.get(&game_id) else {
-            return false;
-        };
-        let Some(first_image) = usize::try_from(first_media_index)
-            .ok()
-            .and_then(|index| items.get(index))
-        else {
-            return false;
-        };
-        let Some(next_image) = usize::try_from(next_media_index)
-            .ok()
-            .and_then(|index| items.get(index))
-        else {
-            return false;
-        };
-        let local_file = |value: QString| {
-            QUrl::from_user_input(&value, &QString::default())
-                .to_local_file()
-                .map(|path| PathBuf::from(path.to_string()))
-        };
-        let Some(first_file) = local_file(first_image_url) else {
-            return false;
-        };
-        let Some(next_file) = local_file(next_image_url) else {
-            return false;
-        };
-        let safe_regular_file = |path: &Path| {
-            fs::symlink_metadata(path)
-                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
-        };
-        let success = game_id == "fixture-adventure"
-            && items.len() == 4
-            && self.game_image_count_for_game(qstring(&game_id)) == 3
-            && self.game_image_media_index_at(qstring(&game_id), 0) == first_media_index
-            && self.game_image_media_index_at(qstring(&game_id), 1) == next_media_index
-            && self.game_image_media_index_at(qstring(&game_id), 2) == 2
-            && first_image.kind == GameMediaKind::Image
-            && first_image.media_type == "Box - Front"
-            && first_image.path == first_file
-            && safe_regular_file(&first_file)
-            && next_image.kind == GameMediaKind::Image
-            && next_image.media_type == "Screenshot - Gameplay"
-            && next_image.path == next_file
-            && safe_regular_file(&next_file)
-            && !*self.loading()
-            && !*self.writing();
+        let success = self.validate_image_viewer_smoke(
+            &game_id.to_string(),
+            first_media_index,
+            next_media_index,
+            first_image_url,
+            next_image_url,
+        );
         if success {
             eprintln!(
                 "BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=3 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
+            );
+        }
+        success
+    }
+
+    pub fn report_launch_box_image_viewer_smoke_success(
+        &self,
+        game_id: QString,
+        first_media_index: i32,
+        next_media_index: i32,
+        first_image_url: QString,
+        next_image_url: QString,
+    ) -> bool {
+        let success = self.validate_image_viewer_smoke(
+            &game_id.to_string(),
+            first_media_index,
+            next_media_index,
+            first_image_url,
+            next_image_url,
+        );
+        if success {
+            eprintln!(
+                "LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=3 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
             );
         }
         success
@@ -26420,6 +26413,62 @@ impl qobject::LibraryController {
             .game_media_by_game_id
             .get(game_id)
             .and_then(|items| items.get(index))
+    }
+
+    fn validate_image_viewer_smoke(
+        &self,
+        game_id: &str,
+        first_media_index: i32,
+        next_media_index: i32,
+        first_image_url: QString,
+        next_image_url: QString,
+    ) -> bool {
+        let Some(items) = self.rust().game_media_by_game_id.get(game_id) else {
+            return false;
+        };
+        let Some(first_image) = usize::try_from(first_media_index)
+            .ok()
+            .and_then(|index| items.get(index))
+        else {
+            return false;
+        };
+        let Some(next_image) = usize::try_from(next_media_index)
+            .ok()
+            .and_then(|index| items.get(index))
+        else {
+            return false;
+        };
+        let local_file = |value: QString| {
+            QUrl::from_user_input(&value, &QString::default())
+                .to_local_file()
+                .map(|path| PathBuf::from(path.to_string()))
+        };
+        let Some(first_file) = local_file(first_image_url) else {
+            return false;
+        };
+        let Some(next_file) = local_file(next_image_url) else {
+            return false;
+        };
+        let safe_regular_file = |path: &Path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        };
+        game_id == "fixture-adventure"
+            && items.len() == 4
+            && self.game_image_count_for_game(qstring(game_id)) == 3
+            && self.game_image_media_index_at(qstring(game_id), 0) == first_media_index
+            && self.game_image_media_index_at(qstring(game_id), 1) == next_media_index
+            && self.game_image_media_index_at(qstring(game_id), 2) == 2
+            && first_image.kind == GameMediaKind::Image
+            && first_image.media_type == "Box - Front"
+            && first_image.path == first_file
+            && safe_regular_file(&first_file)
+            && next_image.kind == GameMediaKind::Image
+            && next_image.media_type == "Screenshot - Gameplay"
+            && next_image.path == next_file
+            && safe_regular_file(&next_file)
+            && !*self.loading()
+            && !*self.writing()
     }
 
     fn navigation_entry_at(&self, index: i32) -> Option<&NavigationEntry> {

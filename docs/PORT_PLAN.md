@@ -287,7 +287,15 @@ native-URL index. Previous/next, Enter, and page actions switch image types;
 the explicit port policy clamps zoom to 100–400% in 25% increments, resets fit
 and pan on type changes, and supports wheel, mouse drag, directional keys, and
 visible pan/zoom controls. Back returns to details when nested or to the wheel
-when entered directly. Native Windows and Intel/Apple Silicon macOS Qt
+when entered directly. LaunchBox now uses the same image-only interaction
+contract from the Details View Image action or the global `I` action. The
+docked path is owned by the main window, while popped-out Details opens the
+modal in its own native window; both stop hidden video, retain the selected
+image, and restore focus to the media row on Back. A compiled desktop scenario
+drives the shared button activation paths, validates the three-to-four
+image/media mapping and native regular files, renders a zoomed PNG, and proves
+byte-identical media and library documents. Native Windows and Intel/Apple
+Silicon macOS Qt
 interaction and Qt Multimedia execution remain explicit real-host gates, and
 all media mutation, download, manual/music playback, platform-video
 management, box flip, 3D models, related/document/application panes, custom
@@ -308,8 +316,9 @@ preservation, and restoration in a fresh process while fixture
 platform/settings documents stay byte-identical. Its third vertical follows
 the recovered stock `MediaList`/`MediaPreview` shape with a selectable
 thumbnail row, large image/video preview, details-video settings, and playback
-controls. Details customization, full media-view parity, multi-display geometry
-recovery, and native Windows/macOS Qt interaction remain open.
+controls. The next desktop media gaps are box flip, 3D models, related and
+document/application panes, media mutation/management, and multi-display
+geometry recovery; native Windows/macOS Qt interaction also remains open.
 Transactional title
 editing has expanded into 18 descriptive fields through a versioned typed
 payload; it recomputes sort/search membership, removes explicitly cleared
