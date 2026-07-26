@@ -76,11 +76,23 @@ pub mod qobject {
         #[qproperty(i32, game_count)]
         #[qproperty(i32, front_image_count)]
         #[qproperty(i32, indexed_media_count)]
+        #[qproperty(i32, indexed_manual_count)]
+        #[qproperty(i32, indexed_music_track_count)]
         #[qproperty(i32, game_media_revision)]
         #[qproperty(i32, model_settings_revision)]
         #[qproperty(bool, details_show_video)]
         #[qproperty(bool, details_auto_play_video)]
         #[qproperty(bool, details_show_3d_model)]
+        #[qproperty(bool, launchbox_auto_play_music)]
+        #[qproperty(bool, launchbox_shuffle_music)]
+        #[qproperty(bool, big_box_auto_play_music_games_list)]
+        #[qproperty(bool, big_box_auto_play_music_game_details)]
+        #[qproperty(bool, big_box_prioritize_music_over_video_audio)]
+        #[qproperty(bool, big_box_repeat_game_music)]
+        #[qproperty(bool, big_box_shuffle_soundtrack_music)]
+        #[qproperty(bool, big_box_show_game_menu_play_music)]
+        #[qproperty(bool, big_box_show_game_menu_view_manual)]
+        #[qproperty(i32, big_box_music_volume_percent)]
         #[qproperty(bool, big_box_show_game_menu_flip_box)]
         #[qproperty(bool, big_box_show_game_menu_model)]
         #[qproperty(i32, filtered_count)]
@@ -191,6 +203,22 @@ pub mod qobject {
 
         #[qinvokable]
         fn game_box_full_url_for_game(self: &LibraryController, game_id: QString) -> QUrl;
+
+        #[qinvokable]
+        fn game_manual_url_for_game(self: &LibraryController, game_id: QString) -> QUrl;
+
+        #[qinvokable]
+        fn game_music_count_for_game(self: &LibraryController, game_id: QString) -> i32;
+
+        #[qinvokable]
+        fn game_music_url_at(self: &LibraryController, game_id: QString, track_index: i32) -> QUrl;
+
+        #[qinvokable]
+        fn game_music_file_name_at(
+            self: &LibraryController,
+            game_id: QString,
+            track_index: i32,
+        ) -> QString;
 
         #[qinvokable]
         fn game_model_settings_json_for_game(self: &LibraryController, game_id: QString)
@@ -771,6 +799,16 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_supplemental_media_smoke_success(
+            self: &LibraryController,
+            frontend: QString,
+            game_id: QString,
+            manual_url: QString,
+            first_music_url: QString,
+            second_music_url: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_game_details_smoke_success(
             self: &LibraryController,
             row: i32,
@@ -1296,15 +1334,16 @@ use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
 use lb_platform::{
     default_host_path_mappings_path, default_launchbox_ui_state_path,
     default_model_viewer_state_path, default_platform_folders, execute_launch_sequence_controlled,
-    index_game_media, navigation_document_file_name, platform_document_file_name,
-    portable_storage_name, prepare_game_launch_sequence_with_mounts_context_and_resolver,
+    index_game_media, index_game_supplemental_media, navigation_document_file_name,
+    platform_document_file_name, portable_storage_name,
+    prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
-    select_emulator_for_game, ArchiveExtractor, FrontendLaunchScreenPolicy,
+    select_emulator_for_game, ArchiveExtractor, BigBoxMusicPolicy, FrontendLaunchScreenPolicy,
     FrontendPauseScreenPolicy, GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem,
-    GameMediaKind, HostPathMappings, HostPathResolver, LaunchBoxUiState, LaunchContext,
-    LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence,
-    LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy,
-    LaunchTarget, ModelRotationLock, ModelViewerState,
+    GameMediaKind, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState,
+    LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy,
+    LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy,
+    LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
@@ -1554,11 +1593,23 @@ pub struct LibraryControllerRust {
     game_count: i32,
     front_image_count: i32,
     indexed_media_count: i32,
+    indexed_manual_count: i32,
+    indexed_music_track_count: i32,
     game_media_revision: i32,
     model_settings_revision: i32,
     details_show_video: bool,
     details_auto_play_video: bool,
     details_show_3d_model: bool,
+    launchbox_auto_play_music: bool,
+    launchbox_shuffle_music: bool,
+    big_box_auto_play_music_games_list: bool,
+    big_box_auto_play_music_game_details: bool,
+    big_box_prioritize_music_over_video_audio: bool,
+    big_box_repeat_game_music: bool,
+    big_box_shuffle_soundtrack_music: bool,
+    big_box_show_game_menu_play_music: bool,
+    big_box_show_game_menu_view_manual: bool,
+    big_box_music_volume_percent: i32,
     big_box_show_game_menu_flip_box: bool,
     big_box_show_game_menu_model: bool,
     filtered_count: i32,
@@ -1623,7 +1674,11 @@ pub struct LibraryControllerRust {
     spine_image_paths: BTreeMap<String, PathBuf>,
     full_image_paths: BTreeMap<String, PathBuf>,
     game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
+    manual_paths_by_game_id: BTreeMap<String, PathBuf>,
+    music_paths_by_game_id: BTreeMap<String, Vec<PathBuf>>,
     game_details_media_policy: GameDetailsMediaPolicy,
+    launchbox_music_policy: LaunchBoxMusicPolicy,
+    big_box_music_policy: BigBoxMusicPolicy,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
@@ -1748,7 +1803,11 @@ struct LoadedLibrary {
     spine_image_paths: BTreeMap<String, PathBuf>,
     full_image_paths: BTreeMap<String, PathBuf>,
     game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
+    manual_paths_by_game_id: BTreeMap<String, PathBuf>,
+    music_paths_by_game_id: BTreeMap<String, Vec<PathBuf>>,
     game_details_media_policy: GameDetailsMediaPolicy,
+    launchbox_music_policy: LaunchBoxMusicPolicy,
+    big_box_music_policy: BigBoxMusicPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -1783,7 +1842,11 @@ struct LibraryReplacement {
     spine_image_paths: BTreeMap<String, PathBuf>,
     full_image_paths: BTreeMap<String, PathBuf>,
     game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
+    manual_paths_by_game_id: BTreeMap<String, PathBuf>,
+    music_paths_by_game_id: BTreeMap<String, Vec<PathBuf>>,
     game_details_media_policy: GameDetailsMediaPolicy,
+    launchbox_music_policy: LaunchBoxMusicPolicy,
+    big_box_music_policy: BigBoxMusicPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -1862,7 +1925,11 @@ impl LoadedLibrary {
                 spine_image_paths: BTreeMap::new(),
                 full_image_paths: BTreeMap::new(),
                 game_media_by_game_id: BTreeMap::new(),
+                manual_paths_by_game_id: BTreeMap::new(),
+                music_paths_by_game_id: BTreeMap::new(),
                 game_details_media_policy: GameDetailsMediaPolicy::default(),
+                launchbox_music_policy: LaunchBoxMusicPolicy::default(),
+                big_box_music_policy: BigBoxMusicPolicy::default(),
                 big_box_show_game_menu_flip_box: true,
                 details_show_3d_model: true,
                 big_box_show_game_menu_model: true,
@@ -1937,13 +2004,23 @@ impl LoadedLibrary {
         let custom_fields_by_game = collect_custom_fields_by_game(data.platforms());
         let game_saves_by_game = collect_game_saves_by_game(data.platforms());
         let game_save_count = game_saves_by_game.values().map(Vec::len).sum::<usize>();
+        let platform_folders = data
+            .platform_catalog()
+            .map(|catalog| catalog.folders.as_slice())
+            .unwrap_or(&[]);
         let game_media_index = index_game_media(
             &root,
             &games,
-            data.platform_catalog()
-                .map(|catalog| catalog.folders.as_slice())
-                .unwrap_or(&[]),
+            platform_folders,
             data.settings(),
+            path_resolver,
+        );
+        let supplemental_media_index = index_game_supplemental_media(
+            &root,
+            &games,
+            platform_folders,
+            data.settings(),
+            data.big_box_settings(),
             path_resolver,
         );
         let front_image_count = game_media_index.front_paths_by_game_id.len();
@@ -1963,23 +2040,44 @@ impl LoadedLibrary {
         let full_image_paths = game_media_index.full_paths_by_game_id;
         let game_media_by_game_id = game_media_index.items_by_game_id;
         let game_details_media_policy = game_media_index.policy;
+        let supplemental_report = supplemental_media_index.report;
+        let indexed_manual_count = supplemental_media_index.manual_paths_by_game_id.len();
+        let indexed_music_track_count = supplemental_media_index
+            .music_paths_by_game_id
+            .values()
+            .map(Vec::len)
+            .sum::<usize>();
+        let manual_paths_by_game_id = supplemental_media_index.manual_paths_by_game_id;
+        let music_paths_by_game_id = supplemental_media_index.music_paths_by_game_id;
+        let launchbox_music_policy = supplemental_media_index.launchbox_music_policy;
+        let big_box_music_policy = supplemental_media_index.big_box_music_policy;
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
             .map(|configuration| configuration.emulators.len())
             .unwrap_or_default();
         let message = format!(
-            "Loaded {} games, {front_image_count} front images, {indexed_media_count} detail media items, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s (media: {} files across {} folders; {} unsafe, {} oversized, {} unresolved, {} truncated).",
+            "Loaded {} games, {front_image_count} front images, {indexed_media_count} detail media items, {indexed_manual_count} manuals, {indexed_music_track_count} music tracks, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s (media: {} files across {} folders; supplemental: {} files across {} folders; {} unsafe, {} oversized, {} unresolved, {} truncated).",
             games.len(),
             started.elapsed().as_secs_f64(),
             media_report.scanned_files,
             media_report.scanned_folders,
-            media_report.unsafe_entries,
-            media_report.oversized_files,
+            supplemental_report.scanned_files,
+            supplemental_report.scanned_folders,
+            media_report
+                .unsafe_entries
+                .saturating_add(supplemental_report.unsafe_entries),
+            media_report
+                .oversized_files
+                .saturating_add(supplemental_report.oversized_files),
             media_report
                 .unresolved_folders
-                .saturating_add(media_report.unresolved_files),
+                .saturating_add(media_report.unresolved_files)
+                .saturating_add(supplemental_report.unresolved_folders)
+                .saturating_add(supplemental_report.unresolved_files),
             media_truncations
+                .saturating_add(supplemental_report.truncated_folders)
+                .saturating_add(supplemental_report.truncated_music_tracks)
         );
         let launchbox_root = Some(root.clone());
         let pending_recovery_count = pending_transaction_manifests(&root)
@@ -2003,7 +2101,11 @@ impl LoadedLibrary {
             spine_image_paths,
             full_image_paths,
             game_media_by_game_id,
+            manual_paths_by_game_id,
+            music_paths_by_game_id,
             game_details_media_policy,
+            launchbox_music_policy,
+            big_box_music_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -15776,7 +15878,11 @@ impl qobject::LibraryController {
                     spine_image_paths: BTreeMap::new(),
                     full_image_paths: BTreeMap::new(),
                     game_media_by_game_id: BTreeMap::new(),
+                    manual_paths_by_game_id: BTreeMap::new(),
+                    music_paths_by_game_id: BTreeMap::new(),
                     game_details_media_policy: GameDetailsMediaPolicy::default(),
+                    launchbox_music_policy: LaunchBoxMusicPolicy::default(),
+                    big_box_music_policy: BigBoxMusicPolicy::default(),
                     big_box_show_game_menu_flip_box: true,
                     details_show_3d_model: true,
                     big_box_show_game_menu_model: true,
@@ -15931,6 +16037,37 @@ impl qobject::LibraryController {
             .full_image_paths
             .get(&game_id.to_string())
             .map(|path| QUrl::from_local_file(&qstring(path.to_string_lossy())))
+            .unwrap_or_default()
+    }
+
+    pub fn game_manual_url_for_game(&self, game_id: QString) -> QUrl {
+        self.rust()
+            .manual_paths_by_game_id
+            .get(&game_id.to_string())
+            .map(|path| QUrl::from_local_file(&qstring(path.to_string_lossy())))
+            .unwrap_or_default()
+    }
+
+    pub fn game_music_count_for_game(&self, game_id: QString) -> i32 {
+        saturating_i32(
+            self.rust()
+                .music_paths_by_game_id
+                .get(&game_id.to_string())
+                .map(Vec::len)
+                .unwrap_or_default(),
+        )
+    }
+
+    pub fn game_music_url_at(&self, game_id: QString, track_index: i32) -> QUrl {
+        self.game_music_path(&game_id.to_string(), track_index)
+            .map(|path| QUrl::from_local_file(&qstring(path.to_string_lossy())))
+            .unwrap_or_default()
+    }
+
+    pub fn game_music_file_name_at(&self, game_id: QString, track_index: i32) -> QString {
+        self.game_music_path(&game_id.to_string(), track_index)
+            .and_then(|path| path.file_name())
+            .map(|name| qstring(name.to_string_lossy()))
             .unwrap_or_default()
     }
 
@@ -18928,6 +19065,92 @@ impl qobject::LibraryController {
             eprintln!(
                 "MEDIA_SMOKE_COMPLETE images=1 id={} file=Fixture-Adventure-01.svg",
                 game.id
+            );
+        }
+        success
+    }
+
+    pub fn report_supplemental_media_smoke_success(
+        &self,
+        frontend: QString,
+        game_id: QString,
+        manual_url: QString,
+        first_music_url: QString,
+        second_music_url: QString,
+    ) -> bool {
+        let frontend = frontend.to_string();
+        let game_id = game_id.to_string();
+        let Some(expected_manual) = self.rust().manual_paths_by_game_id.get(&game_id) else {
+            return false;
+        };
+        let Some(expected_tracks) = self.rust().music_paths_by_game_id.get(&game_id) else {
+            return false;
+        };
+        let local_path = |value: &QString| {
+            QUrl::from_user_input(value, &QString::default())
+                .to_local_file()
+                .map(|path| PathBuf::from(path.to_string()))
+        };
+        let Some(manual_file) = local_path(&manual_url) else {
+            return false;
+        };
+        let Some(first_music_file) = local_path(&first_music_url) else {
+            return false;
+        };
+        let Some(second_music_file) = local_path(&second_music_url) else {
+            return false;
+        };
+        let safe_regular_file = |path: &Path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        };
+        let policy_matches = match frontend.as_str() {
+            "launchbox" => {
+                !*self.launchbox_auto_play_music()
+                    && *self.launchbox_shuffle_music()
+                    && !*self.big_box_auto_play_music_games_list()
+                    && !*self.big_box_auto_play_music_game_details()
+            }
+            "bigbox" => {
+                !*self.big_box_auto_play_music_games_list()
+                    && !*self.big_box_auto_play_music_game_details()
+                    && !*self.big_box_prioritize_music_over_video_audio()
+                    && !*self.big_box_repeat_game_music()
+                    && !*self.big_box_shuffle_soundtrack_music()
+                    && *self.big_box_show_game_menu_play_music()
+                    && *self.big_box_show_game_menu_view_manual()
+                    && *self.big_box_music_volume_percent() == 75
+            }
+            _ => false,
+        };
+        let success = game_id == "fixture-adventure"
+            && self.rust().manual_paths_by_game_id.len() == 1
+            && *self.indexed_manual_count() == 1
+            && *self.indexed_music_track_count() == 2
+            && expected_tracks.len() == 2
+            && manual_file == *expected_manual
+            && first_music_file == expected_tracks[0]
+            && second_music_file == expected_tracks[1]
+            && manual_file.file_name().and_then(|name| name.to_str())
+                == Some("fixture-adventure.pdf")
+            && first_music_file.file_name().and_then(|name| name.to_str())
+                == Some("Fixture Adventure-01.mp3")
+            && second_music_file.file_name().and_then(|name| name.to_str())
+                == Some("Fixture Adventure-02.mp3")
+            && safe_regular_file(&manual_file)
+            && safe_regular_file(&first_music_file)
+            && safe_regular_file(&second_music_file)
+            && !*self.loading()
+            && !*self.writing()
+            && policy_matches;
+        if success {
+            let marker = if frontend == "launchbox" {
+                "LAUNCHBOX_SUPPLEMENTAL_MEDIA_SMOKE_COMPLETE"
+            } else {
+                "BIGBOX_SUPPLEMENTAL_MEDIA_SMOKE_COMPLETE"
+            };
+            eprintln!(
+                "{marker} id=fixture-adventure manuals=1 tracks=2 manual=pdf audio=mp3 playlist=m3u controls=1"
             );
         }
         success
@@ -23224,7 +23447,11 @@ impl qobject::LibraryController {
                     spine_image_paths: loaded.spine_image_paths,
                     full_image_paths: loaded.full_image_paths,
                     game_media_by_game_id: loaded.game_media_by_game_id,
+                    manual_paths_by_game_id: loaded.manual_paths_by_game_id,
+                    music_paths_by_game_id: loaded.music_paths_by_game_id,
                     game_details_media_policy: loaded.game_details_media_policy,
+                    launchbox_music_policy: loaded.launchbox_music_policy,
+                    big_box_music_policy: loaded.big_box_music_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     details_show_3d_model: loaded.details_show_3d_model,
                     big_box_show_game_menu_model: loaded.big_box_show_game_menu_model,
@@ -26608,6 +26835,8 @@ impl qobject::LibraryController {
                     rust.resolved_model_settings_by_game
                         .remove(&deleted.game.id);
                     rust.game_media_by_game_id.remove(&deleted.game.id);
+                    rust.manual_paths_by_game_id.remove(&deleted.game.id);
+                    rust.music_paths_by_game_id.remove(&deleted.game.id);
                     rust.games.remove(actual_index);
                     rust.game_sources.remove(actual_index);
                     rust.filtered_indices.retain(|index| *index != actual_index);
@@ -26632,6 +26861,19 @@ impl qobject::LibraryController {
                         .sum::<usize>(),
                 );
                 self.as_mut().set_indexed_media_count(indexed_media_count);
+                let indexed_manual_count =
+                    saturating_i32(self.as_ref().rust().manual_paths_by_game_id.len());
+                let indexed_music_track_count = saturating_i32(
+                    self.as_ref()
+                        .rust()
+                        .music_paths_by_game_id
+                        .values()
+                        .map(Vec::len)
+                        .sum::<usize>(),
+                );
+                self.as_mut().set_indexed_manual_count(indexed_manual_count);
+                self.as_mut()
+                    .set_indexed_music_track_count(indexed_music_track_count);
                 let revision = self.as_ref().rust().game_media_revision.wrapping_add(1);
                 self.as_mut().set_game_media_revision(revision);
                 let model_revision = self.as_ref().model_settings_revision().wrapping_add(1);
@@ -26845,7 +27087,11 @@ impl qobject::LibraryController {
             spine_image_paths,
             full_image_paths,
             game_media_by_game_id,
+            manual_paths_by_game_id,
+            music_paths_by_game_id,
             game_details_media_policy,
+            launchbox_music_policy,
+            big_box_music_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -26873,6 +27119,9 @@ impl qobject::LibraryController {
         let front_image_count = saturating_i32(front_image_paths.len());
         let indexed_media_count =
             saturating_i32(game_media_by_game_id.values().map(Vec::len).sum::<usize>());
+        let indexed_manual_count = saturating_i32(manual_paths_by_game_id.len());
+        let indexed_music_track_count =
+            saturating_i32(music_paths_by_game_id.values().map(Vec::len).sum::<usize>());
         let details_show_video = game_details_media_policy.show_video;
         let details_auto_play_video = game_details_media_policy.auto_play_video;
         let platform_counts = collect_platform_counts(&games, &platform_names);
@@ -26905,7 +27154,11 @@ impl qobject::LibraryController {
             rust.spine_image_paths = spine_image_paths;
             rust.full_image_paths = full_image_paths;
             rust.game_media_by_game_id = game_media_by_game_id;
+            rust.manual_paths_by_game_id = manual_paths_by_game_id;
+            rust.music_paths_by_game_id = music_paths_by_game_id;
             rust.game_details_media_policy = game_details_media_policy;
+            rust.launchbox_music_policy = launchbox_music_policy;
+            rust.big_box_music_policy = big_box_music_policy;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
             rust.platform_counts = platform_counts;
@@ -27005,6 +27258,9 @@ impl qobject::LibraryController {
         self.as_mut().set_game_count(game_count);
         self.as_mut().set_front_image_count(front_image_count);
         self.as_mut().set_indexed_media_count(indexed_media_count);
+        self.as_mut().set_indexed_manual_count(indexed_manual_count);
+        self.as_mut()
+            .set_indexed_music_track_count(indexed_music_track_count);
         let game_media_revision = self.as_ref().game_media_revision().wrapping_add(1);
         self.as_mut().set_game_media_revision(game_media_revision);
         let model_settings_revision = self.as_ref().model_settings_revision().wrapping_add(1);
@@ -27013,6 +27269,30 @@ impl qobject::LibraryController {
         self.as_mut().set_details_show_video(details_show_video);
         self.as_mut()
             .set_details_auto_play_video(details_auto_play_video);
+        let launchbox_music_policy = self.as_ref().rust().launchbox_music_policy.clone();
+        self.as_mut()
+            .set_launchbox_auto_play_music(launchbox_music_policy.auto_play);
+        self.as_mut()
+            .set_launchbox_shuffle_music(launchbox_music_policy.shuffle);
+        let big_box_music_policy = self.as_ref().rust().big_box_music_policy.clone();
+        self.as_mut()
+            .set_big_box_auto_play_music_games_list(big_box_music_policy.auto_play_games_list);
+        self.as_mut()
+            .set_big_box_auto_play_music_game_details(big_box_music_policy.auto_play_game_details);
+        self.as_mut().set_big_box_prioritize_music_over_video_audio(
+            big_box_music_policy.prioritize_music_over_video_audio,
+        );
+        self.as_mut()
+            .set_big_box_repeat_game_music(big_box_music_policy.repeat_game_music);
+        self.as_mut()
+            .set_big_box_shuffle_soundtrack_music(big_box_music_policy.shuffle_soundtrack_music);
+        self.as_mut()
+            .set_big_box_show_game_menu_play_music(big_box_music_policy.show_game_menu_play_music);
+        self.as_mut().set_big_box_show_game_menu_view_manual(
+            big_box_music_policy.show_game_menu_view_manual,
+        );
+        self.as_mut()
+            .set_big_box_music_volume_percent(i32::from(big_box_music_policy.volume_percent));
         self.as_mut()
             .set_big_box_show_game_menu_flip_box(big_box_show_game_menu_flip_box);
         self.as_mut()
@@ -27129,6 +27409,14 @@ impl qobject::LibraryController {
             .game_media_by_game_id
             .get(game_id)
             .and_then(|items| items.get(index))
+    }
+
+    fn game_music_path(&self, game_id: &str, track_index: i32) -> Option<&PathBuf> {
+        let track_index = usize::try_from(track_index).ok()?;
+        self.rust()
+            .music_paths_by_game_id
+            .get(game_id)
+            .and_then(|tracks| tracks.get(track_index))
     }
 
     fn validate_image_viewer_smoke(
@@ -31686,11 +31974,12 @@ mod tests {
         payload.platform.release_date = Some("2001-02-03".into());
         payload.platform.disable_auto_import = true;
         payload.folders[0].folder_path = r"Videos\Fixture Console\Edited".into();
-        payload.folders.push(PlatformFolderEditPayload {
-            source_index: None,
-            media_type: "Manual".into(),
-            folder_path: r"Manuals\Fixture Console".into(),
-        });
+        payload
+            .folders
+            .iter_mut()
+            .find(|folder| folder.media_type == "Manual")
+            .expect("fixture manual folder")
+            .folder_path = r"Manuals\Fixture Console\Edited".into();
         let payload = parse_platform_edit_payload(
             "Fixture Console",
             &serde_json::to_string(&payload).unwrap(),
@@ -31702,7 +31991,7 @@ mod tests {
             payload,
         )
         .unwrap();
-        assert_eq!(edited.folder_count, 8);
+        assert_eq!(edited.folder_count, 9);
         assert_eq!(
             fs::read(&edited.catalog_backup).unwrap(),
             original_catalog.as_bytes()
@@ -31727,9 +32016,13 @@ mod tests {
         assert_eq!(platform.release_date.as_deref(), Some("2001-02-03"));
         assert!(platform.metadata.hide_in_big_box);
         assert!(platform.disable_auto_import);
-        let manual = catalog.folders.last().expect("appended manual folder");
+        let manual = catalog
+            .folders
+            .iter()
+            .find(|folder| folder.media_type == "Manual")
+            .expect("edited manual folder");
         assert_eq!(manual.media_type, "Manual");
-        assert_eq!(manual.folder_path, r"Manuals\Fixture Console");
+        assert_eq!(manual.folder_path, r"Manuals\Fixture Console\Edited");
         assert!(!directory.path().join("Manuals").exists());
     }
 

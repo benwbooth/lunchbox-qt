@@ -31,6 +31,7 @@ diagnostics=$(
     apps/lb-shell/qml/GameImageViewer.qml \
     apps/lb-shell/qml/BoxArtView.qml \
     apps/lb-shell/qml/BoxModelViewer.qml \
+    apps/lb-shell/qml/GameMusicPlayer.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -164,17 +165,39 @@ echo "LaunchBox and BigBox role-model runtime smokes validated."
 
 cp -a fixtures/launchbox/. "$media_root/"
 fixture_video="$media_root/Videos/Fixture Console/fixture-adventure.mp4"
-mkdir -p "$(dirname "$fixture_video")"
+fixture_manual="$media_root/Manuals/Fixture Console/fixture-adventure.pdf"
+fixture_music_first="$media_root/Music/Fixture Console/Fixture Adventure-01.mp3"
+fixture_music_second="$media_root/Music/Fixture Console/Fixture Adventure-02.mp3"
+mkdir -p \
+  "$(dirname "$fixture_video")" \
+  "$(dirname "$fixture_manual")" \
+  "$(dirname "$fixture_music_first")"
 base64 --decode fixtures/media/fixture-video.mp4.base64 > "$fixture_video"
+base64 --decode fixtures/media/fixture-manual.pdf.base64 > "$fixture_manual"
+base64 --decode fixtures/media/fixture-music.mp3.gz.base64 \
+  | gzip --decompress > "$fixture_music_first"
+cp "$fixture_music_first" "$fixture_music_second"
 if [[ $(sha256sum "$fixture_video" | cut -d' ' -f1) \
   != d415ca3d0511bb16cbbc5a508fe831f7a0f080e9c187475de907ba070431a205 ]]; then
   echo "Decoded selected-game video fixture does not match its pinned source." >&2
   exit 1
 fi
+if [[ $(sha256sum "$fixture_manual" | cut -d' ' -f1) \
+  != 52a03172ce1339ed39ad214396e16a10d65af40543ae4f7a4289545cc554bae1 ]]; then
+  echo "Decoded game-manual fixture does not match its pinned source." >&2
+  exit 1
+fi
+for fixture_music in "$fixture_music_first" "$fixture_music_second"; do
+  if [[ $(sha256sum "$fixture_music" | cut -d' ' -f1) \
+    != 89d64dd51662c9c3c41629582028828cf53f0d66608404b69e178310e1174fd3 ]]; then
+    echo "Decoded game-music fixture does not match its pinned source." >&2
+    exit 1
+  fi
+done
 media_files_manifest="$test_config_root/media-files.before.sha256"
 (
   cd "$media_root"
-  find Images Videos -type f -print0 \
+  find Images Videos Manuals Music -type f -print0 \
     | sort -z \
     | xargs -0 sha256sum
 ) > "$media_files_manifest"
@@ -205,6 +228,47 @@ for shell in launchbox bigbox; do
 done
 
 echo "LaunchBox and BigBox native-path front artwork indexing, URL delivery, decoding, and rendering validated without library writes."
+
+for shell in launchbox bigbox; do
+  screenshot="$media_root/$shell-supplemental-media.png"
+  arguments=(
+    --library "$media_root"
+    --supplemental-media-smoke-test
+    --supplemental-media-screenshot "$screenshot"
+    --path-mappings-file "$empty_path_mappings"
+  )
+  marker=LAUNCHBOX_SUPPLEMENTAL_MEDIA_SMOKE_COMPLETE
+  if [[ "$shell" == bigbox ]]; then
+    arguments+=(--windowed)
+    marker=BIGBOX_SUPPLEMENTAL_MEDIA_SMOKE_COMPLETE
+  fi
+  output=$(QT_QPA_PLATFORM=offscreen \
+    "$binary_dir/$shell" "${arguments[@]}" 2>&1) || {
+    printf '%s\n' "$output" >&2
+    exit 1
+  }
+  if ! rg -q \
+    "$marker id=fixture-adventure manuals=1 tracks=2 manual=pdf audio=mp3 playlist=m3u controls=1" \
+    <<< "$output"; then
+    printf '%s\n' "$output" >&2
+    echo "$shell did not validate its manual and game-music controls." >&2
+    exit 1
+  fi
+  if [[ ! -s "$screenshot" ]] \
+    || [[ $(wc -c < "$screenshot") -lt 1024 ]]; then
+    echo "$shell did not save a rendered supplemental-media screenshot." >&2
+    exit 1
+  fi
+  supplemental_colors=$(magick "$screenshot" -format '%k' info:)
+  if [[ ! "$supplemental_colors" =~ ^[0-9]+$ ]] \
+    || ((supplemental_colors < 64)); then
+    echo "$shell supplemental-media screenshot is blank or insufficiently rendered ($supplemental_colors colors)." >&2
+    exit 1
+  fi
+  cmp "$media_platform.before-media-smoke" "$media_platform"
+done
+
+echo "LaunchBox and BigBox manual opening, typed music policy, M3U expansion, Qt audio decode, pause/next/stop controls, and rendered player UI validated without library writes."
 
 game_details_settings="$media_root/Data/Settings.xml"
 game_details_screenshot="$media_root/launchbox-game-details.png"

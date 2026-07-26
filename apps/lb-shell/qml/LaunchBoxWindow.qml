@@ -19,6 +19,7 @@ ApplicationWindow {
     color: "#14171c"
     onClosing: {
         window.applicationClosing = true
+        launchBoxMusicPlayer.stopPlayback(true)
         gameDetailsLayoutSaveTimer.stop()
         window.persistGameDetailsLayout(
                     controller.show_game_details,
@@ -68,6 +69,16 @@ ApplicationWindow {
     property bool loadSmokeTest: Qt.application.arguments.indexOf("--load-smoke-test") >= 0
     property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
     property bool mediaSmokeFinished: false
+    property bool supplementalMediaSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--supplemental-media-smoke-test") >= 0
+    property int supplementalMediaSmokePhase: 0
+    property bool supplementalMediaSmokeFinished: false
+    property string supplementalMediaManualUrl: ""
+    property string supplementalMediaFirstMusicUrl: ""
+    property bool supplementalMediaScreenshotRequested: false
+    property string supplementalMediaScreenshotPath:
+        argumentValue("--supplemental-media-screenshot")
     property bool gameDetailsSmokeTest:
         Qt.application.arguments.indexOf("--game-details-smoke-test") >= 0
     property int gameDetailsSmokePhase: 0
@@ -738,6 +749,97 @@ ApplicationWindow {
                                       returnFocusItem) {
         return modelViewerForDetails.openForGame(
                     gameId, gameTitle, returnFocusItem)
+    }
+
+    function openGameManual(gameId) {
+        if (gameId.length === 0 || controller.loading
+                || controller.writing)
+            return false
+        const manualUrl = controller.game_manual_url_for_game(gameId)
+        if (manualUrl.toString().length === 0)
+            return false
+        if (supplementalMediaSmokeTest) {
+            supplementalMediaManualUrl = manualUrl.toString()
+            return true
+        }
+        return Qt.openUrlExternally(manualUrl)
+    }
+
+    function playGameMusic(gameId, gameTitle, playNow) {
+        if (gameId.length === 0 || controller.loading
+                || controller.writing
+                || controller.game_music_count_for_game(gameId) === 0)
+            return false
+        const detailsPane = activeGameDetailsPane()
+        if (detailsPane) {
+            // qmllint disable missing-property
+            detailsPane["stopMediaPreview"]()
+            // qmllint enable missing-property
+        }
+        launchBoxMusicPlayer.shuffleEnabled =
+            controller.launchbox_shuffle_music
+        return launchBoxMusicPlayer.openForGame(
+                    gameId, gameTitle, playNow)
+    }
+
+    function launchGame(row, gameId) {
+        launchBoxMusicPlayer.stopPlayback(true)
+        controller.launch_game(row, gameId)
+    }
+
+    function launchAdditionalApplication(row, gameId, applicationId) {
+        launchBoxMusicPlayer.stopPlayback(true)
+        controller.launch_additional_application(
+                    row, gameId, applicationId)
+    }
+
+    function finishSupplementalMediaSmoke() {
+        function complete() {
+            const firstMusicUrl =
+                controller.game_music_url_at(
+                    "fixture-adventure", 0).toString()
+            const secondMusicUrl =
+                controller.game_music_url_at(
+                    "fixture-adventure", 1).toString()
+            if (supplementalMediaFirstMusicUrl !== firstMusicUrl
+                    || launchBoxMusicPlayer.trackSource.toString()
+                       !== secondMusicUrl
+                    || !controller
+                        .report_supplemental_media_smoke_success(
+                            "launchbox", "fixture-adventure",
+                            supplementalMediaManualUrl,
+                            firstMusicUrl, secondMusicUrl)) {
+                console.error(
+                    "LAUNCHBOX_SUPPLEMENTAL_MEDIA_CONTROLLER_REJECTED"
+                    + " manual=" + supplementalMediaManualUrl
+                    + " first=" + supplementalMediaFirstMusicUrl
+                    + " current="
+                    + launchBoxMusicPlayer.trackSource.toString())
+                Qt.exit(569)
+                return
+            }
+            launchBoxMusicPlayer.clickStopForSmoke()
+            supplementalMediaSmokeFinished = true
+            Qt.quit()
+        }
+        if (supplementalMediaScreenshotPath.length === 0) {
+            complete()
+            return
+        }
+        if (supplementalMediaScreenshotRequested)
+            return
+        supplementalMediaScreenshotRequested = true
+        launchBoxMusicPlayer.contentItem.grabToImage(function(result) {
+            if (!result.saveToFile(
+                    supplementalMediaScreenshotPath)) {
+                console.error(
+                    "LAUNCHBOX_SUPPLEMENTAL_MEDIA_SCREENSHOT_SAVE_FAILED path="
+                    + supplementalMediaScreenshotPath)
+                Qt.exit(568)
+                return
+            }
+            complete()
+        })
     }
 
     function finishLibraryListViewSmoke(reload) {
@@ -5078,7 +5180,70 @@ ApplicationWindow {
                                 if (index < 0 || index >= mediaCount)
                                     return false
                                 detailsMediaPlayer.stop()
+                                if (controller.game_media_kind_at(
+                                        mediaGameId, index) === "video")
+                                    launchBoxMusicPlayer.stopPlayback(true)
                                 selectedMediaIndex = index
+                                return true
+                            }
+
+                            function stopMediaPreview() {
+                                detailsMediaPlayer.stop()
+                                return true
+                            }
+
+                            function hasVideoMedia() {
+                                for (let index = 0; index < mediaCount;
+                                     ++index) {
+                                    if (controller.game_media_kind_at(
+                                            mediaGameId, index) === "video")
+                                        return true
+                                }
+                                return false
+                            }
+
+                            function autoPlayMusicIfAllowed() {
+                                if (!game)
+                                    return false
+                                if (controller.details_auto_play_video
+                                        && hasVideoMedia()) {
+                                    if (launchBoxMusicPlayer.opened
+                                            && launchBoxMusicPlayer.gameId
+                                               === mediaGameId)
+                                        launchBoxMusicPlayer
+                                            .stopPlayback(true)
+                                    return false
+                                }
+                                if (!controller.launchbox_auto_play_music)
+                                    return false
+                                return window.playGameMusic(
+                                    mediaGameId, game.gameTitle, true)
+                            }
+
+                            function openManual() {
+                                return game
+                                       && window.openGameManual(mediaGameId)
+                            }
+
+                            function playMusic() {
+                                return game
+                                       && window.playGameMusic(
+                                           mediaGameId, game.gameTitle, true)
+                            }
+
+                            function clickViewManualForSmoke() {
+                                if (!detailsViewManualButton.visible
+                                        || !detailsViewManualButton.enabled)
+                                    return false
+                                detailsViewManualButton.clicked()
+                                return true
+                            }
+
+                            function clickPlayMusicForSmoke() {
+                                if (!detailsPlayMusicButton.visible
+                                        || !detailsPlayMusicButton.enabled)
+                                    return false
+                                detailsPlayMusicButton.clicked()
                                 return true
                             }
 
@@ -5149,11 +5314,18 @@ ApplicationWindow {
                                     .imageViewerOpenSucceeded
                             }
 
-                            onMediaGameIdChanged:
-                                Qt.callLater(resetMediaSelection)
-                            onMediaRevisionChanged:
-                                Qt.callLater(resetMediaSelection)
-                            Component.onCompleted: resetMediaSelection()
+                            onMediaGameIdChanged: Qt.callLater(function() {
+                                resetMediaSelection()
+                                autoPlayMusicIfAllowed()
+                            })
+                            onMediaRevisionChanged: Qt.callLater(function() {
+                                resetMediaSelection()
+                                autoPlayMusicIfAllowed()
+                            })
+                            Component.onCompleted: {
+                                resetMediaSelection()
+                                Qt.callLater(autoPlayMusicIfAllowed)
+                            }
 
                             Timer {
                                 interval: 25
@@ -6015,7 +6187,7 @@ ApplicationWindow {
                                                      && !controller.launching
                                                      && !controller.launch_session_active
                                                      && controller.pending_recovery_count === 0
-                                            onClicked: controller.launch_game(
+                                            onClicked: window.launchGame(
                                                            gameDetailsPane.game.index,
                                                            gameDetailsPane.game.gameId)
                                         }
@@ -6118,6 +6290,52 @@ ApplicationWindow {
                                                            gameDetailsPane.game.index,
                                                            gameDetailsPane.game.gameId,
                                                            gameDetailsPane.game.gameTitle)
+                                        }
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Button {
+                                            id: detailsViewManualButton
+                                            Layout.fillWidth: true
+                                            text: "View Manual"
+                                            visible:
+                                                gameDetailsPane.game
+                                                && controller
+                                                   .game_manual_url_for_game(
+                                                       gameDetailsPane
+                                                       .mediaGameId)
+                                                   .toString().length > 0
+                                            enabled: visible
+                                                     && !controller.loading
+                                                     && !controller.writing
+                                            Accessible.name:
+                                                "Open the selected game manual"
+                                            onClicked:
+                                                gameDetailsPane.openManual()
+                                        }
+                                        Button {
+                                            id: detailsPlayMusicButton
+                                            Layout.fillWidth: true
+                                            text:
+                                                launchBoxMusicPlayer.opened
+                                                && launchBoxMusicPlayer.gameId
+                                                   === gameDetailsPane
+                                                      .mediaGameId
+                                                ? "Music Controls"
+                                                : "Play Music"
+                                            visible:
+                                                gameDetailsPane.game
+                                                && controller
+                                                   .game_music_count_for_game(
+                                                       gameDetailsPane
+                                                       .mediaGameId) > 0
+                                            enabled: visible
+                                                     && !controller.loading
+                                                     && !controller.writing
+                                            Accessible.name:
+                                                "Play the selected game music"
+                                            onClicked:
+                                                gameDetailsPane.playMusic()
                                         }
                                     }
 
@@ -6931,7 +7149,7 @@ ApplicationWindow {
                                          && !controller.launching
                                          && !controller.launch_session_active
                                          && controller.pending_recovery_count === 0
-                                onClicked: controller.launch_game(index, gameId)
+                                onClicked: window.launchGame(index, gameId)
                             }
                             Button {
                                 anchors.left: parent.left
@@ -7857,7 +8075,8 @@ ApplicationWindow {
                     const row = launchWithDialog.modelRow
                     const gameId = launchWithDialog.gameId
                     launchWithDialog.close()
-                    controller.launch_additional_application(row, gameId, applicationId)
+                    window.launchAdditionalApplication(
+                                row, gameId, applicationId)
                 }
             }
         }
@@ -13587,6 +13806,123 @@ ApplicationWindow {
         controller: controller
         onOpened: window.modelViewerOpen = true
         onClosed: window.modelViewerOpen = false
+    }
+
+    GameMusicPlayer {
+        id: launchBoxMusicPlayer
+        parent: Overlay.overlay
+        x: Math.round((window.width - width) / 2)
+        y: Math.max(12, window.height - height - 70)
+        controller: controller
+        shuffleEnabled: controller.launchbox_shuffle_music
+        repeatEnabled: false
+        outputVolume: 0.75
+        mutedForSmoke: window.supplementalMediaSmokeTest
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.supplementalMediaSmokeTest
+                 && !window.supplementalMediaSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.library_path.length === 0)
+                return
+            if (window.supplementalMediaSmokePhase === 0) {
+                if (controller.indexed_manual_count !== 1
+                        || controller.indexed_music_track_count !== 2
+                        || controller.launchbox_auto_play_music
+                        || !controller.launchbox_shuffle_music)
+                    return
+                window.setAttributeFilters(
+                            "any", "none", true, true)
+                window.restoreGameSelection(
+                            "fixture-adventure")
+                window.supplementalMediaSmokePhase = 1
+                return
+            }
+            const detailsPane = window.activeGameDetailsPane()
+            if (window.supplementalMediaSmokePhase === 1) {
+                if (window.selectedGameId !== "fixture-adventure"
+                        || !detailsPane)
+                    return
+                // qmllint disable missing-property
+                if (!detailsPane["clickViewManualForSmoke"]()
+                        || !detailsPane["clickPlayMusicForSmoke"]()) {
+                    // qmllint enable missing-property
+                    console.error(
+                        "LAUNCHBOX_SUPPLEMENTAL_MEDIA_ACTION_MISSING")
+                    Qt.exit(565)
+                    return
+                }
+                // qmllint enable missing-property
+                window.supplementalMediaSmokePhase = 2
+            } else if (window.supplementalMediaSmokePhase === 2) {
+                if (window.supplementalMediaManualUrl.length === 0
+                        || !launchBoxMusicPlayer.opened
+                        || launchBoxMusicPlayer.gameId
+                           !== "fixture-adventure"
+                        || launchBoxMusicPlayer.trackCount !== 2
+                        || launchBoxMusicPlayer.currentTrackIndex !== 0
+                        || launchBoxMusicPlayer.trackName
+                           !== "Fixture Adventure-01.mp3"
+                        || launchBoxMusicPlayer.duration <= 0
+                        || launchBoxMusicPlayer.mediaError
+                           !== MediaPlayer.NoError
+                        || launchBoxMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                window.supplementalMediaFirstMusicUrl =
+                    launchBoxMusicPlayer.trackSource.toString()
+                if (!launchBoxMusicPlayer
+                        .clickPlayPauseForSmoke()) {
+                    console.error(
+                        "LAUNCHBOX_SUPPLEMENTAL_MEDIA_PAUSE_MISSING")
+                    Qt.exit(566)
+                    return
+                }
+                window.supplementalMediaSmokePhase = 3
+            } else if (window.supplementalMediaSmokePhase === 3) {
+                if (launchBoxMusicPlayer.playbackState
+                        !== MediaPlayer.PausedState)
+                    return
+                if (!launchBoxMusicPlayer.clickNextForSmoke()) {
+                    console.error(
+                        "LAUNCHBOX_SUPPLEMENTAL_MEDIA_NEXT_MISSING")
+                    Qt.exit(567)
+                    return
+                }
+                window.supplementalMediaSmokePhase = 4
+            } else if (window.supplementalMediaSmokePhase === 4) {
+                if (launchBoxMusicPlayer.currentTrackIndex !== 1
+                        || launchBoxMusicPlayer.trackName
+                           !== "Fixture Adventure-02.mp3")
+                    return
+                window.finishSupplementalMediaSmoke()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.supplementalMediaSmokeTest
+                 && !window.supplementalMediaSmokeFinished
+        onTriggered: {
+            console.error(
+                "LAUNCHBOX_SUPPLEMENTAL_MEDIA_TIMEOUT phase="
+                + window.supplementalMediaSmokePhase
+                + " id=" + window.selectedGameId
+                + " track=" + launchBoxMusicPlayer.currentTrackIndex
+                + " state=" + launchBoxMusicPlayer.playbackState
+                + " status=" + launchBoxMusicPlayer.mediaStatus
+                + " error=" + launchBoxMusicPlayer.mediaError
+                + " duration=" + launchBoxMusicPlayer.duration
+                + " controller=" + controller.status_message)
+            Qt.exit(window.supplementalMediaScreenshotRequested
+                    ? 599
+                    : 570 + window.supplementalMediaSmokePhase)
+        }
     }
 
     LaunchStartupOverlay {

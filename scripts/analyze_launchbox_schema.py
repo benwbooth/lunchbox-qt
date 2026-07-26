@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -195,6 +196,104 @@ def additional_application_census(
     return result
 
 
+def supplemental_tree_census(root: Path) -> dict[str, object]:
+    """Count manual/music tree shapes without retaining names or paths."""
+    counts: Counter[str] = Counter()
+    extensions: Counter[str] = Counter()
+    maximum_relative_depth = 0
+    if not root.is_dir():
+        return {
+            "present": False,
+            "regular_files": 0,
+            "symlinks": 0,
+            "maximum_relative_depth": 0,
+            "extension_counts": {},
+        }
+    for entry in root.rglob("*"):
+        try:
+            relative_depth = len(entry.relative_to(root).parts)
+            maximum_relative_depth = max(
+                maximum_relative_depth, relative_depth
+            )
+            if entry.is_symlink():
+                counts["symlinks"] += 1
+            elif entry.is_file():
+                counts["regular_files"] += 1
+                extension = entry.suffix.lower().lstrip(".") or "(none)"
+                extensions[extension] += 1
+        except OSError:
+            counts["unreadable_entries"] += 1
+    return {
+        "present": True,
+        "regular_files": counts["regular_files"],
+        "symlinks": counts["symlinks"],
+        "unreadable_entries": counts["unreadable_entries"],
+        "maximum_relative_depth": maximum_relative_depth,
+        "extension_counts": dict(sorted(extensions.items())),
+    }
+
+
+def stored_supplemental_path_census(
+    data_root: Path, field_name: str
+) -> dict[str, object]:
+    """Count persisted path shapes without retaining a path or game value."""
+    counts: Counter[str] = Counter()
+    extensions: Counter[str] = Counter()
+    for path in sorted((data_root / "Platforms").glob("*.xml")):
+        try:
+            root = ET.parse(path).getroot()
+        except (ET.ParseError, OSError):
+            counts["platform_parse_errors"] += 1
+            continue
+        for game in root.findall("Game"):
+            value = game.findtext(field_name, default="").strip()
+            if not value:
+                continue
+            counts["nonempty_paths"] += 1
+            lexical_parts = [
+                part for part in re.split(r"[\\/]+", value) if part
+            ]
+            if any(part == ".." for part in lexical_parts):
+                counts["paths_with_parent_components"] += 1
+            if re.match(r"^[A-Za-z]:[\\/]", value) or value.startswith(
+                ("\\\\", "//")
+            ):
+                counts["windows_absolute_paths"] += 1
+            elif value.startswith("/"):
+                counts["native_absolute_paths"] += 1
+            else:
+                counts["relative_paths"] += 1
+            leaf = lexical_parts[-1] if lexical_parts else ""
+            extension = Path(leaf).suffix.lower().lstrip(".") or "(none)"
+            extensions[extension] += 1
+    return {
+        key: counts[key]
+        for key in (
+            "nonempty_paths",
+            "relative_paths",
+            "windows_absolute_paths",
+            "native_absolute_paths",
+            "paths_with_parent_components",
+            "platform_parse_errors",
+        )
+    } | {"extension_counts": dict(sorted(extensions.items()))}
+
+
+def supplemental_media_census(
+    install_root: Path, data_root: Path
+) -> dict[str, object]:
+    return {
+        "manual_tree": supplemental_tree_census(install_root / "Manuals"),
+        "music_tree": supplemental_tree_census(install_root / "Music"),
+        "game_manual_paths": stored_supplemental_path_census(
+            data_root, "ManualPath"
+        ),
+        "game_music_paths": stored_supplemental_path_census(
+            data_root, "MusicPath"
+        ),
+    }
+
+
 def build_census(install_root: Path) -> dict[str, object]:
     data_root = install_root / "Data"
     if not data_root.is_dir():
@@ -260,6 +359,9 @@ def build_census(install_root: Path) -> dict[str, object]:
         "data_layout_directories": sorted_directory_names(data_root),
         "additional_applications": additional_application_census(data_root),
         "combined_roms": combined_rom_census(data_root),
+        "supplemental_media": supplemental_media_census(
+            install_root, data_root
+        ),
         "document_groups": serializable_groups,
     }
 

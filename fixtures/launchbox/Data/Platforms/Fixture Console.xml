@@ -59,7 +59,7 @@
     <MissingMusic>false</MissingMusic>
     <MissingScreenshotImage>false</MissingScreenshotImage>
     <MissingVideo>false</MissingVideo>
-    <MusicPath>Music\Fixture Console\fixture-adventure.mp3</MusicPath>
+    <MusicPath>Music\Fixture Console\Fixture Adventure.m3u</MusicPath>
     <Notes>A synthetic adventure used to verify LaunchBox XML compatibility.</Notes>
     <OriginAppId>fixture-origin-id</OriginAppId>
     <OriginInstallPath>Games\Origin\Fixture Adventure</OriginInstallPath>

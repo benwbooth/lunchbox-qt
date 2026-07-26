@@ -12,6 +12,14 @@
     <PauseTheme>Fixture BigBox Pause</PauseTheme>
     <PauseScreenMuting>true</PauseScreenMuting>
     <PauseScreenFading>true</PauseScreenFading>
+    <AutoPlayMusicGamesList>false</AutoPlayMusicGamesList>
+    <AutoPlayMusicGameDetails>false</AutoPlayMusicGameDetails>
+    <PrioritizeMusicOverVideoAudio>false</PrioritizeMusicOverVideoAudio>
+    <RepeatGameMusic>false</RepeatGameMusic>
+    <ShuffleSoundtrackMusic>false</ShuffleSoundtrackMusic>
+    <ShowGameMenuPlayMusic>true</ShowGameMenuPlayMusic>
+    <ShowGameMenuViewManual>true</ShowGameMenuViewManual>
+    <VolumeMusic>75</VolumeMusic>
     <ShowGameMenuFlipBox>true</ShowGameMenuFlipBox>
     <ShowGameMenuViewModelFullscreen>true</ShowGameMenuViewModelFullscreen>
     <KeyboardFlipBox>49</KeyboardFlipBox>

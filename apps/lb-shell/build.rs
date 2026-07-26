@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/BoxArtView.qml");
     println!("cargo:rerun-if-changed=qml/BoxModelViewer.qml");
     println!("cargo:rerun-if-changed=qml/ModelSettingsEditor.qml");
+    println!("cargo:rerun-if-changed=qml/GameMusicPlayer.qml");
     println!("cargo:rerun-if-changed=qml/LaunchStartupOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchShutdownOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchPauseOverlay.qml");
@@ -25,6 +26,7 @@ fn main() {
                 "qml/BoxArtView.qml",
                 "qml/BoxModelViewer.qml",
                 "qml/ModelSettingsEditor.qml",
+                "qml/GameMusicPlayer.qml",
                 "qml/LaunchStartupOverlay.qml",
                 "qml/LaunchShutdownOverlay.qml",
                 "qml/LaunchPauseOverlay.qml",

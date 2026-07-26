@@ -14,9 +14,11 @@ pub use archive::{
 pub use dosbox::DosBoxPlanError;
 pub use m3u::M3uPreparationError;
 pub use media::{
-    front_image_type_priorities, index_front_images, index_game_media, launchbox_media_stem,
-    region_priorities, FrontImageIndex, FrontImageIndexReport, GameDetailsMediaPolicy,
-    GameMediaIndex, GameMediaIndexReport, GameMediaItem, GameMediaKind,
+    front_image_type_priorities, index_front_images, index_game_media,
+    index_game_supplemental_media, launchbox_media_stem, region_priorities, BigBoxMusicPolicy,
+    FrontImageIndex, FrontImageIndexReport, GameDetailsMediaPolicy, GameMediaIndex,
+    GameMediaIndexReport, GameMediaItem, GameMediaKind, GameSupplementalMediaIndex,
+    GameSupplementalMediaIndexReport, LaunchBoxMusicPolicy,
 };
 pub use model_viewer_state::{
     default_model_viewer_state_path, ModelRotationLock, ModelViewerState, ModelViewerStateError,

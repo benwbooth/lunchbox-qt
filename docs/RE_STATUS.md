@@ -37,10 +37,11 @@ though it is older than the frozen 13.27 binary oracle.
 
 `scripts/analyze_launchbox_schema.py` produced
 `analysis/real-install-schema.json`, a value-free census that records element
-and attribute names plus aggregate counts, but no filenames, text values,
-stored paths, accounts, or license data. It found 37 platform files, 35,869
-games, 16,752 additional applications, 20,739 alternate names, 54 playlists,
-zero custom-field records, and no XML parse errors.
+and attribute names plus aggregate record/media-extension/path-shape counts,
+but no filenames, text values, stored paths, accounts, or license data. It
+found 37 platform files, 35,869 games, 16,752 additional applications, 20,739
+alternate names, 54 playlists, zero custom-field records, and no XML parse
+errors.
 
 The census now includes a value-free additional-application shape audit. All
 16,752 records have parseable nonnegative priorities ranging from 0 through 26;
@@ -176,6 +177,44 @@ enable details video and autoplay with Theme Video, Video Snap, Recording, then
 Trailer priority. These facts establish the current read-only selected-game
 media contract; they do not establish every codec, theme, platform-video, or
 media-management behavior.
+
+Manual and game-music behavior has a separate static boundary. The recovered
+13.27 game surface names `GetManualPath`, `GetMusicPath`, `OpenManual`, and
+`HasMusic`, while desktop and BigBox resources contain the visible View
+Manual, Play Music, and Stop Music actions. The shared static `Music` surface
+names play, stop, pause, resume, next, previous, track switching, and volume,
+but its protected bodies do not disclose exact queuing or error behavior.
+LaunchBox settings expose `AutoPlayMusic` and `ShuffleMusic`. BigBox settings
+separately expose `AutoPlayMusicGamesList`, `AutoPlayMusicGameDetails`,
+`PrioritizeMusicOverVideoAudio`, `RepeatGameMusic`,
+`ShuffleSoundtrackMusic`, `ShowGameMenuPlayMusic`,
+`ShowGameMenuViewManual`, and `VolumeMusic`.
+
+The privacy-preserving 13.24 census makes the storage shape concrete without
+retaining a title or path. `Manuals` contains 5,547 regular PDFs and two
+symlinks; `Music` contains 8,441 MP3 files and 34 M3U documents. Both trees
+have exactly a platform-directory plus filename below their root. Game XML
+contains 4,240 nonempty manual paths, all relative: 3,182 PDF, 927 TXT, 113
+DOC, 14 JPG, two PNG, one HTM, and one RTF. One contains a parent component,
+which the census records only as a count. It contains 133 nonempty relative
+music paths: 111 MP3, nine MOD, eight OGG, three M3U, one S3M, and one XM.
+The older settings snapshot disables LaunchBox autoplay and enables shuffle;
+its BigBox snapshot enables list/details autoplay and both menu actions,
+disables repeat and soundtrack shuffle, and stores music volume 75. These
+aggregate facts establish explicit paths, conventional per-platform fallback,
+local playlists, legacy module formats, separate frontend policy, and
+symlink-aware indexing. They do not establish protected M3U parser quirks,
+background/platform music, every decoder, or original error/notification
+behavior.
+
+The implemented cross-platform boundary therefore keeps XML paths lexical,
+resolves them once through the existing native/mapped-Windows service, validates
+bounded regular files, rejects remote/nested/traversing M3U entries, and gives
+Qt only local URLs. A fresh read-only compiled load indexed 5,539 manuals and
+8,412 music tracks for the 35,869 games in 36.314 seconds. It scanned all
+14,022 regular manual/music files across 70 present platform folders, refused
+the two symlinks, and reported no oversized or truncated input. Missing
+explicit/configured targets stayed unresolved rather than being guessed.
 
 The installed CriticalZoneV2 BigBox `TextGamesView.xaml` independently places
 an `ImageView`, an `ImageVideoView` explicitly marked as video content, and a

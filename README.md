@@ -457,6 +457,33 @@ reparented to the nearest visible level.
 Interrupted transactions require an explicit Recover action; conflicts require
 a reload and never offer a blind overwrite.
 
+Both frontends now expose read-only manuals and per-game music through the
+shared platform boundary. A safe explicit `ManualPath` or `MusicPath` wins;
+otherwise the configured per-platform Manual or Music folder is matched by
+LaunchBox's title-and-ordinal filename convention. The bounded index accepts
+the document and soundtrack extensions observed in the real library, expands
+local M3U playlists in document order, deduplicates tracks, and refuses remote
+playlist entries, nested playlists, symlinks, oversized files, traversal, and
+unbounded lists. Persisted Windows separators remain lexical XML data; Qt sees
+only native local-file URLs produced by the existing Linux/Windows/macOS path
+resolver.
+
+LaunchBox adds **View Manual** and **Play Music** to docked and popped-out game
+details and honors `AutoPlayMusic` and `ShuffleMusic`. BigBox adds the same
+actions to its game wheel and full-screen details, gated by
+`ShowGameMenuViewManual` and `ShowGameMenuPlayMusic`, and applies the recovered
+game-list/details autoplay, music-over-video, repeat, soundtrack-shuffle, and
+volume settings. One lifecycle-owned Qt Multimedia player supplies
+previous/play-pause/next/stop and volume controls, refreshes on library
+replacement, yields to selected video according to policy, and always stops
+before a game or additional application launches. Manuals open through Qt's
+cross-platform default-application service. Exact Rust tests and compiled
+LaunchBox/BigBox smokes use a valid PDF, a real MP3, and a two-track M3U;
+exercise the visible actions and audio controls; render the player; validate
+safe local URLs; and byte-check the library/media tree. In-app document
+rendering, platform/background music, broad codec/backend parity, global media
+hotkeys, and native Windows/macOS Qt Multimedia execution remain open.
+
 LaunchBox also has a three-page manual ROM importer backed by the reusable
 `lb-import` crate. It accepts multiple native files and folders, optional
 recursive discovery and extension filters, file- or folder-derived editable

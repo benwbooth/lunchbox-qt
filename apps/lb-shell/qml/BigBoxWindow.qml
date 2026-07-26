@@ -15,9 +15,20 @@ ApplicationWindow {
                 ? Window.Windowed : Window.FullScreen
     title: "BigBox Port"
     color: "#07090d"
+    onClosing: bigBoxMusicPlayer.stopPlayback(true)
     property bool smokeTest: Qt.application.arguments.indexOf("--smoke-test") >= 0
     property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
     property bool mediaSmokeFinished: false
+    property bool supplementalMediaSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--supplemental-media-smoke-test") >= 0
+    property int supplementalMediaSmokePhase: 0
+    property bool supplementalMediaSmokeFinished: false
+    property string supplementalMediaManualUrl: ""
+    property string supplementalMediaFirstMusicUrl: ""
+    property bool supplementalMediaScreenshotRequested: false
+    property string supplementalMediaScreenshotPath:
+        argumentValue("--supplemental-media-screenshot")
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -189,9 +200,21 @@ ApplicationWindow {
         if (gameList.currentIndex >= 0 && !controller.loading && !controller.writing
                 && !controller.launching && !controller.launch_session_active) {
             const gameId = controller.game_id_at(gameList.currentIndex)
-            if (gameId.length > 0)
-                controller.launch_game(gameList.currentIndex, gameId)
+            if (gameId.length > 0) {
+                launchGame(gameList.currentIndex, gameId)
+            }
         }
+    }
+
+    function launchGame(row, gameId) {
+        bigBoxMusicPlayer.stopPlayback(true)
+        controller.launch_game(row, gameId)
+    }
+
+    function launchAdditionalApplication(row, gameId, applicationId) {
+        bigBoxMusicPlayer.stopPlayback(true)
+        controller.launch_additional_application(
+                    row, gameId, applicationId)
     }
 
     function openGameDetails() {
@@ -222,6 +245,101 @@ ApplicationWindow {
                     selectedBigBoxGameId,
                     selectedBigBoxGameTitle,
                     returnFocusItem ? returnFocusItem : gameList)
+    }
+
+    function openGameManual(gameId) {
+        if (gameId.length === 0 || controller.loading
+                || controller.writing
+                || !controller.big_box_show_game_menu_view_manual)
+            return false
+        const manualUrl = controller.game_manual_url_for_game(gameId)
+        if (manualUrl.toString().length === 0)
+            return false
+        if (supplementalMediaSmokeTest) {
+            supplementalMediaManualUrl = manualUrl.toString()
+            return true
+        }
+        return Qt.openUrlExternally(manualUrl)
+    }
+
+    function playGameMusic(gameId, gameTitle, playNow) {
+        if (gameId.length === 0 || controller.loading
+                || controller.writing
+                || controller.game_music_count_for_game(gameId) === 0)
+            return false
+        bigBoxMediaPlayer.stop()
+        bigBoxMusicPlayer.shuffleEnabled =
+            controller.big_box_shuffle_soundtrack_music
+        bigBoxMusicPlayer.repeatEnabled =
+            controller.big_box_repeat_game_music
+        return bigBoxMusicPlayer.openForGame(gameId, gameTitle, playNow)
+    }
+
+    function autoPlaySelectedGameMusicFromList() {
+        if (!controller.big_box_auto_play_music_games_list
+                || selectedBigBoxGameId.length === 0)
+            return false
+        if (controller.game_music_count_for_game(
+                selectedBigBoxGameId) === 0) {
+            if (bigBoxMusicPlayer.opened)
+                bigBoxMusicPlayer.stopPlayback(true)
+            return false
+        }
+        if (bigBoxMusicPlayer.opened
+                && bigBoxMusicPlayer.gameId === selectedBigBoxGameId)
+            return true
+        return playGameMusic(
+                    selectedBigBoxGameId,
+                    selectedBigBoxGameTitle, true)
+    }
+
+    function finishSupplementalMediaSmoke() {
+        function complete() {
+            const firstMusicUrl =
+                controller.game_music_url_at(
+                    "fixture-adventure", 0).toString()
+            const secondMusicUrl =
+                controller.game_music_url_at(
+                    "fixture-adventure", 1).toString()
+            if (supplementalMediaFirstMusicUrl !== firstMusicUrl
+                    || bigBoxMusicPlayer.trackSource.toString()
+                       !== secondMusicUrl
+                    || !controller
+                        .report_supplemental_media_smoke_success(
+                            "bigbox", "fixture-adventure",
+                            supplementalMediaManualUrl,
+                            firstMusicUrl, secondMusicUrl)) {
+                console.error(
+                    "BIGBOX_SUPPLEMENTAL_MEDIA_CONTROLLER_REJECTED"
+                    + " manual=" + supplementalMediaManualUrl
+                    + " first=" + supplementalMediaFirstMusicUrl
+                    + " current="
+                    + bigBoxMusicPlayer.trackSource.toString())
+                Qt.exit(579)
+                return
+            }
+            bigBoxMusicPlayer.clickStopForSmoke()
+            supplementalMediaSmokeFinished = true
+            Qt.quit()
+        }
+        if (supplementalMediaScreenshotPath.length === 0) {
+            complete()
+            return
+        }
+        if (supplementalMediaScreenshotRequested)
+            return
+        supplementalMediaScreenshotRequested = true
+        bigBoxMusicPlayer.contentItem.grabToImage(function(result) {
+            if (!result.saveToFile(
+                    supplementalMediaScreenshotPath)) {
+                console.error(
+                    "BIGBOX_SUPPLEMENTAL_MEDIA_SCREENSHOT_SAVE_FAILED path="
+                    + supplementalMediaScreenshotPath)
+                Qt.exit(578)
+                return
+            }
+            complete()
+        })
     }
 
     function flipSelectedBox() {
@@ -2245,6 +2363,11 @@ ApplicationWindow {
                             gameCommunityStarRating
                         window.selectedBigBoxGameFrontImageUrl =
                             gameFrontImageUrl
+                        if (controller
+                                .big_box_auto_play_music_games_list)
+                            Qt.callLater(
+                                window
+                                .autoPlaySelectedGameMusicFromList)
                     }
 
                     Component.onCompleted: {
@@ -2378,7 +2501,7 @@ ApplicationWindow {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: gameList.currentIndex = index
-                        onDoubleClicked: controller.launch_game(index, gameId)
+                        onDoubleClicked: window.launchGame(index, gameId)
                     }
                 }
             }
@@ -2416,6 +2539,43 @@ ApplicationWindow {
                          && window.selectedBigBoxGameImageCount > 0
                          && !controller.loading && !controller.writing
                 onClicked: window.openGameImages(-1)
+            }
+            Button {
+                id: bigBoxManualButton
+                text: "MANUAL"
+                visible:
+                    controller.big_box_show_game_menu_view_manual
+                    && window.selectedBigBoxGameId.length > 0
+                    && controller.game_manual_url_for_game(
+                        window.selectedBigBoxGameId)
+                       .toString().length > 0
+                enabled: visible
+                         && !controller.loading
+                         && !controller.writing
+                Accessible.name: "Open the selected game manual"
+                onClicked:
+                    window.openGameManual(
+                        window.selectedBigBoxGameId)
+            }
+            Button {
+                id: bigBoxMusicButton
+                text: bigBoxMusicPlayer.opened
+                      && bigBoxMusicPlayer.gameId
+                         === window.selectedBigBoxGameId
+                      ? "MUSIC…" : "MUSIC"
+                visible:
+                    controller.big_box_show_game_menu_play_music
+                    && window.selectedBigBoxGameId.length > 0
+                    && controller.game_music_count_for_game(
+                        window.selectedBigBoxGameId) > 0
+                enabled: visible
+                         && !controller.loading
+                         && !controller.writing
+                Accessible.name: "Play the selected game music"
+                onClicked:
+                    window.playGameMusic(
+                        window.selectedBigBoxGameId,
+                        window.selectedBigBoxGameTitle, true)
             }
             Button {
                 id: bigBoxModelButton
@@ -2477,6 +2637,7 @@ ApplicationWindow {
                 onClicked: window.showLaunchWithSelection()
             }
             Label {
+                visible: window.width >= 1500
                 text: controller.launching
                       ? "LAUNCHING…"
                       : "D  DETAILS     I  IMAGES     F  FLIP     ← →  GAMES     ENTER  PLAY"
@@ -2542,6 +2703,9 @@ ApplicationWindow {
             if (index < 0 || index >= mediaCount)
                 return false
             bigBoxMediaPlayer.stop()
+            if (controller.game_media_kind_at(
+                    mediaGameId, index) === "video")
+                bigBoxMusicPlayer.stopPlayback(true)
             selectedMediaIndex = index
             bigBoxMediaThumbnailList.positionViewAtIndex(
                 index, ListView.Contain)
@@ -2580,6 +2744,32 @@ ApplicationWindow {
             return true
         }
 
+        function hasVideoMedia() {
+            for (let index = 0; index < mediaCount; ++index) {
+                if (controller.game_media_kind_at(
+                        mediaGameId, index) === "video")
+                    return true
+            }
+            return false
+        }
+
+        function autoPlayMusicIfAllowed() {
+            if (!controller.big_box_auto_play_music_game_details
+                    || mediaGameId.length === 0
+                    || (hasVideoMedia()
+                        && controller.details_auto_play_video
+                        && !controller
+                            .big_box_prioritize_music_over_video_audio)) {
+                if (bigBoxMusicPlayer.opened
+                        && bigBoxMusicPlayer.gameId === mediaGameId)
+                    bigBoxMusicPlayer.stopPlayback(true)
+                return false
+            }
+            return window.playGameMusic(
+                        mediaGameId,
+                        window.selectedBigBoxGameTitle, true)
+        }
+
         function clickMediaThumbnailForSmoke(index) {
             const item = bigBoxMediaThumbnailList.itemAtIndex(index)
             if (!item)
@@ -2594,11 +2784,13 @@ ApplicationWindow {
             resetMediaSelection()
             Qt.callLater(function() {
                 bigBoxGameDetailsContent.forceActiveFocus()
+                bigBoxGameDetails.autoPlayMusicIfAllowed()
             })
         }
         onClosed: {
             bigBoxMediaPlayer.stop()
             gameList.forceActiveFocus()
+            Qt.callLater(window.autoPlaySelectedGameMusicFromList)
         }
         onMediaGameIdChanged: {
             if (opened)
@@ -3137,6 +3329,56 @@ ApplicationWindow {
                                 }
                             }
 
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "VIEW MANUAL"
+                                    visible:
+                                        controller
+                                        .big_box_show_game_menu_view_manual
+                                        && controller
+                                           .game_manual_url_for_game(
+                                               bigBoxGameDetails
+                                               .mediaGameId)
+                                           .toString().length > 0
+                                    enabled: visible
+                                             && !controller.loading
+                                             && !controller.writing
+                                    onClicked:
+                                        window.openGameManual(
+                                            bigBoxGameDetails
+                                            .mediaGameId)
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text:
+                                        bigBoxMusicPlayer.opened
+                                        && bigBoxMusicPlayer.gameId
+                                           === bigBoxGameDetails
+                                              .mediaGameId
+                                        ? "MUSIC CONTROLS"
+                                        : "PLAY MUSIC"
+                                    visible:
+                                        controller
+                                        .big_box_show_game_menu_play_music
+                                        && controller
+                                           .game_music_count_for_game(
+                                               bigBoxGameDetails
+                                               .mediaGameId) > 0
+                                    enabled: visible
+                                             && !controller.loading
+                                             && !controller.writing
+                                    onClicked:
+                                        window.playGameMusic(
+                                            bigBoxGameDetails
+                                            .mediaGameId,
+                                            window
+                                            .selectedBigBoxGameTitle,
+                                            true)
+                                }
+                            }
+
                             Label {
                                 Layout.fillWidth: true
                                 text: "DESCRIPTION"
@@ -3618,6 +3860,134 @@ ApplicationWindow {
         controller: controller
     }
 
+    GameMusicPlayer {
+        id: bigBoxMusicPlayer
+        parent: Overlay.overlay
+        x: Math.round((window.width - width) / 2)
+        y: Math.max(18, window.height - height - 24)
+        controller: controller
+        shuffleEnabled:
+            controller.big_box_shuffle_soundtrack_music
+        repeatEnabled: controller.big_box_repeat_game_music
+        outputVolume:
+            Math.max(0, Math.min(
+                1, controller.big_box_music_volume_percent / 100))
+        mutedForSmoke: window.supplementalMediaSmokeTest
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.supplementalMediaSmokeTest
+                 && !window.supplementalMediaSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.library_path.length === 0)
+                return
+            if (window.supplementalMediaSmokePhase === 0) {
+                if (controller.indexed_manual_count !== 1
+                        || controller.indexed_music_track_count !== 2
+                        || controller.big_box_auto_play_music_games_list
+                        || controller.big_box_auto_play_music_game_details
+                        || controller
+                           .big_box_prioritize_music_over_video_audio
+                        || controller.big_box_repeat_game_music
+                        || controller.big_box_shuffle_soundtrack_music
+                        || !controller
+                            .big_box_show_game_menu_play_music
+                        || !controller
+                            .big_box_show_game_menu_view_manual
+                        || controller.big_box_music_volume_percent
+                           !== 75)
+                    return
+                const row = controller.row_for_game_id(
+                                "fixture-adventure")
+                if (row < 0)
+                    return
+                gameList.currentIndex = row
+                gameList.positionViewAtIndex(
+                            row, ListView.Center)
+                window.supplementalMediaSmokePhase = 1
+                return
+            }
+            if (window.supplementalMediaSmokePhase === 1) {
+                if (window.selectedBigBoxGameId
+                        !== "fixture-adventure"
+                        || !bigBoxManualButton.visible
+                        || !bigBoxManualButton.enabled
+                        || !bigBoxMusicButton.visible
+                        || !bigBoxMusicButton.enabled)
+                    return
+                bigBoxManualButton.clicked()
+                bigBoxMusicButton.clicked()
+                window.supplementalMediaSmokePhase = 2
+            } else if (window.supplementalMediaSmokePhase === 2) {
+                if (window.supplementalMediaManualUrl.length === 0
+                        || !bigBoxMusicPlayer.opened
+                        || bigBoxMusicPlayer.gameId
+                           !== "fixture-adventure"
+                        || bigBoxMusicPlayer.trackCount !== 2
+                        || bigBoxMusicPlayer.currentTrackIndex !== 0
+                        || bigBoxMusicPlayer.trackName
+                           !== "Fixture Adventure-01.mp3"
+                        || bigBoxMusicPlayer.duration <= 0
+                        || bigBoxMusicPlayer.mediaError
+                           !== MediaPlayer.NoError
+                        || bigBoxMusicPlayer.playbackState
+                           !== MediaPlayer.PlayingState)
+                    return
+                window.supplementalMediaFirstMusicUrl =
+                    bigBoxMusicPlayer.trackSource.toString()
+                if (!bigBoxMusicPlayer
+                        .clickPlayPauseForSmoke()) {
+                    console.error(
+                        "BIGBOX_SUPPLEMENTAL_MEDIA_PAUSE_MISSING")
+                    Qt.exit(576)
+                    return
+                }
+                window.supplementalMediaSmokePhase = 3
+            } else if (window.supplementalMediaSmokePhase === 3) {
+                if (bigBoxMusicPlayer.playbackState
+                        !== MediaPlayer.PausedState)
+                    return
+                if (!bigBoxMusicPlayer.clickNextForSmoke()) {
+                    console.error(
+                        "BIGBOX_SUPPLEMENTAL_MEDIA_NEXT_MISSING")
+                    Qt.exit(577)
+                    return
+                }
+                window.supplementalMediaSmokePhase = 4
+            } else if (window.supplementalMediaSmokePhase === 4) {
+                if (bigBoxMusicPlayer.currentTrackIndex !== 1
+                        || bigBoxMusicPlayer.trackName
+                           !== "Fixture Adventure-02.mp3")
+                    return
+                window.finishSupplementalMediaSmoke()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.supplementalMediaSmokeTest
+                 && !window.supplementalMediaSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_SUPPLEMENTAL_MEDIA_TIMEOUT phase="
+                + window.supplementalMediaSmokePhase
+                + " id=" + window.selectedBigBoxGameId
+                + " track=" + bigBoxMusicPlayer.currentTrackIndex
+                + " state=" + bigBoxMusicPlayer.playbackState
+                + " status=" + bigBoxMusicPlayer.mediaStatus
+                + " error=" + bigBoxMusicPlayer.mediaError
+                + " duration=" + bigBoxMusicPlayer.duration
+                + " controller=" + controller.status_message)
+            Qt.exit(window.supplementalMediaScreenshotRequested
+                    ? 599
+                    : 580 + window.supplementalMediaSmokePhase)
+        }
+    }
+
     LaunchStartupOverlay {
         id: launchStartupOverlay
         anchors.fill: parent
@@ -3699,7 +4069,8 @@ ApplicationWindow {
                     const row = launchWithDialog.modelRow
                     const gameId = launchWithDialog.gameId
                     launchWithDialog.close()
-                    controller.launch_additional_application(row, gameId, applicationId)
+                    window.launchAdditionalApplication(
+                                row, gameId, applicationId)
                 }
             }
         }

@@ -1011,7 +1011,7 @@ mod tests {
         let catalog = index.platform_catalog().expect("platform catalog");
         assert_eq!(catalog.platforms.len(), 1);
         assert_eq!(catalog.categories.len(), 1);
-        assert_eq!(catalog.folders.len(), 7);
+        assert_eq!(catalog.folders.len(), 9);
         assert_eq!(catalog.model_settings.len(), 1);
         assert_eq!(
             catalog.model_settings[0].platform_name.as_deref(),
@@ -1037,7 +1037,7 @@ mod tests {
 
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         let settings = index.settings().expect("LaunchBox settings");
-        assert_eq!(settings.entries.len(), 24);
+        assert_eq!(settings.entries.len(), 26);
         assert_eq!(settings.get("Theme"), Some("Fixture Theme"));
         assert_eq!(settings.get_bool("DebugLog"), Some(false));
         assert_eq!(settings.get_bool("UseStartupScreen"), Some(true));
@@ -1065,6 +1065,8 @@ mod tests {
         assert_eq!(settings.get("NextBoxSize"), Some("0.17214286"));
         assert_eq!(settings.get_bool("ShowDetailsVideo"), Some(true));
         assert_eq!(settings.get_bool("AutoPlayDetailsVideo"), Some(true));
+        assert_eq!(settings.get_bool("AutoPlayMusic"), Some(false));
+        assert_eq!(settings.get_bool("ShuffleMusic"), Some(true));
         assert_eq!(
             settings.get("VideoTypePriorities"),
             Some("Theme Video,Video Snap,Recording,Trailer")
@@ -1095,7 +1097,7 @@ mod tests {
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 14);
+        assert_eq!(big_box.entries.len(), 22);
         assert_eq!(big_box.get_bool("EnableAttractMode"), Some(true));
         assert_eq!(
             big_box.get_bool("ShowGameMenuViewModelFullscreen"),
@@ -1113,6 +1115,17 @@ mod tests {
         assert_eq!(big_box.get("PauseTheme"), Some("Fixture BigBox Pause"));
         assert_eq!(big_box.get_bool("PauseScreenMuting"), Some(true));
         assert_eq!(big_box.get_bool("PauseScreenFading"), Some(true));
+        assert_eq!(big_box.get_bool("AutoPlayMusicGamesList"), Some(false));
+        assert_eq!(big_box.get_bool("AutoPlayMusicGameDetails"), Some(false));
+        assert_eq!(
+            big_box.get_bool("PrioritizeMusicOverVideoAudio"),
+            Some(false)
+        );
+        assert_eq!(big_box.get_bool("RepeatGameMusic"), Some(false));
+        assert_eq!(big_box.get_bool("ShuffleSoundtrackMusic"), Some(false));
+        assert_eq!(big_box.get_bool("ShowGameMenuPlayMusic"), Some(true));
+        assert_eq!(big_box.get_bool("ShowGameMenuViewManual"), Some(true));
+        assert_eq!(big_box.get_i64("VolumeMusic"), Some(75));
         assert_eq!(big_box.get_bool("ShowGameMenuFlipBox"), Some(true));
         assert_eq!(big_box.get("KeyboardFlipBox"), Some("49"));
     }

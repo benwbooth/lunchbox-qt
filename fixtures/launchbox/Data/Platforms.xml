@@ -53,6 +53,16 @@
     <MediaType>Fanart - Background</MediaType>
     <FolderPath>Images\Fixture Console\Fanart - Background</FolderPath>
   </PlatformFolder>
+  <PlatformFolder>
+    <Platform>Fixture Console</Platform>
+    <MediaType>Manual</MediaType>
+    <FolderPath>Manuals\Fixture Console</FolderPath>
+  </PlatformFolder>
+  <PlatformFolder>
+    <Platform>Fixture Console</Platform>
+    <MediaType>Music</MediaType>
+    <FolderPath>Music/Fixture Console</FolderPath>
+  </PlatformFolder>
   <ModelSettings>
     <CaseColor>-16737946</CaseColor>
     <CoverColor>-1</CoverColor>

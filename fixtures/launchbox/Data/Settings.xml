@@ -19,6 +19,8 @@
     <ShowDetailsVideo>true</ShowDetailsVideo>
     <ShowDetails3dModel>true</ShowDetails3dModel>
     <AutoPlayDetailsVideo>true</AutoPlayDetailsVideo>
+    <AutoPlayMusic>false</AutoPlayMusic>
+    <ShuffleMusic>true</ShuffleMusic>
     <VideoTypePriorities>Theme Video,Video Snap,Recording,Trailer</VideoTypePriorities>
     <FrontImageTypePriorities>Box - Front,Screenshot - Gameplay,Fanart - Background</FrontImageTypePriorities>
     <BackImageTypePriorities>Box - Back,Box - Back - Reconstructed,Advertisement Flyer - Back,Fanart - Box - Back</BackImageTypePriorities>

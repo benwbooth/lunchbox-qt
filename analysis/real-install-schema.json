@@ -49,6 +49,62 @@
     "multi_entry_groups": 6261,
     "version_application_records": 15430
   },
+  "supplemental_media": {
+    "manual_tree": {
+      "present": true,
+      "regular_files": 5547,
+      "symlinks": 2,
+      "unreadable_entries": 0,
+      "maximum_relative_depth": 2,
+      "extension_counts": {
+        "pdf": 5547
+      }
+    },
+    "music_tree": {
+      "present": true,
+      "regular_files": 8475,
+      "symlinks": 0,
+      "unreadable_entries": 0,
+      "maximum_relative_depth": 2,
+      "extension_counts": {
+        "m3u": 34,
+        "mp3": 8441
+      }
+    },
+    "game_manual_paths": {
+      "nonempty_paths": 4240,
+      "relative_paths": 4240,
+      "windows_absolute_paths": 0,
+      "native_absolute_paths": 0,
+      "paths_with_parent_components": 1,
+      "platform_parse_errors": 0,
+      "extension_counts": {
+        "doc": 113,
+        "htm": 1,
+        "jpg": 14,
+        "pdf": 3182,
+        "png": 2,
+        "rtf": 1,
+        "txt": 927
+      }
+    },
+    "game_music_paths": {
+      "nonempty_paths": 133,
+      "relative_paths": 133,
+      "windows_absolute_paths": 0,
+      "native_absolute_paths": 0,
+      "paths_with_parent_components": 0,
+      "platform_parse_errors": 0,
+      "extension_counts": {
+        "m3u": 3,
+        "mod": 9,
+        "mp3": 111,
+        "ogg": 8,
+        "s3m": 1,
+        "xm": 1
+      }
+    }
+  },
   "document_groups": {
     "BigBoxSettings.xml": {
       "file_count": 1,

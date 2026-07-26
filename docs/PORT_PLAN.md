@@ -297,10 +297,27 @@ image/media mapping and native regular files, renders a zoomed PNG, and proves
 byte-identical media and library documents. Native Windows and Intel/Apple
 Silicon macOS Qt
 interaction and Qt Multimedia execution remain explicit real-host gates, and
-all media mutation, download, manual/music playback, platform-video
+all media mutation, download, platform-video
 management, full-scan/model-detail rendering and model-settings editing,
 related/document/application panes, custom BigBox theme layouts/transitions,
 cleanup, and migration work remains open.
+The current `MED-006`/`DESK-006`/`BB-004` slice adds manuals and game music
+without moving stored Windows path syntax into QML. One bounded supplemental
+index resolves explicit paths first and configured Manual/Music folders
+second, validates regular files at the platform boundary, expands only local
+non-nested M3U entries, caps every file/list/track dimension, and emits native
+Qt local URLs. LaunchBox details and BigBox wheel/details expose the real
+actions. Typed frontend-specific autoplay, shuffle, repeat, volume, visibility,
+and music-over-video settings feed one lifecycle-owned Qt Multimedia popup
+with previous/play-pause/next/stop/volume controls. Selection changes,
+library revisions, video priority, window close, and game/additional-app launch
+own explicit state transitions; no helper shell or Windows-only API is
+involved. Pure policy/index/symlink tests plus compiled PDF/MP3/M3U action,
+decode, control, render, local-URL, and whole-tree immutability smokes cover
+both shells. Native Windows and Intel/Apple Silicon macOS playback remain
+real-host gates. In-app document rendering, platform/background music, broad
+codec parity, global controls/notifications, theme music integration, and
+media mutation remain later slices.
 The current `DESK-004`/`BB-004` media vertical adds settings-prioritized box
 backs and one shared front/back Qt presenter to the LaunchBox grid and BigBox
 wheel. The exact recovered back priority is applied at the native-path index
