@@ -147,7 +147,7 @@
     <LogoRotation>0,,0,</LogoRotation>
     <ModelType>jewelCase</ModelType>
     <SpineRotation>0,,0,</SpineRotation>
-    <UseFullScanImages>false</UseFullScanImages>
+    <UseFullScanImages>true</UseFullScanImages>
     <FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>
   </ModelSettings>
   <AdditionalApplication>

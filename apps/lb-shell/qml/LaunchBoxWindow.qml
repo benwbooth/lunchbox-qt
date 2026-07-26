@@ -1588,8 +1588,13 @@ ApplicationWindow {
                         || modelViewer.frontImageStatus !== Image.Ready
                         || modelViewer.backImageStatus !== Image.Ready
                         || modelViewer.spineImageStatus !== Image.Ready
+                        || modelViewer.fullImageStatus !== Image.Ready
                         || !modelViewer.hasBack
                         || !modelViewer.hasSpine
+                        || !modelViewer.hasFull
+                        || !modelViewer.useFullScan
+                        || Math.abs(modelViewer.fullSpineFraction - 0.143)
+                           > 0.0001
                         || modelViewer.rotationX !== -8
                         || modelViewer.rotationY !== -22
                         || modelViewer.modelZoom !== 1
@@ -1685,7 +1690,8 @@ ApplicationWindow {
                             "fixture-adventure",
                             modelViewer.frontSource.toString(),
                             modelViewer.backSource.toString(),
-                            modelViewer.spineSource.toString())) {
+                            modelViewer.spineSource.toString(),
+                            modelViewer.fullSource.toString())) {
                     console.error(
                         "LAUNCHBOX_MODEL_VIEWER_CONTROLLER_REJECTED")
                     Qt.exit(542)
@@ -3812,7 +3818,22 @@ ApplicationWindow {
                            !== "Images\\Dragon 32_64\\Edited"
                         || payload.folders[51].media_type !== "Test Media"
                         || payload.folders[51].folder_path
-                           !== "Portable\\Dragon 32_64") {
+                           !== "Portable\\Dragon 32_64"
+                        || payload.model_settings === null
+                        || payload.model_settings.model_type
+                           !== "longJewelCase"
+                        || payload.model_settings.case_color
+                           !== "#ff102030"
+                        || payload.model_settings.cover_color
+                           !== "#ff405060"
+                        || payload.model_settings.full_image_spine_width
+                           !== 0.143
+                        || payload.model_settings.use_full_scan_images
+                        || payload.model_settings.model_size !== null
+                        || payload.model_settings_source
+                           !== "platformOverride"
+                        || payload.effective_model_settings.model_type
+                           !== "longJewelCase") {
                     console.error("PLATFORM_CRUD_SMOKE_EDIT_NOT_PERSISTED payload="
                                   + saved)
                     Qt.exit(9)
@@ -5160,9 +5181,9 @@ ApplicationWindow {
                                         if (window.selectedGameId
                                                 !== "fixture-adventure"
                                                 || gameDetailsPane
-                                                   .mediaCount !== 6
+                                                   .mediaCount !== 7
                                                 || gameDetailsPane
-                                                   .selectedMediaIndex !== 5
+                                                   .selectedMediaIndex !== 6
                                                 || gameDetailsPane
                                                    .selectedMediaKind
                                                    !== "video"
@@ -5224,7 +5245,7 @@ ApplicationWindow {
                                             function() {
                                                 if (!gameDetailsPane
                                                         .clickMediaThumbnailForSmoke(
-                                                            5)) {
+                                                            6)) {
                                                     console.error(
                                                         "GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
                                                     Qt.exit(495)
@@ -5259,7 +5280,7 @@ ApplicationWindow {
                                             .gameDetailsMediaSmokePhase
                                             === 4) {
                                         if (gameDetailsPane
-                                                .selectedMediaIndex !== 5
+                                                .selectedMediaIndex !== 6
                                                 || gameDetailsPane
                                                    .selectedMediaKind
                                                    !== "video"
@@ -5279,7 +5300,7 @@ ApplicationWindow {
                                         if (!controller
                                                 .report_game_details_media_smoke_success(
                                                     "fixture-adventure",
-                                                    0, 5,
+                                                    0, 6,
                                                     controller
                                                     .game_media_url_at(
                                                         "fixture-adventure",
@@ -5287,7 +5308,7 @@ ApplicationWindow {
                                                     controller
                                                     .game_media_url_at(
                                                         "fixture-adventure",
-                                                        5).toString())) {
+                                                        6).toString())) {
                                             console.error(
                                                 "GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
                                             Qt.exit(497)
@@ -5324,7 +5345,7 @@ ApplicationWindow {
                                         if (window.selectedGameId
                                                 !== "fixture-adventure"
                                                 || gameDetailsPane
-                                                   .mediaCount !== 6)
+                                                   .mediaCount !== 7)
                                             return
                                         if (!gameDetailsPane
                                                 .clickMediaThumbnailForSmoke(
@@ -5361,7 +5382,7 @@ ApplicationWindow {
                                                    .gameId
                                                    !== "fixture-adventure"
                                                 || detailsImageViewer
-                                                   .imageCount !== 5
+                                                   .imageCount !== 6
                                                 || detailsImageViewer
                                                    .selectedImageIndex !== 0
                                                 || detailsImageViewer
@@ -8979,6 +9000,16 @@ ApplicationWindow {
             scummVmFullscreenCheck.checked = scummVmFullscreen
             scummVmGameDataFolderPathField.text = scummVmGameDataFolderPath
             scummVmGameTypeField.text = scummVmGameType
+            const serializedModelSettings =
+                controller.game_model_settings_json_for_game(id)
+            if (serializedModelSettings.length > 0) {
+                const modelSettings = JSON.parse(serializedModelSettings)
+                gameModelSettingsEditor.load(
+                    modelSettings.source === "gameOverride"
+                    ? modelSettings : null,
+                    modelSettings,
+                    modelSettings.source)
+            }
             open()
         }
 
@@ -9050,6 +9081,9 @@ ApplicationWindow {
                 fieldName: "Port Status",
                 fieldValue: "Native Qt"
             })
+            gameModelSettingsEditor.setSmokeValues(
+                "box", true, 0.088,
+                "#ff223344", "#ff556677", [5, 7, 1])
             open()
             Qt.callLater(function() { gameEditor.accept() })
         }
@@ -9084,7 +9118,7 @@ ApplicationWindow {
                 }
             }
             return JSON.stringify({
-                version: 3,
+                version: 4,
                 metadata: {
                     title: titleField.text,
                     sort_title: optionalText(sortTitleField.text),
@@ -9125,7 +9159,8 @@ ApplicationWindow {
                 custom_fields: customFields,
                 favorite: favoriteCheck.checked,
                 completed: completedCheck.checked,
-                star_rating: starRating.value
+                star_rating: starRating.value,
+                model_settings: gameModelSettingsEditor.editPayload()
             })
         }
 
@@ -9336,6 +9371,21 @@ ApplicationWindow {
                         fieldName: "",
                         fieldValue: ""
                     })
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: "#30363d"
+                }
+                Label {
+                    text: "3D model settings"
+                    font.pixelSize: 18
+                    font.bold: true
+                }
+                ModelSettingsEditor {
+                    id: gameModelSettingsEditor
+                    Layout.fillWidth: true
+                    scopeLabel: "game"
                 }
                 Rectangle {
                     Layout.fillWidth: true
@@ -11549,6 +11599,10 @@ ApplicationWindow {
             platformNotesField.text = storedText(metadata.notes)
             platformHideBigBoxCheck.checked = metadata.hide_in_big_box
             platformDisableAutoImportCheck.checked = draft.platform.disable_auto_import
+            platformModelSettingsEditor.load(
+                draft.model_settings,
+                draft.effective_model_settings,
+                draft.model_settings_source)
             platformFolderEditorModel.clear()
             for (let index = 0; index < draft.folders.length; ++index) {
                 const folder = draft.folders[index]
@@ -11596,6 +11650,7 @@ ApplicationWindow {
             metadata.notes = optionalText(platformNotesField.text)
             metadata.hide_in_big_box = platformHideBigBoxCheck.checked
             draft.platform.disable_auto_import = platformDisableAutoImportCheck.checked
+            draft.model_settings = platformModelSettingsEditor.editPayload()
             const folders = []
             for (let index = 0; index < platformFolderEditorModel.count; ++index) {
                 const folder = platformFolderEditorModel.get(index)
@@ -11625,6 +11680,9 @@ ApplicationWindow {
                 mediaType: "Test Media",
                 folderPath: "Portable\\Dragon 32_64"
             })
+            platformModelSettingsEditor.setSmokeValues(
+                "longJewelCase", false, 0.143,
+                "#ff102030", "#ff405060", null)
             Qt.callLater(function() { platformEditor.accept() })
         }
 
@@ -11727,6 +11785,21 @@ ApplicationWindow {
                     CheckBox { id: platformHideBigBoxCheck; text: "Hide in BigBox" }
                     CheckBox { id: platformDisableAutoImportCheck; text: "Disable auto-import" }
                     Item { Layout.fillWidth: true }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: "#30363d"
+                }
+                Label {
+                    text: "3D model settings"
+                    font.pixelSize: 18
+                    font.bold: true
+                }
+                ModelSettingsEditor {
+                    id: platformModelSettingsEditor
+                    Layout.fillWidth: true
+                    scopeLabel: "platform"
                 }
                 Rectangle {
                     Layout.fillWidth: true

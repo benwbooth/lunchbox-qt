@@ -77,6 +77,7 @@ pub mod qobject {
         #[qproperty(i32, front_image_count)]
         #[qproperty(i32, indexed_media_count)]
         #[qproperty(i32, game_media_revision)]
+        #[qproperty(i32, model_settings_revision)]
         #[qproperty(bool, details_show_video)]
         #[qproperty(bool, details_auto_play_video)]
         #[qproperty(bool, details_show_3d_model)]
@@ -187,6 +188,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn game_box_spine_url_for_game(self: &LibraryController, game_id: QString) -> QUrl;
+
+        #[qinvokable]
+        fn game_box_full_url_for_game(self: &LibraryController, game_id: QString) -> QUrl;
 
         #[qinvokable]
         fn game_model_settings_json_for_game(self: &LibraryController, game_id: QString)
@@ -837,6 +841,7 @@ pub mod qobject {
             front_image_url: QString,
             back_image_url: QString,
             spine_image_url: QString,
+            full_image_url: QString,
         ) -> bool;
 
         #[qinvokable]
@@ -846,6 +851,7 @@ pub mod qobject {
             front_image_url: QString,
             back_image_url: QString,
             spine_image_url: QString,
+            full_image_url: QString,
             restored_horizontal_lock: bool,
         ) -> bool;
 
@@ -1222,13 +1228,13 @@ use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QUrl, QVariant,
 };
 use lb_domain::{
-    resolve_model_settings, AdditionalApplication, AdditionalApplicationEdit, AlternateName,
-    BoxSize, CustomField, Emulator, EmulatorConfiguration, EmulatorPlatform, FrontendSettings,
-    Game, GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit,
-    ListViewColumnLayout, ModelSettingsSource, ModelType, Mount, NavigationMetadata,
-    ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder,
-    Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame, ResolvedModelSettings,
-    UNASSIGNED_EMULATOR_ID,
+    built_in_model_settings, resolve_model_settings, AdditionalApplication,
+    AdditionalApplicationEdit, AlternateName, ArgbColor, BoxSize, CustomField, Emulator,
+    EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game, GameLaunchConfiguration,
+    GameMetadata, GameSave, GameSaveMetadataEdit, ListViewColumnLayout, ModelSettings,
+    ModelSettingsSource, ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship,
+    PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
+    PlaylistDocument, PlaylistFilter, PlaylistGame, ResolvedModelSettings, UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -1549,6 +1555,7 @@ pub struct LibraryControllerRust {
     front_image_count: i32,
     indexed_media_count: i32,
     game_media_revision: i32,
+    model_settings_revision: i32,
     details_show_video: bool,
     details_auto_play_video: bool,
     details_show_3d_model: bool,
@@ -1614,6 +1621,7 @@ pub struct LibraryControllerRust {
     front_image_paths: BTreeMap<String, PathBuf>,
     back_image_paths: BTreeMap<String, PathBuf>,
     spine_image_paths: BTreeMap<String, PathBuf>,
+    full_image_paths: BTreeMap<String, PathBuf>,
     game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
     game_details_media_policy: GameDetailsMediaPolicy,
     filtered_indices: Vec<usize>,
@@ -1738,6 +1746,7 @@ struct LoadedLibrary {
     front_image_paths: BTreeMap<String, PathBuf>,
     back_image_paths: BTreeMap<String, PathBuf>,
     spine_image_paths: BTreeMap<String, PathBuf>,
+    full_image_paths: BTreeMap<String, PathBuf>,
     game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
     game_details_media_policy: GameDetailsMediaPolicy,
     big_box_show_game_menu_flip_box: bool,
@@ -1772,6 +1781,7 @@ struct LibraryReplacement {
     front_image_paths: BTreeMap<String, PathBuf>,
     back_image_paths: BTreeMap<String, PathBuf>,
     spine_image_paths: BTreeMap<String, PathBuf>,
+    full_image_paths: BTreeMap<String, PathBuf>,
     game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
     game_details_media_policy: GameDetailsMediaPolicy,
     big_box_show_game_menu_flip_box: bool,
@@ -1850,6 +1860,7 @@ impl LoadedLibrary {
                 front_image_paths: BTreeMap::new(),
                 back_image_paths: BTreeMap::new(),
                 spine_image_paths: BTreeMap::new(),
+                full_image_paths: BTreeMap::new(),
                 game_media_by_game_id: BTreeMap::new(),
                 game_details_media_policy: GameDetailsMediaPolicy::default(),
                 big_box_show_game_menu_flip_box: true,
@@ -1949,6 +1960,7 @@ impl LoadedLibrary {
         let front_image_paths = game_media_index.front_paths_by_game_id;
         let back_image_paths = game_media_index.back_paths_by_game_id;
         let spine_image_paths = game_media_index.spine_paths_by_game_id;
+        let full_image_paths = game_media_index.full_paths_by_game_id;
         let game_media_by_game_id = game_media_index.items_by_game_id;
         let game_details_media_policy = game_media_index.policy;
         let playlist_count = data.playlists().len();
@@ -1989,6 +2001,7 @@ impl LoadedLibrary {
             front_image_paths,
             back_image_paths,
             spine_image_paths,
+            full_image_paths,
             game_media_by_game_id,
             game_details_media_policy,
             big_box_show_game_menu_flip_box,
@@ -2330,6 +2343,7 @@ struct GameWriteSuccess {
     game: Game,
     alternate_names: Vec<AlternateName>,
     custom_fields: Vec<CustomField>,
+    resolved_model_settings: ResolvedModelSettings,
     source: PathBuf,
     backup: PathBuf,
 }
@@ -2527,6 +2541,7 @@ struct PlatformEditSuccess {
     platform: PlatformDefinition,
     catalog_backup: PathBuf,
     folder_count: usize,
+    resolved_model_settings_by_game: BTreeMap<String, ResolvedModelSettings>,
 }
 
 struct PlatformDeleteSuccess {
@@ -2757,10 +2772,10 @@ enum EmulatorWriteFailure {
     Other(String),
 }
 
-const GAME_EDIT_PAYLOAD_VERSION: u32 = 3;
+const GAME_EDIT_PAYLOAD_VERSION: u32 = 4;
 const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
-const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 1;
+const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 2;
 const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
 const RETROARCH_CORE_PAYLOAD_VERSION: u32 = 1;
 const EMULATOR_BIOS_AUDIT_PAYLOAD_VERSION: u32 = 3;
@@ -2787,7 +2802,90 @@ struct CustomFieldEditPayload {
     value: String,
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ModelSettingsEditPayload {
+    model_type: String,
+    case_color: Option<String>,
+    cover_color: Option<String>,
+    front_spine_image: Option<String>,
+    front_spine_is_clear: bool,
+    full_image_spine_width: f64,
+    full_scan_is_landscape: bool,
+    logo_font: Option<String>,
+    logo_rotation: String,
+    model_size: Option<[f64; 3]>,
+    spine_rotation: String,
+    use_full_scan_images: bool,
+}
+
+impl ModelSettingsEditPayload {
+    fn from_settings(settings: &ModelSettings) -> Self {
+        Self {
+            model_type: settings.effective_model_type().key().to_string(),
+            case_color: settings.case_color.map(ArgbColor::qt_hex),
+            cover_color: settings.cover_color.map(ArgbColor::qt_hex),
+            front_spine_image: settings.front_spine_image.clone(),
+            front_spine_is_clear: settings.front_spine_is_clear,
+            full_image_spine_width: settings.full_image_spine_width,
+            full_scan_is_landscape: settings.full_scan_is_landscape,
+            logo_font: settings.logo_font.clone(),
+            logo_rotation: settings.logo_rotation.clone(),
+            model_size: settings.model_size.map(|size| [size.x, size.y, size.z]),
+            spine_rotation: settings.spine_rotation.clone(),
+            use_full_scan_images: settings.use_full_scan_images,
+        }
+    }
+
+    fn into_settings(
+        mut self,
+        game_id: Option<String>,
+        platform_name: Option<String>,
+    ) -> Result<ModelSettings, String> {
+        self.model_type = self.model_type.trim().to_string();
+        if self.model_type.is_empty() {
+            return Err("a model type key is required".into());
+        }
+        self.case_color = canonical_optional_text(self.case_color);
+        self.cover_color = canonical_optional_text(self.cover_color);
+        self.front_spine_image = canonical_optional_text(self.front_spine_image);
+        self.logo_font = canonical_optional_text(self.logo_font);
+        let settings = ModelSettings {
+            case_color: self
+                .case_color
+                .as_deref()
+                .map(ArgbColor::parse_qt_hex)
+                .transpose()
+                .map_err(|error| error.to_string())?,
+            cover_color: self
+                .cover_color
+                .as_deref()
+                .map(ArgbColor::parse_qt_hex)
+                .transpose()
+                .map_err(|error| error.to_string())?,
+            front_spine_image: self.front_spine_image,
+            front_spine_is_clear: self.front_spine_is_clear,
+            full_image_spine_width: self.full_image_spine_width,
+            full_scan_is_landscape: self.full_scan_is_landscape,
+            game_id,
+            logo_font: self.logo_font,
+            logo_rotation: self.logo_rotation,
+            model_size: self.model_size.map(|size| ModelSize {
+                x: size[0],
+                y: size[1],
+                z: size[2],
+            }),
+            model_type: Some(ModelType::from_key(&self.model_type)),
+            platform_name,
+            spine_rotation: self.spine_rotation,
+            use_full_scan_images: self.use_full_scan_images,
+        };
+        settings.validate().map_err(|error| error.to_string())?;
+        Ok(settings)
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct GameEditPayload {
     version: u32,
@@ -2798,6 +2896,7 @@ struct GameEditPayload {
     favorite: bool,
     completed: bool,
     star_rating: u8,
+    model_settings: Option<ModelSettingsEditPayload>,
 }
 
 const MODEL_SETTINGS_PAYLOAD_VERSION: u32 = 1;
@@ -2815,7 +2914,10 @@ struct ModelSettingsPresentationPayload {
     front_spine_is_clear: bool,
     full_image_spine_width: f64,
     full_scan_is_landscape: bool,
+    logo_font: Option<String>,
+    logo_rotation: String,
     model_size: Option<[f64; 3]>,
+    spine_rotation: String,
     use_full_scan_images: bool,
 }
 
@@ -2839,7 +2941,10 @@ impl From<&ResolvedModelSettings> for ModelSettingsPresentationPayload {
             front_spine_is_clear: settings.front_spine_is_clear,
             full_image_spine_width: settings.full_image_spine_width,
             full_scan_is_landscape: settings.full_scan_is_landscape,
+            logo_font: settings.logo_font.clone(),
+            logo_rotation: settings.logo_rotation.clone(),
             model_size: settings.model_size.map(|size| [size.x, size.y, size.z]),
+            spine_rotation: settings.spine_rotation.clone(),
             use_full_scan_images: settings.use_full_scan_images,
         }
     }
@@ -2897,12 +3002,15 @@ struct PlatformFolderEditPayload {
     folder_path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct PlatformEditPayload {
     version: u32,
     platform: PlatformDefinition,
     folders: Vec<PlatformFolderEditPayload>,
+    model_settings: Option<ModelSettingsEditPayload>,
+    effective_model_settings: ModelSettingsEditPayload,
+    model_settings_source: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -3653,6 +3761,11 @@ fn parse_game_edit_payload(payload: &str) -> Result<GameEditPayload, String> {
             return Err("a custom field name cannot be empty".into());
         }
     }
+    if let Some(settings) = &payload.model_settings {
+        settings
+            .clone()
+            .into_settings(Some("validation-game".into()), None)?;
+    }
     Ok(payload)
 }
 
@@ -3687,6 +3800,24 @@ fn parse_platform_edit_payload(
         }
         .validate()
         .map_err(|error| error.to_string())?;
+    }
+    if let Some(settings) = &payload.model_settings {
+        settings
+            .clone()
+            .into_settings(None, Some(original_name.to_string()))?;
+    }
+    payload
+        .effective_model_settings
+        .clone()
+        .into_settings(None, Some(original_name.to_string()))?;
+    if !matches!(
+        payload.model_settings_source.as_str(),
+        "platformOverride" | "builtInPlatform" | "boxFallback"
+    ) {
+        return Err(format!(
+            "unsupported platform model-settings source: {}",
+            payload.model_settings_source
+        ));
     }
     Ok(payload)
 }
@@ -4841,6 +4972,7 @@ fn write_game(
         favorite,
         completed,
         star_rating,
+        model_settings,
     } = edit;
     let mut document = PlatformDocument::load(&source)
         .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
@@ -4885,6 +5017,13 @@ fn write_game(
     document
         .set_game_state(&game_id, favorite, completed, star_rating)
         .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let model_settings = model_settings
+        .map(|settings| settings.into_settings(Some(game_id.clone()), None))
+        .transpose()
+        .map_err(GameWriteFailure::Other)?;
+    document
+        .set_game_model_settings(&game_id, model_settings)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
     let game = document
         .library()
         .games
@@ -4894,6 +5033,26 @@ fn write_game(
         .ok_or_else(|| {
             GameWriteFailure::Other(format!("game {game_id} disappeared during edit"))
         })?;
+    let data = LaunchBoxDataIndex::load(&root)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let catalog = data.platform_catalog();
+    let scrape_as = catalog
+        .and_then(|catalog| {
+            catalog
+                .platforms
+                .iter()
+                .find(|platform| platform.metadata.name == game.platform)
+        })
+        .and_then(|platform| platform.metadata.scrape_as.as_deref());
+    let resolved_model_settings = resolve_model_settings(
+        &game.id,
+        &game.platform,
+        scrape_as,
+        &document.library().model_settings,
+        catalog
+            .map(|catalog| catalog.model_settings.as_slice())
+            .unwrap_or(&[]),
+    );
 
     let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
     transaction
@@ -4910,6 +5069,7 @@ fn write_game(
         game,
         alternate_names,
         custom_fields,
+        resolved_model_settings,
         source,
         backup,
     })
@@ -14421,10 +14581,31 @@ fn load_platform_edit_payload(root: &Path, name: &str) -> Result<String, Platfor
         .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
     let platform = catalog
         .platforms
-        .into_iter()
+        .iter()
         .find(|platform| platform.metadata.name.eq_ignore_ascii_case(name))
+        .cloned()
         .ok_or_else(|| PlatformWriteFailure::Other(format!("platform was not found: {name}")))?;
     let exact_name = platform.metadata.name.clone();
+    let model_settings = catalog
+        .model_settings
+        .iter()
+        .find(|settings| {
+            settings
+                .platform_name
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(&exact_name))
+        })
+        .cloned();
+    let (effective_model_settings, model_settings_source) =
+        if let Some(settings) = model_settings.as_ref() {
+            (settings.clone(), "platformOverride")
+        } else if let Some(settings) =
+            built_in_model_settings(&exact_name, platform.metadata.scrape_as.as_deref())
+        {
+            (settings, "builtInPlatform")
+        } else {
+            (ModelSettings::box_defaults(), "boxFallback")
+        };
     let folders = catalog
         .folders
         .into_iter()
@@ -14440,6 +14621,13 @@ fn load_platform_edit_payload(root: &Path, name: &str) -> Result<String, Platfor
         version: PLATFORM_EDIT_PAYLOAD_VERSION,
         platform,
         folders,
+        model_settings: model_settings
+            .as_ref()
+            .map(ModelSettingsEditPayload::from_settings),
+        effective_model_settings: ModelSettingsEditPayload::from_settings(
+            &effective_model_settings,
+        ),
+        model_settings_source: model_settings_source.to_string(),
     })
     .map_err(|error| PlatformWriteFailure::Other(error.to_string()))
 }
@@ -14449,12 +14637,21 @@ fn write_platform_definition(
     original_name: String,
     payload: PlatformEditPayload,
 ) -> Result<PlatformEditSuccess, PlatformWriteFailure> {
-    let platform = payload.platform.clone();
-    let catalog_path = platform_catalog_path(&root)?;
+    let PlatformEditPayload {
+        version: _,
+        platform,
+        folders,
+        model_settings,
+        effective_model_settings: _,
+        model_settings_source: _,
+    } = payload;
+    let saved_platform = platform.clone();
+    let data = LaunchBoxDataIndex::load(&root)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let catalog_path = data.data_root().join("Platforms.xml");
     let mut document = AuxiliaryDocument::load(&catalog_path)
         .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
-    let folder_edits = payload
-        .folders
+    let folder_edits = folders
         .into_iter()
         .map(|folder| IndexedPlatformRecordEdit {
             source_index: folder.source_index,
@@ -14467,8 +14664,20 @@ fn write_platform_definition(
         .collect::<Vec<_>>();
     let folder_count = folder_edits.len();
     document
-        .set_platform_definition(&original_name, payload.platform, folder_edits)
+        .set_platform_definition(&original_name, platform, folder_edits)
         .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let model_settings = model_settings
+        .map(|settings| settings.into_settings(None, Some(original_name.clone())))
+        .transpose()
+        .map_err(PlatformWriteFailure::Other)?;
+    document
+        .set_platform_model_settings(&original_name, model_settings)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let candidate_catalog = document
+        .platform_catalog()
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let resolved_model_settings_by_game =
+        collect_resolved_model_settings(data.platforms(), Some(&candidate_catalog));
 
     let mut transaction =
         LibraryTransaction::new(&root).map_err(classify_platform_transaction_error)?;
@@ -14490,9 +14699,10 @@ fn write_platform_definition(
         })?;
     Ok(PlatformEditSuccess {
         name: original_name,
-        platform,
+        platform: saved_platform,
         catalog_backup,
         folder_count,
+        resolved_model_settings_by_game,
     })
 }
 
@@ -15564,6 +15774,7 @@ impl qobject::LibraryController {
                     front_image_paths: BTreeMap::new(),
                     back_image_paths: BTreeMap::new(),
                     spine_image_paths: BTreeMap::new(),
+                    full_image_paths: BTreeMap::new(),
                     game_media_by_game_id: BTreeMap::new(),
                     game_details_media_policy: GameDetailsMediaPolicy::default(),
                     big_box_show_game_menu_flip_box: true,
@@ -15710,6 +15921,14 @@ impl qobject::LibraryController {
     pub fn game_box_spine_url_for_game(&self, game_id: QString) -> QUrl {
         self.rust()
             .spine_image_paths
+            .get(&game_id.to_string())
+            .map(|path| QUrl::from_local_file(&qstring(path.to_string_lossy())))
+            .unwrap_or_default()
+    }
+
+    pub fn game_box_full_url_for_game(&self, game_id: QString) -> QUrl {
+        self.rust()
+            .full_image_paths
             .get(&game_id.to_string())
             .map(|path| QUrl::from_local_file(&qstring(path.to_string_lossy())))
             .unwrap_or_default()
@@ -18846,9 +19065,21 @@ impl qobject::LibraryController {
             fs::symlink_metadata(path)
                 .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
         };
+        let full_scan_is_indexed = self
+            .rust()
+            .full_image_paths
+            .get(&game_id)
+            .is_some_and(|path| {
+                safe_regular_file(path)
+                    && items.iter().any(|item| {
+                        item.kind == GameMediaKind::Image
+                            && item.media_type == "Box - Full"
+                            && item.path.as_path() == path.as_path()
+                    })
+            });
         let success = game_id == "fixture-adventure"
-            && items.len() == 6
-            && *self.indexed_media_count() == 6
+            && items.len() == 7
+            && *self.indexed_media_count() == 7
             && image.kind == GameMediaKind::Image
             && image.media_type == "Box - Front"
             && image.path == image_file
@@ -18860,11 +19091,12 @@ impl qobject::LibraryController {
             && self.game_media_default_index(qstring(&game_id)) == video_index
             && *self.details_show_video()
             && *self.details_auto_play_video()
+            && full_scan_is_indexed
             && !*self.loading()
             && !*self.writing();
         if success {
             eprintln!(
-                "GAME_DETAILS_MEDIA_SMOKE_COMPLETE id={game_id} items=6 image=Box-Front video=Video-Snap autoplay=1"
+                "GAME_DETAILS_MEDIA_SMOKE_COMPLETE id={game_id} items=7 image=Box-Front full=Box-Full video=Video-Snap autoplay=1"
             );
         }
         success
@@ -18887,7 +19119,7 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=6 image=Box-Front video=Video-Snap autoplay=1 controls=1"
+                "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=7 image=Box-Front full=Box-Full video=Video-Snap autoplay=1 controls=1"
             );
         }
         success
@@ -18910,7 +19142,7 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=5 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
+                "BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=6 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
             );
         }
         success
@@ -18933,7 +19165,7 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=5 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
+                "LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=6 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
             );
         }
         success
@@ -18977,17 +19209,19 @@ impl qobject::LibraryController {
         front_image_url: QString,
         back_image_url: QString,
         spine_image_url: QString,
+        full_image_url: QString,
     ) -> bool {
         let success = self.validate_box_model_viewer_smoke(
             &game_id.to_string(),
             front_image_url,
             back_image_url,
             spine_image_url,
+            full_image_url,
             ModelRotationLock::Horizontal,
         );
         if success {
             eprintln!(
-                "LAUNCHBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 lock=horizontal controls=1"
+                "LAUNCHBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride fullscan=Box-Full spine=0.143 size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 lock=horizontal controls=1"
             );
         }
         success
@@ -18999,6 +19233,7 @@ impl qobject::LibraryController {
         front_image_url: QString,
         back_image_url: QString,
         spine_image_url: QString,
+        full_image_url: QString,
         restored_horizontal_lock: bool,
     ) -> bool {
         let success = restored_horizontal_lock
@@ -19007,11 +19242,12 @@ impl qobject::LibraryController {
                 front_image_url,
                 back_image_url,
                 spine_image_url,
+                full_image_url,
                 ModelRotationLock::Vertical,
             );
         if success {
             eprintln!(
-                "BIGBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 restored=horizontal lock=vertical controls=1"
+                "BIGBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride fullscan=Box-Full spine=0.143 size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 restored=horizontal lock=vertical controls=1"
             );
         }
         success
@@ -19307,8 +19543,32 @@ impl qobject::LibraryController {
                         value: "Native Qt".into(),
                     },
                 ]);
+        let model_settings_match = rust
+            .resolved_model_settings_by_game
+            .get(&game_id)
+            .is_some_and(|resolved| {
+                resolved.source == ModelSettingsSource::GameOverride
+                    && resolved.settings.effective_model_type() == &ModelType::Box
+                    && resolved
+                        .settings
+                        .case_color
+                        .is_some_and(|color| color.qt_hex() == "#ff223344")
+                    && resolved
+                        .settings
+                        .cover_color
+                        .is_some_and(|color| color.qt_hex() == "#ff556677")
+                    && (resolved.settings.full_image_spine_width - 0.088).abs() < f64::EPSILON
+                    && resolved.settings.use_full_scan_images
+                    && resolved.settings.model_size
+                        == Some(ModelSize {
+                            x: 5.0,
+                            y: 7.0,
+                            z: 1.0,
+                        })
+            });
         let success = state_matches
             && repeated_metadata_matches
+            && model_settings_match
             && rust.filtered_indices.is_empty()
             && rust.model_reset_notifications == 3
             && rust.data_change_notifications == 1
@@ -19318,7 +19578,7 @@ impl qobject::LibraryController {
             && *self.pending_recovery_count() == 0;
         if success {
             eprintln!(
-                "EDIT_SMOKE_COMPLETE id={game_id} title=\"{expected_title}\" resets={} data_changes={} filtered={}",
+                "EDIT_SMOKE_COMPLETE id={game_id} title=\"{expected_title}\" model=box fullscan=1 spine=0.088 size=5x7x1 resets={} data_changes={} filtered={}",
                 rust.model_reset_notifications,
                 rust.data_change_notifications,
                 rust.filtered_indices.len()
@@ -22962,6 +23222,7 @@ impl qobject::LibraryController {
                     front_image_paths: loaded.front_image_paths,
                     back_image_paths: loaded.back_image_paths,
                     spine_image_paths: loaded.spine_image_paths,
+                    full_image_paths: loaded.full_image_paths,
                     game_media_by_game_id: loaded.game_media_by_game_id,
                     game_details_media_policy: loaded.game_details_media_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
@@ -23338,6 +23599,7 @@ impl qobject::LibraryController {
                     game,
                     alternate_names,
                     custom_fields,
+                    resolved_model_settings,
                     source: _,
                     backup,
                 } = written;
@@ -23371,9 +23633,14 @@ impl qobject::LibraryController {
                     if custom_fields.is_empty() {
                         rust.custom_fields_by_game.remove(&game_id);
                     } else {
-                        rust.custom_fields_by_game.insert(game_id, custom_fields);
+                        rust.custom_fields_by_game
+                            .insert(game_id.clone(), custom_fields);
                     }
+                    rust.resolved_model_settings_by_game
+                        .insert(game_id, resolved_model_settings);
                 }
+                let model_revision = self.as_ref().model_settings_revision().saturating_add(1);
+                self.as_mut().set_model_settings_revision(model_revision);
                 self.as_mut().set_write_conflict(false);
                 self.as_mut().set_status_message(qstring(format!(
                     "Saved game. Exact backup: {}",
@@ -25889,6 +26156,10 @@ impl qobject::LibraryController {
                 {
                     *platform = edited.platform.clone();
                 }
+                self.as_mut().rust_mut().resolved_model_settings_by_game =
+                    edited.resolved_model_settings_by_game;
+                let revision = self.as_ref().model_settings_revision().saturating_add(1);
+                self.as_mut().set_model_settings_revision(revision);
                 self.as_mut().update_library_counts();
                 self.as_mut().set_write_conflict(false);
                 self.as_mut().set_status_message(qstring(format!(
@@ -26333,6 +26604,9 @@ impl qobject::LibraryController {
                     rust.front_image_paths.remove(&deleted.game.id);
                     rust.back_image_paths.remove(&deleted.game.id);
                     rust.spine_image_paths.remove(&deleted.game.id);
+                    rust.full_image_paths.remove(&deleted.game.id);
+                    rust.resolved_model_settings_by_game
+                        .remove(&deleted.game.id);
                     rust.game_media_by_game_id.remove(&deleted.game.id);
                     rust.games.remove(actual_index);
                     rust.game_sources.remove(actual_index);
@@ -26360,6 +26634,8 @@ impl qobject::LibraryController {
                 self.as_mut().set_indexed_media_count(indexed_media_count);
                 let revision = self.as_ref().rust().game_media_revision.wrapping_add(1);
                 self.as_mut().set_game_media_revision(revision);
+                let model_revision = self.as_ref().model_settings_revision().wrapping_add(1);
+                self.as_mut().set_model_settings_revision(model_revision);
                 if filtered_row.is_some() {
                     self.as_mut().end_remove_rows();
                 }
@@ -26567,6 +26843,7 @@ impl qobject::LibraryController {
             front_image_paths,
             back_image_paths,
             spine_image_paths,
+            full_image_paths,
             game_media_by_game_id,
             game_details_media_policy,
             big_box_show_game_menu_flip_box,
@@ -26626,6 +26903,7 @@ impl qobject::LibraryController {
             rust.front_image_paths = front_image_paths;
             rust.back_image_paths = back_image_paths;
             rust.spine_image_paths = spine_image_paths;
+            rust.full_image_paths = full_image_paths;
             rust.game_media_by_game_id = game_media_by_game_id;
             rust.game_details_media_policy = game_details_media_policy;
             rust.list_view_column_layout = list_view_column_layout;
@@ -26729,6 +27007,9 @@ impl qobject::LibraryController {
         self.as_mut().set_indexed_media_count(indexed_media_count);
         let game_media_revision = self.as_ref().game_media_revision().wrapping_add(1);
         self.as_mut().set_game_media_revision(game_media_revision);
+        let model_settings_revision = self.as_ref().model_settings_revision().wrapping_add(1);
+        self.as_mut()
+            .set_model_settings_revision(model_settings_revision);
         self.as_mut().set_details_show_video(details_show_video);
         self.as_mut()
             .set_details_auto_play_video(details_auto_play_video);
@@ -26889,13 +27170,14 @@ impl qobject::LibraryController {
                 .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
         };
         game_id == "fixture-adventure"
-            && items.len() == 6
-            && self.game_image_count_for_game(qstring(game_id)) == 5
+            && items.len() == 7
+            && self.game_image_count_for_game(qstring(game_id)) == 6
             && self.game_image_media_index_at(qstring(game_id), 0) == first_media_index
             && self.game_image_media_index_at(qstring(game_id), 1) == next_media_index
             && self.game_image_media_index_at(qstring(game_id), 2) == 2
             && self.game_image_media_index_at(qstring(game_id), 3) == 3
             && self.game_image_media_index_at(qstring(game_id), 4) == 4
+            && self.game_image_media_index_at(qstring(game_id), 5) == 5
             && first_image.kind == GameMediaKind::Image
             && first_image.media_type == "Box - Front"
             && first_image.path == first_file
@@ -26907,7 +27189,9 @@ impl qobject::LibraryController {
             && items[3].kind == GameMediaKind::Image
             && items[3].media_type == "Box - Back"
             && items[4].kind == GameMediaKind::Image
-            && items[4].media_type == "Box - Spine"
+            && items[4].media_type == "Box - Full"
+            && items[5].kind == GameMediaKind::Image
+            && items[5].media_type == "Box - Spine"
             && !*self.loading()
             && !*self.writing()
     }
@@ -26951,8 +27235,8 @@ impl qobject::LibraryController {
             })
         };
         game_id == "fixture-adventure"
-            && items.len() == 6
-            && self.game_image_count_for_game(qstring(game_id)) == 5
+            && items.len() == 7
+            && self.game_image_count_for_game(qstring(game_id)) == 6
             && self.rust().front_image_paths.len() == 1
             && self.rust().back_image_paths.len() == 1
             && front_path == &front_file
@@ -26972,6 +27256,7 @@ impl qobject::LibraryController {
         front_image_url: QString,
         back_image_url: QString,
         spine_image_url: QString,
+        full_image_url: QString,
         expected_lock: ModelRotationLock,
     ) -> bool {
         let Some(front_path) = self.rust().front_image_paths.get(game_id) else {
@@ -26981,6 +27266,9 @@ impl qobject::LibraryController {
             return false;
         };
         let Some(spine_path) = self.rust().spine_image_paths.get(game_id) else {
+            return false;
+        };
+        let Some(full_path) = self.rust().full_image_paths.get(game_id) else {
             return false;
         };
         let local_file = |value: QString| {
@@ -26995,6 +27283,9 @@ impl qobject::LibraryController {
             return false;
         };
         let Some(spine_file) = local_file(spine_image_url) else {
+            return false;
+        };
+        let Some(full_file) = local_file(full_image_url) else {
             return false;
         };
         let safe_regular_file = |path: &Path| {
@@ -27028,23 +27319,27 @@ impl qobject::LibraryController {
             return false;
         };
         game_id == "fixture-adventure"
-            && items.len() == 6
-            && self.game_image_count_for_game(qstring(game_id)) == 5
+            && items.len() == 7
+            && self.game_image_count_for_game(qstring(game_id)) == 6
             && self.rust().front_image_paths.len() == 1
             && self.rust().back_image_paths.len() == 1
             && self.rust().spine_image_paths.len() == 1
+            && self.rust().full_image_paths.len() == 1
             && front_path == &front_file
             && back_path == &back_file
             && spine_path == &spine_file
+            && full_path == &full_file
             && front_path != back_path
             && front_path != spine_path
             && back_path != spine_path
             && safe_regular_file(&front_file)
             && safe_regular_file(&back_file)
             && safe_regular_file(&spine_file)
+            && safe_regular_file(&full_file)
             && has_media("Box - Front", &front_file)
             && has_media("Box - Back", &back_file)
             && has_media("Box - Spine", &spine_file)
+            && has_media("Box - Full", &full_file)
             && game_model.source == ModelSettingsSource::GameOverride
             && game_model.settings.effective_model_type() == &ModelType::JewelCase
             && game_model
@@ -27059,7 +27354,7 @@ impl qobject::LibraryController {
                 == Some(r"{Resources}\Fixture Jewel Spine")
             && game_model.settings.front_spine_is_clear
             && (game_model.settings.full_image_spine_width - 0.143).abs() < f64::EPSILON
-            && !game_model.settings.use_full_scan_images
+            && game_model.settings.use_full_scan_images
             && platform_model.source == ModelSettingsSource::PlatformOverride
             && platform_model.settings.effective_model_type() == &ModelType::DvdCase
             && self.rust().model_viewer_state.rotation_lock == expected_lock
@@ -27961,8 +28256,11 @@ mod tests {
                 "frontSpineIsClear": true,
                 "fullImageSpineWidth": 0.143,
                 "fullScanIsLandscape": false,
+                "logoFont": "Fixture Font",
+                "logoRotation": "0,,0,",
                 "modelSize": null,
-                "useFullScanImages": false
+                "spineRotation": "0,,0,",
+                "useFullScanImages": true
             })
         );
     }
@@ -31404,7 +31702,7 @@ mod tests {
             payload,
         )
         .unwrap();
-        assert_eq!(edited.folder_count, 7);
+        assert_eq!(edited.folder_count, 8);
         assert_eq!(
             fs::read(&edited.catalog_backup).unwrap(),
             original_catalog.as_bytes()
@@ -31447,13 +31745,21 @@ mod tests {
                 ..PlatformDefinition::default()
             },
             folders: Vec::new(),
+            model_settings: None,
+            effective_model_settings: ModelSettingsEditPayload::from_settings(
+                &ModelSettings::box_defaults(),
+            ),
+            model_settings_source: "boxFallback".into(),
         };
         let valid = serde_json::to_string(&payload).unwrap();
         assert!(parse_platform_edit_payload("Fixture Console", &valid).is_ok());
         assert!(parse_platform_edit_payload("Different Console", &valid).is_err());
         assert!(parse_platform_edit_payload(
             "Fixture Console",
-            &valid.replace("\"version\":1", "\"version\":2")
+            &valid.replace(
+                &format!("\"version\":{PLATFORM_EDIT_PAYLOAD_VERSION}"),
+                "\"version\":999"
+            )
         )
         .is_err());
         assert!(parse_platform_edit_payload(
@@ -31631,7 +31937,7 @@ mod tests {
     #[test]
     fn game_edit_payload_is_versioned_typed_and_canonicalized() {
         let valid = r#"{
-            "version": 3,
+            "version": 4,
             "metadata": {
                 "title": "Fixture",
                 "sort_title": "   ",
@@ -31660,6 +31966,7 @@ mod tests {
                     "value": ""
                 }
             ],
+            "model_settings": null,
             "favorite": true,
             "completed": false,
             "star_rating": 4
@@ -31675,7 +31982,7 @@ mod tests {
         assert_eq!(parsed.custom_fields[0].value, "");
 
         assert!(
-            parse_game_edit_payload(&valid.replace("\"version\": 3", "\"version\": 4"))
+            parse_game_edit_payload(&valid.replace("\"version\": 4", "\"version\": 5"))
                 .unwrap_err()
                 .contains("unsupported game editor payload version")
         );

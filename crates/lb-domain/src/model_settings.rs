@@ -78,6 +78,33 @@ impl ArgbColor {
         self.0
     }
 
+    /// Parses the color notation used at the CXX-Qt presentation boundary.
+    ///
+    /// LaunchBox itself still persists the signed [`Self::raw`] value. The
+    /// six-digit form is accepted for editor convenience and receives a fully
+    /// opaque alpha channel.
+    pub fn parse_qt_hex(value: &str) -> Result<Self, ModelSettingsError> {
+        let hexadecimal = value.strip_prefix('#').unwrap_or(value);
+        let raw = match hexadecimal.len() {
+            6 => u32::from_str_radix(hexadecimal, 16)
+                .map(|rgb| 0xff00_0000 | rgb)
+                .map_err(|_| ModelSettingsError::InvalidArgbColor {
+                    value: value.to_string(),
+                })?,
+            8 => u32::from_str_radix(hexadecimal, 16).map_err(|_| {
+                ModelSettingsError::InvalidArgbColor {
+                    value: value.to_string(),
+                }
+            })?,
+            _ => {
+                return Err(ModelSettingsError::InvalidArgbColor {
+                    value: value.to_string(),
+                });
+            }
+        };
+        Ok(Self(raw as i32))
+    }
+
     pub const fn alpha(self) -> u8 {
         ((self.0 as u32) >> 24) as u8
     }
@@ -424,6 +451,8 @@ fn built_in_model_settings_exact(name: &str) -> Option<ModelSettings> {
 
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum ModelSettingsError {
+    #[error("ARGB color must use #AARRGGBB or #RRGGBB notation: {value}")]
+    InvalidArgbColor { value: String },
     #[error("model size must contain three positive finite semicolon-separated numbers: {value}")]
     InvalidModelSize { value: String },
     #[error("full-scan spine width must be finite and between 0 and 1, got {value}")]
@@ -464,6 +493,10 @@ mod tests {
         );
         assert_eq!(color.qt_hex(), "#ff112233");
         assert_eq!(color.raw(), -15_654_349);
+        assert_eq!(ArgbColor::parse_qt_hex("#ff112233").unwrap(), color);
+        assert_eq!(ArgbColor::parse_qt_hex("112233").unwrap(), color);
+        assert!(ArgbColor::parse_qt_hex("#xyz").is_err());
+        assert!(ArgbColor::parse_qt_hex("#0011223344").is_err());
     }
 
     #[test]

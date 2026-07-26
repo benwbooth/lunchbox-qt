@@ -251,7 +251,7 @@ game_details_media_output=$(
   exit 1
 }
 if ! rg -q \
-  'GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=6 image=Box-Front video=Video-Snap autoplay=1' \
+  'GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=7 image=Box-Front full=Box-Full video=Video-Snap autoplay=1' \
   <<< "$game_details_media_output"; then
   printf '%s\n' "$game_details_media_output" >&2
   echo "LaunchBox did not validate selected-game image and video media." >&2
@@ -287,7 +287,7 @@ launchbox_image_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=5 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  'LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=6 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
   <<< "$launchbox_image_viewer_output"; then
   printf '%s\n' "$launchbox_image_viewer_output" >&2
   echo "LaunchBox did not validate its full-screen image viewer." >&2
@@ -324,7 +324,7 @@ bigbox_game_details_media_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=6 image=Box-Front video=Video-Snap autoplay=1 controls=1' \
+  'BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=7 image=Box-Front full=Box-Full video=Video-Snap autoplay=1 controls=1' \
   <<< "$bigbox_game_details_media_output"; then
   printf '%s\n' "$bigbox_game_details_media_output" >&2
   echo "BigBox did not validate its full-screen selected-game media controls." >&2
@@ -361,7 +361,7 @@ bigbox_image_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=5 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  'BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=6 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
   <<< "$bigbox_image_viewer_output"; then
   printf '%s\n' "$bigbox_image_viewer_output" >&2
   echo "BigBox did not validate its standalone full-screen image viewer." >&2
@@ -496,7 +496,7 @@ launchbox_model_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'LAUNCHBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 lock=horizontal controls=1' \
+  'LAUNCHBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride fullscan=Box-Full spine=0.143 size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 lock=horizontal controls=1' \
   <<< "$launchbox_model_viewer_output"; then
   printf '%s\n' "$launchbox_model_viewer_output" >&2
   echo "LaunchBox did not validate its resolved interactive 3D model viewer." >&2
@@ -528,7 +528,7 @@ cmp "$box_flip_bigbox_settings.before-box-flip-smoke" \
   sha256sum --check "$media_files_manifest"
 ) >/dev/null
 
-echo "LaunchBox resolved game-over-platform jewel settings, exact port geometry, six-face Qt Quick 3D textures, actual details entry, rotation, translation, zoom, horizontal lock, focus return, and read-only media behavior validated."
+echo "LaunchBox resolved game-over-platform jewel settings, full-scan back/spine/front construction, exact port geometry, six-face Qt Quick 3D textures, actual details entry, rotation, translation, zoom, horizontal lock, focus return, and read-only media behavior validated."
 
 bigbox_model_viewer_screenshot="$test_config_root/bigbox-model-viewer.png"
 bigbox_model_viewer_args=(
@@ -552,7 +552,7 @@ bigbox_model_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 restored=horizontal lock=vertical controls=1' \
+  'BIGBOX_MODEL_VIEWER_SMOKE_COMPLETE id=fixture-adventure type=jewelCase source=gameOverride fullscan=Box-Full spine=0.143 size=260x230x20 geometry=6 faces=front,back,spine rotate=1 pan=1 zoom=1 restored=horizontal lock=vertical controls=1' \
   <<< "$bigbox_model_viewer_output"; then
   printf '%s\n' "$bigbox_model_viewer_output" >&2
   echo "BigBox did not validate its resolved interactive 3D model viewer." >&2
@@ -1070,7 +1070,7 @@ edit_output=$(
   printf '%s\n' "$edit_output" >&2
   exit 1
 }
-if ! rg -q 'EDIT_SMOKE_COMPLETE id=fixture-adventure title="Renamed Adventure" resets=3 data_changes=1 filtered=0' \
+if ! rg -q 'EDIT_SMOKE_COMPLETE id=fixture-adventure title="Renamed Adventure" model=box fullscan=1 spine=0.088 size=5x7x1 resets=3 data_changes=1 filtered=0' \
   <<< "$edit_output"; then
   printf '%s\n' "$edit_output" >&2
   echo "LaunchBox did not validate its transactional metadata and launch-configuration edits." >&2
@@ -1103,6 +1103,12 @@ for expected in \
   '<Favorite>false</Favorite>' \
   '<Completed>true</Completed>' \
   '<StarRating>2</StarRating>' \
+  '<CaseColor>-14535868</CaseColor>' \
+  '<CoverColor>-11180425</CoverColor>' \
+  '<FullImageSpineWidth>0.088</FullImageSpineWidth>' \
+  '<ModelSizeString>5;7;1</ModelSizeString>' \
+  '<ModelType>box</ModelType>' \
+  '<UseFullScanImages>true</UseFullScanImages>' \
   '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>' \
   '<Name>Adventure, Renamed Alias</Name>' \
   '<Name>Aventure Qt</Name>' \
@@ -1192,7 +1198,7 @@ if ! cmp -s "$edit_launch_log" \
   exit 1
 fi
 
-echo "LaunchBox transactional metadata/launch/alias/custom-field edits, lexical Windows-path preservation, persisted Linux launch resolution, metadata search refresh, backup chain, and unknown XML preservation validated."
+echo "LaunchBox transactional metadata/launch/alias/custom-field/model edits, lexical Windows-path preservation, persisted Linux launch resolution, metadata search refresh, backup chain, and unknown XML preservation validated."
 
 cp -R fixtures/launchbox/Data "$crud_root/Data"
 crud_platform="$crud_root/Data/Platforms/Fixture Console.xml"

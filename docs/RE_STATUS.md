@@ -132,22 +132,35 @@ under its configured `Box - 3D` directories. Its settings retain
 geometry contract and from the separate front/back/spine inputs used by the
 first port model vertical.
 
-The port now losslessly reads these records through both platform readers and
-the catalog reader, retains unknown future model keys/elements, validates
-signed colors/sizes, and resolves game/platform/built-in/fallback settings once
-at the Rust controller boundary. QML receives a versioned typed presentation;
-it never interprets LaunchBox path syntax. The shared viewer applies recovered
-case/cover colors and forced aspect/depth, and presents distinct functional
-box, DVD, jewel, and long-jewel proportions with jewel tray lips and a DVD
-hinge band. LaunchBox and BigBox runtime smokes require the fixture's game-level
-jewel override to beat its platform DVD override and require exact port-owned
-`260x230x20` jewel geometry before accepting the rendered interaction.
+The same installation also contains real `Box - Full` scans. Inspected
+`1090x680` examples use a back-spine-front horizontal layout, with the narrow
+spine centered between the two covers. That observation supports the port's
+full-scan crop direction; the persisted `FullImageSpineWidth` remains the
+authoritative ratio for each resolved record rather than a hard-coded pixel
+width.
+
+The port now losslessly reads and writes these records through both platform
+readers and the catalog reader, retains unknown future model keys/elements,
+validates signed colors/sizes, and resolves
+game/platform/built-in/fallback settings once at the Rust controller boundary.
+The game and platform dialogs edit the complete recovered property surface and
+remove an override to restore inheritance. QML receives a versioned typed
+presentation; it never interprets LaunchBox path syntax. The shared viewer
+applies recovered case/cover colors and forced aspect/depth, presents distinct
+functional box, DVD, jewel, and long-jewel proportions with jewel tray lips
+and a DVD hinge band, and splits a selected `Box - Full` scan into
+back/spine/front regions when enabled. LaunchBox and BigBox runtime smokes
+require the fixture's game-level jewel override to beat its platform DVD
+override, require exact port-owned `260x230x20` jewel geometry and the `0.143`
+scan ratio, and render the result before accepting the interaction. Separate
+transactional smokes prove exact game/platform model edits and platform-delete
+cleanup.
 
 These Qt shapes are a functional cross-platform presentation, not a claim of
-original WPF mesh or camera parity. Full-scan image construction,
-front-spine/logo/rotation rendering, editable model settings, CoverFlow and
-image-view integration, exact materials/meshes/camera/timing/default input,
-native controller bindings, and real Windows/macOS UI execution remain open.
+original WPF mesh or camera parity. Front-spine/logo/rotation material
+rendering, CoverFlow and image-view integration, exact
+materials/meshes/camera/timing/default input, native controller bindings, and
+real Windows/macOS UI execution remain open.
 
 The recovered 13.27 stock `GameDetailsView.xaml` binds `MediaList.SelectedItem`
 to `MediaPreview.MediaItem`; the concrete `MediaItem` exposes location, preview,

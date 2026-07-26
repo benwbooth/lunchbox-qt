@@ -294,10 +294,11 @@ pub struct NewGame {
     pub metadata: NewGameMetadata,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RemovedPlatformCatalogRecords {
     pub platform: PlatformDefinition,
     pub folders: Vec<PlatformFolder>,
+    pub model_settings: Vec<ModelSettings>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1577,6 +1578,94 @@ impl AuxiliaryDocument {
         })
     }
 
+    /// Creates, losslessly updates, or removes the complete model override for
+    /// one platform. Opaque and future children on an existing record remain
+    /// untouched.
+    pub fn set_platform_model_settings(
+        &mut self,
+        platform_name: &str,
+        settings: Option<ModelSettings>,
+    ) -> Result<Option<ModelSettings>, StorageError> {
+        self.ensure_operation_kind(
+            "edit platform model settings",
+            AuxiliaryDocumentKind::Platforms,
+        )?;
+        let catalog = self.platform_catalog()?;
+        let platform = catalog
+            .platforms
+            .iter()
+            .find(|platform| platform.metadata.name.eq_ignore_ascii_case(platform_name))
+            .ok_or_else(|| StorageError::PlatformNotFound {
+                name: platform_name.to_string(),
+            })?;
+        let exact_name = platform.metadata.name.clone();
+        if let Some(settings) = &settings {
+            settings.validate()?;
+            if settings.platform_name.as_deref() != Some(exact_name.as_str())
+                || settings.game_id.is_some()
+            {
+                return Err(StorageError::InvalidModelSettingsTarget {
+                    scope: "platform",
+                    expected: exact_name,
+                });
+            }
+        }
+        let typed_indices = catalog
+            .model_settings
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                candidate
+                    .platform_name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&exact_name))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let xml_indices = self
+            .root
+            .children
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let element = node.as_element()?;
+                (element.name == "ModelSettings"
+                    && child_text(element, "PlatformName")
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&exact_name)))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        ensure_model_settings_alignment("platform", &exact_name, &typed_indices, &xml_indices)?;
+
+        let previous = typed_indices
+            .first()
+            .map(|index| catalog.model_settings[*index].clone());
+        self.mutate(move |root| {
+            match (xml_indices.as_slice(), settings) {
+                ([], None) => {}
+                ([], Some(settings)) => {
+                    let insertion = catalog_record_insertion_index(root, "ModelSettings");
+                    root.children.insert(
+                        insertion,
+                        XMLNode::Element(model_settings_element(&settings)),
+                    );
+                }
+                ([xml_index], None) => {
+                    root.children.remove(*xml_index);
+                }
+                ([xml_index], Some(settings)) => {
+                    let element = root.children[*xml_index]
+                        .as_mut_element()
+                        .expect("model-settings index must identify an element");
+                    update_model_settings_element(element, &settings);
+                }
+                _ => unreachable!("model-settings alignment validates zero or one record"),
+            }
+            Ok(())
+        })?;
+        Ok(previous)
+    }
+
     /// Removes one platform definition and every folder record it owns while
     /// preserving unrelated and unknown XML nodes byte-semantically in the DOM.
     pub fn remove_platform_definition(
@@ -1600,6 +1689,17 @@ impl AuxiliaryDocument {
             .filter(|folder| folder.platform.eq_ignore_ascii_case(&exact_name))
             .cloned()
             .collect::<Vec<_>>();
+        let model_settings = catalog
+            .model_settings
+            .iter()
+            .filter(|settings| {
+                settings
+                    .platform_name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&exact_name))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
 
         self.mutate(|root| {
             root.children.retain(|node| {
@@ -1611,12 +1711,18 @@ impl AuxiliaryDocument {
                         .is_none_or(|name| !name.eq_ignore_ascii_case(&exact_name)),
                     "PlatformFolder" => child_text(element, "Platform")
                         .is_none_or(|name| !name.eq_ignore_ascii_case(&exact_name)),
+                    "ModelSettings" => child_text(element, "PlatformName")
+                        .is_none_or(|name| !name.eq_ignore_ascii_case(&exact_name)),
                     _ => true,
                 }
             });
             Ok(())
         })?;
-        Ok(RemovedPlatformCatalogRecords { platform, folders })
+        Ok(RemovedPlatformCatalogRecords {
+            platform,
+            folders,
+            model_settings,
+        })
     }
 
     /// Adds a category definition without inventing hierarchy placement.
@@ -3005,6 +3111,94 @@ impl PlatformDocument {
 
     pub fn source_revision(&self) -> Option<&FileRevision> {
         self.source_revision.as_ref()
+    }
+
+    /// Creates, losslessly updates, or removes the complete model override for
+    /// one game. Unknown children on an existing `<ModelSettings>` record stay
+    /// in place; only the recovered fields are changed.
+    pub fn set_game_model_settings(
+        &mut self,
+        game_id: &str,
+        settings: Option<ModelSettings>,
+    ) -> Result<Option<ModelSettings>, StorageError> {
+        let game = self
+            .library
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(game_id))
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: game_id.to_string(),
+            })?;
+        let exact_id = game.id.clone();
+        if let Some(settings) = &settings {
+            settings.validate()?;
+            if settings.game_id.as_deref() != Some(exact_id.as_str())
+                || settings.platform_name.is_some()
+            {
+                return Err(StorageError::InvalidModelSettingsTarget {
+                    scope: "game",
+                    expected: exact_id,
+                });
+            }
+        }
+
+        let typed_indices = self
+            .library
+            .model_settings
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                candidate
+                    .game_id
+                    .as_deref()
+                    .is_some_and(|id| id.eq_ignore_ascii_case(&exact_id))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let xml_indices = self
+            .root
+            .children
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let element = node.as_element()?;
+                (element.name == "ModelSettings"
+                    && child_text(element, "GameId")
+                        .is_some_and(|id| id.eq_ignore_ascii_case(&exact_id)))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        ensure_model_settings_alignment("game", &exact_id, &typed_indices, &xml_indices)?;
+
+        match (typed_indices.as_slice(), xml_indices.as_slice(), settings) {
+            ([], [], None) => Ok(None),
+            ([], [], Some(settings)) => {
+                let insertion = platform_record_insertion_index(&self.root, "ModelSettings");
+                self.root.children.insert(
+                    insertion,
+                    XMLNode::Element(model_settings_element(&settings)),
+                );
+                self.library.model_settings.push(settings.clone());
+                self.library.validate()?;
+                Ok(Some(settings))
+            }
+            ([typed_index], [xml_index], None) => {
+                let removed = self.library.model_settings.remove(*typed_index);
+                self.root.children.remove(*xml_index);
+                self.library.validate()?;
+                Ok(Some(removed))
+            }
+            ([typed_index], [xml_index], Some(settings)) => {
+                let element = self.root.children[*xml_index]
+                    .as_mut_element()
+                    .expect("model-settings index must identify an element");
+                update_model_settings_element(element, &settings);
+                self.library.model_settings[*typed_index] = settings.clone();
+                self.library.validate()?;
+                Ok(Some(settings))
+            }
+            _ => unreachable!("model-settings alignment validates zero or one record"),
+        }
     }
 
     pub fn add_game(&mut self, new_game: NewGame) -> Result<Game, StorageError> {
@@ -5430,6 +5624,7 @@ fn platform_record_insertion_index(root: &Element, record_name: &str) -> usize {
     fn rank(name: &str) -> Option<usize> {
         [
             "Game",
+            "ModelSettings",
             "AdditionalApplication",
             "AlternateName",
             "CustomField",
@@ -5457,9 +5652,14 @@ fn platform_record_insertion_index(root: &Element, record_name: &str) -> usize {
 
 fn catalog_record_insertion_index(root: &Element, record_name: &str) -> usize {
     fn rank(name: &str) -> Option<usize> {
-        ["Platform", "PlatformCategory", "PlatformFolder"]
-            .iter()
-            .position(|candidate| *candidate == name)
+        [
+            "Platform",
+            "PlatformCategory",
+            "PlatformFolder",
+            "ModelSettings",
+        ]
+        .iter()
+        .position(|candidate| *candidate == name)
     }
 
     let target_rank = rank(record_name).expect("editable catalog record family has a rank");
@@ -6989,6 +7189,86 @@ fn set_optional_child_text(element: &mut Element, name: &str, value: Option<&str
     }
 }
 
+fn model_settings_element(settings: &ModelSettings) -> Element {
+    let mut element = Element::new("ModelSettings");
+    update_model_settings_element(&mut element, settings);
+    element
+}
+
+fn update_model_settings_element(element: &mut Element, settings: &ModelSettings) {
+    let case_color = settings.case_color.map(|color| color.raw().to_string());
+    let cover_color = settings.cover_color.map(|color| color.raw().to_string());
+    let model_size = settings.model_size.map(ModelSize::to_launchbox);
+    set_optional_child_text(element, "CaseColor", case_color.as_deref());
+    set_optional_child_text(element, "CoverColor", cover_color.as_deref());
+    set_optional_child_text(
+        element,
+        "FrontSpineImage",
+        settings.front_spine_image.as_deref(),
+    );
+    set_child_text(
+        element,
+        "FrontSpineIsClear",
+        &settings.front_spine_is_clear.to_string(),
+    );
+    set_child_text(
+        element,
+        "FullImageSpineWidth",
+        &settings.full_image_spine_width.to_string(),
+    );
+    set_child_text(
+        element,
+        "FullScanIsLandscape",
+        &settings.full_scan_is_landscape.to_string(),
+    );
+    set_optional_child_text(element, "GameId", settings.game_id.as_deref());
+    set_optional_child_text(element, "LogoFont", settings.logo_font.as_deref());
+    set_child_text(element, "LogoRotation", &settings.logo_rotation);
+    set_optional_child_text(element, "ModelSizeString", model_size.as_deref());
+    set_optional_child_text(
+        element,
+        "ModelType",
+        settings.model_type.as_ref().map(ModelType::key),
+    );
+    set_optional_child_text(element, "PlatformName", settings.platform_name.as_deref());
+    set_child_text(element, "SpineRotation", &settings.spine_rotation);
+    set_child_text(
+        element,
+        "UseFullScanImages",
+        &settings.use_full_scan_images.to_string(),
+    );
+}
+
+fn ensure_model_settings_alignment(
+    scope: &'static str,
+    target: &str,
+    typed_indices: &[usize],
+    xml_indices: &[usize],
+) -> Result<(), StorageError> {
+    if typed_indices.len() != xml_indices.len() {
+        return Err(StorageError::InvalidModelSettingsEdit {
+            scope,
+            target: target.to_string(),
+            reason: format!(
+                "typed/XML source count mismatch ({} versus {})",
+                typed_indices.len(),
+                xml_indices.len()
+            ),
+        });
+    }
+    if typed_indices.len() > 1 {
+        return Err(StorageError::InvalidModelSettingsEdit {
+            scope,
+            target: target.to_string(),
+            reason: format!(
+                "{} matching records were found; expected at most one",
+                typed_indices.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn clear_child_text_preserving_element(element: &mut Element, name: &str) {
     if let Some(child) = element.get_mut_child(name) {
         child.children.clear();
@@ -7841,6 +8121,17 @@ pub enum StorageError {
     DuplicateGameId { id: String },
     #[error("invalid game combine/expand request: {reason}")]
     InvalidGameGrouping { reason: String },
+    #[error("{scope} model settings must target {expected} and no other identity")]
+    InvalidModelSettingsTarget {
+        scope: &'static str,
+        expected: String,
+    },
+    #[error("invalid {scope} model-settings edit for {target}: {reason}")]
+    InvalidModelSettingsEdit {
+        scope: &'static str,
+        target: String,
+        reason: String,
+    },
     #[error("game platform {actual} does not match platform document {expected}")]
     GamePlatformMismatch { expected: String, actual: String },
     #[error("invalid {record} edit for game {game_id}: {reason}")]
@@ -8094,6 +8385,127 @@ mod tests {
         assert!(serialized.contains(
             "<FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>"
         ));
+    }
+
+    #[test]
+    fn game_model_settings_create_update_and_remove_are_lossless() {
+        let mut document = PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes())
+            .expect("parse fixture");
+        let mut updated = ModelSettings::box_defaults();
+        updated.game_id = Some("fixture-adventure".into());
+        updated.case_color = Some(ArgbColor::from_channels(0xff, 0x22, 0x33, 0x44));
+        updated.cover_color = Some(ArgbColor::from_channels(0xff, 0x55, 0x66, 0x77));
+        updated.front_spine_image = Some(r"{Resources}\Updated Spine".into());
+        updated.logo_font = Some("Fixture Sans".into());
+        updated.logo_rotation = "1,2,3,4".into();
+        updated.spine_rotation = "5,6,7,8".into();
+        updated.model_size = Some(ModelSize {
+            x: 5.0,
+            y: 7.0,
+            z: 1.0,
+        });
+
+        assert_eq!(
+            document
+                .set_game_model_settings("fixture-adventure", Some(updated.clone()))
+                .expect("update game model settings"),
+            Some(updated.clone())
+        );
+        let updated_xml =
+            String::from_utf8(document.to_xml_bytes().expect("serialize update")).unwrap();
+        assert!(updated_xml.contains(
+            "<FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>"
+        ));
+        assert!(updated_xml.contains("<ModelSizeString>5;7;1</ModelSizeString>"));
+        assert!(updated_xml.contains("<LogoRotation>1,2,3,4</LogoRotation>"));
+
+        let removed = document
+            .set_game_model_settings("fixture-adventure", None)
+            .expect("remove game model settings")
+            .expect("removed settings");
+        assert_eq!(removed, updated);
+        assert!(document.library().model_settings.is_empty());
+        assert!(!String::from_utf8(document.to_xml_bytes().unwrap())
+            .unwrap()
+            .contains("<ModelSettings>"));
+
+        let mut created = ModelSettings::long_jewel_case_defaults();
+        created.game_id = Some("fixture-adventure".into());
+        created.model_type = Some(ModelType::Unknown("futureModel".into()));
+        document
+            .set_game_model_settings("fixture-adventure", Some(created.clone()))
+            .expect("create game model settings");
+        let bytes = document.to_xml_bytes().expect("serialize create");
+        let reparsed =
+            PlatformDocument::from_reader("Fixture Console.xml", bytes.as_slice()).unwrap();
+        assert_eq!(reparsed.library().model_settings, [created]);
+        assert!(String::from_utf8(bytes)
+            .unwrap()
+            .contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+    }
+
+    #[test]
+    fn platform_model_settings_create_update_and_remove_are_lossless() {
+        let fixture = include_str!("../../../fixtures/launchbox/Data/Platforms.xml")
+            .replace(
+                "    <UseFullScanImages>true</UseFullScanImages>\n  </ModelSettings>",
+                "    <UseFullScanImages>true</UseFullScanImages>\n    <FuturePlatformModelElement>preserve-platform-model-data</FuturePlatformModelElement>\n  </ModelSettings>",
+            )
+            .replace(
+                "</LaunchBox>",
+                "  <FutureCatalogRecord>preserve-this-catalog-data</FutureCatalogRecord>\n</LaunchBox>",
+            );
+        let mut document = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Platforms,
+            "Platforms.xml",
+            fixture.as_bytes(),
+        )
+        .expect("parse platform catalog");
+        let mut updated = ModelSettings::long_jewel_case_defaults();
+        updated.platform_name = Some("Fixture Console".into());
+        updated.case_color = Some(ArgbColor::from_channels(0xff, 0x10, 0x20, 0x30));
+        updated.cover_color = Some(ArgbColor::from_channels(0xff, 0x40, 0x50, 0x60));
+
+        let previous = document
+            .set_platform_model_settings("fixture console", Some(updated.clone()))
+            .expect("update platform model settings")
+            .expect("previous platform settings");
+        assert_eq!(previous.model_type, Some(ModelType::DvdCase));
+        let updated_xml =
+            String::from_utf8(document.to_xml_bytes().expect("serialize update")).unwrap();
+        assert!(updated_xml.contains(
+            "<FuturePlatformModelElement>preserve-platform-model-data</FuturePlatformModelElement>"
+        ));
+        assert!(updated_xml.contains("<ModelType>longJewelCase</ModelType>"));
+
+        document
+            .set_platform_model_settings("Fixture Console", None)
+            .expect("remove platform model settings");
+        assert!(document
+            .platform_catalog()
+            .expect("parse removed catalog")
+            .model_settings
+            .is_empty());
+
+        let mut created = ModelSettings::box_defaults();
+        created.platform_name = Some("Fixture Console".into());
+        document
+            .set_platform_model_settings("Fixture Console", Some(created.clone()))
+            .expect("create platform model settings");
+        let bytes = document.to_xml_bytes().expect("serialize create");
+        let reparsed = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Platforms,
+            "Platforms.xml",
+            bytes.as_slice(),
+        )
+        .unwrap();
+        assert_eq!(
+            reparsed.platform_catalog().unwrap().model_settings,
+            [created]
+        );
+        assert!(String::from_utf8(bytes)
+            .unwrap()
+            .contains("<FutureCatalogRecord>preserve-this-catalog-data</FutureCatalogRecord>"));
     }
 
     #[test]
@@ -10584,6 +10996,11 @@ mod tests {
         document
             .add_platform_definition(platform.clone(), folders.clone())
             .unwrap();
+        let mut settings = ModelSettings::box_defaults();
+        settings.platform_name = Some(name.into());
+        document
+            .set_platform_model_settings(name, Some(settings.clone()))
+            .unwrap();
 
         let catalog = document.platform_catalog().unwrap();
         assert_eq!(catalog.platforms.last(), Some(&platform));
@@ -10604,6 +11021,7 @@ mod tests {
         let removed = document.remove_platform_definition("dragon 32/64").unwrap();
         assert_eq!(removed.platform, platform);
         assert_eq!(removed.folders, folders);
+        assert_eq!(removed.model_settings, [settings]);
         assert_eq!(document.to_xml_bytes().unwrap(), original);
     }
 

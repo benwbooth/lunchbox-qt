@@ -194,14 +194,21 @@ after.
 Both frontends now share one typed Qt Quick 3D model preview.
 LaunchBox opens it from the settings-gated **3D Model** Details action or `M`;
 BigBox uses its settings-gated game-menu action or `M`. Distinct safely indexed
-front, back, and spine files texture six real faces. The Rust domain and both
+front, back, spine, and `Box - Full` files feed six real faces. When the
+resolved setting enables full scans, the viewer uses the recovered spine-width
+ratio to crop the observed back-spine-front scan layout into the three visible
+materials; otherwise it uses the separate image families. The Rust domain and both
 XML readers implement the recovered LaunchBox 13.27 root-level
 `ModelSettings` schema, exact `box`/`dvd`/`jewelCase`/`longJewelCase` keys,
 signed ARGB colors, semicolon-delimited forced sizes, all 41 built-in platform
 defaults, and whole-record game-over-platform-over-built-in precedence.
 Unknown future model keys and XML remain lossless. QML applies the resolved
 case/cover color and proportions, with separate functional box, DVD, jewel,
-and long-jewel presentations; LaunchBox path-like resource strings stay opaque
+and long-jewel presentations. The real game and platform editors expose the
+recovered model type, colors, full-scan settings, forced size,
+front-spine/logo values, and sparse rotation strings. Saving creates, replaces,
+or removes the whole scoped override in the same atomic XML transaction while
+retaining unknown children; LaunchBox path-like resource strings stay opaque
 and never become host paths.
 
 Left-drag or arrows rotate, right-drag or Shift+arrows translate, the wheel or
@@ -210,12 +217,14 @@ the same paths. Free, horizontal, and vertical rotation lock is stored
 atomically in the platform-native user configuration directory and shared
 between the two applications without changing LaunchBox XML. Sequential
 offscreen scenarios require the fixture's game jewel override to beat its
-platform DVD override, require the expected jewel dimensions, exercise both
-lock axes, render both model screens, verify native regular textures and focus
-return, compare exact persisted state, and hash the media/XML tree. Full-scan
-construction, logo/spine rotations and styling, model-settings editing,
-CoverFlow/image-view integration, exact original meshes/camera/timing, native
-controllers, and real Windows/macOS Qt execution remain open.
+platform DVD override, require the expected jewel dimensions and full-scan
+spine ratio, exercise both lock axes, render both model screens, verify native
+regular textures and focus return, compare exact persisted state, and hash the
+media/XML tree. Separate editor scenarios prove exact model XML and
+game/platform inheritance changes. Logo/front-spine/rotation material
+rendering, CoverFlow/image-view integration, exact original
+meshes/materials/camera/timing, native controllers, and real Windows/macOS Qt
+execution remain open.
 
 Both frontends also use one typed, read-only library-filter contract. It
 combines text and platform/category/playlist navigation with favorite,

@@ -12,9 +12,14 @@ Popup {
     property string gameTitle: ""
     property Item returnFocusItem: null
     readonly property int mediaRevision: controller.game_media_revision
+    readonly property int modelSettingsRevision:
+        controller.model_settings_revision
     readonly property string modelSettingsJson:
-        gameId.length > 0
-        ? controller.game_model_settings_json_for_game(gameId) : ""
+        {
+            const revision = modelSettingsRevision
+            return gameId.length > 0
+                   ? controller.game_model_settings_json_for_game(gameId) : ""
+        }
     readonly property var modelSettings: {
         if (modelSettingsJson.length > 0) {
             try {
@@ -32,7 +37,14 @@ Popup {
             "modelTypeDisplay": "Box",
             "caseColor": null,
             "coverColor": null,
+            "frontSpineImage": null,
+            "frontSpineIsClear": false,
+            "fullImageSpineWidth": 0.088,
+            "fullScanIsLandscape": false,
+            "logoFont": null,
+            "logoRotation": "0,0,0,",
             "modelSize": null,
+            "spineRotation": "0,,0,",
             "useFullScanImages": true
         }
     }
@@ -42,23 +54,29 @@ Popup {
     readonly property string modelSettingsSource: modelSettings.source
     readonly property bool isJewelCase:
         modelType === "jewelCase" || modelType === "longJewelCase"
+    readonly property real baseModelHeight:
+        modelType === "jewelCase" ? 230 : 260
+    readonly property real baseModelWidth:
+        modelType === "dvd" ? 182
+        : modelType === "jewelCase" ? 260
+        : modelType === "longJewelCase" ? 148 : 180
     readonly property real modelHeight: {
         if (modelSettings.modelSize)
             return 260
-        return modelType === "jewelCase" ? 230 : 260
+        if (modelType === "box"
+                && modelSettings.fullScanIsLandscape)
+            return baseModelWidth
+        return baseModelHeight
     }
     readonly property real modelWidth: {
         if (modelSettings.modelSize) {
             return clamp(modelSettings.modelSize[0]
                          / modelSettings.modelSize[1] * 260, 80, 360)
         }
-        if (modelType === "dvd")
-            return 182
-        if (modelType === "jewelCase")
-            return 260
-        if (modelType === "longJewelCase")
-            return 148
-        return 180
+        if (modelType === "box"
+                && modelSettings.fullScanIsLandscape)
+            return baseModelHeight
+        return baseModelWidth
     }
     readonly property real modelDepth: {
         if (modelSettings.modelSize) {
@@ -106,19 +124,39 @@ Popup {
         return gameId.length > 0
             ? controller.game_box_spine_url_for_game(gameId) : ""
     }
+    readonly property url fullSource: {
+        const revision = mediaRevision
+        return gameId.length > 0
+            ? controller.game_box_full_url_for_game(gameId) : ""
+    }
     readonly property bool hasFront:
         frontSource.toString().length > 0
     readonly property bool hasBack:
         backSource.toString().length > 0
     readonly property bool hasSpine:
         spineSource.toString().length > 0
+    readonly property bool hasFull:
+        fullSource.toString().length > 0
+    readonly property bool useFullScan:
+        Boolean(modelSettings.useFullScanImages) && hasFull
+    readonly property bool effectiveHasBack: useFullScan || hasBack
+    readonly property bool effectiveHasSpine: useFullScan || hasSpine
+    readonly property real fullSpineFraction:
+        clamp(Number(modelSettings.fullImageSpineWidth), 0.001, 0.49)
+    readonly property real fullCoverFraction:
+        (1 - fullSpineFraction) / 2
+    readonly property real fullFrontOffset:
+        fullCoverFraction + fullSpineFraction
     readonly property int frontImageStatus: frontImageProbe.status
     readonly property int backImageStatus: backImageProbe.status
     readonly property int spineImageStatus: spineImageProbe.status
+    readonly property int fullImageStatus: fullImageProbe.status
     readonly property bool sceneReady:
         opened && hasFront && frontImageStatus === Image.Ready
-        && (!hasBack || backImageStatus === Image.Ready)
-        && (!hasSpine || spineImageStatus === Image.Ready)
+        && (useFullScan
+            ? fullImageStatus === Image.Ready
+            : (!hasBack || backImageStatus === Image.Ready)
+              && (!hasSpine || spineImageStatus === Image.Ready))
     readonly property string rotationLock:
         controller.model_rotation_lock
     readonly property real minimumZoom: 0.65
@@ -333,6 +371,16 @@ Popup {
             asynchronous: true
             cache: true
         }
+        Image {
+            id: fullImageProbe
+            width: 1
+            height: 1
+            visible: false
+            source: viewer.opened && viewer.useFullScan
+                    ? viewer.fullSource : ""
+            asynchronous: true
+            cache: true
+        }
 
         ColumnLayout {
             anchors.fill: parent
@@ -375,9 +423,11 @@ Popup {
                     }
                 }
                 Label {
-                    text: viewer.hasSpine
+                    text: viewer.useFullScan
+                          ? "FULL SCAN  •  BACK / SPINE / FRONT"
+                          : viewer.effectiveHasSpine
                           ? "FRONT  •  BACK  •  SPINE"
-                          : viewer.hasBack
+                          : viewer.effectiveHasBack
                             ? "FRONT  •  BACK"
                             : "FRONT"
                     color: "#9eb0c5"
@@ -449,17 +499,34 @@ Popup {
 
                         Texture {
                             id: frontTexture
-                            source: viewer.frontSource
+                            source: viewer.useFullScan
+                                    ? viewer.fullSource : viewer.frontSource
+                            scaleU: viewer.useFullScan
+                                    ? viewer.fullCoverFraction : 1
+                            positionU: viewer.useFullScan
+                                       ? viewer.fullFrontOffset : 0
+                            tilingModeHorizontal: Texture.ClampToEdge
                             generateMipmaps: true
                         }
                         Texture {
                             id: backTexture
-                            source: viewer.backSource
+                            source: viewer.useFullScan
+                                    ? viewer.fullSource : viewer.backSource
+                            scaleU: viewer.useFullScan
+                                    ? viewer.fullCoverFraction : 1
+                            positionU: 0
+                            tilingModeHorizontal: Texture.ClampToEdge
                             generateMipmaps: true
                         }
                         Texture {
                             id: spineTexture
-                            source: viewer.spineSource
+                            source: viewer.useFullScan
+                                    ? viewer.fullSource : viewer.spineSource
+                            scaleU: viewer.useFullScan
+                                    ? viewer.fullSpineFraction : 1
+                            positionU: viewer.useFullScan
+                                       ? viewer.fullCoverFraction : 0
+                            tilingModeHorizontal: Texture.ClampToEdge
                             generateMipmaps: true
                         }
 
@@ -487,9 +554,9 @@ Popup {
                             castsShadows: true
                             receivesShadows: true
                             materials: PrincipledMaterial {
-                                baseColor: viewer.hasBack
+                                baseColor: viewer.effectiveHasBack
                                            ? "#ffffff" : viewer.coverColor
-                                baseColorMap: viewer.hasBack
+                                baseColorMap: viewer.effectiveHasBack
                                               ? backTexture : null
                                 roughness: 0.52
                             }
@@ -504,9 +571,9 @@ Popup {
                             castsShadows: true
                             receivesShadows: true
                             materials: PrincipledMaterial {
-                                baseColor: viewer.hasSpine
+                                baseColor: viewer.effectiveHasSpine
                                            ? "#ffffff" : viewer.caseColor
-                                baseColorMap: viewer.hasSpine
+                                baseColorMap: viewer.effectiveHasSpine
                                               ? spineTexture : null
                                 roughness: 0.5
                             }
@@ -521,9 +588,9 @@ Popup {
                             castsShadows: true
                             receivesShadows: true
                             materials: PrincipledMaterial {
-                                baseColor: viewer.hasSpine
+                                baseColor: viewer.effectiveHasSpine
                                            ? "#ffffff" : viewer.caseColor
-                                baseColorMap: viewer.hasSpine
+                                baseColorMap: viewer.effectiveHasSpine
                                               ? spineTexture : null
                                 roughness: 0.5
                             }

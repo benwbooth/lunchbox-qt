@@ -836,8 +836,15 @@ ApplicationWindow {
                            !== Image.Ready
                         || bigBoxModelViewer.spineImageStatus
                            !== Image.Ready
+                        || bigBoxModelViewer.fullImageStatus
+                           !== Image.Ready
                         || !bigBoxModelViewer.hasBack
                         || !bigBoxModelViewer.hasSpine
+                        || !bigBoxModelViewer.hasFull
+                        || !bigBoxModelViewer.useFullScan
+                        || Math.abs(
+                            bigBoxModelViewer.fullSpineFraction - 0.143)
+                           > 0.0001
                         || bigBoxModelViewer.rotationLock
                            !== "horizontal"
                         || bigBoxModelViewer.rotationX !== -8
@@ -941,6 +948,7 @@ ApplicationWindow {
                             bigBoxModelViewer.frontSource.toString(),
                             bigBoxModelViewer.backSource.toString(),
                             bigBoxModelViewer.spineSource.toString(),
+                            bigBoxModelViewer.fullSource.toString(),
                             window
                             .modelViewerRestoredHorizontalLock)) {
                     console.error(
@@ -991,8 +999,8 @@ ApplicationWindow {
                 window.gameDetailsMediaSmokePhase = 1
             } else if (window.gameDetailsMediaSmokePhase === 1) {
                 if (!bigBoxGameDetails.opened
-                        || bigBoxGameDetails.mediaCount !== 6
-                        || bigBoxGameDetails.selectedMediaIndex !== 5
+                        || bigBoxGameDetails.mediaCount !== 7
+                        || bigBoxGameDetails.selectedMediaIndex !== 6
                         || bigBoxGameDetails.selectedMediaKind !== "video"
                         || bigBoxGameDetails.selectedMediaType !== "Video Snap"
                         || bigBoxGameDetails.mediaDuration <= 0
@@ -1009,7 +1017,7 @@ ApplicationWindow {
                 bigBoxPreviousMediaButton.clicked()
                 window.gameDetailsMediaSmokePhase = 3
             } else if (window.gameDetailsMediaSmokePhase === 3) {
-                if (bigBoxGameDetails.selectedMediaIndex !== 4
+                if (bigBoxGameDetails.selectedMediaIndex !== 5
                         || bigBoxGameDetails.selectedMediaKind !== "image"
                         || bigBoxGameDetails.mediaImageStatus !== Image.Ready)
                     return
@@ -1031,7 +1039,7 @@ ApplicationWindow {
                     return
                 window.gameDetailsMediaScreenshotRequested = true
                 const continueWithVideo = function() {
-                    if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(5)) {
+                    if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(6)) {
                         console.error(
                             "BIGBOX_GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
                         Qt.exit(508)
@@ -1055,7 +1063,7 @@ ApplicationWindow {
                     continueWithVideo()
                 })
             } else if (window.gameDetailsMediaSmokePhase === 5) {
-                if (bigBoxGameDetails.selectedMediaIndex !== 5
+                if (bigBoxGameDetails.selectedMediaIndex !== 6
                         || bigBoxGameDetails.selectedMediaKind !== "video"
                         || bigBoxGameDetails.selectedMediaType !== "Video Snap"
                         || bigBoxGameDetails.mediaDuration <= 0
@@ -1072,11 +1080,11 @@ ApplicationWindow {
                     return
                 if (!controller
                         .report_big_box_game_details_media_smoke_success(
-                        "fixture-adventure", 0, 5,
+                        "fixture-adventure", 0, 6,
                         controller.game_media_url_at(
                             "fixture-adventure", 0).toString(),
                         controller.game_media_url_at(
-                            "fixture-adventure", 5).toString())) {
+                            "fixture-adventure", 6).toString())) {
                     console.error(
                         "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
                     Qt.exit(510)
@@ -1127,7 +1135,7 @@ ApplicationWindow {
                 window.imageViewerSmokePhase = 1
             } else if (window.imageViewerSmokePhase === 1) {
                 if (!bigBoxGameDetails.opened
-                        || bigBoxGameDetails.mediaCount !== 6)
+                        || bigBoxGameDetails.mediaCount !== 7)
                     return
                 if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(0)) {
                     console.error(
@@ -1147,7 +1155,7 @@ ApplicationWindow {
                 if (!bigBoxImageViewer.opened
                         || bigBoxImageViewer.gameId
                            !== "fixture-adventure"
-                        || bigBoxImageViewer.imageCount !== 5
+                        || bigBoxImageViewer.imageCount !== 6
                         || bigBoxImageViewer.selectedImageIndex !== 0
                         || bigBoxImageViewer.selectedMediaIndex !== 0
                         || bigBoxImageViewer.selectedMediaType

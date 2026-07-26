@@ -1011,7 +1011,7 @@ mod tests {
         let catalog = index.platform_catalog().expect("platform catalog");
         assert_eq!(catalog.platforms.len(), 1);
         assert_eq!(catalog.categories.len(), 1);
-        assert_eq!(catalog.folders.len(), 6);
+        assert_eq!(catalog.folders.len(), 7);
         assert_eq!(catalog.model_settings.len(), 1);
         assert_eq!(
             catalog.model_settings[0].platform_name.as_deref(),

@@ -40,6 +40,11 @@
   </PlatformFolder>
   <PlatformFolder>
     <Platform>Fixture Console</Platform>
+    <MediaType>Box - Full</MediaType>
+    <FolderPath>Images\Fixture Console\Box - Full</FolderPath>
+  </PlatformFolder>
+  <PlatformFolder>
+    <Platform>Fixture Console</Platform>
     <MediaType>Screenshot - Gameplay</MediaType>
     <FolderPath>Images/Fixture Console/Screenshot - Gameplay</FolderPath>
   </PlatformFolder>

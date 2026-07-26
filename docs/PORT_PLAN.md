@@ -319,7 +319,9 @@ real-host gate.
 The current `MED-009` model vertical uses one Qt Quick 3D preview in both
 frontends. It builds a true six-face model and maps the safely indexed front,
 back, and `Box - Spine` files to distinct faces while keeping top and bottom
-as solid materials. LaunchBox honors `ShowDetails3dModel` and enters from
+as solid materials. A fourth safe `Box - Full` selection can instead construct
+the back, spine, and front from the observed back-spine-front scan layout and
+the resolved spine-width ratio. LaunchBox honors `ShowDetails3dModel` and enters from
 Details or `M`; BigBox honors `ShowGameMenuViewModelFullscreen` and enters
 from the game menu or `M`.
 Pointer drag, right-drag, wheel, directional/Shift-directional/Page/Home keys,
@@ -340,11 +342,15 @@ read paths and `Data/Platforms.xml` now retain typed `ModelSettings` plus
 unknown future data. A platform-neutral resolver computes a complete setting
 for each game before the CXX-Qt boundary. The viewer applies colors and forced
 size and uses distinct functional box/DVD/jewel/long-jewel proportions with
-jewel lips and a DVD hinge. Compiled LaunchBox and BigBox scenarios require a
-game-level jewel fixture to beat its platform DVD setting and require the
-expected port geometry before reporting success.
+jewel lips and a DVD hinge. The game and platform dialogs edit the recovered
+whole-record property surface, atomically create/update/remove the corresponding
+XML record, and retain unknown future children. Compiled LaunchBox and BigBox
+scenarios require a game-level jewel fixture to beat its platform DVD setting,
+the expected port geometry, and the full-scan ratio before reporting success;
+separate editor and platform-lifecycle smokes prove exact persistence and
+cleanup.
 
-Full-scan construction, front-spine/logo/rotation rendering, settings editing,
+Front-spine/logo/rotation material rendering,
 `Use3dModelImageView`/CoverFlow paths, exact original meshes/materials/camera
 and timing, native controller bindings, and native Windows/Intel/Apple Silicon
 macOS interaction remain explicit later gates.
