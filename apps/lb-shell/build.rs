@@ -14,6 +14,7 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/BigBoxAttractMode.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxScreensaver.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxInputRouter.qml");
+    println!("cargo:rerun-if-changed=qml/BigBoxInputSettings.qml");
     println!("cargo:rerun-if-changed=qml/LaunchStartupOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchShutdownOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchPauseOverlay.qml");
@@ -37,6 +38,7 @@ fn main() {
                 "qml/BigBoxAttractMode.qml",
                 "qml/BigBoxScreensaver.qml",
                 "qml/BigBoxInputRouter.qml",
+                "qml/BigBoxInputSettings.qml",
                 "qml/LaunchStartupOverlay.qml",
                 "qml/LaunchShutdownOverlay.qml",
                 "qml/LaunchPauseOverlay.qml",

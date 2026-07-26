@@ -331,6 +331,70 @@ pub mod qobject {
         fn big_box_keyboard_actions_at(self: &LibraryController, binding_index: i32) -> QString;
 
         #[qinvokable]
+        fn big_box_input_action_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn big_box_input_action_key_at(self: &LibraryController, action_index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_input_action_label_at(self: &LibraryController, action_index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_input_action_keyboard_slot_count_at(
+            self: &LibraryController,
+            action_index: i32,
+        ) -> i32;
+
+        #[qinvokable]
+        fn big_box_input_action_keyboard_wpf_key_at(
+            self: &LibraryController,
+            action_index: i32,
+            slot: i32,
+        ) -> i32;
+
+        #[qinvokable]
+        fn big_box_input_action_keyboard_sequence_at(
+            self: &LibraryController,
+            action_index: i32,
+            slot: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn big_box_controller_rule_action_at(self: &LibraryController, rule_index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_controller_rule_binding_at(self: &LibraryController, rule_index: i32)
+            -> QString;
+
+        #[qinvokable]
+        fn big_box_controller_rule_hold_at(self: &LibraryController, rule_index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_controller_binding_option_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn big_box_controller_binding_option_key_at(
+            self: &LibraryController,
+            binding_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn big_box_wpf_key_for_qt_key(self: &LibraryController, qt_key: i32, modifiers: i32)
+            -> i32;
+
+        #[qinvokable]
+        fn big_box_wpf_key_label(self: &LibraryController, wpf_key: i32) -> QString;
+
+        #[qinvokable]
+        fn save_big_box_input_settings(
+            self: Pin<&mut LibraryController>,
+            request_payload: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_big_box_input_editor_smoke_success(self: &LibraryController) -> bool;
+
+        #[qinvokable]
         fn poll_big_box_gamepad_action(self: Pin<&mut LibraryController>) -> QString;
 
         #[qinvokable]
@@ -1526,10 +1590,11 @@ use lb_domain::{
     built_in_model_settings, resolve_model_settings, AdditionalApplication,
     AdditionalApplicationEdit, AlternateName, ArgbColor, BoxSize, CustomField, Emulator,
     EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game, GameLaunchConfiguration,
-    GameMetadata, GameSave, GameSaveMetadataEdit, ListViewColumnLayout, ModelSettings,
-    ModelSettingsSource, ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship,
-    PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
-    PlaylistDocument, PlaylistFilter, PlaylistGame, ResolvedModelSettings, UNASSIGNED_EMULATOR_ID,
+    GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding, ListViewColumnLayout,
+    ModelSettings, ModelSettingsSource, ModelSize, ModelType, Mount, NavigationMetadata,
+    ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder,
+    Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame, ResolvedModelSettings,
+    UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -1595,18 +1660,18 @@ use lb_platform::{
     navigation_document_file_name, platform_document_file_name, portable_storage_name,
     prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
-    project_big_box_screensaver_candidates,
+    project_big_box_screensaver_candidates, qt_key_to_wpf_key_with_modifiers,
     select_big_box_screensaver_candidate as select_screensaver_candidate_index,
-    select_emulator_for_game, ArchiveExtractor, BigBoxAttractModePolicy,
-    BigBoxBackgroundMusicPolicy, BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy,
-    BigBoxMusicPolicy, BigBoxScreensaverCandidate, BigBoxScreensaverPolicy,
+    select_emulator_for_game, wpf_key_to_qt_portable_text, ArchiveExtractor,
+    BigBoxAttractModePolicy, BigBoxBackgroundMusicPolicy, BigBoxInputAction, BigBoxInputEngine,
+    BigBoxInputPolicy, BigBoxMusicPolicy, BigBoxScreensaverCandidate, BigBoxScreensaverPolicy,
     BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, ControllerBinding,
     FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy, GameDetailsMediaPolicy,
     GameDetailsWindowState, GameMediaItem, GameMediaKind, GamepadInputEvent, HostPathMappings,
     HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
     LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
     LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
-    ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS,
+    ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
@@ -1615,7 +1680,7 @@ use lb_query::{
 use lb_storage::{
     delete_directory_if_revision, delete_regular_files_if_revisions, find_emulator_references,
     find_game_references, find_platform_references, load_big_box_settings_file,
-    pending_transaction_manifests, recover_pending_transactions,
+    load_input_bindings_file, pending_transaction_manifests, recover_pending_transactions,
     replace_directory_from_source_if_revisions, replace_regular_file_from_source_if_revisions,
     AuxiliaryDocument, DirectoryRevision, EmulatorReference, FileRevision, GameReference,
     IndexedGameSaveMetadataEdit, IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex,
@@ -2431,8 +2496,14 @@ impl LoadedLibrary {
             BigBoxAttractModePolicy::from_settings(data.big_box_settings());
         let big_box_screensaver_policy =
             BigBoxScreensaverPolicy::from_settings(data.big_box_settings());
-        let big_box_input_policy =
-            BigBoxInputPolicy::from_settings(data.big_box_settings(), data.input_bindings());
+        let big_box_input_policy = if data.data_root().join("InputBindings.xml").is_file() {
+            BigBoxInputPolicy::from_persisted_settings(
+                data.big_box_settings(),
+                data.input_bindings(),
+            )
+        } else {
+            BigBoxInputPolicy::from_settings(data.big_box_settings(), data.input_bindings())
+        };
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
@@ -2849,6 +2920,134 @@ struct GameSortWriteSuccess {
 }
 
 enum GameSortWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Other(String),
+}
+
+const BIG_BOX_INPUT_SETTINGS_PAYLOAD_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BigBoxKeyboardChangePayload {
+    action: String,
+    slot: usize,
+    wpf_key: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BigBoxControllerRulePayload {
+    action: String,
+    binding: String,
+    hold: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BigBoxInputSettingsPayload {
+    version: u32,
+    gamepad_enabled: Option<bool>,
+    use_all_controllers: Option<bool>,
+    #[serde(default)]
+    keyboard_changes: Vec<BigBoxKeyboardChangePayload>,
+    controller_rules: Option<Vec<BigBoxControllerRulePayload>>,
+}
+
+impl BigBoxInputSettingsPayload {
+    fn validate(&self) -> Result<Vec<InputBinding>, String> {
+        if self.version != BIG_BOX_INPUT_SETTINGS_PAYLOAD_VERSION {
+            return Err(format!(
+                "BigBox input settings version {} is unsupported",
+                self.version
+            ));
+        }
+        if self.gamepad_enabled.is_none()
+            && self.use_all_controllers.is_none()
+            && self.keyboard_changes.is_empty()
+            && self.controller_rules.is_none()
+        {
+            return Err("the BigBox input settings change-set is empty".into());
+        }
+        let mut keyboard_slots = BTreeSet::new();
+        for change in &self.keyboard_changes {
+            let Some(action) = BigBoxInputAction::from_key(change.action.trim()) else {
+                return Err(format!("unknown BigBox input action: {}", change.action));
+            };
+            if change.slot >= action.keyboard_slot_count() {
+                return Err(format!(
+                    "{} has no keyboard slot {}",
+                    action.key(),
+                    change.slot + 1
+                ));
+            }
+            if !(0..=255).contains(&change.wpf_key) {
+                return Err(format!(
+                    "{} keyboard slot {} has an invalid WPF key value: {}",
+                    action.key(),
+                    change.slot + 1,
+                    change.wpf_key
+                ));
+            }
+            if !keyboard_slots.insert((action, change.slot)) {
+                return Err(format!(
+                    "{} keyboard slot {} occurs more than once",
+                    action.key(),
+                    change.slot + 1
+                ));
+            }
+        }
+
+        let Some(rules) = self.controller_rules.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if rules.len() > 1024 {
+            return Err("BigBox controller mappings exceed the 1024-rule safety limit".into());
+        }
+        let mut typed = Vec::with_capacity(rules.len());
+        let mut unique = BTreeSet::new();
+        for rule in rules {
+            let action = rule.action.trim();
+            let binding = rule.binding.trim();
+            let hold = rule.hold.trim();
+            if BigBoxInputAction::from_key(action).is_none() {
+                return Err(format!("unknown BigBox input action: {}", rule.action));
+            }
+            if ControllerBinding::parse(binding).is_none() {
+                return Err(format!("unknown controller binding: {}", rule.binding));
+            }
+            let hold = match hold {
+                "" | "None" => "None",
+                value if ControllerBinding::parse(value).is_some() => value,
+                _ => return Err(format!("unknown controller hold binding: {}", rule.hold)),
+            };
+            if !unique.insert((action.to_string(), binding.to_string(), hold.to_string())) {
+                return Err(format!(
+                    "duplicate BigBox controller mapping: {action}, {binding}, {hold}"
+                ));
+            }
+            typed.push(InputBinding {
+                input_action: action.into(),
+                controller_binding: binding.into(),
+                controller_hold_binding: hold.into(),
+            });
+        }
+        Ok(typed)
+    }
+
+    fn changes_settings(&self) -> bool {
+        self.gamepad_enabled.is_some()
+            || self.use_all_controllers.is_some()
+            || !self.keyboard_changes.is_empty()
+    }
+}
+
+struct BigBoxInputWriteSuccess {
+    policy: BigBoxInputPolicy,
+    backups: Vec<PathBuf>,
+}
+
+enum BigBoxInputWriteFailure {
     Conflict(String),
     PendingRecovery { count: usize, message: String },
     Other(String),
@@ -5339,6 +5538,103 @@ fn write_game_sort_settings(
             )
         })?;
     Ok(GameSortWriteSuccess { backup })
+}
+
+fn write_big_box_input_settings(
+    root: PathBuf,
+    payload: BigBoxInputSettingsPayload,
+) -> Result<BigBoxInputWriteSuccess, BigBoxInputWriteFailure> {
+    let typed_rules = payload.validate().map_err(BigBoxInputWriteFailure::Other)?;
+    let data = root.join("Data");
+    let settings_path = data.join("BigBoxSettings.xml");
+    let bindings_path = data.join("InputBindings.xml");
+    let mut settings_document = if payload.changes_settings() {
+        Some(
+            AuxiliaryDocument::load(&settings_path)
+                .map_err(|error| BigBoxInputWriteFailure::Other(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    if let Some(settings) = settings_document.as_mut() {
+        if let Some(enabled) = payload.gamepad_enabled {
+            settings
+                .set_single_record_field(
+                    "BigBoxSettings",
+                    "EnableGamepad",
+                    if enabled { "true" } else { "false" },
+                )
+                .map_err(|error| BigBoxInputWriteFailure::Other(error.to_string()))?;
+        }
+        if let Some(use_all) = payload.use_all_controllers {
+            settings
+                .set_single_record_field(
+                    "BigBoxSettings",
+                    "UseAllControllers",
+                    if use_all { "true" } else { "false" },
+                )
+                .map_err(|error| BigBoxInputWriteFailure::Other(error.to_string()))?;
+        }
+        for change in &payload.keyboard_changes {
+            let action = BigBoxInputAction::from_key(change.action.trim())
+                .expect("validated BigBox input action");
+            let setting = action
+                .keyboard_setting_key(change.slot)
+                .expect("validated BigBox keyboard slot");
+            settings
+                .set_single_record_field("BigBoxSettings", &setting, &change.wpf_key.to_string())
+                .map_err(|error| BigBoxInputWriteFailure::Other(error.to_string()))?;
+        }
+    }
+
+    let bindings_document = if payload.controller_rules.is_some() {
+        let mut document = AuxiliaryDocument::load(&bindings_path)
+            .map_err(|error| BigBoxInputWriteFailure::Other(error.to_string()))?;
+        let managed_actions = BIG_BOX_INPUT_ACTIONS
+            .iter()
+            .map(|action| action.key())
+            .collect::<Vec<_>>();
+        document
+            .replace_big_box_input_bindings(&typed_rules, &managed_actions)
+            .map_err(|error| BigBoxInputWriteFailure::Other(error.to_string()))?;
+        Some(document)
+    } else {
+        None
+    };
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_big_box_input_transaction_error)?;
+    if let Some(settings) = settings_document.as_ref() {
+        transaction
+            .stage_auxiliary(settings)
+            .map_err(classify_big_box_input_transaction_error)?;
+    }
+    if let Some(bindings) = bindings_document.as_ref() {
+        transaction
+            .stage_auxiliary(bindings)
+            .map_err(classify_big_box_input_transaction_error)?;
+    }
+    let report = transaction
+        .commit()
+        .map_err(classify_big_box_input_transaction_error)?;
+    let backups = report
+        .writes
+        .into_iter()
+        .map(|write| write.backup)
+        .collect::<Vec<_>>();
+
+    // Re-read the committed typed documents. The live router never receives
+    // a policy assembled from uncommitted UI data.
+    let settings = load_big_box_settings_file(&settings_path)
+        .map_err(|error| BigBoxInputWriteFailure::Other(error.to_string()))?;
+    let bindings = load_input_bindings_file(&bindings_path)
+        .map_err(|error| BigBoxInputWriteFailure::Other(error.to_string()))?;
+    let policy = if bindings_path.is_file() {
+        BigBoxInputPolicy::from_persisted_settings(settings.as_ref(), &bindings)
+    } else {
+        BigBoxInputPolicy::from_settings(settings.as_ref(), &bindings)
+    };
+    Ok(BigBoxInputWriteSuccess { policy, backups })
 }
 
 fn write_list_view_setting(
@@ -15588,6 +15884,27 @@ fn classify_game_sort_transaction_error(error: TransactionError) -> GameSortWrit
     }
 }
 
+fn classify_big_box_input_transaction_error(error: TransactionError) -> BigBoxInputWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::SourceConflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            BigBoxInputWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            BigBoxInputWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            BigBoxInputWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => BigBoxInputWriteFailure::Other(message),
+    }
+}
+
 fn classify_list_view_transaction_error(error: TransactionError) -> ListViewWriteFailure {
     let message = error.to_string();
     match error {
@@ -16661,6 +16978,183 @@ impl qobject::LibraryController {
                 )
             })
             .unwrap_or_default()
+    }
+
+    pub fn big_box_input_action_count(&self) -> i32 {
+        saturating_i32(BIG_BOX_INPUT_ACTIONS.len())
+    }
+
+    pub fn big_box_input_action_key_at(&self, action_index: i32) -> QString {
+        big_box_input_action_at(action_index)
+            .map(BigBoxInputAction::key)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_input_action_label_at(&self, action_index: i32) -> QString {
+        big_box_input_action_at(action_index)
+            .map(|action| humanize_pascal_case(action.key().trim_start_matches("BigBox")))
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_input_action_keyboard_slot_count_at(&self, action_index: i32) -> i32 {
+        big_box_input_action_at(action_index)
+            .map(BigBoxInputAction::keyboard_slot_count)
+            .map(saturating_i32)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_input_action_keyboard_wpf_key_at(&self, action_index: i32, slot: i32) -> i32 {
+        let Some(action) = big_box_input_action_at(action_index) else {
+            return -1;
+        };
+        let Ok(slot) = usize::try_from(slot) else {
+            return -1;
+        };
+        self.rust()
+            .big_box_input_engine
+            .policy()
+            .keyboard_wpf_key(action, slot)
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or(-1)
+    }
+
+    pub fn big_box_input_action_keyboard_sequence_at(
+        &self,
+        action_index: i32,
+        slot: i32,
+    ) -> QString {
+        let Some(action) = big_box_input_action_at(action_index) else {
+            return QString::default();
+        };
+        let Ok(slot) = usize::try_from(slot) else {
+            return QString::default();
+        };
+        self.rust()
+            .big_box_input_engine
+            .policy()
+            .keyboard_sequence(action, slot)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_controller_rule_action_at(&self, rule_index: i32) -> QString {
+        self.big_box_controller_rule_at(rule_index)
+            .map(|(action, _, _)| action.key())
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_controller_rule_binding_at(&self, rule_index: i32) -> QString {
+        self.big_box_controller_rule_at(rule_index)
+            .map(|(_, binding, _)| binding.key())
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_controller_rule_hold_at(&self, rule_index: i32) -> QString {
+        self.big_box_controller_rule_at(rule_index)
+            .and_then(|(_, _, hold)| hold)
+            .map(ControllerBinding::key)
+            .map(qstring)
+            .unwrap_or_else(|| qstring("None"))
+    }
+
+    pub fn big_box_controller_binding_option_count(&self) -> i32 {
+        46
+    }
+
+    pub fn big_box_controller_binding_option_key_at(&self, binding_index: i32) -> QString {
+        controller_binding_option(binding_index)
+            .map(ControllerBinding::key)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_wpf_key_for_qt_key(&self, qt_key: i32, modifiers: i32) -> i32 {
+        qt_key_to_wpf_key_with_modifiers(qt_key, modifiers)
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or(-1)
+    }
+
+    pub fn big_box_wpf_key_label(&self, wpf_key: i32) -> QString {
+        if wpf_key == 0 {
+            return qstring("Unbound");
+        }
+        qstring(
+            wpf_key_to_qt_portable_text(i64::from(wpf_key))
+                .unwrap_or_else(|| format!("Unknown ({wpf_key})")),
+        )
+    }
+
+    pub fn save_big_box_input_settings(mut self: Pin<&mut Self>, request_payload: QString) -> bool {
+        let payload = match serde_json::from_str::<BigBoxInputSettingsPayload>(
+            &request_payload.to_string(),
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not decode BigBox input settings: {error}"
+                )));
+                return false;
+            }
+        };
+        if let Err(error) = payload.validate() {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not apply BigBox input settings: {error}"
+            )));
+            return false;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut()
+                .set_status_message(qstring("Load a LaunchBox library before editing inputs."));
+            return false;
+        };
+        if !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Saving BigBox input settings in the background..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("bigbox-input-settings-write".into())
+            .spawn(move || {
+                let result = write_big_box_input_settings(root, payload);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_big_box_input_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the BigBox input settings writer: {error}"
+            )));
+            return false;
+        }
+        true
+    }
+
+    fn big_box_controller_rule_at(
+        &self,
+        rule_index: i32,
+    ) -> Option<(
+        BigBoxInputAction,
+        ControllerBinding,
+        Option<ControllerBinding>,
+    )> {
+        let rule_index = usize::try_from(rule_index).ok()?;
+        self.rust()
+            .big_box_input_engine
+            .policy()
+            .controller_rule(rule_index)
     }
 
     pub fn poll_big_box_gamepad_action(mut self: Pin<&mut Self>) -> QString {
@@ -20217,6 +20711,58 @@ impl qobject::LibraryController {
                 self.loading(),
                 self.writing(),
                 self.big_box_gamepad_status()
+            );
+        }
+        success
+    }
+
+    pub fn report_big_box_input_editor_smoke_success(&self) -> bool {
+        let policy = self.rust().big_box_input_engine.policy();
+        let edited_rule = (0..policy.controller_rule_count()).any(|index| {
+            policy
+                .controller_rule(index)
+                .is_some_and(|(action, binding, hold)| {
+                    action == BigBoxInputAction::Exit
+                        && binding == ControllerBinding::Button(8)
+                        && hold == Some(ControllerBinding::Button(7))
+                })
+        });
+        let success = policy.gamepad_enabled
+            && policy.use_all_controllers
+            && policy.keyboard_wpf_key(BigBoxInputAction::Select, 1) == Some(69)
+            && policy.keyboard_sequence(BigBoxInputAction::Select, 1) == Some("Z")
+            && policy.controller_rule_count() == 18
+            && policy.unsupported_controller_rule_count == 0
+            && edited_rule
+            && *self.big_box_gamepad_enabled()
+            && *self.big_box_use_all_controllers()
+            && *self.big_box_controller_rule_count() == 18
+            && *self.big_box_unsupported_controller_rule_count() == 0
+            && *self.big_box_input_revision() > 1
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            eprintln!(
+                "BIGBOX_INPUT_EDITOR_SMOKE_COMPLETE actions=59 keyboard=Z controller_rules=18 hold=Button7 transaction=2 revision={}",
+                self.big_box_input_revision()
+            );
+        } else {
+            eprintln!(
+                "BIGBOX_INPUT_EDITOR_SMOKE_INCOMPLETE keyboard={} wpf={} rules={} edited_rule={} enabled={} all_controllers={} unsupported={} revision={} loading={} writing={}",
+                policy
+                    .keyboard_sequence(BigBoxInputAction::Select, 1)
+                    .unwrap_or("none"),
+                policy
+                    .keyboard_wpf_key(BigBoxInputAction::Select, 1)
+                    .unwrap_or(-1),
+                policy.controller_rule_count(),
+                edited_rule,
+                self.big_box_gamepad_enabled(),
+                self.big_box_use_all_controllers(),
+                self.big_box_unsupported_controller_rule_count(),
+                self.big_box_input_revision(),
+                self.loading(),
+                self.writing()
             );
         }
         success
@@ -24823,6 +25369,71 @@ impl qobject::LibraryController {
             Err(GameSortWriteFailure::Other(message)) => {
                 self.as_mut().set_status_message(qstring(format!(
                     "Could not save Arrange By settings: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_big_box_input_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<BigBoxInputWriteSuccess, BigBoxInputWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(written) => {
+                let gamepad_enabled = written.policy.gamepad_enabled;
+                let use_all_controllers = written.policy.use_all_controllers;
+                let controller_rule_count = saturating_i32(written.policy.controller_rule_count());
+                let unsupported_controller_rule_count =
+                    saturating_i32(written.policy.unsupported_controller_rule_count);
+                self.as_mut()
+                    .rust_mut()
+                    .big_box_input_engine
+                    .set_policy(written.policy);
+                self.as_mut().set_big_box_gamepad_enabled(gamepad_enabled);
+                self.as_mut()
+                    .set_big_box_use_all_controllers(use_all_controllers);
+                self.as_mut()
+                    .set_big_box_controller_rule_count(controller_rule_count);
+                self.as_mut().set_big_box_unsupported_controller_rule_count(
+                    unsupported_controller_rule_count,
+                );
+                self.as_mut().set_big_box_gamepad_connected_count(0);
+                self.as_mut()
+                    .set_big_box_gamepad_status(qstring("Not initialized"));
+                let revision = self.as_ref().big_box_input_revision().wrapping_add(1);
+                self.as_mut().set_big_box_input_revision(revision);
+                self.as_mut().set_write_conflict(false);
+                let backups = written
+                    .backups
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved BigBox input settings. Exact backup(s): {backups}"
+                )));
+            }
+            Err(BigBoxInputWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(BigBoxInputWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(BigBoxInputWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save BigBox input settings: {message}"
                 )));
             }
         }
@@ -29836,6 +30447,57 @@ fn duration_millis_i32(value: Duration) -> i32 {
     i32::try_from(value.as_millis()).unwrap_or(i32::MAX)
 }
 
+fn big_box_input_action_at(index: i32) -> Option<BigBoxInputAction> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| BIG_BOX_INPUT_ACTIONS.get(index))
+        .copied()
+}
+
+fn controller_binding_option(index: i32) -> Option<ControllerBinding> {
+    let index = usize::try_from(index).ok()?;
+    if index < 32 {
+        return Some(ControllerBinding::Button(u8::try_from(index + 1).ok()?));
+    }
+    [
+        ControllerBinding::DPadUp,
+        ControllerBinding::DPadDown,
+        ControllerBinding::DPadLeft,
+        ControllerBinding::DPadRight,
+        ControllerBinding::LeftStickUp,
+        ControllerBinding::LeftStickDown,
+        ControllerBinding::LeftStickLeft,
+        ControllerBinding::LeftStickRight,
+        ControllerBinding::RightStickUp,
+        ControllerBinding::RightStickDown,
+        ControllerBinding::RightStickLeft,
+        ControllerBinding::RightStickRight,
+        ControllerBinding::TriggerLeft,
+        ControllerBinding::TriggerRight,
+    ]
+    .get(index - 32)
+    .copied()
+}
+
+fn humanize_pascal_case(value: &str) -> String {
+    let characters = value.chars().collect::<Vec<_>>();
+    let mut label = String::with_capacity(value.len() + 8);
+    for (index, character) in characters.iter().copied().enumerate() {
+        let previous = index.checked_sub(1).and_then(|index| characters.get(index));
+        let next = characters.get(index + 1);
+        if index > 0
+            && character.is_uppercase()
+            && (previous.is_some_and(|previous| previous.is_lowercase())
+                || (previous.is_some_and(|previous| previous.is_uppercase())
+                    && next.is_some_and(|next| next.is_lowercase())))
+        {
+            label.push(' ');
+        }
+        label.push(character);
+    }
+    label
+}
+
 fn qstring(value: impl AsRef<str>) -> QString {
     QString::from(value.as_ref())
 }
@@ -30100,6 +30762,183 @@ mod tests {
         assert!(updated.contains("<SortBy>PlayCount</SortBy>"));
         assert!(updated.contains("<SortByDesc>true</SortByDesc>"));
         assert!(updated.contains("<Theme>Fixture Theme</Theme>"));
+    }
+
+    #[test]
+    fn big_box_input_writer_commits_settings_and_rules_as_one_typed_transaction() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data directory");
+        let settings_path = data.join("BigBoxSettings.xml");
+        let bindings_path = data.join("InputBindings.xml");
+        let original_settings =
+            include_bytes!("../../../fixtures/launchbox/Data/BigBoxSettings.xml");
+        let original_bindings =
+            include_bytes!("../../../fixtures/launchbox/Data/InputBindings.xml");
+        fs::write(&settings_path, original_settings).expect("write settings fixture");
+        fs::write(&bindings_path, original_bindings).expect("write bindings fixture");
+
+        let written = write_big_box_input_settings(
+            directory.path().to_path_buf(),
+            BigBoxInputSettingsPayload {
+                version: BIG_BOX_INPUT_SETTINGS_PAYLOAD_VERSION,
+                gamepad_enabled: Some(false),
+                use_all_controllers: Some(true),
+                keyboard_changes: vec![BigBoxKeyboardChangePayload {
+                    action: "BigBoxSelect".into(),
+                    slot: 1,
+                    wpf_key: 69,
+                }],
+                controller_rules: Some(vec![
+                    BigBoxControllerRulePayload {
+                        action: "BigBoxSelect".into(),
+                        binding: "Button1".into(),
+                        hold: "None".into(),
+                    },
+                    BigBoxControllerRulePayload {
+                        action: "BigBoxExit".into(),
+                        binding: "Button8".into(),
+                        hold: "Button7".into(),
+                    },
+                ]),
+            },
+        )
+        .unwrap_or_else(|error| match error {
+            BigBoxInputWriteFailure::Conflict(message)
+            | BigBoxInputWriteFailure::Other(message)
+            | BigBoxInputWriteFailure::PendingRecovery { message, .. } => {
+                panic!("write BigBox input settings: {message}")
+            }
+        });
+
+        assert_eq!(written.backups.len(), 2);
+        let backup_bytes = written
+            .backups
+            .iter()
+            .map(|path| fs::read(path).expect("read exact backup"))
+            .collect::<Vec<_>>();
+        assert!(backup_bytes.iter().any(|bytes| bytes == original_settings));
+        assert!(backup_bytes.iter().any(|bytes| bytes == original_bindings));
+        assert!(!written.policy.gamepad_enabled);
+        assert!(written.policy.use_all_controllers);
+        assert_eq!(
+            written
+                .policy
+                .keyboard_sequence(BigBoxInputAction::Select, 1),
+            Some("Z")
+        );
+        assert_eq!(written.policy.controller_rule_count(), 2);
+        assert_eq!(written.policy.unsupported_controller_rule_count, 0);
+
+        let settings = fs::read_to_string(settings_path).expect("read settings");
+        assert!(settings.contains("<EnableGamepad>false</EnableGamepad>"));
+        assert!(settings.contains("<UseAllControllers>true</UseAllControllers>"));
+        assert!(settings.contains("<KeyboardSelect>6</KeyboardSelect>"));
+        assert!(settings.contains("<KeyboardSelect2>69</KeyboardSelect2>"));
+        let bindings = fs::read_to_string(bindings_path).expect("read bindings");
+        assert_eq!(bindings.matches("<InputBinding>").count(), 2);
+        assert!(bindings.contains("<InputAction>BigBoxExit</InputAction>"));
+        assert!(bindings.contains("<ControllerHoldBinding>Button7</ControllerHoldBinding>"));
+    }
+
+    #[test]
+    fn big_box_input_payload_rejects_invalid_and_duplicate_editor_data() {
+        let payload = BigBoxInputSettingsPayload {
+            version: BIG_BOX_INPUT_SETTINGS_PAYLOAD_VERSION,
+            gamepad_enabled: None,
+            use_all_controllers: None,
+            keyboard_changes: vec![BigBoxKeyboardChangePayload {
+                action: "BigBoxExitGame".into(),
+                slot: 0,
+                wpf_key: 44,
+            }],
+            controller_rules: None,
+        };
+        assert!(payload.validate().is_err());
+
+        let duplicate_rule = BigBoxControllerRulePayload {
+            action: "BigBoxSelect".into(),
+            binding: "Button1".into(),
+            hold: "None".into(),
+        };
+        let payload = BigBoxInputSettingsPayload {
+            version: BIG_BOX_INPUT_SETTINGS_PAYLOAD_VERSION,
+            gamepad_enabled: None,
+            use_all_controllers: None,
+            keyboard_changes: Vec::new(),
+            controller_rules: Some(vec![duplicate_rule.clone(), duplicate_rule]),
+        };
+        assert!(payload.validate().is_err());
+    }
+
+    #[test]
+    fn keyboard_only_input_edit_keeps_an_explicitly_empty_controller_map() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data directory");
+        let settings_path = data.join("BigBoxSettings.xml");
+        let bindings_path = data.join("InputBindings.xml");
+        fs::write(
+            &settings_path,
+            include_bytes!("../../../fixtures/launchbox/Data/BigBoxSettings.xml"),
+        )
+        .expect("write settings fixture");
+        fs::write(
+            &bindings_path,
+            include_bytes!("../../../fixtures/launchbox/Data/InputBindings.xml"),
+        )
+        .expect("write bindings fixture");
+
+        let clear = write_big_box_input_settings(
+            directory.path().to_path_buf(),
+            BigBoxInputSettingsPayload {
+                version: BIG_BOX_INPUT_SETTINGS_PAYLOAD_VERSION,
+                gamepad_enabled: None,
+                use_all_controllers: None,
+                keyboard_changes: Vec::new(),
+                controller_rules: Some(Vec::new()),
+            },
+        )
+        .unwrap_or_else(|error| match error {
+            BigBoxInputWriteFailure::Conflict(message)
+            | BigBoxInputWriteFailure::Other(message)
+            | BigBoxInputWriteFailure::PendingRecovery { message, .. } => {
+                panic!("clear controller rules: {message}")
+            }
+        });
+        assert_eq!(clear.policy.controller_rule_count(), 0);
+
+        let keyboard_only = write_big_box_input_settings(
+            directory.path().to_path_buf(),
+            BigBoxInputSettingsPayload {
+                version: BIG_BOX_INPUT_SETTINGS_PAYLOAD_VERSION,
+                gamepad_enabled: None,
+                use_all_controllers: None,
+                keyboard_changes: vec![BigBoxKeyboardChangePayload {
+                    action: "BigBoxSelect".into(),
+                    slot: 1,
+                    wpf_key: 69,
+                }],
+                controller_rules: None,
+            },
+        )
+        .unwrap_or_else(|error| match error {
+            BigBoxInputWriteFailure::Conflict(message)
+            | BigBoxInputWriteFailure::Other(message)
+            | BigBoxInputWriteFailure::PendingRecovery { message, .. } => {
+                panic!("write keyboard-only edit: {message}")
+            }
+        });
+
+        assert_eq!(keyboard_only.policy.controller_rule_count(), 0);
+        assert_eq!(
+            keyboard_only
+                .policy
+                .keyboard_sequence(BigBoxInputAction::Select, 1),
+            Some("Z")
+        );
+        let bindings = fs::read_to_string(bindings_path).expect("read bindings");
+        assert!(!bindings.contains("<InputBinding>"));
     }
 
     #[test]

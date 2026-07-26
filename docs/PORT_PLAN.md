@@ -373,18 +373,24 @@ immutability. Exact protected random rounding, transition/controller-binding
 behavior, custom themes, and native Windows/macOS multimedia remain later
 parity work.
 The current `BB-012` slice recovers the complete 59-action BigBox input
-vocabulary, every observed keyboard setting and four-slot convention, the WPF
-key-number contract, gamepad enable/all-controller settings, hold chords, and
-the exact 18 default controller rules. A typed `lb-platform` policy converts
-persisted Windows key values into Qt portable sequences, groups duplicate
+vocabulary, every action-specific zero/one/four keyboard-slot contract, the
+raw WPF key-number contract, gamepad enable/all-controller settings, all 46
+controller binding choices, hold chords, and the exact 18 default controller
+rules. A typed `lb-platform` policy converts persisted WPF values into Qt
+portable sequences and logical Qt keys back into WPF values, groups duplicate
 sequences, validates configured semantic rules, owns press edges and
 controller-selection state, and feeds one central QML action dispatcher.
 Native `gilrs` backends provide hot-plugged Linux, Windows, and macOS gamepad
-events without a runtime helper shell or OS-specific device path in QML.
-Ten pure tests plus one compiled offscreen interaction prove the recovered
-contract and actual details, back, wheel-navigation, and image-view routes.
-The Windows and both Darwin cross-target gates compile the backend. Binding
-editors, keyboard automation/mouse options, raw high-button device mappings,
+events without a runtime helper shell or OS-specific device path in QML. A
+visible modal Qt editor covers every recovered keyboard slot, both controller
+flags, every action/binding/hold choice, unbinding, row add/remove, and
+duplicate validation. Its strict changed-only payload uses one recoverable
+transaction for both input XML documents, retains exact backups, preserves
+unknown/non-BigBox/future rows, and reloads only committed policy. Pure tests
+plus compiled dispatcher and rendered-editor interactions prove the recovered
+contract, real route behavior, logical-key/controller edits, exact backups,
+and live reload. The Windows and both Darwin cross-target gates compile the
+backend. Keyboard automation/mouse options, physical raw high-button mappings,
 global input while a game owns focus, and real-device/native Qt validation on
 Windows and both macOS architectures remain later parity work. The evidence
 and deliberate device-mapping boundary are recorded in

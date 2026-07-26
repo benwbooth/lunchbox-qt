@@ -558,18 +558,24 @@ return/explore actions, and immutable settings/media. Exact protected random
 rounding, transitions, custom-theme fidelity, and native
 Windows/macOS Qt Multimedia execution remain explicit parity gates.
 
-The first native BigBox input subset reads the recovered 59-action vocabulary,
-four keyboard slots, WPF key integers, gamepad enable/all-controller policy,
-hold chords, and 18 default controller rules directly from LaunchBox XML.
-Typed Rust converts persisted Windows key values into Qt portable sequences
-and routes semantic controller events from native Linux, Windows, and macOS
-`gilrs` backends into one central QML dispatcher. There are no scan codes,
-platform device paths, shell commands, or OS API handles in QML. Pure tests
-freeze the full contract, and a compiled offscreen scenario drives Select,
-Back, D-pad, and Images through CXX-Qt to exercise real details, wheel, and
-image-view transitions. Windows and both macOS architecture targets compile
-the backend; native physical-device/application interaction remains a
-real-host release gate.
+The native BigBox input subset reads the recovered 59-action vocabulary,
+action-specific keyboard slots, raw WPF key integers, gamepad
+enable/all-controller policy, hold chords, and 18 default controller rules
+directly from LaunchBox XML. Typed Rust converts persisted Windows key values
+into Qt portable sequences and logical Qt key events back into persisted WPF
+values, while semantic controller events arrive from native Linux, Windows,
+and macOS `gilrs` backends. A visible modal Qt editor covers all recovered
+keyboard slots, all 59 controller actions, all 46 binding choices, optional
+holds, and the two controller flags. Its changed-only payload commits
+`BigBoxSettings.xml` and `InputBindings.xml` as one recovery-backed
+transaction, retains exact backups, preserves unknown/future/non-BigBox XML,
+and reloads the live policy only from committed files. There are no scan
+codes, platform device paths, shell commands, or OS API handles in QML. Pure
+tests freeze the lossless contract; compiled scenarios drive the shared
+dispatcher and render/interact with the editor through CXX-Qt. Windows and
+both macOS architecture targets compile the backend; physical high-button
+mapping and native device/application interaction remain real-host release
+gates.
 
 LaunchBox also has a three-page manual ROM importer backed by the reusable
 `lb-import` crate. It accepts multiple native files and folders, optional

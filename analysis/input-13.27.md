@@ -118,3 +118,27 @@ The implementation intentionally does not claim an exact physical mapping for
 the protected 13.27 device-specific mapping behavior remains unavailable.
 Native physical-device interaction, focus, and application-bundle validation
 on real Windows and Intel/Apple Silicon macOS hosts remain release gates.
+
+## Port-owned editor and persistence contract
+
+The port's editor operates on recovered persisted semantics rather than host
+scan codes. Logical Qt keys are converted back to WPF `Key` integers for the
+known function, navigation, keypad, alphanumeric, and OEM punctuation
+vocabulary. Unknown future integers remain attached to their original slots
+and are serialized unchanged unless that exact slot is edited.
+
+Keyboard changes are sparse: only changed action/slot pairs are sent to Rust.
+Controller rules are a complete replacement only for the 59 managed BigBox
+actions. The lossless XML layer retains desktop rules, unknown/future BigBox
+actions, unknown row children, and unknown top-level data verbatim. It rejects
+unknown actions/bindings, invalid slot counts, and duplicate
+action/binding/hold triples before staging anything.
+
+When a change spans `BigBoxSettings.xml` and `InputBindings.xml`, both files
+are staged in one root-scoped repository transaction. A successful commit
+retains one exact sibling backup per changed document and the live router is
+rebuilt by rereading the committed typed documents. A failed or conflicted
+write does not publish partial UI state. An existing empty
+`InputBindings.xml` is authoritative, so deliberately clearing every
+controller mapping remains empty after later keyboard-only edits and process
+restart.

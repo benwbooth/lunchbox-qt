@@ -17,8 +17,9 @@ pub use archive::{
 pub use attract::{BigBoxAttractModePolicy, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS};
 pub use dosbox::DosBoxPlanError;
 pub use input::{
-    wpf_key_to_qt_portable_text, BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy,
-    ControllerBinding, GamepadBackendStatus, GamepadInputEvent, BIG_BOX_INPUT_ACTIONS,
+    qt_key_to_wpf_key, qt_key_to_wpf_key_with_modifiers, wpf_key_to_qt_portable_text,
+    BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy, ControllerBinding,
+    GamepadBackendStatus, GamepadInputEvent, BIG_BOX_INPUT_ACTIONS,
 };
 pub use m3u::M3uPreparationError;
 pub use media::{

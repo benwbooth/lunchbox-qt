@@ -546,6 +546,10 @@ fn parse_game_controllers(root: &Element) -> Result<Vec<GameController>, Storage
         .collect()
 }
 
+pub fn load_input_bindings_file(path: impl AsRef<Path>) -> Result<Vec<InputBinding>, StorageError> {
+    load_input_bindings(path.as_ref())
+}
+
 fn load_input_bindings(path: &Path) -> Result<Vec<InputBinding>, StorageError> {
     let Some(root) = load_optional_root(path)? else {
         return Ok(Vec::new());

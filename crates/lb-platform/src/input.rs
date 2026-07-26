@@ -200,6 +200,14 @@ impl BigBoxInputAction {
             .find(|action| action.key() == value)
     }
 
+    pub fn keyboard_slot_count(self) -> usize {
+        self.keyboard_mapping().map_or(0, |mapping| mapping.slots)
+    }
+
+    pub fn keyboard_setting_key(self, slot: usize) -> Option<String> {
+        self.keyboard_mapping()?.key(slot)
+    }
+
     fn keyboard_mapping(self) -> Option<KeyboardMapping> {
         let mapping = match self {
             Self::Search => KeyboardMapping::standard("KeyboardSearch"),
@@ -409,24 +417,48 @@ struct ControllerRule {
     hold: Option<ControllerBinding>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct KeyboardSlot {
+    wpf_key: i64,
+    sequence: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BigBoxInputPolicy {
     pub gamepad_enabled: bool,
     pub use_all_controllers: bool,
-    keyboard: HashMap<BigBoxInputAction, [Option<String>; 4]>,
+    keyboard: HashMap<BigBoxInputAction, [KeyboardSlot; 4]>,
     controller_rules: Vec<ControllerRule>,
     pub unsupported_controller_rule_count: usize,
 }
 
 impl BigBoxInputPolicy {
     pub fn from_settings(settings: Option<&FrontendSettings>, bindings: &[InputBinding]) -> Self {
+        Self::from_settings_with_controller_defaults(settings, bindings, true)
+    }
+
+    /// Builds a policy from an explicitly persisted controller rule set. Unlike
+    /// `from_settings`, an empty slice remains empty instead of receiving fresh
+    /// installation defaults.
+    pub fn from_persisted_settings(
+        settings: Option<&FrontendSettings>,
+        bindings: &[InputBinding],
+    ) -> Self {
+        Self::from_settings_with_controller_defaults(settings, bindings, false)
+    }
+
+    fn from_settings_with_controller_defaults(
+        settings: Option<&FrontendSettings>,
+        bindings: &[InputBinding],
+        use_controller_defaults: bool,
+    ) -> Self {
         let gamepad_enabled = setting_bool(settings, "EnableGamepad", true);
         let use_all_controllers = setting_bool(settings, "UseAllControllers", false);
         let mut keyboard = HashMap::new();
         for action in BIG_BOX_INPUT_ACTIONS {
-            let mut sequences = [None, None, None, None];
+            let mut slots: [KeyboardSlot; 4] = std::array::from_fn(|_| KeyboardSlot::default());
             if let Some(mapping) = action.keyboard_mapping() {
-                for (slot, sequence) in sequences.iter_mut().enumerate() {
+                for (slot, keyboard_slot) in slots.iter_mut().enumerate() {
                     let Some(key) = mapping.key(slot) else {
                         continue;
                     };
@@ -436,10 +468,11 @@ impl BigBoxInputPolicy {
                         0
                     };
                     let value = setting_i64(settings, &key, default);
-                    *sequence = wpf_key_to_qt_portable_text(value);
+                    keyboard_slot.wpf_key = value;
+                    keyboard_slot.sequence = wpf_key_to_qt_portable_text(value);
                 }
             }
-            keyboard.insert(*action, sequences);
+            keyboard.insert(*action, slots);
         }
 
         let mut unsupported_controller_rule_count = 0;
@@ -476,7 +509,7 @@ impl BigBoxInputPolicy {
                 controller_rules.push(rule);
             }
         }
-        if controller_rules.is_empty() {
+        if controller_rules.is_empty() && use_controller_defaults {
             controller_rules.extend(default_big_box_controller_rules());
         }
 
@@ -492,12 +525,36 @@ impl BigBoxInputPolicy {
     pub fn keyboard_sequence(&self, action: BigBoxInputAction, slot: usize) -> Option<&str> {
         self.keyboard
             .get(&action)
-            .and_then(|sequences| sequences.get(slot))
-            .and_then(Option::as_deref)
+            .and_then(|slots| slots.get(slot))
+            .and_then(|slot| slot.sequence.as_deref())
+    }
+
+    pub fn keyboard_wpf_key(&self, action: BigBoxInputAction, slot: usize) -> Option<i64> {
+        (slot < action.keyboard_slot_count())
+            .then(|| {
+                self.keyboard
+                    .get(&action)
+                    .and_then(|slots| slots.get(slot))
+                    .map(|slot| slot.wpf_key)
+            })
+            .flatten()
     }
 
     pub fn controller_rule_count(&self) -> usize {
         self.controller_rules.len()
+    }
+
+    pub fn controller_rule(
+        &self,
+        index: usize,
+    ) -> Option<(
+        BigBoxInputAction,
+        ControllerBinding,
+        Option<ControllerBinding>,
+    )> {
+        self.controller_rules
+            .get(index)
+            .map(|rule| (rule.action, rule.binding, rule.hold))
     }
 
     pub fn keyboard_bindings(&self) -> Vec<(String, Vec<BigBoxInputAction>)> {
@@ -507,8 +564,8 @@ impl BigBoxInputPolicy {
                 .keyboard
                 .get(action)
                 .into_iter()
-                .flat_map(|sequences| sequences.iter())
-                .flatten()
+                .flat_map(|slots| slots.iter())
+                .filter_map(|slot| slot.sequence.as_ref())
             {
                 if let Some((_, actions)) = bindings
                     .iter_mut()
@@ -639,6 +696,18 @@ pub fn wpf_key_to_qt_portable_text(value: i64) -> Option<String> {
         137 => "Launch Media",
         138 => "Launch 0",
         139 => "Launch 1",
+        140 => ";",
+        141 => "=",
+        142 => ",",
+        143 => "-",
+        144 => ".",
+        145 => "/",
+        146 => "`",
+        149 => "[",
+        150 => "\\",
+        151 => "]",
+        152 => "'",
+        171 => "Clear",
         _ => "",
     };
     if !fixed.is_empty() {
@@ -651,6 +720,108 @@ pub fn wpf_key_to_qt_portable_text(value: i64) -> Option<String> {
             .map(|value| value.to_string()),
         74..=83 => Some(format!("Num+{}", value - 74)),
         90..=113 => Some(format!("F{}", value - 89)),
+        _ => None,
+    }
+}
+
+/// Convert a Qt `KeyEvent.key` value to the persisted WPF `Key` integer used
+/// by LaunchBox. The conversion is intentionally based on logical Qt keys, not
+/// operating-system scan codes, so the editor behaves the same on Linux,
+/// Windows, and macOS.
+pub fn qt_key_to_wpf_key(value: i32) -> Option<i64> {
+    qt_key_to_wpf_key_with_modifiers(value, 0)
+}
+
+pub fn qt_key_to_wpf_key_with_modifiers(value: i32, modifiers: i32) -> Option<i64> {
+    const QT_KEY_ESCAPE: i32 = 0x0100_0000;
+    const QT_KEY_TAB: i32 = 0x0100_0001;
+    const QT_KEY_BACKTAB: i32 = 0x0100_0002;
+    const QT_KEY_BACKSPACE: i32 = 0x0100_0003;
+    const QT_KEY_RETURN: i32 = 0x0100_0004;
+    const QT_KEY_ENTER: i32 = 0x0100_0005;
+    const QT_KEY_INSERT: i32 = 0x0100_0006;
+    const QT_KEY_DELETE: i32 = 0x0100_0007;
+    const QT_KEY_PAUSE: i32 = 0x0100_0008;
+    const QT_KEY_PRINT: i32 = 0x0100_0009;
+    const QT_KEY_CLEAR: i32 = 0x0100_000b;
+    const QT_KEY_HOME: i32 = 0x0100_0010;
+    const QT_KEY_END: i32 = 0x0100_0011;
+    const QT_KEY_LEFT: i32 = 0x0100_0012;
+    const QT_KEY_UP: i32 = 0x0100_0013;
+    const QT_KEY_RIGHT: i32 = 0x0100_0014;
+    const QT_KEY_DOWN: i32 = 0x0100_0015;
+    const QT_KEY_PAGE_UP: i32 = 0x0100_0016;
+    const QT_KEY_PAGE_DOWN: i32 = 0x0100_0017;
+    const QT_KEY_SHIFT: i32 = 0x0100_0020;
+    const QT_KEY_CONTROL: i32 = 0x0100_0021;
+    const QT_KEY_META: i32 = 0x0100_0022;
+    const QT_KEY_ALT: i32 = 0x0100_0023;
+    const QT_KEY_CAPS_LOCK: i32 = 0x0100_0024;
+    const QT_KEY_NUM_LOCK: i32 = 0x0100_0025;
+    const QT_KEY_SCROLL_LOCK: i32 = 0x0100_0026;
+    const QT_KEY_F1: i32 = 0x0100_0030;
+    const QT_KEY_F24: i32 = QT_KEY_F1 + 23;
+    const QT_KEYPAD_MODIFIER: i32 = 0x2000_0000;
+
+    if modifiers & QT_KEYPAD_MODIFIER != 0 {
+        return match value {
+            0x30..=0x39 => Some(i64::from(value - 0x30 + 74)),
+            0x2a => Some(84),
+            0x2b => Some(85),
+            0x2c => Some(86),
+            0x2d => Some(87),
+            0x2e => Some(88),
+            0x2f => Some(89),
+            _ => None,
+        };
+    }
+
+    let fixed = match value {
+        QT_KEY_ESCAPE => 13,
+        QT_KEY_TAB | QT_KEY_BACKTAB => 3,
+        QT_KEY_BACKSPACE => 2,
+        QT_KEY_RETURN | QT_KEY_ENTER => 6,
+        QT_KEY_INSERT => 31,
+        QT_KEY_DELETE => 32,
+        QT_KEY_PAUSE => 7,
+        QT_KEY_PRINT => 30,
+        QT_KEY_CLEAR => 5,
+        QT_KEY_HOME => 22,
+        QT_KEY_END => 21,
+        QT_KEY_LEFT => 23,
+        QT_KEY_UP => 24,
+        QT_KEY_RIGHT => 25,
+        QT_KEY_DOWN => 26,
+        QT_KEY_PAGE_UP => 19,
+        QT_KEY_PAGE_DOWN => 20,
+        QT_KEY_SHIFT => 116,
+        QT_KEY_CONTROL => 118,
+        QT_KEY_META => 70,
+        QT_KEY_ALT => 120,
+        QT_KEY_CAPS_LOCK => 8,
+        QT_KEY_NUM_LOCK => 114,
+        QT_KEY_SCROLL_LOCK => 115,
+        0x20 => 18,
+        0x3b | 0x3a => 140,
+        0x3d | 0x2b => 141,
+        0x2c | 0x3c => 142,
+        0x2d | 0x5f => 143,
+        0x2e | 0x3e => 144,
+        0x2f | 0x3f => 145,
+        0x60 | 0x7e => 146,
+        0x5b | 0x7b => 149,
+        0x5c | 0x7c => 150,
+        0x5d | 0x7d => 151,
+        0x27 | 0x22 => 152,
+        _ => 0,
+    };
+    if fixed != 0 {
+        return Some(fixed);
+    }
+    match value {
+        0x30..=0x39 => Some(i64::from(value - 0x30 + 34)),
+        0x41..=0x5a => Some(i64::from(value - 0x41 + 44)),
+        QT_KEY_F1..=QT_KEY_F24 => Some(i64::from(value - QT_KEY_F1 + 90)),
         _ => None,
     }
 }
@@ -1089,6 +1260,10 @@ mod tests {
             Some("F24")
         );
         assert_eq!(
+            policy.keyboard_wpf_key(BigBoxInputAction::Select, 3),
+            Some(113)
+        );
+        assert_eq!(
             policy.keyboard_sequence(BigBoxInputAction::RotateModelLeft, 0),
             Some("Left")
         );
@@ -1118,6 +1293,14 @@ mod tests {
             Some("Esc")
         );
         assert_eq!(policy.keyboard_sequence(BigBoxInputAction::Select, 0), None);
+        assert_eq!(
+            policy.keyboard_wpf_key(BigBoxInputAction::Select, 0),
+            Some(999)
+        );
+        assert_eq!(
+            policy.keyboard_wpf_key(BigBoxInputAction::ExitGame, 0),
+            None
+        );
     }
 
     #[test]
@@ -1134,6 +1317,15 @@ mod tests {
             binding: ControllerBinding::Button(3),
         });
         assert_eq!(engine.poll_action(), Some(BigBoxInputAction::PlayGame));
+    }
+
+    #[test]
+    fn explicitly_persisted_empty_controller_map_stays_empty() {
+        assert_eq!(
+            BigBoxInputPolicy::from_persisted_settings(None, &[]).controller_rule_count(),
+            0
+        );
+        assert_eq!(BigBoxInputPolicy::default().controller_rule_count(), 18);
     }
 
     #[test]
@@ -1227,7 +1419,57 @@ mod tests {
         assert_eq!(wpf_key_to_qt_portable_text(85).as_deref(), Some("Num++"));
         assert_eq!(wpf_key_to_qt_portable_text(90).as_deref(), Some("F1"));
         assert_eq!(wpf_key_to_qt_portable_text(113).as_deref(), Some("F24"));
+        assert_eq!(wpf_key_to_qt_portable_text(140).as_deref(), Some(";"));
+        assert_eq!(wpf_key_to_qt_portable_text(150).as_deref(), Some("\\"));
         assert_eq!(wpf_key_to_qt_portable_text(999), None);
+    }
+
+    #[test]
+    fn qt_key_capture_maps_logical_keys_without_platform_scan_codes() {
+        assert_eq!(qt_key_to_wpf_key(0x0100_0000), Some(13));
+        assert_eq!(qt_key_to_wpf_key(0x0100_0004), Some(6));
+        assert_eq!(qt_key_to_wpf_key(0x0100_0012), Some(23));
+        assert_eq!(qt_key_to_wpf_key(i32::from(b'0')), Some(34));
+        assert_eq!(qt_key_to_wpf_key(i32::from(b'Z')), Some(69));
+        assert_eq!(qt_key_to_wpf_key(0x0100_0030), Some(90));
+        assert_eq!(qt_key_to_wpf_key(0x0100_0047), Some(113));
+        assert_eq!(qt_key_to_wpf_key(i32::from(b';')), Some(140));
+        assert_eq!(qt_key_to_wpf_key(i32::from(b'\\')), Some(150));
+        assert_eq!(
+            qt_key_to_wpf_key_with_modifiers(i32::from(b'7'), 0x2000_0000),
+            Some(81)
+        );
+        assert_eq!(
+            qt_key_to_wpf_key_with_modifiers(i32::from(b'+'), 0x2000_0000),
+            Some(85)
+        );
+        assert_eq!(qt_key_to_wpf_key(0x0100_0050), None);
+    }
+
+    #[test]
+    fn action_metadata_exposes_exact_persisted_keyboard_slots() {
+        assert_eq!(BigBoxInputAction::Select.keyboard_slot_count(), 4);
+        assert_eq!(
+            BigBoxInputAction::Select.keyboard_setting_key(0).as_deref(),
+            Some("KeyboardSelect")
+        );
+        assert_eq!(
+            BigBoxInputAction::Select.keyboard_setting_key(3).as_deref(),
+            Some("KeyboardSelect4")
+        );
+        assert_eq!(
+            BigBoxInputAction::RotateModelLeft
+                .keyboard_setting_key(0)
+                .as_deref(),
+            Some("KeyboardRotateModelLeft1")
+        );
+        assert_eq!(
+            BigBoxInputAction::ShowPauseScreen
+                .keyboard_setting_key(0)
+                .as_deref(),
+            Some("KeyboardGamePause")
+        );
+        assert_eq!(BigBoxInputAction::ExitGame.keyboard_slot_count(), 0);
     }
 
     #[test]

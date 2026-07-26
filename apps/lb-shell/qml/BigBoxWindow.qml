@@ -141,6 +141,16 @@ ApplicationWindow {
     property int inputSmokeImageOpenCount: 0
     property int inputSmokeImageBackCount: 0
     property bool inputSmokeFinished: false
+    property bool inputEditorSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-input-editor-smoke-test") >= 0
+    property int inputEditorSmokePhase: 0
+    property int inputEditorSmokeStartRevision: -1
+    property bool inputEditorSmokeFinished: false
+    property bool inputEditorSmokeScreenshotRequested: false
+    property bool inputEditorSmokeScreenshotReady: false
+    property string inputEditorSmokeScreenshotPath:
+        argumentValue("--bigbox-input-editor-screenshot")
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -2748,6 +2758,98 @@ ApplicationWindow {
     }
 
     Timer {
+        interval: 20
+        repeat: true
+        running: window.inputEditorSmokeTest
+                 && !window.inputEditorSmokeFinished
+        onTriggered: {
+            if (controller.loading
+                    || window.startupPresentationPending
+                    || controller.library_path.length === 0)
+                return
+            if (window.inputEditorSmokePhase === 0) {
+                if (controller.writing
+                        || controller.big_box_input_revision < 1)
+                    return
+                window.inputEditorSmokeStartRevision =
+                    controller.big_box_input_revision
+                bigBoxInputSettings.openEditor()
+                window.inputEditorSmokePhase = 1
+            } else if (window.inputEditorSmokePhase === 1) {
+                if (!bigBoxInputSettings.opened)
+                    return
+                if (window.inputEditorSmokeScreenshotPath.length > 0
+                        && !window
+                            .inputEditorSmokeScreenshotRequested) {
+                    window.inputEditorSmokeScreenshotRequested = true
+                    const captureStarted =
+                        bigBoxInputSettings.smokeCaptureTarget.grabToImage(
+                        function(result) {
+                            if (!result.saveToFile(
+                                    window
+                                    .inputEditorSmokeScreenshotPath)) {
+                                console.error(
+                                    "BIGBOX_INPUT_EDITOR_SCREENSHOT_SAVE_FAILED path="
+                                    + window
+                                      .inputEditorSmokeScreenshotPath)
+                                Qt.exit(662)
+                                return
+                            }
+                            window.inputEditorSmokeScreenshotReady = true
+                        })
+                    if (!captureStarted)
+                        window.inputEditorSmokeScreenshotRequested = false
+                    return
+                }
+                if (window.inputEditorSmokeScreenshotRequested
+                        && !window.inputEditorSmokeScreenshotReady)
+                    return
+                if (!bigBoxInputSettings.runSmokeExercise()) {
+                    console.error(
+                        "BIGBOX_INPUT_EDITOR_SMOKE_EXERCISE_FAILED")
+                    Qt.exit(659)
+                    return
+                }
+                window.inputEditorSmokePhase = 2
+            } else if (window.inputEditorSmokePhase === 2) {
+                if (controller.writing
+                        || bigBoxInputSettings.opened
+                        || controller.big_box_input_revision
+                           === window.inputEditorSmokeStartRevision)
+                    return
+                if (!controller
+                        .report_big_box_input_editor_smoke_success()) {
+                    console.error(
+                        "BIGBOX_INPUT_EDITOR_SMOKE_CONTROLLER_REJECTED"
+                        + " status=" + controller.status_message)
+                    Qt.exit(660)
+                    return
+                }
+                window.inputEditorSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 8000
+        repeat: false
+        running: window.inputEditorSmokeTest
+                 && !window.inputEditorSmokeFinished
+        onTriggered: {
+            controller.report_big_box_input_editor_smoke_success()
+            console.error(
+                "BIGBOX_INPUT_EDITOR_SMOKE_TIMEOUT phase="
+                + window.inputEditorSmokePhase
+                + " opened=" + bigBoxInputSettings.opened
+                + " writing=" + controller.writing
+                + " revision=" + controller.big_box_input_revision
+                + " status=" + controller.status_message)
+            Qt.exit(661)
+        }
+    }
+
+    Timer {
         interval: 25
         repeat: true
         running: window.launchSmokeTest && !window.launchSmokeFinished
@@ -3582,6 +3684,12 @@ ApplicationWindow {
                 text: "GAME FILTERS"
                 enabled: !controller.loading && !controller.writing
                 onClicked: window.openAttributeFilters()
+            }
+            Button {
+                text: "INPUT"
+                enabled: !controller.loading && !controller.writing
+                Accessible.name: "Edit BigBox input settings"
+                onClicked: bigBoxInputSettings.openEditor()
             }
             Button {
                 text: "RANDOM"
@@ -5949,6 +6057,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+P"
         enabled: controller.pause_screen_available
+                 && !bigBoxInputSettings.opened
         onActivated: {
             if (controller.pause_screen_active)
                 controller.resume_launch_session()
@@ -6011,10 +6120,17 @@ ApplicationWindow {
         }
     }
 
+    BigBoxInputSettings {
+        id: bigBoxInputSettings
+        controller: controller
+    }
+
     BigBoxInputRouter {
         id: bigBoxInputRouter
         controller: controller
-        enabled: window.visible && controller.library_path.length > 0
+        enabled: window.visible
+                 && controller.library_path.length > 0
+                 && !bigBoxInputSettings.opened
         onActionsTriggered: function(actions) {
             if (!bigBoxAttractMode.active)
                 bigBoxAttractMode.noteActivity()
@@ -6029,6 +6145,7 @@ ApplicationWindow {
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
                  && !bigBoxModelViewer.opened
+                 && !bigBoxInputSettings.opened
         onActivated: window.showLaunchWithSelection()
     }
 
@@ -6037,6 +6154,7 @@ ApplicationWindow {
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
                  && !bigBoxModelViewer.opened
+                 && !bigBoxInputSettings.opened
         onActivated: {
             if (navigationDrawer.opened) {
                 navigationDrawer.close()

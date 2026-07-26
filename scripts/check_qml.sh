@@ -37,6 +37,7 @@ diagnostics=$(
     apps/lb-shell/qml/BigBoxAttractMode.qml \
     apps/lb-shell/qml/BigBoxScreensaver.qml \
     apps/lb-shell/qml/BigBoxInputRouter.qml \
+    apps/lb-shell/qml/BigBoxInputSettings.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -94,7 +95,7 @@ install_process_fixture() {
   chmod +x "$destination"
 }
 
-run_model_viewer_smoke() {
+run_rendered_smoke() {
   if [[ $(uname -s) == Linux ]]; then
     local runtime_root="$test_config_root/model-viewer-runtime"
     mkdir -p \
@@ -124,6 +125,30 @@ run_model_viewer_smoke() {
       "$@"
   else
     QT_QPA_PLATFORM=offscreen "$@"
+  fi
+}
+
+run_software_rendered_smoke() {
+  if [[ $(uname -s) == Linux ]]; then
+    local runtime_root="$test_config_root/software-rendered-runtime"
+    mkdir -p \
+      "$runtime_root/home" \
+      "$runtime_root/cache" \
+      "$runtime_root/config" \
+      "$runtime_root/runtime"
+    chmod 700 "$runtime_root/runtime"
+    xvfb-run -a -s '-screen 0 1280x800x24' \
+      env \
+      HOME="$runtime_root/home" \
+      XDG_CACHE_HOME="$runtime_root/cache" \
+      XDG_CONFIG_HOME="$runtime_root/config" \
+      XDG_RUNTIME_DIR="$runtime_root/runtime" \
+      LIBGL_ALWAYS_SOFTWARE=1 \
+      QT_QUICK_BACKEND=software \
+      QT_QPA_PLATFORM=xcb \
+      "$@"
+  else
+    QT_QUICK_BACKEND=software QT_QPA_PLATFORM=offscreen "$@"
   fi
 }
 
@@ -287,6 +312,70 @@ cmp "$input_bindings.before-input-smoke" "$input_bindings"
 )
 
 echo "BigBox four-slot keyboard mappings, native gamepad boundary, semantic controller rules, distinct Select/Play actions, navigation, nested Back, and image entry validated without library writes."
+
+input_editor_root="$test_config_root/input-editor-library"
+mkdir -p "$input_editor_root"
+cp -a "$media_root/." "$input_editor_root/"
+editor_settings="$input_editor_root/Data/BigBoxSettings.xml"
+editor_bindings="$input_editor_root/Data/InputBindings.xml"
+editor_settings_before="$test_config_root/BigBoxSettings.before-input-editor.xml"
+editor_bindings_before="$test_config_root/InputBindings.before-input-editor.xml"
+input_editor_screenshot="$test_config_root/bigbox-input-editor.png"
+cp "$editor_settings" "$editor_settings_before"
+cp "$editor_bindings" "$editor_bindings_before"
+output=$(run_software_rendered_smoke \
+  "$binary_dir/bigbox" \
+    --library "$input_editor_root" \
+    --bigbox-input-editor-smoke-test \
+    --bigbox-input-editor-screenshot "$input_editor_screenshot" \
+    --windowed \
+    --path-mappings-file "$empty_path_mappings" 2>&1) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_INPUT_EDITOR_SMOKE_COMPLETE actions=59 keyboard=Z controller_rules=18 hold=Button7 transaction=2 revision=' \
+  <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox did not edit and transactionally reload keyboard and controller mappings through its Qt dialog." >&2
+  exit 1
+fi
+if ! rg -q '<UseAllControllers>true</UseAllControllers>' "$editor_settings" \
+  || ! rg -q '<KeyboardSelect2>69</KeyboardSelect2>' "$editor_settings" \
+  || ! rg -q -U \
+    '<InputAction>BigBoxExit</InputAction>\s*<ControllerBinding>Button8</ControllerBinding>\s*<ControllerHoldBinding>Button7</ControllerHoldBinding>' \
+    "$editor_bindings" \
+  || [[ $(rg -c '<InputBinding>' "$editor_bindings") -ne 18 ]]; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox input editor did not persist the expected LaunchBox XML semantics." >&2
+  exit 1
+fi
+editor_settings_backups=(
+  "$input_editor_root"/Data/BigBoxSettings.xml.lbport-transaction-backup-*
+)
+editor_bindings_backups=(
+  "$input_editor_root"/Data/InputBindings.xml.lbport-transaction-backup-*
+)
+if [[ ${#editor_settings_backups[@]} -ne 1 \
+  || ${#editor_bindings_backups[@]} -ne 1 ]]; then
+  echo "BigBox input editor did not retain exactly one backup for each transaction participant." >&2
+  exit 1
+fi
+cmp "$editor_settings_before" "${editor_settings_backups[0]}"
+cmp "$editor_bindings_before" "${editor_bindings_backups[0]}"
+if [[ ! -s "$input_editor_screenshot" ]] \
+  || [[ $(wc -c < "$input_editor_screenshot") -lt 4096 ]]; then
+  echo "BigBox input editor did not save a rendered screenshot." >&2
+  exit 1
+fi
+input_editor_colors=$(magick "$input_editor_screenshot" -format '%k' info:)
+if [[ ! "$input_editor_colors" =~ ^[0-9]+$ ]] \
+  || ((input_editor_colors < 64)); then
+  echo "BigBox input editor screenshot is blank or insufficiently rendered ($input_editor_colors colors)." >&2
+  exit 1
+fi
+
+echo "BigBox rendered Qt input editor, logical key capture, controller/hold editing, two-document transaction, exact backups, and committed live-policy reload validated."
 
 for shell in launchbox bigbox; do
   screenshot="$media_root/$shell-supplemental-media.png"
@@ -1242,7 +1331,7 @@ if "$model_viewer_visual_smoke"; then
   )
 fi
 launchbox_model_viewer_output=$(
-  run_model_viewer_smoke "$binary_dir/launchbox" \
+  run_rendered_smoke "$binary_dir/launchbox" \
     "${launchbox_model_viewer_args[@]}" 2>&1
 ) || {
   printf '%s\n' "$launchbox_model_viewer_output" >&2
@@ -1298,7 +1387,7 @@ if "$model_viewer_visual_smoke"; then
   )
 fi
 bigbox_model_viewer_output=$(
-  run_model_viewer_smoke "$binary_dir/bigbox" \
+  run_rendered_smoke "$binary_dir/bigbox" \
     "${bigbox_model_viewer_args[@]}" 2>&1
 ) || {
   printf '%s\n' "$bigbox_model_viewer_output" >&2

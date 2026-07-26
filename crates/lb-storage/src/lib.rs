@@ -2,10 +2,10 @@ use lb_domain::{
     is_unassigned_emulator_id, AdditionalApplication, AdditionalApplicationEdit, AlternateName,
     ArgbColor, CatalogValidationError, CustomField, Emulator, EmulatorConfiguration,
     EmulatorPlatform, Game, GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave,
-    GameSaveMetadataEdit, ModelSettings, ModelSettingsError, ModelSize, ModelType, Mount,
-    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
-    PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
-    ValidationError,
+    GameSaveMetadataEdit, InputBinding, ModelSettings, ModelSettingsError, ModelSize, ModelType,
+    Mount, NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory,
+    PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument,
+    PlaylistFilter, PlaylistGame, ValidationError,
 };
 #[cfg(test)]
 use lb_domain::{
@@ -2164,6 +2164,101 @@ impl AuxiliaryDocument {
             let matches = record_indices(root, record_name, selector);
             let index = exactly_one_editable_record(record_name, selector, &matches)?;
             root.children.remove(index);
+            Ok(())
+        })
+    }
+
+    /// Replaces only the caller's recovered BigBox action rows in
+    /// `InputBindings.xml`.
+    ///
+    /// Existing rows whose complete semantic triple is still requested remain
+    /// untouched in place, including future/unknown child elements. All
+    /// non-BigBox records, future BigBox actions, and top-level unknown XML are
+    /// preserved.
+    pub fn replace_big_box_input_bindings(
+        &mut self,
+        bindings: &[InputBinding],
+        managed_actions: &[&str],
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind(
+            "replace BigBox input bindings",
+            AuxiliaryDocumentKind::InputBindings,
+        )?;
+        for binding in bindings {
+            binding.validate()?;
+            if !binding.input_action.starts_with("BigBox") {
+                return Err(StorageError::InvalidInputBindingEdit {
+                    reason: format!(
+                        "action {} is outside the BigBox namespace",
+                        binding.input_action
+                    ),
+                });
+            }
+        }
+        let managed_actions = managed_actions
+            .iter()
+            .map(|action| action.trim())
+            .collect::<BTreeSet<_>>();
+        if managed_actions.is_empty()
+            || managed_actions
+                .iter()
+                .any(|action| !action.starts_with("BigBox"))
+        {
+            return Err(StorageError::InvalidInputBindingEdit {
+                reason: "managed actions must be a non-empty BigBox action set".into(),
+            });
+        }
+        if bindings
+            .iter()
+            .any(|binding| !managed_actions.contains(binding.input_action.trim()))
+        {
+            return Err(StorageError::InvalidInputBindingEdit {
+                reason: "a requested binding is outside the managed BigBox action set".into(),
+            });
+        }
+        let requested = bindings
+            .iter()
+            .map(input_binding_semantic_key)
+            .collect::<Vec<_>>();
+        let unique = requested.iter().cloned().collect::<BTreeSet<_>>();
+        if unique.len() != requested.len() {
+            return Err(StorageError::InvalidInputBindingEdit {
+                reason: "duplicate action, binding, and hold triple".into(),
+            });
+        }
+
+        self.mutate(|root| {
+            let mut consumed = vec![false; bindings.len()];
+            root.children.retain(|node| {
+                let Some(element) = node.as_element() else {
+                    return true;
+                };
+                if element.name != "InputBinding" {
+                    return true;
+                }
+                let action = child_text(element, "InputAction").unwrap_or_default();
+                if !managed_actions.contains(action.trim()) {
+                    return true;
+                }
+                let existing = input_binding_element_semantic_key(element);
+                let retained = requested
+                    .iter()
+                    .enumerate()
+                    .find(|(index, candidate)| !consumed[*index] && **candidate == existing)
+                    .map(|(index, _)| index);
+                if let Some(index) = retained {
+                    consumed[index] = true;
+                    true
+                } else {
+                    false
+                }
+            });
+            for (index, binding) in bindings.iter().enumerate() {
+                if !consumed[index] {
+                    root.children
+                        .push(XMLNode::Element(input_binding_element(binding)));
+                }
+            }
             Ok(())
         })
     }
@@ -7178,6 +7273,55 @@ fn set_child_text(element: &mut Element, name: &str, value: &str) {
     }
 }
 
+fn normalized_controller_hold(value: &str) -> String {
+    match value.trim() {
+        "" | "None" => "None".into(),
+        value => value.into(),
+    }
+}
+
+fn input_binding_semantic_key(binding: &InputBinding) -> (String, String, String) {
+    (
+        binding.input_action.trim().into(),
+        binding.controller_binding.trim().into(),
+        normalized_controller_hold(&binding.controller_hold_binding),
+    )
+}
+
+fn input_binding_element_semantic_key(element: &Element) -> (String, String, String) {
+    (
+        child_text(element, "InputAction")
+            .unwrap_or_default()
+            .trim()
+            .into(),
+        child_text(element, "ControllerBinding")
+            .unwrap_or_default()
+            .trim()
+            .into(),
+        normalized_controller_hold(
+            child_text(element, "ControllerHoldBinding")
+                .unwrap_or_default()
+                .as_str(),
+        ),
+    )
+}
+
+fn input_binding_element(binding: &InputBinding) -> Element {
+    let mut element = Element::new("InputBinding");
+    set_child_text(&mut element, "InputAction", binding.input_action.trim());
+    set_child_text(
+        &mut element,
+        "ControllerBinding",
+        binding.controller_binding.trim(),
+    );
+    set_child_text(
+        &mut element,
+        "ControllerHoldBinding",
+        &normalized_controller_hold(&binding.controller_hold_binding),
+    );
+    element
+}
+
 fn set_optional_child_text(element: &mut Element, name: &str, value: Option<&str>) {
     if let Some(value) = value {
         set_child_text(element, name, value);
@@ -8080,6 +8224,8 @@ pub enum StorageError {
         field: &'static str,
         expected: &'static str,
     },
+    #[error("invalid BigBox input binding edit: {reason}")]
+    InvalidInputBindingEdit { reason: String },
     #[error("setting {field} in {record} unexpectedly contains nested XML")]
     NestedSettingField { record: String, field: String },
     #[error("{record} is missing required {field} element")]
@@ -10950,6 +11096,116 @@ mod tests {
             child_text(future, "Payload").as_deref(),
             Some("preserve-this")
         );
+    }
+
+    #[test]
+    fn big_box_input_replacement_is_lossless_and_namespace_scoped() {
+        let fixture = br#"<LaunchBox>
+  <FuturePolicy><Payload>keep-top-level</Payload></FuturePolicy>
+  <InputBinding>
+    <InputAction>LaunchBoxSelect</InputAction>
+    <ControllerBinding>Button9</ControllerBinding>
+    <ControllerHoldBinding>None</ControllerHoldBinding>
+    <FutureChild>keep-desktop</FutureChild>
+  </InputBinding>
+  <InputBinding>
+    <InputAction>BigBoxSelect</InputAction>
+    <ControllerBinding>Button1</ControllerBinding>
+    <ControllerHoldBinding>None</ControllerHoldBinding>
+    <FutureChild>keep-retained</FutureChild>
+  </InputBinding>
+  <InputBinding>
+    <InputAction>BigBoxBack</InputAction>
+    <ControllerBinding>Button2</ControllerBinding>
+    <ControllerHoldBinding>None</ControllerHoldBinding>
+    <FutureChild>remove-obsolete</FutureChild>
+  </InputBinding>
+  <InputBinding>
+    <InputAction>BigBoxFutureAction</InputAction>
+    <ControllerBinding>Button31</ControllerBinding>
+    <ControllerHoldBinding>None</ControllerHoldBinding>
+    <FutureChild>keep-future</FutureChild>
+  </InputBinding>
+</LaunchBox>"#;
+        let mut document = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::InputBindings,
+            "InputBindings.xml",
+            fixture.as_slice(),
+        )
+        .expect("load input bindings");
+        document
+            .replace_big_box_input_bindings(
+                &[
+                    InputBinding {
+                        input_action: "BigBoxSelect".into(),
+                        controller_binding: "Button1".into(),
+                        controller_hold_binding: "".into(),
+                    },
+                    InputBinding {
+                        input_action: "BigBoxExit".into(),
+                        controller_binding: "Button8".into(),
+                        controller_hold_binding: "Button7".into(),
+                    },
+                ],
+                &["BigBoxSelect", "BigBoxBack", "BigBoxExit"],
+            )
+            .expect("replace BigBox bindings");
+
+        let xml = String::from_utf8(document.to_xml_bytes().expect("serialize bindings"))
+            .expect("UTF-8 XML");
+        assert!(xml.contains("keep-top-level"));
+        assert!(xml.contains("keep-desktop"));
+        assert!(xml.contains("keep-retained"));
+        assert!(xml.contains("keep-future"));
+        assert!(!xml.contains("remove-obsolete"));
+        assert!(xml.contains("<InputAction>BigBoxExit</InputAction>"));
+        assert!(xml.contains("<ControllerHoldBinding>Button7</ControllerHoldBinding>"));
+        assert_eq!(
+            xml.matches("<InputAction>BigBoxSelect</InputAction>")
+                .count(),
+            1
+        );
+        assert_eq!(
+            xml.matches("<InputAction>LaunchBoxSelect</InputAction>")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn big_box_input_replacement_rejects_duplicates_and_desktop_actions() {
+        let fixture = include_str!("../../../fixtures/launchbox/Data/InputBindings.xml");
+        let mut document = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::InputBindings,
+            "InputBindings.xml",
+            fixture.as_bytes(),
+        )
+        .expect("load input bindings");
+        let before = document.to_xml_bytes().expect("serialize before");
+        let duplicate = InputBinding {
+            input_action: "BigBoxSelect".into(),
+            controller_binding: "Button1".into(),
+            controller_hold_binding: "None".into(),
+        };
+        assert!(matches!(
+            document.replace_big_box_input_bindings(
+                &[duplicate.clone(), duplicate],
+                &["BigBoxSelect"],
+            ),
+            Err(StorageError::InvalidInputBindingEdit { .. })
+        ));
+        assert!(matches!(
+            document.replace_big_box_input_bindings(
+                &[InputBinding {
+                    input_action: "LaunchBoxSelect".into(),
+                    controller_binding: "Button1".into(),
+                    controller_hold_binding: "None".into(),
+                }],
+                &["BigBoxSelect"],
+            ),
+            Err(StorageError::InvalidInputBindingEdit { .. })
+        ));
+        assert_eq!(document.to_xml_bytes().expect("serialize after"), before);
     }
 
     #[test]
