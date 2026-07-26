@@ -956,7 +956,7 @@ mod tests {
         let catalog = index.platform_catalog().expect("platform catalog");
         assert_eq!(catalog.platforms.len(), 1);
         assert_eq!(catalog.categories.len(), 1);
-        assert_eq!(catalog.folders.len(), 4);
+        assert_eq!(catalog.folders.len(), 5);
         assert_eq!(catalog.platforms[0].release_date.as_deref(), Some("1999"));
 
         assert_eq!(index.parents().len(), 2);
@@ -973,7 +973,7 @@ mod tests {
 
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         let settings = index.settings().expect("LaunchBox settings");
-        assert_eq!(settings.entries.len(), 22);
+        assert_eq!(settings.entries.len(), 23);
         assert_eq!(settings.get("Theme"), Some("Fixture Theme"));
         assert_eq!(settings.get_bool("DebugLog"), Some(false));
         assert_eq!(settings.get_bool("UseStartupScreen"), Some(true));
@@ -1009,6 +1009,12 @@ mod tests {
             Some("Box - Front,Screenshot - Gameplay,Fanart - Background")
         );
         assert_eq!(
+            settings.get("BackImageTypePriorities"),
+            Some(
+                "Box - Back,Box - Back - Reconstructed,Advertisement Flyer - Back,Fanart - Box - Back"
+            )
+        );
+        assert_eq!(
             settings.get("ListViewOrderedColumnPriorities"),
             Some(
                 "Badges,Title,Platform,Developer,Publisher,Release Date,Rating,Genre,Series,Region,Play Mode,Version,Status,Source,Last Played,Added,Modified,Play Count,Favorite,Completed,Broken,Portable,Hide,Star Rating,Community Star Rating,Community Star Rating Count,Alternate Names,Wikipedia URL,Max Players,Release Type,Video URL,Installed,Application Path,Launchbox Database ID,Play Time"
@@ -1024,7 +1030,7 @@ mod tests {
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 11);
+        assert_eq!(big_box.entries.len(), 13);
         assert_eq!(big_box.get_bool("EnableAttractMode"), Some(true));
         assert_eq!(big_box.get_bool("UseStartupScreen"), Some(true));
         assert_eq!(big_box.get("StartupTheme"), Some("Fixture BigBox Startup"));
@@ -1038,5 +1044,7 @@ mod tests {
         assert_eq!(big_box.get("PauseTheme"), Some("Fixture BigBox Pause"));
         assert_eq!(big_box.get_bool("PauseScreenMuting"), Some(true));
         assert_eq!(big_box.get_bool("PauseScreenFading"), Some(true));
+        assert_eq!(big_box.get_bool("ShowGameMenuFlipBox"), Some(true));
+        assert_eq!(big_box.get("KeyboardFlipBox"), Some("49"));
     }
 }

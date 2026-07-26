@@ -12,5 +12,7 @@
     <PauseTheme>Fixture BigBox Pause</PauseTheme>
     <PauseScreenMuting>true</PauseScreenMuting>
     <PauseScreenFading>true</PauseScreenFading>
+    <ShowGameMenuFlipBox>true</ShowGameMenuFlipBox>
+    <KeyboardFlipBox>49</KeyboardFlipBox>
   </BigBoxSettings>
 </LaunchBox>

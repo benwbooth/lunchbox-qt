@@ -34,6 +34,14 @@ ApplicationWindow {
     property bool imageViewerScreenshotRequested: false
     property string imageViewerScreenshotPath:
         argumentValue("--bigbox-image-viewer-screenshot")
+    property bool boxFlipSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-box-flip-smoke-test") >= 0
+    property int boxFlipSmokePhase: 0
+    property bool boxFlipSmokeFinished: false
+    property bool boxFlipScreenshotRequested: false
+    property string boxFlipScreenshotPath:
+        argumentValue("--bigbox-box-flip-screenshot")
     property bool navigationSmokeTest:
         Qt.application.arguments.indexOf("--navigation-smoke-test") >= 0
     property bool libraryFilterSmokeTest:
@@ -96,6 +104,14 @@ ApplicationWindow {
     property int selectedBigBoxGameStarRating: 0
     property real selectedBigBoxGamePlayTimeSeconds: 0
     property real selectedBigBoxGameCommunityRating: 0
+    property url selectedBigBoxGameFrontImageUrl
+    property bool selectedBigBoxGameBoxBackVisible: false
+    readonly property url selectedBigBoxGameBackImageUrl: {
+        const revision = controller.game_media_revision
+        return selectedBigBoxGameId.length > 0
+            ? controller.game_box_back_url_for_game(
+                  selectedBigBoxGameId) : ""
+    }
     readonly property int selectedBigBoxGameImageCount: {
         const revision = controller.game_media_revision
         return selectedBigBoxGameId.length > 0
@@ -187,6 +203,16 @@ ApplicationWindow {
                     selectedBigBoxGameId, preferredMediaIndex)
     }
 
+    function flipSelectedBox() {
+        if (!controller.big_box_show_game_menu_flip_box
+                || selectedBigBoxGameId.length === 0
+                || selectedBigBoxGameBackImageUrl.toString().length === 0)
+            return false
+        selectedBigBoxGameBoxBackVisible =
+            !selectedBigBoxGameBoxBackVisible
+        return true
+    }
+
     function formatPlayTime(seconds) {
         const totalMinutes = Math.floor(Math.max(0, seconds) / 60)
         const hours = Math.floor(totalMinutes / 60)
@@ -211,6 +237,8 @@ ApplicationWindow {
         selectedBigBoxGameStarRating = 0
         selectedBigBoxGamePlayTimeSeconds = 0
         selectedBigBoxGameCommunityRating = 0
+        selectedBigBoxGameFrontImageUrl = ""
+        selectedBigBoxGameBoxBackVisible = false
     }
 
     function showLaunchWithSelection() {
@@ -585,6 +613,146 @@ ApplicationWindow {
     Timer {
         interval: 25
         repeat: true
+        running: window.boxFlipSmokeTest
+                 && !window.boxFlipSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0)
+                return
+            if (window.boxFlipSmokePhase === 0) {
+                const row = controller.row_for_game_id(
+                                "fixture-adventure")
+                if (row < 0)
+                    return
+                gameList.currentIndex = row
+                gameList.positionViewAtIndex(row, ListView.Center)
+                window.boxFlipSmokePhase = 1
+                return
+            }
+            const card = gameList.currentItem
+            if (!card)
+                return
+            // qmllint disable missing-property
+            if (window.boxFlipSmokePhase === 1) {
+                if (window.selectedBigBoxGameId
+                        !== "fixture-adventure"
+                        || window.selectedBigBoxGameBackImageUrl
+                           .toString().length === 0
+                        || window.selectedBigBoxGameBoxBackVisible
+                        || card["displayedBoxSource"].toString()
+                           !== window
+                              .selectedBigBoxGameFrontImageUrl
+                              .toString()
+                        || card["displayedBoxStatus"]
+                           !== Image.Ready)
+                    return
+                if (!bigBoxFlipBoxButton.activate()) {
+                    console.error(
+                        "BIGBOX_BOX_FLIP_CONTROL_MISSING")
+                    Qt.exit(531)
+                    return
+                }
+                window.boxFlipSmokePhase = 2
+            } else if (window.boxFlipSmokePhase === 2) {
+                if (!window.selectedBigBoxGameBoxBackVisible
+                        || card["displayedBoxSource"].toString()
+                           !== window.selectedBigBoxGameBackImageUrl
+                              .toString()
+                        || card["displayedBoxStatus"]
+                           !== Image.Ready
+                        || card["displayedBoxFlipAngle"] < 179)
+                    return
+                if (window.boxFlipScreenshotRequested)
+                    return
+                window.boxFlipScreenshotRequested = true
+                const returnToFront = function() {
+                    if (!bigBoxFlipBoxButton.activate()) {
+                        console.error(
+                            "BIGBOX_BOX_FLIP_RETURN_CONTROL_MISSING")
+                        Qt.exit(532)
+                        return
+                    }
+                    window.boxFlipSmokePhase = 3
+                }
+                if (window.boxFlipScreenshotPath.length === 0) {
+                    returnToFront()
+                    return
+                }
+                bigBoxContent.grabToImage(function(result) {
+                    if (!result.saveToFile(
+                            window.boxFlipScreenshotPath)) {
+                        console.error(
+                            "BIGBOX_BOX_FLIP_SCREENSHOT_SAVE_FAILED path="
+                            + window.boxFlipScreenshotPath)
+                        Qt.exit(533)
+                        return
+                    }
+                    returnToFront()
+                })
+            } else if (window.boxFlipSmokePhase === 3) {
+                if (window.selectedBigBoxGameBoxBackVisible
+                        || card["displayedBoxSource"].toString()
+                           !== window
+                              .selectedBigBoxGameFrontImageUrl
+                              .toString()
+                        || card["displayedBoxStatus"]
+                           !== Image.Ready
+                        || card["displayedBoxFlipAngle"] > 1)
+                    return
+                if (!controller.report_big_box_box_flip_smoke_success(
+                        window.selectedBigBoxGameId,
+                        window.selectedBigBoxGameFrontImageUrl
+                              .toString(),
+                        window.selectedBigBoxGameBackImageUrl
+                              .toString())) {
+                    console.error(
+                        "BIGBOX_BOX_FLIP_CONTROLLER_REJECTED")
+                    Qt.exit(534)
+                    return
+                }
+                window.boxFlipSmokeFinished = true
+                Qt.quit()
+            }
+            // qmllint enable missing-property
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.boxFlipSmokeTest
+                 && !window.boxFlipSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_BOX_FLIP_TIMEOUT phase="
+                + window.boxFlipSmokePhase
+                + " id=" + window.selectedBigBoxGameId
+                + " status=" + controller.status_message)
+            if (window.boxFlipSmokePhase === 2) {
+                const card = gameList.currentItem
+                if (!window.selectedBigBoxGameBoxBackVisible)
+                    Qt.exit(551)
+                else if (!card)
+                    Qt.exit(552)
+                // qmllint disable missing-property
+                else if (card["displayedBoxSource"].toString()
+                         !== window.selectedBigBoxGameBackImageUrl
+                            .toString())
+                    Qt.exit(553)
+                else if (card["displayedBoxStatus"] !== Image.Ready)
+                    Qt.exit(554)
+                else if (card["displayedBoxFlipAngle"] < 179)
+                    Qt.exit(555)
+                // qmllint enable missing-property
+                else
+                    Qt.exit(556)
+            } else {
+                Qt.exit(535 + window.boxFlipSmokePhase)
+            }
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
         running: window.gameDetailsMediaSmokeTest
                  && !window.gameDetailsMediaSmokeFinished
         onTriggered: {
@@ -603,8 +771,8 @@ ApplicationWindow {
                 window.gameDetailsMediaSmokePhase = 1
             } else if (window.gameDetailsMediaSmokePhase === 1) {
                 if (!bigBoxGameDetails.opened
-                        || bigBoxGameDetails.mediaCount !== 4
-                        || bigBoxGameDetails.selectedMediaIndex !== 3
+                        || bigBoxGameDetails.mediaCount !== 5
+                        || bigBoxGameDetails.selectedMediaIndex !== 4
                         || bigBoxGameDetails.selectedMediaKind !== "video"
                         || bigBoxGameDetails.selectedMediaType !== "Video Snap"
                         || bigBoxGameDetails.mediaDuration <= 0
@@ -621,7 +789,7 @@ ApplicationWindow {
                 bigBoxPreviousMediaButton.clicked()
                 window.gameDetailsMediaSmokePhase = 3
             } else if (window.gameDetailsMediaSmokePhase === 3) {
-                if (bigBoxGameDetails.selectedMediaIndex !== 2
+                if (bigBoxGameDetails.selectedMediaIndex !== 3
                         || bigBoxGameDetails.selectedMediaKind !== "image"
                         || bigBoxGameDetails.mediaImageStatus !== Image.Ready)
                     return
@@ -643,7 +811,7 @@ ApplicationWindow {
                     return
                 window.gameDetailsMediaScreenshotRequested = true
                 const continueWithVideo = function() {
-                    if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(3)) {
+                    if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(4)) {
                         console.error(
                             "BIGBOX_GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
                         Qt.exit(508)
@@ -667,7 +835,7 @@ ApplicationWindow {
                     continueWithVideo()
                 })
             } else if (window.gameDetailsMediaSmokePhase === 5) {
-                if (bigBoxGameDetails.selectedMediaIndex !== 3
+                if (bigBoxGameDetails.selectedMediaIndex !== 4
                         || bigBoxGameDetails.selectedMediaKind !== "video"
                         || bigBoxGameDetails.selectedMediaType !== "Video Snap"
                         || bigBoxGameDetails.mediaDuration <= 0
@@ -684,11 +852,11 @@ ApplicationWindow {
                     return
                 if (!controller
                         .report_big_box_game_details_media_smoke_success(
-                        "fixture-adventure", 0, 3,
+                        "fixture-adventure", 0, 4,
                         controller.game_media_url_at(
                             "fixture-adventure", 0).toString(),
                         controller.game_media_url_at(
-                            "fixture-adventure", 3).toString())) {
+                            "fixture-adventure", 4).toString())) {
                     console.error(
                         "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
                     Qt.exit(510)
@@ -739,7 +907,7 @@ ApplicationWindow {
                 window.imageViewerSmokePhase = 1
             } else if (window.imageViewerSmokePhase === 1) {
                 if (!bigBoxGameDetails.opened
-                        || bigBoxGameDetails.mediaCount !== 4)
+                        || bigBoxGameDetails.mediaCount !== 5)
                     return
                 if (!bigBoxGameDetails.clickMediaThumbnailForSmoke(0)) {
                     console.error(
@@ -759,7 +927,7 @@ ApplicationWindow {
                 if (!bigBoxImageViewer.opened
                         || bigBoxImageViewer.gameId
                            !== "fixture-adventure"
-                        || bigBoxImageViewer.imageCount !== 3
+                        || bigBoxImageViewer.imageCount !== 4
                         || bigBoxImageViewer.selectedImageIndex !== 0
                         || bigBoxImageViewer.selectedMediaIndex !== 0
                         || bigBoxImageViewer.selectedMediaType
@@ -1716,6 +1884,7 @@ ApplicationWindow {
     }
 
     ColumnLayout {
+        id: bigBoxContent
         anchors.fill: parent
         anchors.margins: 48
         spacing: 18
@@ -1814,10 +1983,22 @@ ApplicationWindow {
                     required property int gameDatabaseId
                     required property string gameAlternateNames
                     required property url gameFrontImageUrl
+                    readonly property url gameBackImageUrl: {
+                        const revision = controller.game_media_revision
+                        return controller.game_box_back_url_for_game(gameId)
+                    }
+                    readonly property url displayedBoxSource:
+                        coverImage.source
+                    readonly property int displayedBoxStatus:
+                        coverImage.status
+                    readonly property real displayedBoxFlipAngle:
+                        coverImage.flipAngle
 
                     function publishCurrentGame() {
                         if (!ListView.isCurrentItem)
                             return
+                        if (window.selectedBigBoxGameId !== gameId)
+                            window.selectedBigBoxGameBoxBackVisible = false
                         window.selectedBigBoxGameId = gameId
                         window.selectedBigBoxGameTitle = gameTitle
                         window.selectedBigBoxGamePlatform = gamePlatform
@@ -1834,6 +2015,8 @@ ApplicationWindow {
                             gamePlayTimeSeconds
                         window.selectedBigBoxGameCommunityRating =
                             gameCommunityStarRating
+                        window.selectedBigBoxGameFrontImageUrl =
+                            gameFrontImageUrl
                     }
 
                     Component.onCompleted: {
@@ -1901,15 +2084,17 @@ ApplicationWindow {
                                     wrapMode: Text.Wrap
                                 }
                             }
-                            Image {
+                            BoxArtView {
                                 id: coverImage
                                 anchors.fill: parent
-                                source: gameFrontImageUrl
-                                asynchronous: true
-                                cache: true
-                                fillMode: Image.PreserveAspectFit
-                                sourceSize.width: 600
-                                sourceSize.height: 800
+                                frontSource: gameFrontImageUrl
+                                backSource: gameBackImageUrl
+                                showingBack:
+                                    gameList.currentIndex === index
+                                    && window
+                                       .selectedBigBoxGameBoxBackVisible
+                                requestedSourceWidth: 600
+                                requestedSourceHeight: 800
                                 onStatusChanged: {
                                     if (!window.mediaSmokeTest
                                             || window.mediaSmokeFinished
@@ -2004,6 +2189,26 @@ ApplicationWindow {
                          && !controller.loading && !controller.writing
                 onClicked: window.openGameImages(-1)
             }
+            Button {
+                id: bigBoxFlipBoxButton
+                text: window.selectedBigBoxGameBoxBackVisible
+                      ? "SHOW FRONT" : "FLIP BOX"
+                visible:
+                    controller.big_box_show_game_menu_flip_box
+                    && window.selectedBigBoxGameBackImageUrl
+                    .toString().length > 0
+                enabled: visible
+                         && !controller.loading
+                         && !controller.writing
+
+                function activate() {
+                    if (!enabled)
+                        return false
+                    return window.flipSelectedBox()
+                }
+
+                onClicked: activate()
+            }
             Label {
                 Layout.fillWidth: true
                 text: gameList.count > 0
@@ -2026,7 +2231,7 @@ ApplicationWindow {
             Label {
                 text: controller.launching
                       ? "LAUNCHING…"
-                      : "D  DETAILS     I  IMAGES     ← →  GAMES     ENTER  PLAY"
+                      : "D  DETAILS     I  IMAGES     F  FLIP     ← →  GAMES     ENTER  PLAY"
                 color: "#9badc4"
                 font.pixelSize: 18
             }
@@ -3243,6 +3448,18 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "F"
+        enabled: !bigBoxGameDetails.opened
+                 && !bigBoxImageViewer.opened
+                 && !attributeFilterDrawer.opened
+                 && !navigationDrawer.opened
+                 && controller.big_box_show_game_menu_flip_box
+                 && window.selectedBigBoxGameBackImageUrl
+                    .toString().length > 0
+        onActivated: window.flipSelectedBox()
+    }
+
+    Shortcut {
         sequence: "L"
         enabled: !bigBoxGameDetails.opened
                  && !bigBoxImageViewer.opened
@@ -3282,13 +3499,6 @@ ApplicationWindow {
                 window.openNavigation()
             }
         }
-    }
-
-    Shortcut {
-        sequence: "F"
-        enabled: !bigBoxGameDetails.opened
-                 && !bigBoxImageViewer.opened
-        onActivated: window.openNavigation()
     }
 
     Shortcut {

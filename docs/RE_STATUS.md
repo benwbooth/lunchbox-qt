@@ -111,10 +111,20 @@ The same recovered `InputAction` contract separately names
 `LaunchBoxShowImages`, `LaunchBoxZoomIn`, `LaunchBoxZoomOut`,
 `LaunchBoxPageUp`, `LaunchBoxPageDown`, and `LaunchBoxFlipBox`, while
 `Settings.AlwaysShowImagesFullscreen` exposes the desktop presentation policy.
-This establishes desktop image entry, switching/navigation, zoom, and box-flip
-boundaries, but not the protected zoom constants, flip behavior, or every
-binding. The port's current desktop image viewer therefore shares the explicit
-bounded policy above; box flip remains unimplemented.
+The static 13.27 extraction also retains desktop
+`BoxItemViewModel.FlipBox`, BigBox `GamesViewModelBase.FlipBox`, and matching
+menu-action entry points, although their protected bodies do not recover the
+transition. The owner's read-only 13.24 installation adds concrete settings
+evidence: `BackImageTypePriorities` is exactly `Box - Back,Box - Back -
+Reconstructed,Advertisement Flyer - Back,Fanart - Box - Back`;
+`ShowGameMenuFlipBox` is enabled; and `KeyboardFlipBox` is WPF key code 49,
+the `F` key. Its media tree contains the corresponding back-art folder
+families. This establishes front/back selection, visible BigBox menu policy,
+and the default keyboard action, but not exact protected transition timing,
+controller binding, 3D-model behavior, or every theme-specific presentation.
+The port therefore uses the recovered priority and visibility settings with an
+explicit platform-neutral 220 ms Qt Y-axis transition rather than presenting
+that duration as original behavior.
 
 The compiled port subsequently loaded that same read-only installation through
 the normal Qt worker transaction and selected 24,920 front images across the

@@ -176,6 +176,21 @@ Rust, renders a visually inspected PNG, and hashes all media and XML before and
 after. The QML and Rust path are platform-neutral; native Windows and
 Intel/Apple Silicon macOS Qt interaction remains a real-host release gate.
 
+LaunchBox and BigBox can now flip the selected box between its front and back
+without mutating the library. The shared media index selects back art using
+LaunchBox's persisted `BackImageTypePriorities`, resolves it through the same
+portable/native/mapped-Windows path boundary, and gives Qt only a native local
+URL. LaunchBox exposes a per-tile **Flip**/**Front** control; BigBox exposes
+**Flip Box**/**Show Front**, honors `ShowGameMenuFlipBox`, and uses the
+recovered `F` default. BigBox resets to the front when selection changes,
+while LaunchBox keeps the
+per-tile state until its Front control is used. Both share an explicit 220 ms
+Qt Y-axis transition because the protected original duration is not
+recoverable. The offscreen gates drive the actual
+controls in both directions, require distinct contained regular front/back
+files, render the back state, and hash the full media and XML trees before and
+after.
+
 Both frontends also use one typed, read-only library-filter contract. It
 combines text and platform/category/playlist navigation with favorite,
 completion, installation tri-state, played/rated, hidden, and broken state;
@@ -398,7 +413,8 @@ never modified or deleted. Playlist filenames use the platform layer's shared
 Windows/Linux/macOS-safe component rules, while stored video and game paths
 remain lexical LaunchBox strings.
 BigBox exposes the same hierarchy through a keyboard-first filter drawer:
-Up, Tab, or F opens the category/platform/playlist list, Enter applies exact
+Up, Tab, or the **Browse** button opens the category/platform/playlist list,
+Enter applies exact
 membership, and Right returns to the horizontal game wheel. Stable playlist
 IDs stay behind display names, the active filter is controller-owned state,
 and nodes marked `HideInBigBox` are omitted while visible descendants are

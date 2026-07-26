@@ -89,6 +89,14 @@ ApplicationWindow {
     property string imageViewerScreenshotPath:
         argumentValue("--launchbox-image-viewer-screenshot")
     property bool imageViewerOpen: false
+    property bool boxFlipSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--launchbox-box-flip-smoke-test") >= 0
+    property int boxFlipSmokePhase: 0
+    property bool boxFlipSmokeFinished: false
+    property bool boxFlipScreenshotRequested: false
+    property string boxFlipScreenshotPath:
+        argumentValue("--launchbox-box-flip-screenshot")
     readonly property var imageViewerForDetails:
         controller.game_details_popped_out
         ? gameDetailsWindowImageViewer : launchBoxImageViewer
@@ -1367,6 +1375,127 @@ ApplicationWindow {
             }
             if (!controller.apply_box_size(window.pendingBoxSize))
                 window.boxSize = controller.box_size
+        }
+    }
+
+    Shortcut {
+        sequence: "F"
+        enabled: !controller.list_view
+                 && gameGrid.currentIndex >= 0
+                 && !window.imageViewerOpen
+                 && !controller.loading
+                 && !controller.writing
+        onActivated: {
+            const tile = gameGrid.currentItem
+            if (!tile)
+                return
+            // qmllint disable missing-property
+            tile["flipBox"]()
+            // qmllint enable missing-property
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.boxFlipSmokeTest
+                 && !window.boxFlipSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.library_path.length === 0)
+                return
+            if (window.boxFlipSmokePhase === 0) {
+                window.setAttributeFilters("any", "none", true, true)
+                window.restoreGameSelection("fixture-adventure")
+                window.boxFlipSmokePhase = 1
+                return
+            }
+            const tile = gameGrid.currentItem
+            if (!tile)
+                return
+            // qmllint disable missing-property
+            if (window.boxFlipSmokePhase === 1) {
+                if (tile["gameId"] !== "fixture-adventure"
+                        || tile["gameBackImageUrl"].toString().length === 0
+                        || tile["boxBackVisible"]
+                        || tile["displayedBoxSource"].toString()
+                           !== tile["gameFrontImageUrl"].toString()
+                        || tile["displayedBoxStatus"] !== Image.Ready)
+                    return
+                if (!tile["activateFlipBoxControl"]()) {
+                    console.error(
+                        "LAUNCHBOX_BOX_FLIP_CONTROL_MISSING")
+                    Qt.exit(526)
+                    return
+                }
+                window.boxFlipSmokePhase = 2
+            } else if (window.boxFlipSmokePhase === 2) {
+                if (!tile["boxBackVisible"]
+                        || tile["displayedBoxSource"].toString()
+                           !== tile["gameBackImageUrl"].toString()
+                        || tile["displayedBoxStatus"] !== Image.Ready
+                        || tile["displayedBoxFlipAngle"] < 179)
+                    return
+                if (window.boxFlipScreenshotRequested)
+                    return
+                window.boxFlipScreenshotRequested = true
+                const returnToFront = function() {
+                    if (!tile["activateFlipBoxControl"]()) {
+                        console.error(
+                            "LAUNCHBOX_BOX_FLIP_RETURN_CONTROL_MISSING")
+                        Qt.exit(527)
+                        return
+                    }
+                    window.boxFlipSmokePhase = 3
+                }
+                if (window.boxFlipScreenshotPath.length === 0) {
+                    returnToFront()
+                    return
+                }
+                tile.grabToImage(function(result) {
+                    if (!result.saveToFile(
+                            window.boxFlipScreenshotPath)) {
+                        console.error(
+                            "LAUNCHBOX_BOX_FLIP_SCREENSHOT_SAVE_FAILED path="
+                            + window.boxFlipScreenshotPath)
+                        Qt.exit(528)
+                        return
+                    }
+                    returnToFront()
+                })
+            } else if (window.boxFlipSmokePhase === 3) {
+                if (tile["boxBackVisible"]
+                        || tile["displayedBoxSource"].toString()
+                           !== tile["gameFrontImageUrl"].toString()
+                        || tile["displayedBoxStatus"] !== Image.Ready
+                        || tile["displayedBoxFlipAngle"] > 1)
+                    return
+                if (!controller
+                        .report_launch_box_box_flip_smoke_success(
+                            tile["gameId"],
+                            tile["gameFrontImageUrl"].toString(),
+                            tile["gameBackImageUrl"].toString())) {
+                    console.error(
+                        "LAUNCHBOX_BOX_FLIP_CONTROLLER_REJECTED")
+                    Qt.exit(529)
+                    return
+                }
+                window.boxFlipSmokeFinished = true
+                Qt.quit()
+            }
+            // qmllint enable missing-property
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.boxFlipSmokeTest
+                 && !window.boxFlipSmokeFinished
+        onTriggered: {
+            console.error(
+                "LAUNCHBOX_BOX_FLIP_TIMEOUT phase="
+                + window.boxFlipSmokePhase
+                + " status=" + controller.status_message)
+            Qt.exit(530)
         }
     }
 
@@ -4790,9 +4919,9 @@ ApplicationWindow {
                                         if (window.selectedGameId
                                                 !== "fixture-adventure"
                                                 || gameDetailsPane
-                                                   .mediaCount !== 4
+                                                   .mediaCount !== 5
                                                 || gameDetailsPane
-                                                   .selectedMediaIndex !== 3
+                                                   .selectedMediaIndex !== 4
                                                 || gameDetailsPane
                                                    .selectedMediaKind
                                                    !== "video"
@@ -4854,7 +4983,7 @@ ApplicationWindow {
                                             function() {
                                                 if (!gameDetailsPane
                                                         .clickMediaThumbnailForSmoke(
-                                                            3)) {
+                                                            4)) {
                                                     console.error(
                                                         "GAME_DETAILS_MEDIA_VIDEO_THUMBNAIL_MISSING")
                                                     Qt.exit(495)
@@ -4889,7 +5018,7 @@ ApplicationWindow {
                                             .gameDetailsMediaSmokePhase
                                             === 4) {
                                         if (gameDetailsPane
-                                                .selectedMediaIndex !== 3
+                                                .selectedMediaIndex !== 4
                                                 || gameDetailsPane
                                                    .selectedMediaKind
                                                    !== "video"
@@ -4909,7 +5038,7 @@ ApplicationWindow {
                                         if (!controller
                                                 .report_game_details_media_smoke_success(
                                                     "fixture-adventure",
-                                                    0, 3,
+                                                    0, 4,
                                                     controller
                                                     .game_media_url_at(
                                                         "fixture-adventure",
@@ -4917,7 +5046,7 @@ ApplicationWindow {
                                                     controller
                                                     .game_media_url_at(
                                                         "fixture-adventure",
-                                                        3).toString())) {
+                                                        4).toString())) {
                                             console.error(
                                                 "GAME_DETAILS_MEDIA_SMOKE_CONTROLLER_REJECTED")
                                             Qt.exit(497)
@@ -4954,7 +5083,7 @@ ApplicationWindow {
                                         if (window.selectedGameId
                                                 !== "fixture-adventure"
                                                 || gameDetailsPane
-                                                   .mediaCount !== 4)
+                                                   .mediaCount !== 5)
                                             return
                                         if (!gameDetailsPane
                                                 .clickMediaThumbnailForSmoke(
@@ -4991,7 +5120,7 @@ ApplicationWindow {
                                                    .gameId
                                                    !== "fixture-adventure"
                                                 || detailsImageViewer
-                                                   .imageCount !== 3
+                                                   .imageCount !== 4
                                                 || detailsImageViewer
                                                    .selectedImageIndex !== 0
                                                 || detailsImageViewer
@@ -6221,6 +6350,30 @@ ApplicationWindow {
                             required property int gameDatabaseId
                             required property string gameAlternateNames
 
+                            readonly property url gameBackImageUrl: {
+                                const revision = controller.game_media_revision
+                                return controller.game_box_back_url_for_game(
+                                    gameId)
+                            }
+                            property bool boxBackVisible: false
+                            readonly property url displayedBoxSource:
+                                coverImage.source
+                            readonly property int displayedBoxStatus:
+                                coverImage.status
+                            readonly property real displayedBoxFlipAngle:
+                                coverImage.flipAngle
+
+                            function flipBox() {
+                                if (gameBackImageUrl.toString().length === 0)
+                                    return false
+                                boxBackVisible = !boxBackVisible
+                                return true
+                            }
+
+                            function activateFlipBoxControl() {
+                                return gameTileFlipButton.activate()
+                            }
+
                             function openEditor() {
                                 gameEditor.edit(
                                     index, gameId, gameTitle, gameSortTitle, gameNotes,
@@ -6307,6 +6460,11 @@ ApplicationWindow {
                                 if (window.editSmokePhase > 0)
                                     verifyEdit()
                             }
+                            onGameIdChanged: boxBackVisible = false
+                            onGameBackImageUrlChanged: {
+                                if (gameBackImageUrl.toString().length === 0)
+                                    boxBackVisible = false
+                            }
                             readonly property bool compactTile:
                                 width < 150 || height < 230
                             width: Math.max(1, gameGrid.cellWidth - 12)
@@ -6325,7 +6483,9 @@ ApplicationWindow {
                                                      12,
                                                      Math.max(3, parent.width * 0.08))
                                 anchors.topMargin:
-                                    parent.compactTile ? anchors.margins : 48
+                                    parent.compactTile ? anchors.margins
+                                    : gameTile.gameBackImageUrl
+                                      .toString().length > 0 ? 80 : 48
                                 anchors.bottomMargin:
                                     parent.compactTile ? anchors.margins : 48
                                 spacing: 7
@@ -6356,15 +6516,16 @@ ApplicationWindow {
                                             wrapMode: Text.Wrap
                                         }
                                     }
-                                    Image {
+                                    BoxArtView {
                                         id: coverImage
                                         anchors.fill: parent
-                                        source: gameFrontImageUrl
-                                        asynchronous: true
-                                        cache: true
-                                        fillMode: Image.PreserveAspectFit
-                                        sourceSize.width: 360
-                                        sourceSize.height: 480
+                                        frontSource: gameFrontImageUrl
+                                        backSource:
+                                            gameTile.gameBackImageUrl
+                                        showingBack:
+                                            gameTile.boxBackVisible
+                                        requestedSourceWidth: 360
+                                        requestedSourceHeight: 480
                                         onStatusChanged: {
                                             if (!window.mediaSmokeTest
                                                     || window.mediaSmokeFinished
@@ -6435,6 +6596,39 @@ ApplicationWindow {
                                     gameGrid.forceActiveFocus()
                                 }
                                 onDoubleClicked: openEditor()
+                            }
+                            Button {
+                                id: gameTileFlipButton
+                                anchors.horizontalCenter:
+                                    parent.horizontalCenter
+                                anchors.top: parent.top
+                                anchors.topMargin: 48
+                                height: 28
+                                topPadding: 2
+                                bottomPadding: 2
+                                leftPadding: 12
+                                rightPadding: 12
+                                z: 2
+                                text: gameTile.boxBackVisible ? "Front" : "Flip"
+                                visible: !parent.compactTile
+                                         && gameTile.gameBackImageUrl
+                                            .toString().length > 0
+                                Accessible.name:
+                                    (gameTile.boxBackVisible
+                                     ? "Show box front for "
+                                     : "Show box back for ") + gameTitle
+                                enabled: visible
+                                         && controller.library_path.length > 0
+                                         && !controller.loading
+                                         && !controller.writing
+
+                                function activate() {
+                                    if (!enabled)
+                                        return false
+                                    return gameTile.flipBox()
+                                }
+
+                                onClicked: activate()
                             }
                             Button {
                                 anchors.right: parent.right

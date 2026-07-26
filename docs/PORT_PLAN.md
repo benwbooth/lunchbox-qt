@@ -276,7 +276,7 @@ deterministic, while directory/file/size/item limits and symlink refusal keep
 large or hostile libraries isolated. Pure tests and compiled offscreen
 SVG/H.264 decode, selection, autoplay, play/pause, actual-thumbnail, and
 rendered-gallery scenarios cover both frontends without media writes. BigBox's
-first two `BB-004` subsets follow the stock theme's separate image,
+first three `BB-004` subsets follow the stock theme's separate image,
 image/video, and game-details presenters: `D`/Details opens one full-screen
 stable-ID layer outside recycled delegates; left/right or Previous/Next wraps
 the collection, Space/play-pause and mute control video, Enter launches, and
@@ -292,14 +292,29 @@ contract from the Details View Image action or the global `I` action. The
 docked path is owned by the main window, while popped-out Details opens the
 modal in its own native window; both stop hidden video, retain the selected
 image, and restore focus to the media row on Back. A compiled desktop scenario
-drives the shared button activation paths, validates the three-to-four
+drives the shared button activation paths, validates the four-to-five
 image/media mapping and native regular files, renders a zoomed PNG, and proves
 byte-identical media and library documents. Native Windows and Intel/Apple
 Silicon macOS Qt
 interaction and Qt Multimedia execution remain explicit real-host gates, and
 all media mutation, download, manual/music playback, platform-video
-management, box flip, 3D models, related/document/application panes, custom
+management, 3D models, related/document/application panes, custom
 BigBox theme layouts/transitions, cleanup, and migration work remains open.
+The current `DESK-004`/`BB-004` media vertical adds settings-prioritized box
+backs and one shared front/back Qt presenter to the LaunchBox grid and BigBox
+wheel. The exact recovered back priority is applied at the native-path index
+boundary; missing backs leave the action unavailable. LaunchBox exposes a
+visible per-tile Flip/Front control and `F`, while BigBox additionally honors
+`ShowGameMenuFlipBox` and assigns the recovered `KeyboardFlipBox=49` default
+without colliding with navigation. BigBox wheel selection changes return to
+the front; LaunchBox retains each tile's side until its Front control is used.
+Separate compiled interactions activate and return through the real controls,
+wait for a complete 180-degree transition, render visually checked back-cover
+PNGs, validate distinct contained regular files in Rust, and byte-compare the
+entire fixture media/XML tree. The protected 13.27 transition duration remains
+unknown, so the shared 220 ms animation is an explicit cross-platform Qt
+policy. Native Windows and Intel/Apple Silicon macOS interaction remains a
+real-host gate.
 The first three `DESK-002` verticals add a resizable LaunchBox selected-game
 details pane over the shared virtualized model plus hide/show and native
 pop-out/dock behavior. Its stable-ID selection contract survives filter and
@@ -316,7 +331,7 @@ preservation, and restoration in a fresh process while fixture
 platform/settings documents stay byte-identical. Its third vertical follows
 the recovered stock `MediaList`/`MediaPreview` shape with a selectable
 thumbnail row, large image/video preview, details-video settings, and playback
-controls. The next desktop media gaps are box flip, 3D models, related and
+controls. The next desktop media gaps are 3D models, related and
 document/application panes, media mutation/management, and multi-display
 geometry recovery; native Windows/macOS Qt interaction also remains open.
 Transactional title

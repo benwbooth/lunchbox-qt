@@ -24,6 +24,7 @@ diagnostics=$(
     apps/lb-shell/qml/LaunchBoxWindow.qml \
     apps/lb-shell/qml/BigBoxWindow.qml \
     apps/lb-shell/qml/GameImageViewer.qml \
+    apps/lb-shell/qml/BoxArtView.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -193,7 +194,7 @@ game_details_media_output=$(
   exit 1
 }
 if ! rg -q \
-  'GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=4 image=Box-Front video=Video-Snap autoplay=1' \
+  'GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=5 image=Box-Front video=Video-Snap autoplay=1' \
   <<< "$game_details_media_output"; then
   printf '%s\n' "$game_details_media_output" >&2
   echo "LaunchBox did not validate selected-game image and video media." >&2
@@ -229,7 +230,7 @@ launchbox_image_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=3 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  'LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=4 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
   <<< "$launchbox_image_viewer_output"; then
   printf '%s\n' "$launchbox_image_viewer_output" >&2
   echo "LaunchBox did not validate its full-screen image viewer." >&2
@@ -266,7 +267,7 @@ bigbox_game_details_media_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=4 image=Box-Front video=Video-Snap autoplay=1 controls=1' \
+  'BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=5 image=Box-Front video=Video-Snap autoplay=1 controls=1' \
   <<< "$bigbox_game_details_media_output"; then
   printf '%s\n' "$bigbox_game_details_media_output" >&2
   echo "BigBox did not validate its full-screen selected-game media controls." >&2
@@ -303,7 +304,7 @@ bigbox_image_viewer_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=3 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
+  'BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=4 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1' \
   <<< "$bigbox_image_viewer_output"; then
   printf '%s\n' "$bigbox_image_viewer_output" >&2
   echo "BigBox did not validate its standalone full-screen image viewer." >&2
@@ -325,6 +326,88 @@ cmp "$game_details_settings.before-game-details-smoke" "$game_details_settings"
 ) >/dev/null
 
 echo "BigBox standalone image entry, image-type switching, bounded zoom, fit reset, pan, nested back navigation, native-path rendering, and read-only media behavior validated."
+
+box_flip_bigbox_settings="$media_root/Data/BigBoxSettings.xml"
+cp "$box_flip_bigbox_settings" \
+  "$box_flip_bigbox_settings.before-box-flip-smoke"
+launchbox_box_flip_screenshot="$test_config_root/launchbox-box-flip.png"
+launchbox_box_flip_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$media_root" \
+    --launchbox-box-flip-smoke-test \
+    --launchbox-box-flip-screenshot \
+    "$launchbox_box_flip_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$launchbox_box_flip_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'LAUNCHBOX_BOX_FLIP_SMOKE_COMPLETE id=fixture-adventure front=Box-Front back=Box-Back flip=1 return=1 controls=1' \
+  <<< "$launchbox_box_flip_output"; then
+  printf '%s\n' "$launchbox_box_flip_output" >&2
+  echo "LaunchBox did not validate the grid box-flip workflow." >&2
+  exit 1
+fi
+if [[ ! -s "$launchbox_box_flip_screenshot" ]] \
+  || [[ $(wc -c < "$launchbox_box_flip_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$launchbox_box_flip_screenshot" \
+      | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$launchbox_box_flip_output" >&2
+  echo "LaunchBox did not render a valid flipped box-back PNG." >&2
+  exit 1
+fi
+cmp "$media_platform.before-media-smoke" "$media_platform"
+cmp "$game_details_settings.before-game-details-smoke" \
+  "$game_details_settings"
+cmp "$box_flip_bigbox_settings.before-box-flip-smoke" \
+  "$box_flip_bigbox_settings"
+(
+  cd "$media_root"
+  sha256sum --check "$media_files_manifest"
+) >/dev/null
+
+echo "LaunchBox settings-prioritized front/back box selection, real Flip control, animated return, native-path rendering, and read-only media behavior validated."
+
+bigbox_box_flip_screenshot="$test_config_root/bigbox-box-flip.png"
+bigbox_box_flip_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --library "$media_root" \
+    --windowed \
+    --bigbox-box-flip-smoke-test \
+    --bigbox-box-flip-screenshot \
+    "$bigbox_box_flip_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$bigbox_box_flip_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_BOX_FLIP_SMOKE_COMPLETE id=fixture-adventure front=Box-Front back=Box-Back flip=1 return=1 controls=1' \
+  <<< "$bigbox_box_flip_output"; then
+  printf '%s\n' "$bigbox_box_flip_output" >&2
+  echo "BigBox did not validate the game-wheel box-flip workflow." >&2
+  exit 1
+fi
+if [[ ! -s "$bigbox_box_flip_screenshot" ]] \
+  || [[ $(wc -c < "$bigbox_box_flip_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$bigbox_box_flip_screenshot" \
+      | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$bigbox_box_flip_output" >&2
+  echo "BigBox did not render a valid full-window box-back PNG." >&2
+  exit 1
+fi
+cmp "$media_platform.before-media-smoke" "$media_platform"
+cmp "$game_details_settings.before-game-details-smoke" \
+  "$game_details_settings"
+cmp "$box_flip_bigbox_settings.before-box-flip-smoke" \
+  "$box_flip_bigbox_settings"
+(
+  cd "$media_root"
+  sha256sum --check "$media_files_manifest"
+) >/dev/null
+
+echo "BigBox settings-prioritized front/back box selection, real Flip control, F shortcut contract, animated return, native-path rendering, and read-only media behavior validated."
 
 game_details_ui_state="$test_config_root/game-details-ui-state.json"
 expected_game_details_ui_state="$test_config_root/expected-game-details-ui-state.json"

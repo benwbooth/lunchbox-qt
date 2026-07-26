@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="800" viewBox="0 0 600 800">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3f1d38"/>
+      <stop offset="1" stop-color="#9b426d"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="800" rx="24" fill="url(#background)"/>
+  <rect x="54" y="58" width="492" height="118" rx="14" fill="#190f1a" opacity="0.72"/>
+  <text x="300" y="112" fill="#ffffff" font-family="sans-serif" font-size="34"
+        font-weight="700" text-anchor="middle">FIXTURE ADVENTURE</text>
+  <text x="300" y="152" fill="#ffc4dd" font-family="sans-serif" font-size="20"
+        letter-spacing="5" text-anchor="middle">BOX BACK</text>
+  <rect x="64" y="216" width="472" height="252" rx="18" fill="#130d18" opacity="0.58"/>
+  <path d="M108 410 L220 260 L302 362 L372 290 L494 410 Z"
+        fill="#f0c04a" opacity="0.9"/>
+  <text x="74" y="536" fill="#ffffff" font-family="sans-serif" font-size="25"
+        font-weight="700">EXPLORE THE FIXTURE WORLD</text>
+  <text x="74" y="580" fill="#ffe4ef" font-family="sans-serif" font-size="18">
+    A deterministic back-cover image for native media tests.
+  </text>
+  <text x="74" y="612" fill="#ffe4ef" font-family="sans-serif" font-size="18">
+    Switch sides, return to front, and never modify the source.
+  </text>
+  <rect x="74" y="676" width="238" height="58" rx="8" fill="#f5f5f5"/>
+  <g fill="#171717">
+    <rect x="92" y="688" width="4" height="34"/>
+    <rect x="102" y="688" width="8" height="34"/>
+    <rect x="116" y="688" width="3" height="34"/>
+    <rect x="125" y="688" width="7" height="34"/>
+    <rect x="139" y="688" width="4" height="34"/>
+    <rect x="150" y="688" width="10" height="34"/>
+    <rect x="167" y="688" width="3" height="34"/>
+    <rect x="177" y="688" width="6" height="34"/>
+    <rect x="190" y="688" width="4" height="34"/>
+    <rect x="201" y="688" width="9" height="34"/>
+    <rect x="217" y="688" width="3" height="34"/>
+    <rect x="227" y="688" width="7" height="34"/>
+    <rect x="241" y="688" width="4" height="34"/>
+    <rect x="252" y="688" width="10" height="34"/>
+    <rect x="269" y="688" width="5" height="34"/>
+    <rect x="281" y="688" width="8" height="34"/>
+  </g>
+  <rect x="392" y="666" width="134" height="76" rx="12" fill="#17101b" stroke="#ffc4dd"
+        stroke-width="3"/>
+  <text x="459" y="698" fill="#ffffff" font-family="sans-serif" font-size="16"
+        font-weight="700" text-anchor="middle">FIXTURE</text>
+  <text x="459" y="722" fill="#ffc4dd" font-family="sans-serif" font-size="14"
+        text-anchor="middle">CONSOLE</text>
+</svg>

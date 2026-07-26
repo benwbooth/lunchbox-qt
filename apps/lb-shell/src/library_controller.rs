@@ -79,6 +79,7 @@ pub mod qobject {
         #[qproperty(i32, game_media_revision)]
         #[qproperty(bool, details_show_video)]
         #[qproperty(bool, details_auto_play_video)]
+        #[qproperty(bool, big_box_show_game_menu_flip_box)]
         #[qproperty(i32, filtered_count)]
         #[qproperty(i32, platform_entry_count)]
         #[qproperty(i32, navigation_entry_count)]
@@ -163,6 +164,9 @@ pub mod qobject {
             game_id: QString,
             image_index: i32,
         ) -> i32;
+
+        #[qinvokable]
+        fn game_box_back_url_for_game(self: &LibraryController, game_id: QString) -> QUrl;
 
         #[qinvokable]
         fn game_media_url_at(self: &LibraryController, game_id: QString, index: i32) -> QUrl;
@@ -784,6 +788,22 @@ pub mod qobject {
             next_media_index: i32,
             first_image_url: QString,
             next_image_url: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_launch_box_box_flip_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            front_image_url: QString,
+            back_image_url: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_big_box_box_flip_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            front_image_url: QString,
+            back_image_url: QString,
         ) -> bool;
 
         #[qinvokable]
@@ -1487,6 +1507,7 @@ pub struct LibraryControllerRust {
     game_media_revision: i32,
     details_show_video: bool,
     details_auto_play_video: bool,
+    big_box_show_game_menu_flip_box: bool,
     filtered_count: i32,
     platform_entry_count: i32,
     navigation_entry_count: i32,
@@ -1541,6 +1562,7 @@ pub struct LibraryControllerRust {
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
     front_image_paths: BTreeMap<String, PathBuf>,
+    back_image_paths: BTreeMap<String, PathBuf>,
     game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
     game_details_media_policy: GameDetailsMediaPolicy,
     filtered_indices: Vec<usize>,
@@ -1659,8 +1681,10 @@ struct LoadedLibrary {
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
     front_image_paths: BTreeMap<String, PathBuf>,
+    back_image_paths: BTreeMap<String, PathBuf>,
     game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
     game_details_media_policy: GameDetailsMediaPolicy,
+    big_box_show_game_menu_flip_box: bool,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
     navigation_catalog: NavigationCatalog,
@@ -1687,8 +1711,10 @@ struct LibraryReplacement {
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
     front_image_paths: BTreeMap<String, PathBuf>,
+    back_image_paths: BTreeMap<String, PathBuf>,
     game_media_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
     game_details_media_policy: GameDetailsMediaPolicy,
+    big_box_show_game_menu_flip_box: bool,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
     navigation_catalog: NavigationCatalog,
@@ -1758,8 +1784,10 @@ impl LoadedLibrary {
                 custom_fields_by_game,
                 game_saves_by_game,
                 front_image_paths: BTreeMap::new(),
+                back_image_paths: BTreeMap::new(),
                 game_media_by_game_id: BTreeMap::new(),
                 game_details_media_policy: GameDetailsMediaPolicy::default(),
+                big_box_show_game_menu_flip_box: true,
                 platform_names,
                 platform_sources,
                 navigation_catalog: NavigationCatalog::default(),
@@ -1796,6 +1824,8 @@ impl LoadedLibrary {
         let big_box_pause_screen_policy =
             FrontendPauseScreenPolicy::from_settings(data.big_box_settings())
                 .map_err(|error| error.to_string())?;
+        let big_box_show_game_menu_flip_box =
+            big_box_show_game_menu_flip_box_from_settings(data.big_box_settings());
         let emulator_configuration = data.emulator_configuration().cloned();
         let (platform_names, platform_sources) = platform_state_from_data(&data)?;
         let navigation_catalog = NavigationCatalog {
@@ -1845,6 +1875,7 @@ impl LoadedLibrary {
             .saturating_add(media_report.truncated_configured_folders)
             .saturating_add(media_report.truncated_items);
         let front_image_paths = game_media_index.front_paths_by_game_id;
+        let back_image_paths = game_media_index.back_paths_by_game_id;
         let game_media_by_game_id = game_media_index.items_by_game_id;
         let game_details_media_policy = game_media_index.policy;
         let playlist_count = data.playlists().len();
@@ -1882,8 +1913,10 @@ impl LoadedLibrary {
             custom_fields_by_game,
             game_saves_by_game,
             front_image_paths,
+            back_image_paths,
             game_media_by_game_id,
             game_details_media_policy,
+            big_box_show_game_menu_flip_box,
             platform_names,
             platform_sources,
             navigation_catalog,
@@ -1918,6 +1951,12 @@ fn list_view_from_settings(settings: Option<&FrontendSettings>) -> bool {
     settings
         .and_then(|settings| settings.get_bool("ListView"))
         .unwrap_or(false)
+}
+
+fn big_box_show_game_menu_flip_box_from_settings(settings: Option<&FrontendSettings>) -> bool {
+    settings
+        .and_then(|settings| settings.get_bool("ShowGameMenuFlipBox"))
+        .unwrap_or(true)
 }
 
 fn platform_key(name: &str) -> String {
@@ -15267,8 +15306,10 @@ impl qobject::LibraryController {
                     custom_fields_by_game,
                     game_saves_by_game,
                     front_image_paths: BTreeMap::new(),
+                    back_image_paths: BTreeMap::new(),
                     game_media_by_game_id: BTreeMap::new(),
                     game_details_media_policy: GameDetailsMediaPolicy::default(),
+                    big_box_show_game_menu_flip_box: true,
                     platform_names: vec![document.library().name.clone()],
                     platform_sources: BTreeMap::new(),
                     navigation_catalog: NavigationCatalog::default(),
@@ -15389,6 +15430,14 @@ impl qobject::LibraryController {
                     .map(|(media_index, _)| saturating_i32(media_index))
             })
             .unwrap_or(-1)
+    }
+
+    pub fn game_box_back_url_for_game(&self, game_id: QString) -> QUrl {
+        self.rust()
+            .back_image_paths
+            .get(&game_id.to_string())
+            .map(|path| QUrl::from_local_file(&qstring(path.to_string_lossy())))
+            .unwrap_or_default()
     }
 
     pub fn game_media_url_at(&self, game_id: QString, index: i32) -> QUrl {
@@ -18513,8 +18562,8 @@ impl qobject::LibraryController {
                 .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
         };
         let success = game_id == "fixture-adventure"
-            && items.len() == 4
-            && *self.indexed_media_count() == 4
+            && items.len() == 5
+            && *self.indexed_media_count() == 5
             && image.kind == GameMediaKind::Image
             && image.media_type == "Box - Front"
             && image.path == image_file
@@ -18530,7 +18579,7 @@ impl qobject::LibraryController {
             && !*self.writing();
         if success {
             eprintln!(
-                "GAME_DETAILS_MEDIA_SMOKE_COMPLETE id={game_id} items=4 image=Box-Front video=Video-Snap autoplay=1"
+                "GAME_DETAILS_MEDIA_SMOKE_COMPLETE id={game_id} items=5 image=Box-Front video=Video-Snap autoplay=1"
             );
         }
         success
@@ -18553,7 +18602,7 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=4 image=Box-Front video=Video-Snap autoplay=1 controls=1"
+                "BIGBOX_GAME_DETAILS_MEDIA_SMOKE_COMPLETE id=fixture-adventure items=5 image=Box-Front video=Video-Snap autoplay=1 controls=1"
             );
         }
         success
@@ -18576,7 +18625,7 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=3 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
+                "BIGBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=4 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
             );
         }
         success
@@ -18599,7 +18648,39 @@ impl qobject::LibraryController {
         );
         if success {
             eprintln!(
-                "LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=3 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
+                "LAUNCHBOX_IMAGE_VIEWER_SMOKE_COMPLETE id=fixture-adventure images=4 first=Box-Front next=Screenshot-Gameplay zoom=1 pan=1 switch=1 controls=1"
+            );
+        }
+        success
+    }
+
+    pub fn report_launch_box_box_flip_smoke_success(
+        &self,
+        game_id: QString,
+        front_image_url: QString,
+        back_image_url: QString,
+    ) -> bool {
+        let success =
+            self.validate_box_flip_smoke(&game_id.to_string(), front_image_url, back_image_url);
+        if success {
+            eprintln!(
+                "LAUNCHBOX_BOX_FLIP_SMOKE_COMPLETE id=fixture-adventure front=Box-Front back=Box-Back flip=1 return=1 controls=1"
+            );
+        }
+        success
+    }
+
+    pub fn report_big_box_box_flip_smoke_success(
+        &self,
+        game_id: QString,
+        front_image_url: QString,
+        back_image_url: QString,
+    ) -> bool {
+        let success =
+            self.validate_box_flip_smoke(&game_id.to_string(), front_image_url, back_image_url);
+        if success {
+            eprintln!(
+                "BIGBOX_BOX_FLIP_SMOKE_COMPLETE id=fixture-adventure front=Box-Front back=Box-Back flip=1 return=1 controls=1"
             );
         }
         success
@@ -22547,8 +22628,10 @@ impl qobject::LibraryController {
                     custom_fields_by_game: loaded.custom_fields_by_game,
                     game_saves_by_game: loaded.game_saves_by_game,
                     front_image_paths: loaded.front_image_paths,
+                    back_image_paths: loaded.back_image_paths,
                     game_media_by_game_id: loaded.game_media_by_game_id,
                     game_details_media_policy: loaded.game_details_media_policy,
+                    big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     platform_names: loaded.platform_names,
                     platform_sources: loaded.platform_sources,
                     navigation_catalog: loaded.navigation_catalog,
@@ -25913,6 +25996,7 @@ impl qobject::LibraryController {
                 {
                     let mut rust = self.as_mut().rust_mut();
                     rust.front_image_paths.remove(&deleted.game.id);
+                    rust.back_image_paths.remove(&deleted.game.id);
                     rust.game_media_by_game_id.remove(&deleted.game.id);
                     rust.games.remove(actual_index);
                     rust.game_sources.remove(actual_index);
@@ -26144,8 +26228,10 @@ impl qobject::LibraryController {
             custom_fields_by_game,
             game_saves_by_game,
             front_image_paths,
+            back_image_paths,
             game_media_by_game_id,
             game_details_media_policy,
+            big_box_show_game_menu_flip_box,
             platform_names,
             platform_sources,
             navigation_catalog,
@@ -26197,6 +26283,7 @@ impl qobject::LibraryController {
             rust.custom_fields_by_game = custom_fields_by_game;
             rust.game_saves_by_game = game_saves_by_game;
             rust.front_image_paths = front_image_paths;
+            rust.back_image_paths = back_image_paths;
             rust.game_media_by_game_id = game_media_by_game_id;
             rust.game_details_media_policy = game_details_media_policy;
             rust.list_view_column_layout = list_view_column_layout;
@@ -26303,6 +26390,8 @@ impl qobject::LibraryController {
         self.as_mut().set_details_show_video(details_show_video);
         self.as_mut()
             .set_details_auto_play_video(details_auto_play_video);
+        self.as_mut()
+            .set_big_box_show_game_menu_flip_box(big_box_show_game_menu_flip_box);
         self.as_mut().set_filtered_count(filtered_count);
         self.as_mut().set_platform_entry_count(platform_entry_count);
         self.as_mut()
@@ -26454,11 +26543,12 @@ impl qobject::LibraryController {
                 .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
         };
         game_id == "fixture-adventure"
-            && items.len() == 4
-            && self.game_image_count_for_game(qstring(game_id)) == 3
+            && items.len() == 5
+            && self.game_image_count_for_game(qstring(game_id)) == 4
             && self.game_image_media_index_at(qstring(game_id), 0) == first_media_index
             && self.game_image_media_index_at(qstring(game_id), 1) == next_media_index
             && self.game_image_media_index_at(qstring(game_id), 2) == 2
+            && self.game_image_media_index_at(qstring(game_id), 3) == 3
             && first_image.kind == GameMediaKind::Image
             && first_image.media_type == "Box - Front"
             && first_image.path == first_file
@@ -26467,6 +26557,62 @@ impl qobject::LibraryController {
             && next_image.media_type == "Screenshot - Gameplay"
             && next_image.path == next_file
             && safe_regular_file(&next_file)
+            && items[3].kind == GameMediaKind::Image
+            && items[3].media_type == "Box - Back"
+            && !*self.loading()
+            && !*self.writing()
+    }
+
+    fn validate_box_flip_smoke(
+        &self,
+        game_id: &str,
+        front_image_url: QString,
+        back_image_url: QString,
+    ) -> bool {
+        let Some(front_path) = self.rust().front_image_paths.get(game_id) else {
+            return false;
+        };
+        let Some(back_path) = self.rust().back_image_paths.get(game_id) else {
+            return false;
+        };
+        let Some(front_file) = QUrl::from_user_input(&front_image_url, &QString::default())
+            .to_local_file()
+            .map(|path| PathBuf::from(path.to_string()))
+        else {
+            return false;
+        };
+        let Some(back_file) = QUrl::from_user_input(&back_image_url, &QString::default())
+            .to_local_file()
+            .map(|path| PathBuf::from(path.to_string()))
+        else {
+            return false;
+        };
+        let safe_regular_file = |path: &Path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        };
+        let Some(items) = self.rust().game_media_by_game_id.get(game_id) else {
+            return false;
+        };
+        let has_media = |media_type: &str, path: &Path| {
+            items.iter().any(|item| {
+                item.kind == GameMediaKind::Image
+                    && item.media_type == media_type
+                    && item.path == path
+            })
+        };
+        game_id == "fixture-adventure"
+            && items.len() == 5
+            && self.game_image_count_for_game(qstring(game_id)) == 4
+            && self.rust().front_image_paths.len() == 1
+            && self.rust().back_image_paths.len() == 1
+            && front_path == &front_file
+            && back_path == &back_file
+            && front_path != back_path
+            && safe_regular_file(&front_file)
+            && safe_regular_file(&back_file)
+            && has_media("Box - Front", &front_file)
+            && has_media("Box - Back", &back_file)
             && !*self.loading()
             && !*self.writing()
     }
@@ -27254,6 +27400,32 @@ mod tests {
         };
         assert!(!list_view_from_settings(Some(&invalid)));
         assert!(!list_view_from_settings(None));
+    }
+
+    #[test]
+    fn big_box_flip_menu_setting_is_typed_with_a_visible_default() {
+        let hidden = FrontendSettings {
+            entries: vec![lb_domain::SettingEntry {
+                key: "ShowGameMenuFlipBox".into(),
+                value: "false".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert!(!big_box_show_game_menu_flip_box_from_settings(Some(
+            &hidden
+        )));
+
+        let invalid = FrontendSettings {
+            entries: vec![lb_domain::SettingEntry {
+                key: "ShowGameMenuFlipBox".into(),
+                value: "future-value".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert!(big_box_show_game_menu_flip_box_from_settings(Some(
+            &invalid
+        )));
+        assert!(big_box_show_game_menu_flip_box_from_settings(None));
     }
 
     #[test]
@@ -30693,7 +30865,7 @@ mod tests {
             payload,
         )
         .unwrap();
-        assert_eq!(edited.folder_count, 5);
+        assert_eq!(edited.folder_count, 6);
         assert_eq!(
             fs::read(&edited.catalog_backup).unwrap(),
             original_catalog.as_bytes()
@@ -30718,8 +30890,8 @@ mod tests {
         assert_eq!(platform.release_date.as_deref(), Some("2001-02-03"));
         assert!(platform.metadata.hide_in_big_box);
         assert!(platform.disable_auto_import);
-        assert_eq!(catalog.folders[4].media_type, "Manual");
-        assert_eq!(catalog.folders[4].folder_path, r"Manuals\Fixture Console");
+        assert_eq!(catalog.folders[5].media_type, "Manual");
+        assert_eq!(catalog.folders[5].folder_path, r"Manuals\Fixture Console");
         assert!(!directory.path().join("Manuals").exists());
     }
 

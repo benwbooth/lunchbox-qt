@@ -20,6 +20,13 @@ const FALLBACK_FRONT_IMAGE_TYPES: &[&str] = &[
     "Fanart - Box - Front",
 ];
 
+const FALLBACK_BACK_IMAGE_TYPES: &[&str] = &[
+    "Box - Back",
+    "Box - Back - Reconstructed",
+    "Advertisement Flyer - Back",
+    "Fanart - Box - Back",
+];
+
 const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &[
     "bmp", "gif", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp",
 ];
@@ -104,6 +111,7 @@ impl GameDetailsMediaPolicy {
 pub struct GameMediaIndex {
     pub items_by_game_id: BTreeMap<String, Vec<GameMediaItem>>,
     pub front_paths_by_game_id: BTreeMap<String, PathBuf>,
+    pub back_paths_by_game_id: BTreeMap<String, PathBuf>,
     pub policy: GameDetailsMediaPolicy,
     pub report: GameMediaIndexReport,
 }
@@ -206,6 +214,19 @@ pub fn front_image_type_priorities(settings: Option<&FrontendSettings>) -> Vec<S
         .collect()
 }
 
+pub fn back_image_type_priorities(settings: Option<&FrontendSettings>) -> Vec<String> {
+    settings
+        .and_then(|settings| settings.get("BackImageTypePriorities"))
+        .map(split_priorities)
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| {
+            FALLBACK_BACK_IMAGE_TYPES
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect()
+        })
+}
+
 pub fn region_priorities(settings: Option<&FrontendSettings>) -> Vec<String> {
     settings
         .and_then(|settings| settings.get("RegionPriorities"))
@@ -296,6 +317,7 @@ pub fn index_game_media(
 ) -> GameMediaIndex {
     let policy = GameDetailsMediaPolicy::from_settings(settings);
     let front_priorities = front_image_type_priorities(settings);
+    let back_priorities = back_image_type_priorities(settings);
     let region_priorities = region_priorities(settings);
     let games_by_platform = games_by_platform(games);
     let mut scan_report = FrontImageIndexReport::default();
@@ -507,34 +529,19 @@ pub fn index_game_media(
         .map(|game| (game.id.as_str(), game))
         .collect::<BTreeMap<_, _>>();
     let mut front_paths_by_game_id = BTreeMap::new();
+    let mut back_paths_by_game_id = BTreeMap::new();
     for (game_id, items) in &items_by_game_id {
         let Some(game) = games_by_id.get(game_id.as_str()) else {
             continue;
         };
-        let selected = front_priorities.iter().find_map(|priority| {
-            items
-                .iter()
-                .filter(|item| {
-                    item.kind == GameMediaKind::Image
-                        && item.media_type.trim().eq_ignore_ascii_case(priority)
-                })
-                .min_by(|left, right| {
-                    media_region_rank(
-                        left.region.as_deref(),
-                        game.region.as_deref(),
-                        &region_priorities,
-                    )
-                    .cmp(&media_region_rank(
-                        right.region.as_deref(),
-                        game.region.as_deref(),
-                        &region_priorities,
-                    ))
-                    .then_with(|| left.ordinal.cmp(&right.ordinal))
-                    .then_with(|| left.path.cmp(&right.path))
-                })
-        });
-        if let Some(selected) = selected {
+        if let Some(selected) =
+            select_game_image(items, game, &front_priorities, &region_priorities)
+        {
             front_paths_by_game_id.insert(game_id.clone(), selected.path.clone());
+        }
+        if let Some(selected) = select_game_image(items, game, &back_priorities, &region_priorities)
+        {
+            back_paths_by_game_id.insert(game_id.clone(), selected.path.clone());
         }
     }
 
@@ -548,9 +555,40 @@ pub fn index_game_media(
     GameMediaIndex {
         items_by_game_id,
         front_paths_by_game_id,
+        back_paths_by_game_id,
         policy,
         report,
     }
+}
+
+fn select_game_image<'a>(
+    items: &'a [GameMediaItem],
+    game: &Game,
+    priorities: &[String],
+    region_priorities: &[String],
+) -> Option<&'a GameMediaItem> {
+    priorities.iter().find_map(|priority| {
+        items
+            .iter()
+            .filter(|item| {
+                item.kind == GameMediaKind::Image
+                    && item.media_type.trim().eq_ignore_ascii_case(priority)
+            })
+            .min_by(|left, right| {
+                media_region_rank(
+                    left.region.as_deref(),
+                    game.region.as_deref(),
+                    region_priorities,
+                )
+                .cmp(&media_region_rank(
+                    right.region.as_deref(),
+                    game.region.as_deref(),
+                    region_priorities,
+                ))
+                .then_with(|| left.ordinal.cmp(&right.ordinal))
+                .then_with(|| left.path.cmp(&right.path))
+            })
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1245,6 +1283,10 @@ mod tests {
             ["Steam Poster", "Box - Front", "Fanart - Box - Front"]
         );
         assert_eq!(
+            back_image_type_priorities(Some(&settings)),
+            FALLBACK_BACK_IMAGE_TYPES
+        );
+        assert_eq!(
             region_priorities(Some(&settings)),
             ["North America", "United States"]
         );
@@ -1270,6 +1312,18 @@ mod tests {
         assert_eq!(
             front_image_type_priorities(Some(&unrelated_default)),
             FALLBACK_FRONT_IMAGE_TYPES
+        );
+
+        let configured_back = FrontendSettings {
+            entries: vec![SettingEntry {
+                key: "BackImageTypePriorities".into(),
+                value: "Fanart - Box - Back, Box - Back, fanart - box - back".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            back_image_type_priorities(Some(&configured_back)),
+            ["Fanart - Box - Back", "Box - Back"]
         );
     }
 
@@ -1332,6 +1386,7 @@ mod tests {
     fn indexes_all_selected_game_media_with_native_paths_and_launchbox_ordering() {
         let directory = tempfile::tempdir().expect("temporary LaunchBox root");
         let boxes = directory.path().join("Images/Fixture Console/Box - Front");
+        let box_backs = directory.path().join("Images/Fixture Console/Box - Back");
         let screenshots = directory
             .path()
             .join("Images/Fixture Console/Screenshot - Gameplay");
@@ -1339,12 +1394,17 @@ mod tests {
             .path()
             .join("Images/Fixture Console/Fanart - Background");
         let videos = directory.path().join("Videos/Fixture Console");
-        for folder in [&boxes, &screenshots, &fanart] {
+        for folder in [&boxes, &box_backs, &screenshots, &fanart] {
             fs::create_dir_all(folder.join("North America")).expect("image region");
         }
         fs::create_dir_all(videos.join("Theme/North America")).expect("theme video region");
         fs::create_dir_all(videos.join("Trailer")).expect("trailer video folder");
         fs::write(boxes.join("North America/Fixture Adventure-02.png"), b"box").expect("box");
+        fs::write(
+            box_backs.join("North America/Fixture Adventure-01.png"),
+            b"box back",
+        )
+        .expect("box back");
         fs::write(
             screenshots.join("North America/Fixture Adventure-01.jpg"),
             b"screenshot",
@@ -1387,6 +1447,11 @@ mod tests {
             },
             PlatformFolder {
                 platform: "Fixture Console".into(),
+                media_type: "Box - Back".into(),
+                folder_path: r"Images\Fixture Console\Box - Back".into(),
+            },
+            PlatformFolder {
+                platform: "Fixture Console".into(),
                 media_type: "Fanart - Background".into(),
                 folder_path: r"Images\Fixture Console\Fanart - Background".into(),
             },
@@ -1404,6 +1469,10 @@ mod tests {
                 SettingEntry {
                     key: "FrontImageTypePriorities".into(),
                     value: "Box - Front,Screenshot - Gameplay,Fanart - Background".into(),
+                },
+                SettingEntry {
+                    key: "BackImageTypePriorities".into(),
+                    value: "Box - Back,Box - Back - Reconstructed,Advertisement Flyer - Back,Fanart - Box - Back".into(),
                 },
                 SettingEntry {
                     key: "RegionPriorities".into(),
@@ -1433,7 +1502,7 @@ mod tests {
             &HostPathResolver::default(),
         );
         let items = &index.items_by_game_id["fixture-adventure"];
-        assert_eq!(items.len(), 7);
+        assert_eq!(items.len(), 8);
         assert_eq!(
             items
                 .iter()
@@ -1443,6 +1512,7 @@ mod tests {
                 (GameMediaKind::Image, "Box - Front", 2),
                 (GameMediaKind::Image, "Screenshot - Gameplay", 1),
                 (GameMediaKind::Image, "Fanart - Background", 1),
+                (GameMediaKind::Image, "Box - Back", 1),
                 (GameMediaKind::Video, "Theme Video", 1),
                 (GameMediaKind::Video, "Trailer", 2),
                 (GameMediaKind::Video, "Video Snap", 0),
@@ -1453,7 +1523,11 @@ mod tests {
             index.front_paths_by_game_id["fixture-adventure"],
             boxes.join("North America/Fixture Adventure-02.png")
         );
-        assert_eq!(index.report.indexed_images, 3);
+        assert_eq!(
+            index.back_paths_by_game_id["fixture-adventure"],
+            box_backs.join("North America/Fixture Adventure-01.png")
+        );
+        assert_eq!(index.report.indexed_images, 4);
         assert_eq!(index.report.indexed_videos, 4);
         assert_eq!(index.report.matched_games, 1);
         assert!(
