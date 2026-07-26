@@ -12,6 +12,7 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/BackgroundMusicPlayer.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxStartupPresentation.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxAttractMode.qml");
+    println!("cargo:rerun-if-changed=qml/BigBoxScreensaver.qml");
     println!("cargo:rerun-if-changed=qml/LaunchStartupOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchShutdownOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchPauseOverlay.qml");
@@ -33,6 +34,7 @@ fn main() {
                 "qml/BackgroundMusicPlayer.qml",
                 "qml/BigBoxStartupPresentation.qml",
                 "qml/BigBoxAttractMode.qml",
+                "qml/BigBoxScreensaver.qml",
                 "qml/LaunchStartupOverlay.qml",
                 "qml/LaunchShutdownOverlay.qml",
                 "qml/LaunchPauseOverlay.qml",

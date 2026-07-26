@@ -16,6 +16,7 @@ ApplicationWindow {
     title: "BigBox Port"
     color: "#07090d"
     onClosing: {
+        bigBoxScreensaver.stopMode("frontend")
         bigBoxAttractMode.stopMode("frontend")
         startupPresentationOverlay.stopForFrontend()
         bigBoxMusicPlayer.stopPlayback(true)
@@ -114,6 +115,22 @@ ApplicationWindow {
     property int attractModeAutoDelayElapsedMs: 0
     property double attractModeDisabledWaitStartedAt: 0
     property int attractNavigationCursor: -1
+    property bool screensaverSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-screensaver-smoke-test") >= 0
+    property bool screensaverDisabledSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-screensaver-disabled-smoke-test") >= 0
+    property bool screensaverAnySmokeTest:
+        screensaverSmokeTest || screensaverDisabledSmokeTest
+    property int screensaverSmokePhase: 0
+    property bool screensaverSmokeFinished: false
+    property double screensaverPhaseStartedAt: 0
+    property double screensaverDisabledWaitStartedAt: 0
+    property bool screensaverCapturePending: false
+    property bool screensaverVideoReadySeen: false
+    property string screensaverScreenshotPrefix:
+        argumentValue("--bigbox-screensaver-screenshot-prefix")
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -676,6 +693,19 @@ ApplicationWindow {
         return false
     }
 
+    function exploreScreensaverGame(gameId) {
+        activateNavigationRow(0)
+        setAttributeFilters("any", "none", false, false)
+        controller.search_text = ""
+        const row = controller.row_for_game_id(gameId)
+        if (row < 0)
+            return false
+        gameList.currentIndex = row
+        gameList.positionViewAtIndex(row, ListView.Center)
+        gameList.forceActiveFocus()
+        return true
+    }
+
     function finishAttractModeSmoke(expectedEnabled) {
         const wheelSteps = expectedEnabled
                          ? attractModeAutoWheelSteps
@@ -738,6 +768,77 @@ ApplicationWindow {
             }
             exitMode()
         })
+    }
+
+    function captureScreensaverView(viewOrdinal) {
+        if (screensaverCapturePending)
+            return
+        const path = screensaverScreenshotPrefix.length > 0
+                   ? screensaverScreenshotPrefix
+                     + "-view" + viewOrdinal + ".png" : ""
+        function advance() {
+            screensaverCapturePending = false
+            if (viewOrdinal < 4) {
+                bigBoxScreensaver.setSmokeView(viewOrdinal + 1)
+                screensaverSmokePhase += 1
+                screensaverPhaseStartedAt = Date.now()
+            } else {
+                bigBoxScreensaver.clickReturnForSmoke()
+                screensaverSmokePhase = 7
+            }
+        }
+        if (path.length === 0) {
+            advance()
+            return
+        }
+        screensaverCapturePending = true
+        bigBoxScreensaver.grabToImage(function(result) {
+            if (!result.saveToFile(path)) {
+                console.error(
+                    "BIGBOX_SCREENSAVER_SCREENSHOT_SAVE_FAILED path="
+                    + path)
+                Qt.exit(648 + viewOrdinal)
+                return
+            }
+            advance()
+        })
+    }
+
+    function finishScreensaverSmoke(expectedEnabled) {
+        const automaticDelay = expectedEnabled
+                             ? bigBoxScreensaver
+                               .lastAutomaticDelayElapsedMs : 0
+        if (!controller.report_big_box_screensaver_smoke_success(
+                expectedEnabled,
+                bigBoxScreensaver.swapCount,
+                bigBoxScreensaver.selectionCount,
+                automaticDelay,
+                bigBoxScreensaver.manualStartCount > 0,
+                bigBoxScreensaver.inputStopCount,
+                bigBoxScreensaver.exploreCount,
+                bigBoxScreensaver.presentedViewsMask,
+                bigBoxScreensaver.videoPlaybackSeen,
+                screensaverVideoReadySeen)) {
+            console.error(
+                "BIGBOX_SCREENSAVER_CONTROLLER_REJECTED enabled="
+                + expectedEnabled
+                + " swaps=" + bigBoxScreensaver.swapCount
+                + " selections=" + bigBoxScreensaver.selectionCount
+                + " autoDelay=" + automaticDelay
+                + " manualStarts="
+                + bigBoxScreensaver.manualStartCount
+                + " inputStops=" + bigBoxScreensaver.inputStopCount
+                + " explore=" + bigBoxScreensaver.exploreCount
+                + " views=" + bigBoxScreensaver.presentedViewsMask
+                + " videoState="
+                + bigBoxScreensaver.videoPlaybackState
+                + " videoStatus="
+                + bigBoxScreensaver.videoMediaStatus)
+            Qt.exit(647)
+            return
+        }
+        screensaverSmokeFinished = true
+        Qt.quit()
     }
 
     function filteredIdsMatch(expected) {
@@ -2893,6 +2994,8 @@ ApplicationWindow {
                 Keys.onPressed: function(event) {
                     if (!bigBoxAttractMode.active)
                         bigBoxAttractMode.noteActivity()
+                    if (!bigBoxScreensaver.active)
+                        bigBoxScreensaver.noteActivity()
                 }
                 Keys.onEnterPressed: function(event) {
                     window.launchSelection()
@@ -3103,7 +3206,10 @@ ApplicationWindow {
                     }
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: gameList.currentIndex = index
+                        onClicked: {
+                            bigBoxScreensaver.noteActivity()
+                            gameList.currentIndex = index
+                        }
                         onDoubleClicked: window.launchGame(index, gameId)
                     }
                 }
@@ -3137,6 +3243,16 @@ ApplicationWindow {
                     && !bigBoxAttractMode.active
                 Accessible.name: "Start Attract Mode"
                 onClicked: bigBoxAttractMode.startManual()
+            }
+            Button {
+                id: startScreensaverButton
+                text: "START SCREENSAVER"
+                enabled:
+                    controller.big_box_screensaver_candidate_count > 0
+                    && !bigBoxScreensaver.blocked
+                    && !bigBoxScreensaver.active
+                Accessible.name: "Start screensaver"
+                onClicked: bigBoxScreensaver.startManual()
             }
             Button {
                 id: bigBoxGameDetailsButton
@@ -4463,6 +4579,39 @@ ApplicationWindow {
         }
     }
 
+    BigBoxScreensaver {
+        id: bigBoxScreensaver
+        anchors.fill: parent
+        z: 9500
+        controller: controller
+        mutedForSmoke: window.screensaverAnySmokeTest
+        blocked:
+            controller.loading
+            || controller.writing
+            || controller.launching
+            || controller.launch_session_active
+            || controller.startup_screen_active
+            || controller.shutdown_screen_active
+            || controller.pause_screen_active
+            || window.startupPresentationPending
+            || bigBoxGameDetails.opened
+            || bigBoxImageViewer.opened
+            || bigBoxModelViewer.opened
+            || attributeFilterDrawer.opened
+            || navigationDrawer.opened
+            || launchWithDialog.opened
+            || bigBoxAttractMode.active
+        activationCallback: function() {
+            bigBoxAttractMode.stopMode("screensaver")
+            bigBoxMediaPlayer.stop()
+            bigBoxMusicPlayer.stopPlayback(true)
+        }
+        exploreGameCallback: window.exploreScreensaverGame
+        focusReturnCallback: function() {
+            gameList.forceActiveFocus()
+        }
+    }
+
     BigBoxAttractMode {
         id: bigBoxAttractMode
         anchors.fill: parent
@@ -4484,6 +4633,7 @@ ApplicationWindow {
             || attributeFilterDrawer.opened
             || navigationDrawer.opened
             || launchWithDialog.opened
+            || bigBoxScreensaver.active
         advanceWheelCallback: window.advanceAttractWheel
         switchFilterCallback: window.switchAttractFilter
         focusReturnCallback: function() {
@@ -4570,6 +4720,7 @@ ApplicationWindow {
             || controller.launching
             || controller.launch_session_active
             || window.startupPresentationPending
+            || bigBoxScreensaver.active
             || bigBoxMusicPlayer.opened
             || (!controller
                 .big_box_play_video_audio_with_background_music
@@ -4710,6 +4861,128 @@ ApplicationWindow {
                 + " soundStatus=" + bigBoxAttractMode.moveSoundStatus
                 + " controller=" + controller.status_message)
             Qt.exit(640 + window.attractModeSmokePhase)
+        }
+    }
+
+    Timer {
+        interval: 20
+        repeat: true
+        running: window.screensaverAnySmokeTest
+                 && !window.screensaverSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.library_path.length === 0)
+                return
+            if (bigBoxScreensaver.videoReady)
+                window.screensaverVideoReadySeen = true
+
+            if (window.screensaverDisabledSmokeTest) {
+                if (window.screensaverSmokePhase === 0) {
+                    window.screensaverDisabledWaitStartedAt = Date.now()
+                    window.screensaverSmokePhase = 1
+                } else if (window.screensaverSmokePhase === 1) {
+                    if (Date.now()
+                            - window.screensaverDisabledWaitStartedAt
+                            < 1300)
+                        return
+                    if (bigBoxScreensaver.active
+                            || bigBoxScreensaver.lastStartSource
+                               === "automatic") {
+                        console.error(
+                            "BIGBOX_SCREENSAVER_DISABLED_AUTO_STARTED")
+                        Qt.exit(646)
+                        return
+                    }
+                    startScreensaverButton.clicked()
+                    window.screensaverSmokePhase = 2
+                } else if (window.screensaverSmokePhase === 2) {
+                    if (!bigBoxScreensaver.active
+                            || bigBoxScreensaver.lastStartSource
+                               !== "manual"
+                            || !bigBoxScreensaver.videoPlaybackSeen
+                            || !window.screensaverVideoReadySeen)
+                        return
+                    bigBoxScreensaver.setSmokeView(1)
+                    bigBoxScreensaver.setSmokeView(2)
+                    bigBoxScreensaver.setSmokeView(3)
+                    bigBoxScreensaver.setSmokeView(4)
+                    bigBoxScreensaver.clickReturnForSmoke()
+                    window.screensaverSmokePhase = 3
+                } else if (window.screensaverSmokePhase === 3) {
+                    if (bigBoxScreensaver.active)
+                        return
+                    window.finishScreensaverSmoke(false)
+                }
+                return
+            }
+
+            if (window.screensaverSmokePhase === 0) {
+                if (!controller.big_box_screensaver_enabled
+                        || bigBoxScreensaver.idleCountdownStartedAt <= 0)
+                    return
+                window.screensaverSmokePhase = 1
+            } else if (window.screensaverSmokePhase === 1) {
+                if (!bigBoxScreensaver.active
+                        || bigBoxScreensaver.lastStartSource
+                           !== "automatic")
+                    return
+                window.screensaverSmokePhase = 2
+            } else if (window.screensaverSmokePhase === 2) {
+                if (!bigBoxScreensaver.active
+                        || bigBoxScreensaver.swapCount < 1
+                        || !bigBoxScreensaver.videoPlaybackSeen
+                        || !window.screensaverVideoReadySeen)
+                    return
+                bigBoxScreensaver.setSmokeView(1)
+                window.screensaverPhaseStartedAt = Date.now()
+                window.screensaverSmokePhase = 3
+            } else if (window.screensaverSmokePhase >= 3
+                       && window.screensaverSmokePhase <= 6) {
+                if (Date.now() - window.screensaverPhaseStartedAt < 1400)
+                    return
+                window.captureScreensaverView(
+                    window.screensaverSmokePhase - 2)
+            } else if (window.screensaverSmokePhase === 7) {
+                if (bigBoxScreensaver.active)
+                    return
+                startScreensaverButton.clicked()
+                window.screensaverSmokePhase = 8
+            } else if (window.screensaverSmokePhase === 8) {
+                if (!bigBoxScreensaver.active
+                        || bigBoxScreensaver.lastStartSource !== "manual")
+                    return
+                bigBoxScreensaver.clickExploreForSmoke()
+                window.screensaverSmokePhase = 9
+            } else if (window.screensaverSmokePhase === 9) {
+                if (bigBoxScreensaver.active
+                        || window.selectedBigBoxGameId
+                           !== "fixture-adventure")
+                    return
+                window.finishScreensaverSmoke(true)
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.screensaverAnySmokeTest
+                 && !window.screensaverSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_SCREENSAVER_TIMEOUT phase="
+                + window.screensaverSmokePhase
+                + " active=" + bigBoxScreensaver.active
+                + " source=" + bigBoxScreensaver.lastStartSource
+                + " stop=" + bigBoxScreensaver.lastStopReason
+                + " swaps=" + bigBoxScreensaver.swapCount
+                + " selections=" + bigBoxScreensaver.selectionCount
+                + " views=" + bigBoxScreensaver.presentedViewsMask
+                + " videoState="
+                + bigBoxScreensaver.videoPlaybackState
+                + " videoStatus="
+                + bigBoxScreensaver.videoMediaStatus
+                + " controller=" + controller.status_message)
+            Qt.exit(645 + window.screensaverSmokePhase)
         }
     }
 
@@ -5227,6 +5500,14 @@ ApplicationWindow {
                  && !bigBoxAttractMode.blocked
                  && controller.filtered_count > 0
         onActivated: bigBoxAttractMode.startManual()
+    }
+
+    Shortcut {
+        sequence: "S"
+        enabled: !bigBoxScreensaver.active
+                 && !bigBoxScreensaver.blocked
+                 && controller.big_box_screensaver_candidate_count > 0
+        onActivated: bigBoxScreensaver.startManual()
     }
 
     Shortcut {

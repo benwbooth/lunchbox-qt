@@ -539,6 +539,22 @@ decoded sound, volume, actual return/input controls, rendered UI, and immutable
 library data. The protected product's exact curve, filter algorithm, and
 binding interpretation remain explicitly open rather than being inferred.
 
+The first native BigBox screensaver subset recovers the four 13.27 presentation
+families and all nine persisted screensaver/video settings into a typed Rust
+policy. It projects stable-ID candidates only from the existing symlink-safe
+native media index, applies the three missing-media switches, starts from true
+idle or an explicit visible action, selects randomly while avoiding the
+current game when possible, and swaps within the configured bounded interval.
+One lifecycle-owned Qt layer renders fanart/metadata, full video, split
+box-and-video/screenshot, or centered media/metadata layouts. Enter explores
+the selected game; other key, pointer, wheel, and visible-return input restores
+the wheel. Video and master volume are composed without a helper process or
+runtime shell. Compiled enabled and disabled scenarios exercise automatic and
+manual entry, all four rendered views, genuine H.264 playback, swaps,
+return/explore actions, and immutable settings/media. Exact protected random
+rounding, transitions, controller mapping, custom-theme fidelity, and native
+Windows/macOS Qt Multimedia execution remain explicit parity gates.
+
 LaunchBox also has a three-page manual ROM importer backed by the reusable
 `lb-import` crate. It accepts multiple native files and folders, optional
 recursive discovery and extension filters, file- or folder-derived editable

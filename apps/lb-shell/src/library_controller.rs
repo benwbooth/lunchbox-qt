@@ -119,6 +119,17 @@ pub mod qobject {
         #[qproperty(bool, big_box_play_move_in_attract_mode)]
         #[qproperty(i32, big_box_attract_mode_navigation_sound_volume_percent)]
         #[qproperty(i32, big_box_attract_mode_master_volume_percent)]
+        #[qproperty(bool, big_box_screensaver_enabled)]
+        #[qproperty(i32, big_box_screensaver_delay_seconds)]
+        #[qproperty(i32, big_box_screensaver_minimum_swap_time_ms)]
+        #[qproperty(i32, big_box_screensaver_maximum_swap_time_ms)]
+        #[qproperty(bool, big_box_screensaver_skip_games_missing_background)]
+        #[qproperty(bool, big_box_screensaver_skip_games_missing_box_art)]
+        #[qproperty(bool, big_box_screensaver_skip_games_missing_video)]
+        #[qproperty(QString, big_box_screensaver_view)]
+        #[qproperty(i32, big_box_screensaver_video_volume_percent)]
+        #[qproperty(i32, big_box_screensaver_master_volume_percent)]
+        #[qproperty(i32, big_box_screensaver_candidate_count)]
         #[qproperty(bool, big_box_show_game_menu_flip_box)]
         #[qproperty(bool, big_box_show_game_menu_model)]
         #[qproperty(i32, filtered_count)]
@@ -302,6 +313,73 @@ pub mod qobject {
 
         #[qinvokable]
         fn big_box_attract_mode_wheel_interval_ms(self: &LibraryController, step: i32) -> i32;
+
+        #[qinvokable]
+        fn select_big_box_screensaver_candidate(
+            self: Pin<&mut LibraryController>,
+            avoid_game_id: QString,
+        ) -> i32;
+
+        #[qinvokable]
+        fn big_box_screensaver_swap_time_ms(self: &LibraryController, entropy: i32) -> i32;
+
+        #[qinvokable]
+        fn big_box_screensaver_game_id_at(
+            self: &LibraryController,
+            candidate_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn big_box_screensaver_title_at(self: &LibraryController, candidate_index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_screensaver_platform_at(
+            self: &LibraryController,
+            candidate_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn big_box_screensaver_genre_at(self: &LibraryController, candidate_index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_screensaver_release_date_at(
+            self: &LibraryController,
+            candidate_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn big_box_screensaver_play_time_seconds_at(
+            self: &LibraryController,
+            candidate_index: i32,
+        ) -> f64;
+
+        #[qinvokable]
+        fn big_box_screensaver_star_rating_at(
+            self: &LibraryController,
+            candidate_index: i32,
+        ) -> f64;
+
+        #[qinvokable]
+        fn big_box_screensaver_background_url_at(
+            self: &LibraryController,
+            candidate_index: i32,
+        ) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_screensaver_box_art_url_at(
+            self: &LibraryController,
+            candidate_index: i32,
+        ) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_screensaver_screenshot_url_at(
+            self: &LibraryController,
+            candidate_index: i32,
+        ) -> QUrl;
+
+        #[qinvokable]
+        fn big_box_screensaver_video_url_at(self: &LibraryController, candidate_index: i32)
+            -> QUrl;
 
         #[qinvokable]
         fn game_model_settings_json_for_game(self: &LibraryController, game_id: QString)
@@ -935,6 +1013,21 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_big_box_screensaver_smoke_success(
+            self: &LibraryController,
+            expected_enabled: bool,
+            swap_count: i32,
+            selection_count: i32,
+            automatic_delay_elapsed_ms: i32,
+            manual_start_seen: bool,
+            input_stop_count: i32,
+            explore_count: i32,
+            presented_views_mask: i32,
+            video_playback_seen: bool,
+            video_ready: bool,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_game_details_smoke_success(
             self: &LibraryController,
             row: i32,
@@ -1464,12 +1557,15 @@ use lb_platform::{
     navigation_document_file_name, platform_document_file_name, portable_storage_name,
     prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
+    project_big_box_screensaver_candidates,
+    select_big_box_screensaver_candidate as select_screensaver_candidate_index,
     select_emulator_for_game, ArchiveExtractor, BigBoxAttractModePolicy,
-    BigBoxBackgroundMusicPolicy, BigBoxMusicPolicy, BigBoxStartupPresentationIndex,
-    BigBoxStartupPresentationPolicy, FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy,
-    GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem, GameMediaKind, HostPathMappings,
-    HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
-    LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
+    BigBoxBackgroundMusicPolicy, BigBoxMusicPolicy, BigBoxScreensaverCandidate,
+    BigBoxScreensaverPolicy, BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy,
+    FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy, GameDetailsMediaPolicy,
+    GameDetailsWindowState, GameMediaItem, GameMediaKind, HostPathMappings, HostPathResolver,
+    LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand, LaunchKind,
+    LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
     LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
     ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS,
 };
@@ -1765,6 +1861,17 @@ pub struct LibraryControllerRust {
     big_box_play_move_in_attract_mode: bool,
     big_box_attract_mode_navigation_sound_volume_percent: i32,
     big_box_attract_mode_master_volume_percent: i32,
+    big_box_screensaver_enabled: bool,
+    big_box_screensaver_delay_seconds: i32,
+    big_box_screensaver_minimum_swap_time_ms: i32,
+    big_box_screensaver_maximum_swap_time_ms: i32,
+    big_box_screensaver_skip_games_missing_background: bool,
+    big_box_screensaver_skip_games_missing_box_art: bool,
+    big_box_screensaver_skip_games_missing_video: bool,
+    big_box_screensaver_view: QString,
+    big_box_screensaver_video_volume_percent: i32,
+    big_box_screensaver_master_volume_percent: i32,
+    big_box_screensaver_candidate_count: i32,
     big_box_show_game_menu_flip_box: bool,
     big_box_show_game_menu_model: bool,
     filtered_count: i32,
@@ -1844,6 +1951,8 @@ pub struct LibraryControllerRust {
     big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_attract_mode_policy: BigBoxAttractModePolicy,
+    big_box_screensaver_policy: BigBoxScreensaverPolicy,
+    big_box_screensaver_candidates: Vec<BigBoxScreensaverCandidate>,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
@@ -1983,6 +2092,7 @@ struct LoadedLibrary {
     big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_attract_mode_policy: BigBoxAttractModePolicy,
+    big_box_screensaver_policy: BigBoxScreensaverPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2032,6 +2142,7 @@ struct LibraryReplacement {
     big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_attract_mode_policy: BigBoxAttractModePolicy,
+    big_box_screensaver_policy: BigBoxScreensaverPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2125,6 +2236,7 @@ impl LoadedLibrary {
                 big_box_background_music_policy: BigBoxBackgroundMusicPolicy::default(),
                 big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
                 big_box_attract_mode_policy: BigBoxAttractModePolicy::default(),
+                big_box_screensaver_policy: BigBoxScreensaverPolicy::default(),
                 big_box_show_game_menu_flip_box: true,
                 details_show_3d_model: true,
                 big_box_show_game_menu_model: true,
@@ -2267,6 +2379,8 @@ impl LoadedLibrary {
             supplemental_media_index.big_box_startup_presentation_policy;
         let big_box_attract_mode_policy =
             BigBoxAttractModePolicy::from_settings(data.big_box_settings());
+        let big_box_screensaver_policy =
+            BigBoxScreensaverPolicy::from_settings(data.big_box_settings());
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
@@ -2332,6 +2446,7 @@ impl LoadedLibrary {
             big_box_background_music_policy,
             big_box_startup_presentation_policy,
             big_box_attract_mode_policy,
+            big_box_screensaver_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -16119,6 +16234,7 @@ impl qobject::LibraryController {
                     big_box_background_music_policy: BigBoxBackgroundMusicPolicy::default(),
                     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
                     big_box_attract_mode_policy: BigBoxAttractModePolicy::default(),
+                    big_box_screensaver_policy: BigBoxScreensaverPolicy::default(),
                     big_box_show_game_menu_flip_box: true,
                     details_show_3d_model: true,
                     big_box_show_game_menu_model: true,
@@ -16447,6 +16563,108 @@ impl qobject::LibraryController {
                 .big_box_attract_mode_policy
                 .wheel_interval_ms(step) as usize,
         )
+    }
+
+    pub fn select_big_box_screensaver_candidate(
+        mut self: Pin<&mut Self>,
+        avoid_game_id: QString,
+    ) -> i32 {
+        let avoid_game_id = avoid_game_id.to_string();
+        let counter = self
+            .as_ref()
+            .rust()
+            .random_selection_counter
+            .wrapping_add(1);
+        self.as_mut().rust_mut().random_selection_counter = counter;
+        let clock_entropy = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs().rotate_left(17) ^ u64::from(duration.subsec_nanos()))
+            .unwrap_or_default();
+        let selected = {
+            let this = self.as_ref();
+            let candidates = &this.rust().big_box_screensaver_candidates;
+            select_screensaver_candidate_index(
+                candidates,
+                (!avoid_game_id.is_empty()).then_some(avoid_game_id.as_str()),
+                clock_entropy ^ counter.wrapping_mul(0x9e37_79b9_7f4a_7c15),
+            )
+        };
+        selected.map(saturating_i32).unwrap_or(-1)
+    }
+
+    pub fn big_box_screensaver_swap_time_ms(&self, entropy: i32) -> i32 {
+        let entropy = u32::try_from(entropy).map(u64::from).unwrap_or_default();
+        saturating_i32(self.rust().big_box_screensaver_policy.swap_time_ms(entropy) as usize)
+    }
+
+    pub fn big_box_screensaver_game_id_at(&self, candidate_index: i32) -> QString {
+        self.big_box_screensaver_candidate(candidate_index)
+            .map(|candidate| qstring(&candidate.game_id))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_title_at(&self, candidate_index: i32) -> QString {
+        self.big_box_screensaver_candidate(candidate_index)
+            .map(|candidate| qstring(&candidate.title))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_platform_at(&self, candidate_index: i32) -> QString {
+        self.big_box_screensaver_candidate(candidate_index)
+            .map(|candidate| qstring(&candidate.platform))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_genre_at(&self, candidate_index: i32) -> QString {
+        self.big_box_screensaver_candidate(candidate_index)
+            .map(|candidate| qstring(&candidate.genre))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_release_date_at(&self, candidate_index: i32) -> QString {
+        self.big_box_screensaver_candidate(candidate_index)
+            .map(|candidate| qstring(&candidate.release_date))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_play_time_seconds_at(&self, candidate_index: i32) -> f64 {
+        self.big_box_screensaver_candidate(candidate_index)
+            .map(|candidate| candidate.play_time_seconds as f64)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_star_rating_at(&self, candidate_index: i32) -> f64 {
+        self.big_box_screensaver_candidate(candidate_index)
+            .map(|candidate| candidate.star_rating)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_background_url_at(&self, candidate_index: i32) -> QUrl {
+        self.big_box_screensaver_candidate(candidate_index)
+            .and_then(|candidate| candidate.media.background_path.as_deref())
+            .map(local_file_url)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_box_art_url_at(&self, candidate_index: i32) -> QUrl {
+        self.big_box_screensaver_candidate(candidate_index)
+            .and_then(|candidate| candidate.media.box_art_path.as_deref())
+            .map(local_file_url)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_screenshot_url_at(&self, candidate_index: i32) -> QUrl {
+        self.big_box_screensaver_candidate(candidate_index)
+            .and_then(|candidate| candidate.media.screenshot_path.as_deref())
+            .map(local_file_url)
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_screensaver_video_url_at(&self, candidate_index: i32) -> QUrl {
+        self.big_box_screensaver_candidate(candidate_index)
+            .and_then(|candidate| candidate.media.video_path.as_deref())
+            .map(local_file_url)
+            .unwrap_or_default()
     }
 
     pub fn game_media_url_at(&self, game_id: QString, index: i32) -> QUrl {
@@ -19792,6 +20010,112 @@ impl qobject::LibraryController {
             let enabled = u8::from(expected_enabled);
             eprintln!(
                 "BIGBOX_ATTRACT_MODE_SMOKE_COMPLETE enabled={enabled} wheel_steps={wheel_steps} movement_cycles={movement_cycles} filter_switches={filter_switches} auto_delay_ms={automatic_delay_elapsed_ms} manual=1 input_exit={input_stop_count} sounds=2 sound=wav volume=20 curve=80-20-80"
+            );
+        }
+        success
+    }
+
+    pub fn report_big_box_screensaver_smoke_success(
+        &self,
+        expected_enabled: bool,
+        swap_count: i32,
+        selection_count: i32,
+        automatic_delay_elapsed_ms: i32,
+        manual_start_seen: bool,
+        input_stop_count: i32,
+        explore_count: i32,
+        presented_views_mask: i32,
+        video_playback_seen: bool,
+        video_ready: bool,
+    ) -> bool {
+        let candidates = &self.rust().big_box_screensaver_candidates;
+        let safe_regular_file = |path: &Path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        };
+        let candidate_matches = candidates.len() == 1
+            && candidates.first().is_some_and(|candidate| {
+                candidate.game_id == "fixture-adventure"
+                    && candidate.title == "Fixture Adventure"
+                    && candidate.platform == "Fixture Console"
+                    && candidate.genre == "Adventure"
+                    && candidate.release_date == "1999-03-04"
+                    && candidate.play_time_seconds == 5400
+                    && (candidate.star_rating - 4.25).abs() < f64::EPSILON
+                    && [
+                        candidate.media.background_path.as_deref(),
+                        candidate.media.box_art_path.as_deref(),
+                        candidate.media.screenshot_path.as_deref(),
+                        candidate.media.video_path.as_deref(),
+                    ]
+                    .into_iter()
+                    .all(|path| path.is_some_and(&safe_regular_file))
+                    && candidate
+                        .media
+                        .background_path
+                        .as_deref()
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        == Some("Fixture Adventure-01.svg")
+                    && candidate
+                        .media
+                        .box_art_path
+                        .as_deref()
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        == Some("Fixture Adventure-01.svg")
+                    && candidate
+                        .media
+                        .screenshot_path
+                        .as_deref()
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        == Some("Fixture Adventure-01.svg")
+                    && candidate
+                        .media
+                        .video_path
+                        .as_deref()
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        == Some("fixture-adventure.mp4")
+            });
+        let interaction_matches = if expected_enabled {
+            swap_count >= 1
+                && selection_count >= 3
+                && (800..=5_000).contains(&automatic_delay_elapsed_ms)
+                && input_stop_count >= 1
+                && explore_count >= 1
+        } else {
+            selection_count >= 1
+                && automatic_delay_elapsed_ms == 0
+                && input_stop_count >= 1
+                && explore_count == 0
+        };
+        let success = candidate_matches
+            && *self.big_box_screensaver_enabled() == expected_enabled
+            && *self.big_box_screensaver_delay_seconds() == 1
+            && *self.big_box_screensaver_minimum_swap_time_ms() == 300
+            && *self.big_box_screensaver_maximum_swap_time_ms() == 500
+            && *self.big_box_screensaver_skip_games_missing_background()
+            && *self.big_box_screensaver_skip_games_missing_box_art()
+            && *self.big_box_screensaver_skip_games_missing_video()
+            && self.big_box_screensaver_view().to_string() == "Screensaver3View"
+            && *self.big_box_screensaver_video_volume_percent() == 40
+            && *self.big_box_screensaver_master_volume_percent() == 50
+            && *self.big_box_screensaver_candidate_count() == 1
+            && self.big_box_screensaver_swap_time_ms(0) == 300
+            && self.big_box_screensaver_swap_time_ms(200) == 500
+            && manual_start_seen
+            && presented_views_mask == 15
+            && video_playback_seen
+            && video_ready
+            && interaction_matches
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            let enabled = u8::from(expected_enabled);
+            eprintln!(
+                "BIGBOX_SCREENSAVER_SMOKE_COMPLETE enabled={enabled} candidates=1 swaps={swap_count} selections={selection_count} auto_delay_ms={automatic_delay_elapsed_ms} manual=1 input_exit={input_stop_count} explore={explore_count} views=1-2-3-4 video=h264 volume=20 range=300-500"
             );
         }
         success
@@ -24103,6 +24427,7 @@ impl qobject::LibraryController {
                     big_box_background_music_policy: loaded.big_box_background_music_policy,
                     big_box_startup_presentation_policy: loaded.big_box_startup_presentation_policy,
                     big_box_attract_mode_policy: loaded.big_box_attract_mode_policy,
+                    big_box_screensaver_policy: loaded.big_box_screensaver_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     details_show_3d_model: loaded.details_show_3d_model,
                     big_box_show_game_menu_model: loaded.big_box_show_game_menu_model,
@@ -24205,6 +24530,7 @@ impl qobject::LibraryController {
                     }
                     rust.last_imported_game_ids = game_ids;
                 }
+                self.as_mut().refresh_big_box_screensaver_candidates();
                 self.as_mut().refresh_filtered_games();
                 self.as_mut().update_library_counts();
                 self.as_mut().set_write_conflict(false);
@@ -24517,6 +24843,7 @@ impl qobject::LibraryController {
                     rust.resolved_model_settings_by_game
                         .insert(game_id, resolved_model_settings);
                 }
+                self.as_mut().refresh_big_box_screensaver_candidates();
                 let model_revision = self.as_ref().model_settings_revision().saturating_add(1);
                 self.as_mut().set_model_settings_revision(model_revision);
                 self.as_mut().set_write_conflict(false);
@@ -25082,6 +25409,7 @@ impl qobject::LibraryController {
                             )
                         };
                         self.as_mut().rust_mut().games[actual_index] = *game;
+                        self.as_mut().refresh_big_box_screensaver_candidates();
                         if query_result_may_change {
                             self.as_mut().refresh_filtered_games();
                         } else if statistics_changed {
@@ -25298,6 +25626,7 @@ impl qobject::LibraryController {
                         rust.row_insert_notifications += 1;
                     }
                 }
+                self.as_mut().refresh_big_box_screensaver_candidates();
                 if insertion_row.is_some() {
                     self.as_mut().end_insert_rows();
                 }
@@ -27500,6 +27829,7 @@ impl qobject::LibraryController {
                         rust.row_remove_notifications += 1;
                     }
                 }
+                self.as_mut().refresh_big_box_screensaver_candidates();
                 let front_image_count =
                     saturating_i32(self.as_ref().rust().front_image_paths.len());
                 self.as_mut().set_front_image_count(front_image_count);
@@ -27793,6 +28123,7 @@ impl qobject::LibraryController {
             big_box_background_music_policy,
             big_box_startup_presentation_policy,
             big_box_attract_mode_policy,
+            big_box_screensaver_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -27848,6 +28179,14 @@ impl qobject::LibraryController {
         let indexed_startup_video_count = saturating_i32(startup_video_paths.len());
         let indexed_startup_sound_count = saturating_i32(startup_sound_paths.len());
         let indexed_attract_move_sound_count = saturating_i32(attract_move_sound_paths.len());
+        let big_box_screensaver_candidates = project_big_box_screensaver_candidates(
+            &games,
+            &game_media_by_game_id,
+            &front_image_paths,
+            &big_box_screensaver_policy,
+        );
+        let big_box_screensaver_candidate_count =
+            saturating_i32(big_box_screensaver_candidates.len());
         let details_show_video = game_details_media_policy.show_video;
         let details_auto_play_video = game_details_media_policy.auto_play_video;
         let platform_counts = collect_platform_counts(&games, &platform_names);
@@ -27895,6 +28234,8 @@ impl qobject::LibraryController {
             rust.big_box_background_music_policy = big_box_background_music_policy;
             rust.big_box_startup_presentation_policy = big_box_startup_presentation_policy;
             rust.big_box_attract_mode_policy = big_box_attract_mode_policy;
+            rust.big_box_screensaver_policy = big_box_screensaver_policy;
+            rust.big_box_screensaver_candidates = big_box_screensaver_candidates;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
             rust.platform_counts = platform_counts;
@@ -28108,6 +28449,45 @@ impl qobject::LibraryController {
             .set_big_box_attract_mode_master_volume_percent(i32::from(
                 attract_policy.master_volume_percent,
             ));
+        let screensaver_policy = self.as_ref().rust().big_box_screensaver_policy.clone();
+        self.as_mut()
+            .set_big_box_screensaver_enabled(screensaver_policy.enabled);
+        self.as_mut()
+            .set_big_box_screensaver_delay_seconds(saturating_i32(
+                screensaver_policy.delay_seconds as usize,
+            ));
+        self.as_mut()
+            .set_big_box_screensaver_minimum_swap_time_ms(saturating_i32(
+                screensaver_policy.minimum_swap_time_ms as usize,
+            ));
+        self.as_mut()
+            .set_big_box_screensaver_maximum_swap_time_ms(saturating_i32(
+                screensaver_policy.maximum_swap_time_ms as usize,
+            ));
+        self.as_mut()
+            .set_big_box_screensaver_skip_games_missing_background(
+                screensaver_policy.skip_games_missing_background,
+            );
+        self.as_mut()
+            .set_big_box_screensaver_skip_games_missing_box_art(
+                screensaver_policy.skip_games_missing_box_art,
+            );
+        self.as_mut()
+            .set_big_box_screensaver_skip_games_missing_video(
+                screensaver_policy.skip_games_missing_video,
+            );
+        self.as_mut()
+            .set_big_box_screensaver_view(qstring(screensaver_policy.view.key()));
+        self.as_mut()
+            .set_big_box_screensaver_video_volume_percent(i32::from(
+                screensaver_policy.video_volume_percent,
+            ));
+        self.as_mut()
+            .set_big_box_screensaver_master_volume_percent(i32::from(
+                screensaver_policy.master_volume_percent,
+            ));
+        self.as_mut()
+            .set_big_box_screensaver_candidate_count(big_box_screensaver_candidate_count);
         self.as_mut()
             .set_big_box_show_game_menu_flip_box(big_box_show_game_menu_flip_box);
         self.as_mut()
@@ -28177,6 +28557,22 @@ impl qobject::LibraryController {
         self.as_mut().set_navigation_filter_key(QString::default());
     }
 
+    fn refresh_big_box_screensaver_candidates(mut self: Pin<&mut Self>) {
+        let candidates = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            project_big_box_screensaver_candidates(
+                &rust.games,
+                &rust.game_media_by_game_id,
+                &rust.front_image_paths,
+                &rust.big_box_screensaver_policy,
+            )
+        };
+        let count = saturating_i32(candidates.len());
+        self.as_mut().rust_mut().big_box_screensaver_candidates = candidates;
+        self.as_mut().set_big_box_screensaver_candidate_count(count);
+    }
+
     fn refresh_filtered_games(mut self: Pin<&mut Self>) {
         let filter = self.as_ref().current_filter();
         let category_filter = self.as_ref().rust().category_filter.clone();
@@ -28216,6 +28612,16 @@ impl qobject::LibraryController {
         let index = usize::try_from(index).ok()?;
         let game_index = *self.rust().filtered_indices.get(index)?;
         self.rust().games.get(game_index)
+    }
+
+    fn big_box_screensaver_candidate(
+        &self,
+        candidate_index: i32,
+    ) -> Option<&BigBoxScreensaverCandidate> {
+        let candidate_index = usize::try_from(candidate_index).ok()?;
+        self.rust()
+            .big_box_screensaver_candidates
+            .get(candidate_index)
     }
 
     fn game_media_item(&self, game_id: &str, index: i32) -> Option<&GameMediaItem> {
@@ -29201,6 +29607,10 @@ fn duration_millis_i32(value: Duration) -> i32 {
 
 fn qstring(value: impl AsRef<str>) -> QString {
     QString::from(value.as_ref())
+}
+
+fn local_file_url(path: &Path) -> QUrl {
+    QUrl::from_local_file(&qstring(path.to_string_lossy()))
 }
 
 #[cfg(test)]

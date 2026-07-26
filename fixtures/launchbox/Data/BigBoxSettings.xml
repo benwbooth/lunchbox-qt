@@ -11,6 +11,14 @@
     <PlayMoveInAttractMode>false</PlayMoveInAttractMode>
     <VolumeAttractModeNavigationSound>15</VolumeAttractModeNavigationSound>
     <VolumeAttractModeMaster>100</VolumeAttractModeMaster>
+    <EnableScreensaver>true</EnableScreensaver>
+    <ScreensaverDelay>300</ScreensaverDelay>
+    <ScreensaverMinimumSwapTime>30000</ScreensaverMinimumSwapTime>
+    <ScreensaverMaximumSwapTime>60000</ScreensaverMaximumSwapTime>
+    <ScreensaverSkipGamesMissingBackground>true</ScreensaverSkipGamesMissingBackground>
+    <ScreensaverSkipGamesMissingBoxArt>true</ScreensaverSkipGamesMissingBoxArt>
+    <ScreensaverSkipGamesMissingVideo>false</ScreensaverSkipGamesMissingVideo>
+    <ScreensaverView>Screensaver1View</ScreensaverView>
     <ShowStartupSplashScreen>true</ShowStartupSplashScreen>
     <PlayStartupSound>true</PlayStartupSound>
     <SoundPack>Fixture Sounds</SoundPack>

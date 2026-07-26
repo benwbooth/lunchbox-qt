@@ -772,6 +772,20 @@ resolves the persisted folder only at the host-platform boundary; exact live
 Windows-oracle argument ordering remains pending because the method bodies are
 protected.
 
+The 13.27 BigBox resources and installed settings establish four separate
+screensaver views and one shared model. `Screensaver1View` is a
+fanart/metadata composition, `Screensaver2View` transitions to full video,
+`Screensaver3View` places box art beside video or a gameplay screenshot, and
+`Screensaver4View` centers media plus title/metadata. The model exposes the
+selected `Game`, time-since-swap, total swap time, a one-shot timer, random
+selection, and Enter/navigation handlers; every view exposes a Select prompt.
+Fresh 13.27 prefixes and the older complete installation agree on enabled,
+300-second delay, 30–60 second swaps, required background/box but optional
+video, first-view, 75% video, and 100% master defaults. The protected method
+bodies still conceal exact random rounding/order, transition details, and
+input-binding interpretation. The evidence and port boundary are recorded in
+`analysis/screensaver-13.27.md`.
+
 ## Protection boundary
 
 The assemblies are not ordinary unobfuscated .NET applications:

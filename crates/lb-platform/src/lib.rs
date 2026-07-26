@@ -6,6 +6,7 @@ mod media;
 mod model_viewer_state;
 mod path;
 mod path_settings;
+mod screensaver;
 mod scummvm;
 mod ui_state;
 
@@ -36,6 +37,11 @@ pub use path::{
 pub use path_settings::{
     default_host_path_mappings_path, HostPathMappings, HostPathMappingsError, WindowsDriveMapping,
     WindowsUncMapping, HOST_PATH_MAPPINGS_VERSION,
+};
+pub use screensaver::{
+    project_big_box_screensaver_candidates, select_big_box_screensaver_candidate,
+    BigBoxScreensaverCandidate, BigBoxScreensaverMedia, BigBoxScreensaverPolicy,
+    BigBoxScreensaverView,
 };
 pub use scummvm::ScummVmPlanError;
 pub use ui_state::{

@@ -1106,7 +1106,24 @@ mod tests {
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 42);
+        assert_eq!(big_box.entries.len(), 50);
+        assert_eq!(big_box.get_bool("EnableScreensaver"), Some(true));
+        assert_eq!(big_box.get_i64("ScreensaverDelay"), Some(300));
+        assert_eq!(big_box.get_i64("ScreensaverMinimumSwapTime"), Some(30_000));
+        assert_eq!(big_box.get_i64("ScreensaverMaximumSwapTime"), Some(60_000));
+        assert_eq!(
+            big_box.get_bool("ScreensaverSkipGamesMissingBackground"),
+            Some(true)
+        );
+        assert_eq!(
+            big_box.get_bool("ScreensaverSkipGamesMissingBoxArt"),
+            Some(true)
+        );
+        assert_eq!(
+            big_box.get_bool("ScreensaverSkipGamesMissingVideo"),
+            Some(false)
+        );
+        assert_eq!(big_box.get("ScreensaverView"), Some("Screensaver1View"));
         assert_eq!(big_box.get_bool("EnableAttractMode"), Some(true));
         assert_eq!(big_box.get_bool("AttractModeSwitchFilters"), Some(true));
         assert_eq!(big_box.get_i64("AttractModeDelay"), Some(120));

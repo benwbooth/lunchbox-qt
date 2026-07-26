@@ -35,6 +35,7 @@ diagnostics=$(
     apps/lb-shell/qml/BackgroundMusicPlayer.qml \
     apps/lb-shell/qml/BigBoxStartupPresentation.qml \
     apps/lb-shell/qml/BigBoxAttractMode.qml \
+    apps/lb-shell/qml/BigBoxScreensaver.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -422,6 +423,135 @@ cmp "$attract_disabled_settings.before-attract-mode-smoke" \
   "$attract_disabled_settings"
 
 echo "BigBox typed Attract Mode policy, delayed automatic and explicit manual entry, bounded native wheel curve, filter switching, key/button exit layer, decoded move sounds, attract-specific volume, rendering, disabled-auto behavior, and immutable library data validated."
+
+screensaver_root="$test_config_root/screensaver-library"
+screensaver_screenshot_prefix="$test_config_root/bigbox-screensaver"
+mkdir -p "$screensaver_root"
+cp -a "$media_root/." "$screensaver_root/"
+screensaver_settings="$screensaver_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<ScreensaverDelay>300</ScreensaverDelay>#<ScreensaverDelay>1</ScreensaverDelay>#' \
+  "$screensaver_settings"
+sed -i \
+  's#<ScreensaverMinimumSwapTime>30000</ScreensaverMinimumSwapTime>#<ScreensaverMinimumSwapTime>300</ScreensaverMinimumSwapTime>#' \
+  "$screensaver_settings"
+sed -i \
+  's#<ScreensaverMaximumSwapTime>60000</ScreensaverMaximumSwapTime>#<ScreensaverMaximumSwapTime>500</ScreensaverMaximumSwapTime>#' \
+  "$screensaver_settings"
+sed -i \
+  's#<ScreensaverSkipGamesMissingVideo>false</ScreensaverSkipGamesMissingVideo>#<ScreensaverSkipGamesMissingVideo>true</ScreensaverSkipGamesMissingVideo>#' \
+  "$screensaver_settings"
+sed -i \
+  's#<ScreensaverView>Screensaver1View</ScreensaverView>#<ScreensaverView>Screensaver3View</ScreensaverView>#' \
+  "$screensaver_settings"
+sed -i \
+  's#<VolumeVideo>75</VolumeVideo>#<VolumeVideo>40</VolumeVideo>#' \
+  "$screensaver_settings"
+cp "$screensaver_settings" "$screensaver_settings.before-screensaver-smoke"
+screensaver_manifest="$test_config_root/screensaver.before.sha256"
+(
+  cd "$screensaver_root"
+  find Images Videos Manuals Music -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$screensaver_manifest"
+screensaver_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$screensaver_root" \
+    --bigbox-screensaver-smoke-test \
+    --bigbox-screensaver-screenshot-prefix "$screensaver_screenshot_prefix" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$screensaver_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_SCREENSAVER_SMOKE_COMPLETE enabled=1 candidates=1 swaps=[0-9]+ selections=[0-9]+ auto_delay_ms=[0-9]+ manual=1 input_exit=[0-9]+ explore=[0-9]+ views=1-2-3-4 video=h264 volume=20 range=300-500' \
+  <<< "$screensaver_output"; then
+  printf '%s\n' "$screensaver_output" >&2
+  echo "BigBox did not complete automatic and manual screensaver interaction." >&2
+  exit 1
+fi
+for view in 1 2 3 4; do
+  screenshot="$screensaver_screenshot_prefix-view$view.png"
+  if [[ ! -s "$screenshot" ]] \
+    || [[ $(wc -c < "$screenshot") -lt 1024 ]]; then
+    echo "BigBox did not save rendered screensaver view $view." >&2
+    exit 1
+  fi
+  screensaver_colors=$(magick "$screenshot" -format '%k' info:)
+  if [[ ! "$screensaver_colors" =~ ^[0-9]+$ ]] \
+    || ((screensaver_colors < 64)); then
+    echo "BigBox screensaver view $view is blank or insufficiently rendered ($screensaver_colors colors)." >&2
+    exit 1
+  fi
+done
+cmp "$screensaver_settings.before-screensaver-smoke" "$screensaver_settings"
+(
+  cd "$screensaver_root"
+  sha256sum --check "$screensaver_manifest"
+) >/dev/null
+
+screensaver_disabled_root="$test_config_root/screensaver-disabled-library"
+mkdir -p "$screensaver_disabled_root"
+cp -a "$media_root/." "$screensaver_disabled_root/"
+screensaver_disabled_settings="$screensaver_disabled_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<EnableScreensaver>true</EnableScreensaver>#<EnableScreensaver>false</EnableScreensaver>#' \
+  "$screensaver_disabled_settings"
+sed -i \
+  's#<ScreensaverDelay>300</ScreensaverDelay>#<ScreensaverDelay>1</ScreensaverDelay>#' \
+  "$screensaver_disabled_settings"
+sed -i \
+  's#<ScreensaverMinimumSwapTime>30000</ScreensaverMinimumSwapTime>#<ScreensaverMinimumSwapTime>300</ScreensaverMinimumSwapTime>#' \
+  "$screensaver_disabled_settings"
+sed -i \
+  's#<ScreensaverMaximumSwapTime>60000</ScreensaverMaximumSwapTime>#<ScreensaverMaximumSwapTime>500</ScreensaverMaximumSwapTime>#' \
+  "$screensaver_disabled_settings"
+sed -i \
+  's#<ScreensaverSkipGamesMissingVideo>false</ScreensaverSkipGamesMissingVideo>#<ScreensaverSkipGamesMissingVideo>true</ScreensaverSkipGamesMissingVideo>#' \
+  "$screensaver_disabled_settings"
+sed -i \
+  's#<ScreensaverView>Screensaver1View</ScreensaverView>#<ScreensaverView>Screensaver3View</ScreensaverView>#' \
+  "$screensaver_disabled_settings"
+sed -i \
+  's#<VolumeVideo>75</VolumeVideo>#<VolumeVideo>40</VolumeVideo>#' \
+  "$screensaver_disabled_settings"
+cp "$screensaver_disabled_settings" \
+  "$screensaver_disabled_settings.before-screensaver-smoke"
+screensaver_disabled_manifest="$test_config_root/screensaver-disabled.before.sha256"
+(
+  cd "$screensaver_disabled_root"
+  find Images Videos Manuals Music -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$screensaver_disabled_manifest"
+screensaver_disabled_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$screensaver_disabled_root" \
+    --bigbox-screensaver-disabled-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$screensaver_disabled_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_SCREENSAVER_SMOKE_COMPLETE enabled=0 candidates=1 swaps=[0-9]+ selections=[0-9]+ auto_delay_ms=0 manual=1 input_exit=[0-9]+ explore=0 views=1-2-3-4 video=h264 volume=20 range=300-500' \
+  <<< "$screensaver_disabled_output"; then
+  printf '%s\n' "$screensaver_disabled_output" >&2
+  echo "BigBox did not keep automatic screensaver entry disabled while retaining manual start." >&2
+  exit 1
+fi
+cmp "$screensaver_disabled_settings.before-screensaver-smoke" \
+  "$screensaver_disabled_settings"
+(
+  cd "$screensaver_disabled_root"
+  sha256sum --check "$screensaver_disabled_manifest"
+) >/dev/null
+
+echo "BigBox typed screensaver policy, guarded candidate projection, automatic and manual entry, bounded random swapping, all four recovered views, decoded video, composed volume, input return/explore behavior, disabled-auto behavior, and immutable library data validated."
 
 background_music_root="$test_config_root/background-music-library"
 background_music_screenshot="$test_config_root/bigbox-background-music.png"

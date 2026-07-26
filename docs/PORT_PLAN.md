@@ -355,6 +355,22 @@ helper shell. The proprietary branded splash is not copied. Exact artwork and
 custom-theme parity, packaged-theme sound precedence, controller bindings,
 primary-monitor routing, video-and-startup-sound coexistence, original VLC/WMP
 backend parity, and native Windows/macOS playback remain later slices.
+The current `BB-009` slice recovers all four installed screensaver resources
+and their shared game/select contract without copying proprietary XAML or
+artwork. A strict Rust policy owns the nine screensaver/video settings,
+inclusive bounded swap timing, missing-media gates, stable-ID candidates, and
+random selection that avoids the current game when possible. Candidate media
+comes only from the existing bounded symlink-safe cross-platform index, and
+CXX-Qt publishes guarded native local URLs. One Qt focus layer owns idle/manual
+entry, all four fanart/video/box/screenshot/metadata layouts, one-shot swaps,
+composed video/master volume, return input, and exact-game exploration.
+Launch, load, write, presentation, modal, pause, and Attract lifecycles are
+explicit blockers. Six pure tests plus enabled/disabled compiled scenarios
+prove real delay and manual entry, all four rendered layouts, H.264 decode,
+bounded swaps, disabled-auto behavior, stable selection, and whole-tree
+immutability. Exact protected random rounding, transition/controller-binding
+behavior, custom themes, and native Windows/macOS multimedia remain later
+parity work.
 The current `DESK-004`/`BB-004` media vertical adds settings-prioritized box
 backs and one shared front/back Qt presenter to the LaunchBox grid and BigBox
 wheel. The exact recovered back priority is applied at the native-path index
