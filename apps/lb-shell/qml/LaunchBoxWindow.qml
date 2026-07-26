@@ -250,6 +250,9 @@ ApplicationWindow {
     property bool importSmokeTest:
         Qt.application.arguments.indexOf("--import-smoke-test") >= 0
     property bool launchSmokeTest: Qt.application.arguments.indexOf("--launch-smoke-test") >= 0
+    property bool desktopCommandSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--desktop-command-smoke-test") >= 0
     property bool launchLifecycleSmokeTest:
         Qt.application.arguments.indexOf("--launch-lifecycle-smoke-test") >= 0
     property bool launchLifecycleShortProcess:
@@ -384,6 +387,15 @@ ApplicationWindow {
     property string playlistCrudChildId: ""
     property int launchSmokePhase: 0
     property bool launchSmokeFinished: false
+    property int desktopCommandSmokePhase: 0
+    property bool desktopCommandSmokeFinished: false
+    property bool desktopCommandFocusVerified: false
+    property bool desktopCommandControlsVerified: false
+    property bool desktopCommandScreenshotRequested: false
+    property string desktopCommandScreenshotPath:
+        argumentValue("--desktop-command-screenshot")
+    readonly property string recoveredFocusSearchShortcut: "Ctrl+F"
+    readonly property string selectRandomGameShortcutSequence: "Ctrl+Alt+Q"
     property int launchLifecycleSmokePhase: 0
     property bool launchLifecycleSmokeFinished: false
     property bool launchLifecycleStartupVisibleSeen: false
@@ -586,6 +598,13 @@ ApplicationWindow {
             gameList.forceActiveFocus()
         else
             gameGrid.forceActiveFocus()
+    }
+
+    function focusSearch() {
+        if (controller.loading || controller.writing)
+            return false
+        searchField.forceActiveFocus()
+        return searchField.activeFocus
     }
 
     function setLibraryViewMode(listView) {
@@ -1040,6 +1059,22 @@ ApplicationWindow {
             focusCurrentLibraryView()
         }
         return row
+    }
+
+    function playRandomGame() {
+        if (controller.filtered_count <= 0
+                || controller.loading || controller.writing
+                || controller.launching
+                || controller.launch_session_active)
+            return false
+        const row = selectRandomGame()
+        if (row < 0)
+            return false
+        const gameId = controller.game_id_at(row)
+        if (gameId.length === 0)
+            return false
+        launchGame(row, gameId)
+        return true
     }
 
     function formatPlayTime(seconds) {
@@ -1742,6 +1777,27 @@ ApplicationWindow {
                           + " status=" + controller.status_message)
             Qt.exit(493)
         }
+    }
+
+    Shortcut {
+        id: focusSearchShortcut
+        sequence: StandardKey.Find
+        enabled: !window.imageViewerOpen
+                 && !window.modelViewerOpen
+                 && !controller.loading
+                 && !controller.writing
+        onActivated: window.focusSearch()
+    }
+
+    Shortcut {
+        id: selectRandomGameShortcut
+        sequence: window.selectRandomGameShortcutSequence
+        enabled: controller.filtered_count > 0
+                 && !window.imageViewerOpen
+                 && !window.modelViewerOpen
+                 && !controller.loading
+                 && !controller.writing
+        onActivated: window.selectRandomGame()
     }
 
     Shortcut {
@@ -4883,6 +4939,123 @@ ApplicationWindow {
     Timer {
         interval: 25
         repeat: true
+        running: window.desktopCommandSmokeTest
+                 && !window.desktopCommandSmokeFinished
+        onTriggered: {
+            if (window.desktopCommandSmokePhase === 0) {
+                if (controller.loading
+                        || controller.library_path.length === 0
+                        || controller.filtered_count !== 1)
+                    return
+                const expectedId = "fixture-direct"
+                if (controller.row_for_game_id(expectedId) !== 0
+                        || !focusSearchShortcut.enabled
+                        || !selectRandomGameShortcut.enabled) {
+                    console.error(
+                        "DESKTOP_COMMAND_SMOKE_BAD_INITIAL_STATE rows="
+                        + controller.filtered_count
+                        + " focusEnabled=" + focusSearchShortcut.enabled
+                        + " randomEnabled="
+                        + selectRandomGameShortcut.enabled)
+                    Qt.exit(494)
+                    return
+                }
+                pathField.forceActiveFocus()
+                focusSearchShortcut.activated()
+                window.desktopCommandFocusVerified =
+                    searchField.activeFocus
+                gameGrid.currentIndex = -1
+                gameList.currentIndex = -1
+                window.selectedGameId = ""
+                selectRandomGameShortcut.activated()
+                window.desktopCommandControlsVerified =
+                    selectRandomGameButton.visible
+                    && selectRandomGameButton.enabled
+                    && playRandomGameButton.visible
+                    && playRandomGameButton.enabled
+                if (!window.desktopCommandFocusVerified
+                        || !window.desktopCommandControlsVerified
+                        || window.selectedGameId !== expectedId
+                        || gameGrid.currentIndex !== 0
+                        || gameList.currentIndex !== 0) {
+                    console.error(
+                        "DESKTOP_COMMAND_SMOKE_BAD_COMMANDS focus="
+                        + window.desktopCommandFocusVerified
+                        + " controls="
+                        + window.desktopCommandControlsVerified
+                        + " selected=" + window.selectedGameId
+                        + " grid=" + gameGrid.currentIndex
+                        + " list=" + gameList.currentIndex)
+                    Qt.exit(494)
+                    return
+                }
+                function launchSelectedRandomGame() {
+                    window.desktopCommandSmokePhase = 1
+                    if (!window.playRandomGame()) {
+                        console.error(
+                            "DESKTOP_COMMAND_SMOKE_PLAY_REJECTED id="
+                            + window.selectedGameId
+                            + " status=" + controller.status_message)
+                        Qt.exit(494)
+                    }
+                }
+                if (window.desktopCommandScreenshotPath.length === 0) {
+                    launchSelectedRandomGame()
+                    return
+                }
+                if (window.desktopCommandScreenshotRequested)
+                    return
+                window.desktopCommandScreenshotRequested = true
+                launchBoxContent.grabToImage(function(result) {
+                    if (!result.saveToFile(
+                            window.desktopCommandScreenshotPath)) {
+                        console.error(
+                            "DESKTOP_COMMAND_SCREENSHOT_SAVE_FAILED path="
+                            + window.desktopCommandScreenshotPath)
+                        Qt.exit(494)
+                        return
+                    }
+                    launchSelectedRandomGame()
+                })
+            } else if (window.desktopCommandSmokePhase === 1
+                       && !controller.launching
+                       && !controller.launch_session_active) {
+                if (!controller.report_desktop_command_smoke_success(
+                        window.recoveredFocusSearchShortcut,
+                        window.selectRandomGameShortcutSequence,
+                        window.desktopCommandFocusVerified,
+                        window.desktopCommandControlsVerified,
+                        window.selectedGameId)) {
+                    console.error(
+                        "DESKTOP_COMMAND_SMOKE_CONTROLLER_REJECTED id="
+                        + window.selectedGameId
+                        + " status=" + controller.status_message)
+                    Qt.exit(494)
+                    return
+                }
+                window.desktopCommandSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.desktopCommandSmokeTest
+                 && !window.desktopCommandSmokeFinished
+        onTriggered: {
+            console.error(
+                "DESKTOP_COMMAND_SMOKE_TIMEOUT phase="
+                + window.desktopCommandSmokePhase
+                + " selected=" + window.selectedGameId
+                + " status=" + controller.status_message)
+            Qt.exit(494)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
         running: window.launchSmokeTest && !window.launchSmokeFinished
         onTriggered: {
             if (window.launchSmokePhase === 0 && !controller.loading
@@ -7138,11 +7311,22 @@ ApplicationWindow {
                         onClicked: window.applyCurrentSort()
                     }
                     Button {
-                        text: "Random Game"
+                        id: selectRandomGameButton
+                        text: "Select Random"
                         Accessible.name: "Select a random visible game"
                         enabled: controller.filtered_count > 0
                                  && !controller.loading && !controller.writing
                         onClicked: window.selectRandomGame()
+                    }
+                    Button {
+                        id: playRandomGameButton
+                        text: "Play Random"
+                        Accessible.name: "Select and play a random visible game"
+                        enabled: controller.filtered_count > 0
+                                 && !controller.loading && !controller.writing
+                                 && !controller.launching
+                                 && !controller.launch_session_active
+                        onClicked: window.playRandomGame()
                     }
                     Item { Layout.preferredWidth: 12 }
                     Label {

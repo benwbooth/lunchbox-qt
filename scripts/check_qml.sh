@@ -2163,12 +2163,13 @@ emulator_launch_root=$(mktemp -d)
 disabled_lifecycle_root=$(mktemp -d)
 short_lifecycle_root=$(mktemp -d)
 direct_launch_root=$(mktemp -d)
+desktop_command_root=$(mktemp -d)
 sequence_launch_root=$(mktemp -d)
 archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$launchbox_desktop_tray_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$launchbox_desktop_tray_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$desktop_command_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 
 cp -a fixtures/launchbox/. "$library_filter_root/"
 library_filter_platform="$library_filter_root/Data/Platforms/Fixture Console.xml"
@@ -5190,6 +5191,13 @@ cp -R fixtures/launchbox-direct/Data "$direct_launch_root/Data"
 mkdir -p "$direct_launch_root/LaunchTargets"
 install_process_fixture "$direct_launch_root/LaunchTargets/argument-recorder"
 
+cp -R fixtures/launchbox-direct/Data "$desktop_command_root/Data"
+mkdir -p "$desktop_command_root/LaunchTargets"
+install_process_fixture "$desktop_command_root/LaunchTargets/argument-recorder"
+desktop_command_platform="$desktop_command_root/Data/Platforms/Direct Fixture.xml"
+cp "$desktop_command_platform" \
+  "$desktop_command_platform.before-desktop-command-smoke"
+
 cp -R fixtures/launchbox-archive/Data "$archive_launch_root/Data"
 mkdir -p \
   "$archive_launch_root/Emulators" \
@@ -5313,6 +5321,78 @@ run_launch_smoke() {
     ((index += 1))
   done
 }
+
+desktop_command_log="$desktop_command_root/desktop-command-arguments.txt"
+desktop_command_screenshot="$desktop_command_root/desktop-commands.png"
+desktop_command_output=$(
+  LBPORT_LAUNCH_SMOKE_LOG="$desktop_command_log" \
+    QT_QPA_PLATFORM=offscreen \
+    "$binary_dir/launchbox" \
+    --library "$desktop_command_root" \
+    --desktop-command-smoke-test \
+    --desktop-command-screenshot "$desktop_command_screenshot" \
+    --map-windows-drive "Z=$desktop_command_root" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$desktop_command_output" >&2
+  exit 1
+}
+if ! rg -q -F \
+  'DESKTOP_COMMAND_SMOKE_COMPLETE focus=Ctrl+F select=Ctrl+Alt+Q id=fixture-direct launches=1 stats_writes=2' \
+  <<< "$desktop_command_output"; then
+  printf '%s\n' "$desktop_command_output" >&2
+  echo "LaunchBox did not validate its focus, random-selection, and random-play desktop commands." >&2
+  exit 1
+fi
+for ((attempt = 0; attempt < 200; ++attempt)); do
+  if [[ -f "$desktop_command_log" ]]; then
+    break
+  fi
+  sleep 0.01
+done
+if ! cmp -s "$desktop_command_log" \
+  <(printf '%s\n' --direct 'two words'); then
+  printf 'Desktop-command launch arguments were:\n' >&2
+  sed 's/^/  /' "$desktop_command_log" >&2 || true
+  exit 1
+fi
+if [[ ! -s "$desktop_command_screenshot" ]] \
+  || [[ $(wc -c < "$desktop_command_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$desktop_command_screenshot" | tr -d ' \n') \
+    != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$desktop_command_output" >&2
+  echo "LaunchBox did not render a valid desktop-command PNG." >&2
+  exit 1
+fi
+mapfile -t desktop_command_backups < <(
+  find "$desktop_command_root/Data/Platforms" -maxdepth 1 -type f \
+    -name 'Direct Fixture.xml.lbport-transaction-backup-*' -print
+)
+desktop_command_original_backups=0
+desktop_command_session_backups=0
+for backup in "${desktop_command_backups[@]}"; do
+  if cmp -s "$backup" \
+    "$desktop_command_platform.before-desktop-command-smoke"; then
+    ((desktop_command_original_backups += 1))
+  elif rg -q -F '<PlayCount>1</PlayCount>' "$backup" \
+    && rg -q -F '<PlayTime>0</PlayTime>' "$backup" \
+    && rg -q -F '<LastPlayedDate>' "$backup"; then
+    ((desktop_command_session_backups += 1))
+  fi
+done
+if [[ ${#desktop_command_backups[@]} -ne 2 \
+  || $desktop_command_original_backups -ne 1 \
+  || $desktop_command_session_backups -ne 1 ]]; then
+  echo "Desktop random play did not retain the exact start/end statistics backup chain." >&2
+  exit 1
+fi
+if find "$desktop_command_root" -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Desktop random play left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox standard Find focus, Ctrl+Alt+Q random selection, separate random play, rendered controls, portable mapped launch, exact argv, statistics, and backup validated."
 
 emulator_log="$emulator_launch_root/emulator-arguments.txt"
 run_launch_smoke launchbox "$emulator_launch_root" fixture-racer "$emulator_log" \
@@ -5998,6 +6078,9 @@ assert_play_stats \
   "$direct_launch_root/Data/Platforms/Direct Fixture.xml" \
   Game ID fixture-direct 2 2 LastPlayedDate
 assert_play_stats \
+  "$desktop_command_root/Data/Platforms/Direct Fixture.xml" \
+  Game ID fixture-direct 1 1 LastPlayedDate
+assert_play_stats \
   "$sequence_launch_root/Data/Platforms/Sequence Fixture.xml" \
   Game ID fixture-sequence 1 0 LastPlayedDate
 assert_play_stats \
@@ -6027,6 +6110,7 @@ for launch_root in \
   "$disabled_lifecycle_root" \
   "$short_lifecycle_root" \
   "$direct_launch_root" \
+  "$desktop_command_root" \
   "$sequence_launch_root" \
   "$archive_launch_root" \
   "$m3u_launch_root" \

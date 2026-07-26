@@ -388,13 +388,19 @@ the recovered `Settings.xml` `SortBy` and `SortByDesc` contract for title/sort
 title, platform, release and library dates, last played, play count/time,
 local/community rating, developer, publisher, genre, series, status, and
 favorite state. Missing primary values remain last in either direction and
-title/ID tie-breaks are deterministic. LaunchBox exposes inline Arrange By and
-Random Game controls; BigBox exposes the same ordering in its keyboard-
-navigable drawer plus a button and `R` shortcut. Changes use the existing
+title/ID tie-breaks are deterministic. LaunchBox exposes inline Arrange By,
+separate Select Random and Play Random controls, Qt's platform-standard Find
+binding, and the recovered `Ctrl+Alt+Q` selection command. Play Random is
+guarded against overlapping library and launch operations and enters the same
+stable-ID, shell-free process boundary as ordinary Play. BigBox exposes the
+same ordering and selection in its keyboard-navigable drawer plus its recovered
+Random Game input action and visible button. Changes use the existing
 transactional settings writer with an exact backup. Random selection operates
 on the visible model and avoids the current game when possible. This is
 platform-neutral Rust/Qt behavior shared unchanged by Linux, Windows, Intel
-macOS, and Apple Silicon.
+macOS, and Apple Silicon; the exact protected random algorithm is not claimed.
+The recovered command evidence and clean-room boundary are recorded in
+`analysis/desktop-commands-13.27.md`.
 LaunchBox can now switch that same model and stable-ID selection between its
 box-art grid and a virtualized, horizontally scrollable list. The list shows
 all 35 columns recovered from LaunchBox 13.27; supported headers drive the

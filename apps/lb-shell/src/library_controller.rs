@@ -1758,6 +1758,16 @@ pub mod qobject {
         fn report_launch_smoke_success(self: &LibraryController, game_id: QString) -> bool;
 
         #[qinvokable]
+        fn report_desktop_command_smoke_success(
+            self: &LibraryController,
+            focus_shortcut: QString,
+            select_random_shortcut: QString,
+            focus_verified: bool,
+            controls_verified: bool,
+            selected_game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_launch_lifecycle_smoke_success(
             self: &LibraryController,
             game_id: QString,
@@ -25248,6 +25258,44 @@ impl qobject::LibraryController {
         if success {
             eprintln!(
                 "LAUNCH_SMOKE_COMPLETE id={game_id} launches={} stats_writes={}",
+                rust.launch_notifications, rust.session_stats_writes,
+            );
+        }
+        success
+    }
+
+    pub fn report_desktop_command_smoke_success(
+        &self,
+        focus_shortcut: QString,
+        select_random_shortcut: QString,
+        focus_verified: bool,
+        controls_verified: bool,
+        selected_game_id: QString,
+    ) -> bool {
+        let focus_shortcut = focus_shortcut.to_string();
+        let select_random_shortcut = select_random_shortcut.to_string();
+        let selected_game_id = selected_game_id.to_string();
+        let rust = self.rust();
+        let success = focus_shortcut == "Ctrl+F"
+            && select_random_shortcut == "Ctrl+Alt+Q"
+            && focus_verified
+            && controls_verified
+            && selected_game_id == "fixture-direct"
+            && self.row_for_game_id(qstring(&selected_game_id)) == 0
+            && rust.launch_notifications == 1
+            && rust.session_stats_writes == 2
+            && rust.session_stats_error.is_none()
+            && self.last_launch_game_id().to_string() == selected_game_id
+            && self.last_launch_target_id().to_string() == selected_game_id
+            && *self.last_launch_succeeded()
+            && !*self.frontend_is_big_box()
+            && !*self.loading()
+            && !*self.writing()
+            && !*self.launching()
+            && !*self.launch_session_active();
+        if success {
+            eprintln!(
+                "DESKTOP_COMMAND_SMOKE_COMPLETE focus={focus_shortcut} select={select_random_shortcut} id={selected_game_id} launches={} stats_writes={}",
                 rust.launch_notifications, rust.session_stats_writes,
             );
         }

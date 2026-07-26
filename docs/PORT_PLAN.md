@@ -254,8 +254,15 @@ selected game across ordering changes and expose random visible-game selection
 that avoids the current game when alternatives exist. Pure tests and real
 offscreen processes prove invalid-key refusal, exact PlayCount ordering,
 single/multi-result random behavior, Settings.xml backup/persistence, and
-byte-identical platform XML. Dynamic/custom-field arrangement, group headings,
-suggestions, and random play remain open.
+byte-identical platform XML. The first `DESK-009` desktop-command layer now
+adds Qt's platform-standard Find binding, exact `Ctrl+Alt+Q` Select Random Game,
+and a separate guarded Play Random control over the same stable-ID selector and
+shell-free launch boundary. Its compiled workflow activates both shortcut
+handlers, renders both controls, proves exact mapped-path argv, and verifies the
+two-write LaunchBox statistics/backup chain. The current-game-exclusion and
+entropy rules remain explicitly port-owned because the protected 13.27 bodies
+are stubs. Dynamic/custom-field arrangement, group headings, suggestions, and
+Random-as-an-arrangement remain open.
 The current `DESK-001` vertical now covers both persisted view modes, every
 recovered 13.27 list column, and box sizing. The original `ListView`, column
 order, and stable visibility indexes use recoverable shared settings writes;
