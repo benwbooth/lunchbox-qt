@@ -4,11 +4,15 @@ use thiserror::Error;
 
 mod box_size;
 mod catalog;
+mod desktop_tray;
+mod discovery;
 mod list_view;
 mod model_settings;
 
 pub use box_size::*;
 pub use catalog::*;
+pub use desktop_tray::*;
+pub use discovery::*;
 pub use list_view::*;
 pub use model_settings::*;
 

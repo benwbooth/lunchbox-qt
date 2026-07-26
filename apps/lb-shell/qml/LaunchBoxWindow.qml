@@ -17,13 +17,63 @@ ApplicationWindow {
            ? controller.library_name + " — LaunchBox Port"
            : "LaunchBox Port"
     color: "#14171c"
-    onClosing: {
+    onClosing: function(close) {
+        if (!window.forceApplicationExit
+                && controller.desktop_close_to_tray
+                && launchBoxSystemTray.visible
+                && launchBoxSystemTray.available) {
+            close.accepted = false
+            window.sendToSystemTray("close")
+            return
+        }
+        close.accepted = true
+        window.finalizeApplicationExit()
+    }
+    onVisibilityChanged: {
+        if (visibility === Window.Minimized
+                && controller.desktop_minimize_to_tray
+                && launchBoxSystemTray.visible
+                && launchBoxSystemTray.available
+                && !window.trayHidePending) {
+            window.trayHidePending = true
+            Qt.callLater(function() {
+                if (window.visibility === Window.Minimized)
+                    window.sendToSystemTray("minimize")
+                window.trayHidePending = false
+            })
+        }
+    }
+
+    function finalizeApplicationExit() {
+        if (window.applicationClosing)
+            return
         window.applicationClosing = true
         launchBoxMusicPlayer.stopPlayback(true)
         gameDetailsLayoutSaveTimer.stop()
         window.persistGameDetailsLayout(
                     controller.show_game_details,
                     controller.game_details_popped_out)
+    }
+
+    function sendToSystemTray(reason) {
+        if (!launchBoxSystemTray.sendWindowToTray(reason))
+            return false
+        window.hide()
+        return true
+    }
+
+    function restoreFromSystemTray(openNotifications) {
+        window.show()
+        window.visibility = Window.Windowed
+        window.raise()
+        window.requestActivate()
+        if (openNotifications)
+            desktopNotificationDialog.open()
+    }
+
+    function exitFromSystemTray() {
+        window.forceApplicationExit = true
+        window.close()
     }
 
     property string selectedPlatform: ""
@@ -60,6 +110,17 @@ ApplicationWindow {
     property bool libraryBoxSizeScreenshotRequested: false
     property string libraryBoxSizeScreenshotPath:
         argumentValue("--library-box-size-screenshot")
+    property bool desktopTraySmokeTest:
+        Qt.application.arguments.indexOf("--desktop-tray-smoke-test") >= 0
+    property bool desktopTrayReloadSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--desktop-tray-reload-smoke-test") >= 0
+    property int desktopTraySmokePhase: 0
+    property int desktopTraySmokeInitialRevision: 0
+    property bool desktopTraySmokeFinished: false
+    property bool desktopTrayScreenshotRequested: false
+    property string desktopTrayScreenshotPath:
+        argumentValue("--desktop-tray-screenshot")
     property real boxSize: 0.17214286
     property real pendingBoxSize: 0.17214286
     readonly property int boxCellWidth:
@@ -132,6 +193,8 @@ ApplicationWindow {
     property int gameDetailsLayoutSmokePhase: 0
     property bool gameDetailsLayoutSmokeFinished: false
     property bool applicationClosing: false
+    property bool forceApplicationExit: false
+    property bool trayHidePending: false
     property bool gameDetailsLayoutScreenshotRequested: false
     property string gameDetailsLayoutScreenshotPath:
         argumentValue("--game-details-layout-screenshot")
@@ -1527,6 +1590,157 @@ ApplicationWindow {
             }
             if (!controller.apply_box_size(window.pendingBoxSize))
                 window.boxSize = controller.box_size
+        }
+    }
+
+    function finishDesktopTraySmoke(reload) {
+        if (controller.desktop_tray_enabled !== true
+                || controller.desktop_minimize_to_tray !== true
+                || controller.desktop_close_to_tray !== true
+                || controller.desktop_show_sent_to_tray_notification !== true
+                || controller.desktop_notification_type
+                   !== "windowsNotifications") {
+            console.error("DESKTOP_TRAY_SMOKE_BAD_POLICY enabled="
+                          + controller.desktop_tray_enabled
+                          + " minimize="
+                          + controller.desktop_minimize_to_tray
+                          + " close=" + controller.desktop_close_to_tray
+                          + " reminder="
+                          + controller.desktop_show_sent_to_tray_notification
+                          + " type=" + controller.desktop_notification_type)
+            Qt.exit(493)
+            return
+        }
+        if (!reload
+                && (controller.desktop_notification_count !== 1
+                    || controller.desktop_unread_notification_count !== 0
+                    || !controller.desktop_notification_is_read_at(0)
+                    || controller.desktop_notification_message_at(0)
+                       !== "LaunchBox notification center smoke")) {
+            console.error("DESKTOP_TRAY_SMOKE_BAD_NOTIFICATION_MODEL count="
+                          + controller.desktop_notification_count
+                          + " unread="
+                          + controller.desktop_unread_notification_count)
+            Qt.exit(493)
+            return
+        }
+        if (!controller.report_desktop_tray_smoke_success(
+                    reload, window.desktopTraySmokeInitialRevision)) {
+            console.error("DESKTOP_TRAY_SMOKE_CONTROLLER_CONTRACT_FAILED")
+            Qt.exit(493)
+            return
+        }
+        console.log((reload ? "DESKTOP_TRAY_RELOAD_SMOKE_COMPLETE"
+                            : "DESKTOP_TRAY_SMOKE_COMPLETE")
+                    + " revision="
+                    + controller.desktop_tray_settings_revision
+                    + " trayAvailable=" + launchBoxSystemTray.available
+                    + " notifications="
+                    + controller.desktop_notification_count)
+        window.desktopTraySmokeFinished = true
+        Qt.quit()
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: (window.desktopTraySmokeTest
+                  || window.desktopTrayReloadSmokeTest)
+                 && !window.desktopTraySmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.library_path.length === 0)
+                return
+
+            if (window.desktopTrayReloadSmokeTest) {
+                window.finishDesktopTraySmoke(true)
+                return
+            }
+
+            if (window.desktopTraySmokePhase === 0) {
+                if (controller.desktop_tray_enabled
+                        || controller.desktop_minimize_to_tray
+                        || controller.desktop_close_to_tray
+                        || !controller.desktop_show_sent_to_tray_notification
+                        || controller.desktop_notification_type
+                           !== "launchBoxNotifications") {
+                    console.error("DESKTOP_TRAY_SMOKE_BAD_DEFAULTS")
+                    Qt.exit(493)
+                    return
+                }
+                window.desktopTraySmokeInitialRevision =
+                        controller.desktop_tray_settings_revision
+                desktopTraySettingsDialog.prepare()
+                if (!desktopTraySettingsDialog.visible) {
+                    console.error("DESKTOP_TRAY_SMOKE_EDITOR_DID_NOT_OPEN")
+                    Qt.exit(493)
+                    return
+                }
+                enableSystemTrayCheck.checked = true
+                minimizeToSystemTrayCheck.checked = true
+                closeToSystemTrayCheck.checked = true
+                trayReminderCheck.checked = true
+                notificationTypeCombo.currentIndex = 1
+                window.desktopTraySmokePhase = 1
+                desktopTraySettingsDialog.save()
+            } else if (window.desktopTraySmokePhase === 1) {
+                if (controller.desktop_tray_settings_revision
+                        <= window.desktopTraySmokeInitialRevision)
+                    return
+                if (!controller.raise_desktop_notification(
+                            "LaunchBox notification center smoke", false)
+                        || !controller.raise_desktop_notification(
+                            "LaunchBox notification error smoke", true)
+                        || controller.desktop_notification_count !== 2
+                        || controller.desktop_unread_notification_count !== 2
+                        || !controller.set_desktop_notification_read(0, true)
+                        || !controller.dismiss_desktop_notification(1)
+                        || controller.desktop_notification_count !== 1
+                        || controller.desktop_unread_notification_count !== 0) {
+                    console.error(
+                        "DESKTOP_TRAY_SMOKE_NOTIFICATION_INTERACTION_FAILED")
+                    Qt.exit(493)
+                    return
+                }
+                desktopNotificationDialog.open()
+                window.desktopTraySmokePhase = 2
+            } else if (window.desktopTraySmokePhase === 2) {
+                if (!desktopNotificationDialog.visible)
+                    return
+                if (window.desktopTrayScreenshotPath.length > 0
+                        && !window.desktopTrayScreenshotRequested) {
+                    window.desktopTrayScreenshotRequested = true
+                    desktopNotificationDialog.contentItem.grabToImage(
+                        function(result) {
+                        if (!result.saveToFile(
+                                window.desktopTrayScreenshotPath)) {
+                            console.error(
+                                "DESKTOP_TRAY_SCREENSHOT_SAVE_FAILED path="
+                                + window.desktopTrayScreenshotPath)
+                            Qt.exit(493)
+                            return
+                        }
+                        window.finishDesktopTraySmoke(false)
+                    })
+                    return
+                }
+                if (window.desktopTrayScreenshotPath.length === 0)
+                    window.finishDesktopTraySmoke(false)
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: (window.desktopTraySmokeTest
+                  || window.desktopTrayReloadSmokeTest)
+                 && !window.desktopTraySmokeFinished
+        onTriggered: {
+            console.error("DESKTOP_TRAY_SMOKE_TIMEOUT phase="
+                          + window.desktopTraySmokePhase
+                          + " writing=" + controller.writing
+                          + " status=" + controller.status_message)
+            Qt.exit(493)
         }
     }
 
@@ -4892,6 +5106,254 @@ ApplicationWindow {
         }
     }
 
+    LaunchBoxSystemTray {
+        id: launchBoxSystemTray
+        controller: controller
+        applicationTitle: window.title
+        onRestoreRequested: window.restoreFromSystemTray(false)
+        onExitRequested: window.exitFromSystemTray()
+        onNotificationCenterRequested:
+            Qt.callLater(function() { desktopNotificationDialog.open() })
+        onMessageBoxRequested: function(title, message) {
+            trayReminderMessageDialog.title = title
+            trayReminderMessageDialog.text = message
+            trayReminderMessageDialog.open()
+        }
+    }
+
+    MessageDialog {
+        id: trayReminderMessageDialog
+        title: "LaunchBox Port"
+        text: "LaunchBox has been sent to the system tray"
+    }
+
+    Dialog {
+        id: desktopTraySettingsDialog
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(560, window.width - 40)
+        title: "System Tray and Notifications"
+
+        function notificationTypeIndex(key) {
+            for (let index = 0; index < notificationTypeCombo.count; ++index) {
+                if (notificationTypeCombo.model[index].key === key)
+                    return index
+            }
+            return 0
+        }
+
+        function prepare() {
+            let payload
+            try {
+                payload = JSON.parse(controller.desktop_tray_settings_json())
+            } catch (error) {
+                console.error("Could not decode desktop tray settings: " + error)
+                return
+            }
+            enableSystemTrayCheck.checked = payload.enabled
+            minimizeToSystemTrayCheck.checked = payload.minimizeToTray
+            closeToSystemTrayCheck.checked = payload.closeToTray
+            trayReminderCheck.checked = payload.showSentToTrayNotification
+            notificationTypeCombo.currentIndex =
+                    notificationTypeIndex(payload.notificationType)
+            open()
+        }
+
+        function save() {
+            const payload = {
+                version: 1,
+                enabled: enableSystemTrayCheck.checked,
+                minimizeToTray: minimizeToSystemTrayCheck.checked,
+                closeToTray: closeToSystemTrayCheck.checked,
+                showSentToTrayNotification: trayReminderCheck.checked,
+                notificationType: notificationTypeCombo.currentValue
+            }
+            if (controller.save_desktop_tray_settings(
+                        JSON.stringify(payload)))
+                accept()
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: "LaunchBox Port uses Qt's native tray integration on Windows, Linux, and macOS. Close and minimize are intercepted only when the desktop reports that a tray is available."
+                wrapMode: Text.Wrap
+                color: "#aeb8c5"
+            }
+            CheckBox {
+                id: enableSystemTrayCheck
+                text: "Enable System Tray"
+            }
+            CheckBox {
+                id: closeToSystemTrayCheck
+                text: "Close to System Tray"
+                enabled: enableSystemTrayCheck.checked
+            }
+            CheckBox {
+                id: minimizeToSystemTrayCheck
+                text: "Minimize to System Tray"
+                enabled: enableSystemTrayCheck.checked
+            }
+            CheckBox {
+                id: trayReminderCheck
+                text: "Show notification when LaunchBox has been sent to system tray"
+                enabled: enableSystemTrayCheck.checked
+            }
+            Label {
+                text: "Notification presentation"
+                font.bold: true
+            }
+            ComboBox {
+                id: notificationTypeCombo
+                Layout.fillWidth: true
+                textRole: "label"
+                valueRole: "key"
+                model: [
+                    {
+                        key: "launchBoxNotifications",
+                        label: "LaunchBox Notifications"
+                    },
+                    {
+                        key: "windowsNotifications",
+                        label: "System Notifications"
+                    },
+                    {
+                        key: "messageBoxes",
+                        label: "Message Boxes"
+                    }
+                ]
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "Cancel"
+                onClicked: desktopTraySettingsDialog.reject()
+            }
+            Button {
+                text: "Save"
+                highlighted: true
+                enabled: !controller.writing
+                onClicked: desktopTraySettingsDialog.save()
+            }
+        }
+    }
+
+    Dialog {
+        id: desktopNotificationDialog
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(720, window.width - 40)
+        height: Math.min(560, window.height - 40)
+        title: controller.desktop_unread_notification_count > 0
+               ? "Notifications — "
+                 + controller.desktop_unread_notification_count + " unread"
+               : "Notifications"
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                visible: controller.desktop_notification_count === 0
+                text: "There are no LaunchBox notifications."
+                color: "#8b949e"
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            ListView {
+                id: desktopNotificationList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: 8
+                model: controller.desktop_notification_count
+                ScrollBar.vertical: ScrollBar {}
+
+                delegate: Rectangle {
+                    required property int index
+                    property int notificationRevision:
+                        controller.desktop_notification_revision
+                    property bool notificationRead: {
+                        const revision = notificationRevision
+                        return controller.desktop_notification_is_read_at(index)
+                    }
+                    width: desktopNotificationList.width
+                    height: 104
+                    radius: 6
+                    color: notificationRead ? "#20252d" : "#25354a"
+                    border.color: {
+                        const revision = notificationRevision
+                        return controller.desktop_notification_is_error_at(index)
+                               ? "#f85149" : "#3b82f6"
+                    }
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 4
+                        Label {
+                            Layout.fillWidth: true
+                            text: {
+                                const revision =
+                                    controller.desktop_notification_revision
+                                return controller
+                                    .desktop_notification_message_at(index)
+                            }
+                            color: "white"
+                            wrapMode: Text.Wrap
+                            font.bold: !parent.parent.notificationRead
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: {
+                                const revision =
+                                    controller.desktop_notification_revision
+                                return controller
+                                    .desktop_notification_raised_at(index)
+                            }
+                            color: "#8b949e"
+                            font.pixelSize: 11
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Item { Layout.fillWidth: true }
+                            Button {
+                                text: parent.parent.parent.notificationRead
+                                      ? "Mark unread" : "Mark read"
+                                onClicked:
+                                    controller.set_desktop_notification_read(
+                                        index,
+                                        !parent.parent.parent.notificationRead)
+                            }
+                            Button {
+                                text: "Dismiss"
+                                onClicked:
+                                    controller.dismiss_desktop_notification(
+                                        index)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "Mark all read"
+                enabled: controller.desktop_unread_notification_count > 0
+                onClicked:
+                    controller.mark_all_desktop_notifications_read()
+            }
+            Button {
+                text: "Close"
+                onClicked: desktopNotificationDialog.accept()
+            }
+        }
+    }
+
     header: ToolBar {
         background: Rectangle { color: "#20252d" }
         RowLayout {
@@ -4928,6 +5390,21 @@ ApplicationWindow {
             Button {
                 text: "Host Paths…"
                 onClicked: pathMappingsDialog.open()
+            }
+            ToolButton {
+                text: "Tray…"
+                Accessible.name: "System tray and notification settings"
+                enabled: controller.library_path.length > 0
+                         && !controller.loading && !controller.writing
+                onClicked: desktopTraySettingsDialog.prepare()
+            }
+            ToolButton {
+                text: controller.desktop_unread_notification_count > 0
+                      ? "Notifs "
+                        + controller.desktop_unread_notification_count
+                      : "Notifs"
+                Accessible.name: "Open LaunchBox notifications"
+                onClicked: desktopNotificationDialog.open()
             }
             Button {
                 text: checked ? "Details ✓" : "Details"

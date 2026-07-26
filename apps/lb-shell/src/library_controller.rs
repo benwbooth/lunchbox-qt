@@ -50,6 +50,15 @@ pub mod qobject {
         #[qproperty(bool, list_view)]
         #[qproperty(QString, list_view_layout_json)]
         #[qproperty(f64, box_size)]
+        #[qproperty(bool, desktop_tray_enabled)]
+        #[qproperty(bool, desktop_minimize_to_tray)]
+        #[qproperty(bool, desktop_close_to_tray)]
+        #[qproperty(bool, desktop_show_sent_to_tray_notification)]
+        #[qproperty(QString, desktop_notification_type)]
+        #[qproperty(i32, desktop_tray_settings_revision)]
+        #[qproperty(i32, desktop_notification_count)]
+        #[qproperty(i32, desktop_unread_notification_count)]
+        #[qproperty(i32, desktop_notification_revision)]
         #[qproperty(bool, include_hidden_games)]
         #[qproperty(bool, include_broken_games)]
         #[qproperty(bool, loading)]
@@ -260,6 +269,69 @@ pub mod qobject {
 
         #[qinvokable]
         fn load_library(self: Pin<&mut LibraryController>, path: QString);
+
+        #[qinvokable]
+        fn desktop_tray_settings_json(self: &LibraryController) -> QString;
+
+        #[qinvokable]
+        fn save_desktop_tray_settings(
+            self: Pin<&mut LibraryController>,
+            request_payload: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn desktop_notification_message_at(
+            self: &LibraryController,
+            notification_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn desktop_notification_raised_at(
+            self: &LibraryController,
+            notification_index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn desktop_notification_is_error_at(
+            self: &LibraryController,
+            notification_index: i32,
+        ) -> bool;
+
+        #[qinvokable]
+        fn desktop_notification_is_read_at(
+            self: &LibraryController,
+            notification_index: i32,
+        ) -> bool;
+
+        #[qinvokable]
+        fn raise_desktop_notification(
+            self: Pin<&mut LibraryController>,
+            message: QString,
+            is_error: bool,
+        ) -> bool;
+
+        #[qinvokable]
+        fn set_desktop_notification_read(
+            self: Pin<&mut LibraryController>,
+            notification_index: i32,
+            is_read: bool,
+        ) -> bool;
+
+        #[qinvokable]
+        fn dismiss_desktop_notification(
+            self: Pin<&mut LibraryController>,
+            notification_index: i32,
+        ) -> bool;
+
+        #[qinvokable]
+        fn mark_all_desktop_notifications_read(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn report_desktop_tray_smoke_success(
+            self: &LibraryController,
+            reload: bool,
+            initial_revision: i32,
+        ) -> bool;
 
         #[qinvokable]
         fn prepare_big_box_startup_presentation(
@@ -1853,13 +1925,13 @@ use cxx_qt_lib::{
 };
 use lb_domain::{
     built_in_model_settings, resolve_model_settings, AdditionalApplication,
-    AdditionalApplicationEdit, AlternateName, ArgbColor, BoxSize, CustomField, Emulator,
-    EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game, GameLaunchConfiguration,
-    GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding, ListViewColumnLayout,
-    ModelSettings, ModelSettingsSource, ModelSize, ModelType, Mount, NavigationMetadata,
-    ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder,
-    Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame, ResolvedModelSettings,
-    UNASSIGNED_EMULATOR_ID,
+    AdditionalApplicationEdit, AlternateName, ArgbColor, BoxSize, CustomField,
+    DesktopNotificationType, DesktopTrayPolicy, Emulator, EmulatorConfiguration, EmulatorPlatform,
+    FrontendSettings, Game, GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit,
+    InputBinding, ListViewColumnLayout, ModelSettings, ModelSettingsSource, ModelSize, ModelType,
+    Mount, NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory,
+    PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
+    ResolvedModelSettings, UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -1958,12 +2030,12 @@ use lb_query::{
 use lb_storage::{
     delete_directory_if_revision, delete_regular_files_if_revisions, find_emulator_references,
     find_game_references, find_platform_references, load_big_box_settings_file,
-    load_input_bindings_file, pending_transaction_manifests, recover_pending_transactions,
-    replace_directory_from_source_if_revisions, replace_regular_file_from_source_if_revisions,
-    AuxiliaryDocument, DirectoryRevision, EmulatorReference, FileRevision, GameReference,
-    IndexedGameSaveMetadataEdit, IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex,
-    LibraryTransaction, NewGame, NewGameMetadata, PlatformDocument, PlatformReference,
-    StorageError, TransactionError,
+    load_input_bindings_file, load_settings_file, pending_transaction_manifests,
+    recover_pending_transactions, replace_directory_from_source_if_revisions,
+    replace_regular_file_from_source_if_revisions, AuxiliaryDocument, DirectoryRevision,
+    EmulatorReference, FileRevision, GameReference, IndexedGameSaveMetadataEdit,
+    IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame,
+    NewGameMetadata, PlatformDocument, PlatformReference, StorageError, TransactionError,
 };
 use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
@@ -2159,6 +2231,15 @@ pub struct LibraryControllerRust {
     list_view: bool,
     list_view_layout_json: QString,
     box_size: f64,
+    desktop_tray_enabled: bool,
+    desktop_minimize_to_tray: bool,
+    desktop_close_to_tray: bool,
+    desktop_show_sent_to_tray_notification: bool,
+    desktop_notification_type: QString,
+    desktop_tray_settings_revision: i32,
+    desktop_notification_count: i32,
+    desktop_unread_notification_count: i32,
+    desktop_notification_revision: i32,
     include_hidden_games: bool,
     include_broken_games: bool,
     loading: bool,
@@ -2421,6 +2502,8 @@ pub struct LibraryControllerRust {
     model_viewer_state: ModelViewerState,
     model_viewer_state_initialized: bool,
     list_view_column_layout: ListViewColumnLayout,
+    desktop_tray_policy: DesktopTrayPolicy,
+    desktop_notifications: Vec<DesktopNotification>,
     request_generation: u64,
     random_selection_counter: u64,
     model_reset_notifications: u64,
@@ -2509,6 +2592,17 @@ struct RelatedGamesPayload {
     sections: Vec<RelatedGamesSectionPayload>,
 }
 
+const MAX_DESKTOP_NOTIFICATIONS: usize = 128;
+const MAX_DESKTOP_NOTIFICATION_MESSAGE_BYTES: usize = 4096;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DesktopNotification {
+    message: String,
+    raised_at: String,
+    is_error: bool,
+    is_read: bool,
+}
+
 struct LoadedLibrary {
     path: String,
     root: PathBuf,
@@ -2567,6 +2661,7 @@ struct LoadedLibrary {
     list_view: bool,
     list_view_column_layout: ListViewColumnLayout,
     box_size: BoxSize,
+    desktop_tray_policy: DesktopTrayPolicy,
 }
 
 struct LibraryReplacement {
@@ -2623,6 +2718,7 @@ struct LibraryReplacement {
     list_view: bool,
     list_view_column_layout: ListViewColumnLayout,
     box_size: BoxSize,
+    desktop_tray_policy: DesktopTrayPolicy,
     name: String,
     message: String,
     pending_recovery_count: usize,
@@ -2723,6 +2819,7 @@ impl LoadedLibrary {
                 list_view: false,
                 list_view_column_layout: ListViewColumnLayout::default(),
                 box_size: BoxSize::default(),
+                desktop_tray_policy: DesktopTrayPolicy::default(),
             });
         }
 
@@ -2732,6 +2829,7 @@ impl LoadedLibrary {
         let list_view = list_view_from_settings(data.settings());
         let list_view_column_layout = ListViewColumnLayout::from_settings(data.settings());
         let box_size = BoxSize::from_settings(data.settings());
+        let desktop_tray_policy = DesktopTrayPolicy::from_settings(data.settings());
         let launchbox_launch_screen_policy =
             FrontendLaunchScreenPolicy::from_settings(data.settings())
                 .map_err(|error| error.to_string())?;
@@ -2956,6 +3054,7 @@ impl LoadedLibrary {
             list_view,
             list_view_column_layout,
             box_size,
+            desktop_tray_policy,
         })
     }
 }
@@ -3588,6 +3687,45 @@ impl BigBoxMarqueeSettingsPayload {
     }
 }
 
+const DESKTOP_TRAY_SETTINGS_PAYLOAD_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DesktopTraySettingsPayload {
+    version: u32,
+    enabled: bool,
+    minimize_to_tray: bool,
+    close_to_tray: bool,
+    show_sent_to_tray_notification: bool,
+    notification_type: String,
+}
+
+impl DesktopTraySettingsPayload {
+    fn validate(&self) -> Result<DesktopTrayPolicy, String> {
+        if self.version != DESKTOP_TRAY_SETTINGS_PAYLOAD_VERSION {
+            return Err(format!(
+                "desktop tray settings version {} is unsupported",
+                self.version
+            ));
+        }
+        let Some(notification_type) =
+            DesktopNotificationType::from_key(self.notification_type.trim())
+        else {
+            return Err(format!(
+                "unknown desktop notification type: {}",
+                self.notification_type
+            ));
+        };
+        Ok(DesktopTrayPolicy {
+            enabled: self.enabled,
+            minimize_to_tray: self.minimize_to_tray,
+            close_to_tray: self.close_to_tray,
+            show_sent_to_tray_notification: self.show_sent_to_tray_notification,
+            notification_type,
+        })
+    }
+}
+
 const BIG_BOX_SECURITY_SETTINGS_PAYLOAD_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -3678,6 +3816,17 @@ enum BigBoxInputWriteFailure {
 struct BigBoxMarqueeWriteSuccess {
     policy: BigBoxMarqueePolicy,
     backup: PathBuf,
+}
+
+struct DesktopTrayWriteSuccess {
+    policy: DesktopTrayPolicy,
+    backup: PathBuf,
+}
+
+enum DesktopTrayWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Other(String),
 }
 
 enum BigBoxMarqueeWriteFailure {
@@ -6419,6 +6568,65 @@ fn write_big_box_marquee_settings(
         ));
     }
     Ok(BigBoxMarqueeWriteSuccess { policy, backup })
+}
+
+fn write_desktop_tray_settings(
+    root: PathBuf,
+    payload: DesktopTraySettingsPayload,
+) -> Result<DesktopTrayWriteSuccess, DesktopTrayWriteFailure> {
+    let requested = payload.validate().map_err(DesktopTrayWriteFailure::Other)?;
+    let settings_path = root.join("Data").join("Settings.xml");
+    let mut settings = AuxiliaryDocument::load(&settings_path)
+        .map_err(|error| DesktopTrayWriteFailure::Other(error.to_string()))?;
+    for (key, value) in [
+        ("EnableSystemTray", requested.enabled.to_string()),
+        (
+            "MinimizeToSystemTray",
+            requested.minimize_to_tray.to_string(),
+        ),
+        ("CloseToSystemTray", requested.close_to_tray.to_string()),
+        (
+            "DontSendTrayReminder",
+            (!requested.show_sent_to_tray_notification).to_string(),
+        ),
+        (
+            "NotificationType",
+            requested.notification_type.persisted_value().to_string(),
+        ),
+    ] {
+        settings
+            .set_single_record_field("Settings", key, &value)
+            .map_err(|error| DesktopTrayWriteFailure::Other(error.to_string()))?;
+    }
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_desktop_tray_transaction_error)?;
+    transaction
+        .stage_auxiliary(&settings)
+        .map_err(classify_desktop_tray_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_desktop_tray_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == settings_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            DesktopTrayWriteFailure::Other(
+                "desktop tray transaction reported no Settings.xml write".into(),
+            )
+        })?;
+
+    let settings = load_settings_file(&settings_path)
+        .map_err(|error| DesktopTrayWriteFailure::Other(error.to_string()))?;
+    let policy = DesktopTrayPolicy::from_settings(settings.as_ref());
+    if policy != requested {
+        return Err(DesktopTrayWriteFailure::Other(
+            "committed desktop tray settings did not round-trip to the requested policy".into(),
+        ));
+    }
+    Ok(DesktopTrayWriteSuccess { policy, backup })
 }
 
 fn write_big_box_security_settings(
@@ -16937,6 +17145,27 @@ fn classify_big_box_marquee_transaction_error(
     }
 }
 
+fn classify_desktop_tray_transaction_error(error: TransactionError) -> DesktopTrayWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::SourceConflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            DesktopTrayWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            DesktopTrayWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            DesktopTrayWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => DesktopTrayWriteFailure::Other(message),
+    }
+}
+
 fn classify_big_box_security_transaction_error(
     error: TransactionError,
 ) -> BigBoxSecurityWriteFailure {
@@ -17225,6 +17454,52 @@ impl qobject::LibraryController {
                 "Could not encode LaunchBox list layout: {error}"
             ))),
         }
+    }
+
+    fn apply_desktop_tray_policy(mut self: Pin<&mut Self>, policy: DesktopTrayPolicy) {
+        self.as_mut().rust_mut().desktop_tray_policy = policy;
+        self.as_mut().set_desktop_tray_enabled(policy.enabled);
+        self.as_mut()
+            .set_desktop_minimize_to_tray(policy.minimize_to_tray);
+        self.as_mut()
+            .set_desktop_close_to_tray(policy.close_to_tray);
+        self.as_mut()
+            .set_desktop_show_sent_to_tray_notification(policy.show_sent_to_tray_notification);
+        self.as_mut()
+            .set_desktop_notification_type(qstring(policy.notification_type.key()));
+        let revision = self
+            .as_ref()
+            .desktop_tray_settings_revision()
+            .wrapping_add(1);
+        self.as_mut().set_desktop_tray_settings_revision(revision);
+    }
+
+    fn desktop_notification(&self, notification_index: i32) -> Option<&DesktopNotification> {
+        let index = usize::try_from(notification_index).ok()?;
+        self.rust().desktop_notifications.get(index)
+    }
+
+    fn refresh_desktop_notification_properties(mut self: Pin<&mut Self>) {
+        let (count, unread) = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            (
+                saturating_i32(rust.desktop_notifications.len()),
+                saturating_i32(
+                    rust.desktop_notifications
+                        .iter()
+                        .filter(|notification| !notification.is_read)
+                        .count(),
+                ),
+            )
+        };
+        self.as_mut().set_desktop_notification_count(count);
+        self.as_mut().set_desktop_unread_notification_count(unread);
+        let revision = self
+            .as_ref()
+            .desktop_notification_revision()
+            .wrapping_add(1);
+        self.as_mut().set_desktop_notification_revision(revision);
     }
 
     pub fn initialize_launchbox_ui_state(mut self: Pin<&mut Self>) -> bool {
@@ -17684,6 +17959,7 @@ impl qobject::LibraryController {
                     list_view: false,
                     list_view_column_layout: ListViewColumnLayout::default(),
                     box_size: BoxSize::default(),
+                    desktop_tray_policy: DesktopTrayPolicy::default(),
                     name: "Fixture Console".into(),
                     message: "Embedded compatibility fixture".into(),
                     pending_recovery_count: 0,
@@ -17744,6 +18020,230 @@ impl qobject::LibraryController {
             self.as_mut()
                 .set_status_message(qstring(format!("Could not start library loader: {error}")));
         }
+    }
+
+    pub fn desktop_tray_settings_json(&self) -> QString {
+        let policy = self.rust().desktop_tray_policy;
+        serde_json::to_string(&DesktopTraySettingsPayload {
+            version: DESKTOP_TRAY_SETTINGS_PAYLOAD_VERSION,
+            enabled: policy.enabled,
+            minimize_to_tray: policy.minimize_to_tray,
+            close_to_tray: policy.close_to_tray,
+            show_sent_to_tray_notification: policy.show_sent_to_tray_notification,
+            notification_type: policy.notification_type.key().to_string(),
+        })
+        .map(qstring)
+        .unwrap_or_default()
+    }
+
+    pub fn save_desktop_tray_settings(mut self: Pin<&mut Self>, request_payload: QString) -> bool {
+        let payload = match serde_json::from_str::<DesktopTraySettingsPayload>(
+            &request_payload.to_string(),
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not decode desktop tray settings: {error}"
+                )));
+                return false;
+            }
+        };
+        if let Err(error) = payload.validate() {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not apply desktop tray settings: {error}"
+            )));
+            return false;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Load a LaunchBox library before editing desktop tray settings.",
+            ));
+            return false;
+        };
+        if !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Saving desktop tray settings in the background..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-desktop-tray-settings-write".into())
+            .spawn(move || {
+                let result = write_desktop_tray_settings(root, payload);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_desktop_tray_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the desktop tray settings writer: {error}"
+            )));
+            return false;
+        }
+        true
+    }
+
+    pub fn desktop_notification_message_at(&self, notification_index: i32) -> QString {
+        self.desktop_notification(notification_index)
+            .map(|notification| qstring(&notification.message))
+            .unwrap_or_default()
+    }
+
+    pub fn desktop_notification_raised_at(&self, notification_index: i32) -> QString {
+        self.desktop_notification(notification_index)
+            .map(|notification| qstring(&notification.raised_at))
+            .unwrap_or_default()
+    }
+
+    pub fn desktop_notification_is_error_at(&self, notification_index: i32) -> bool {
+        self.desktop_notification(notification_index)
+            .is_some_and(|notification| notification.is_error)
+    }
+
+    pub fn desktop_notification_is_read_at(&self, notification_index: i32) -> bool {
+        self.desktop_notification(notification_index)
+            .is_some_and(|notification| notification.is_read)
+    }
+
+    pub fn raise_desktop_notification(
+        mut self: Pin<&mut Self>,
+        message: QString,
+        is_error: bool,
+    ) -> bool {
+        let message = message.to_string();
+        if message.trim().is_empty() {
+            self.as_mut()
+                .set_status_message(qstring("A desktop notification message cannot be empty."));
+            return false;
+        }
+        if message.len() > MAX_DESKTOP_NOTIFICATION_MESSAGE_BYTES {
+            self.as_mut().set_status_message(qstring(format!(
+                "Desktop notification exceeds the {MAX_DESKTOP_NOTIFICATION_MESSAGE_BYTES}-byte safety limit."
+            )));
+            return false;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            if rust.desktop_notifications.len() == MAX_DESKTOP_NOTIFICATIONS {
+                rust.desktop_notifications.remove(0);
+            }
+            rust.desktop_notifications.push(DesktopNotification {
+                message,
+                raised_at: Utc::now().to_rfc3339(),
+                is_error,
+                is_read: false,
+            });
+        }
+        self.as_mut().refresh_desktop_notification_properties();
+        true
+    }
+
+    pub fn set_desktop_notification_read(
+        mut self: Pin<&mut Self>,
+        notification_index: i32,
+        is_read: bool,
+    ) -> bool {
+        let Ok(index) = usize::try_from(notification_index) else {
+            return false;
+        };
+        let changed = {
+            let this = self.as_mut();
+            let mut rust = this.rust_mut();
+            let Some(notification) = rust.desktop_notifications.get_mut(index) else {
+                return false;
+            };
+            if notification.is_read == is_read {
+                false
+            } else {
+                notification.is_read = is_read;
+                true
+            }
+        };
+        if changed {
+            self.as_mut().refresh_desktop_notification_properties();
+        }
+        true
+    }
+
+    pub fn dismiss_desktop_notification(mut self: Pin<&mut Self>, notification_index: i32) -> bool {
+        let Ok(index) = usize::try_from(notification_index) else {
+            return false;
+        };
+        if index >= self.as_ref().rust().desktop_notifications.len() {
+            return false;
+        }
+        self.as_mut().rust_mut().desktop_notifications.remove(index);
+        self.as_mut().refresh_desktop_notification_properties();
+        true
+    }
+
+    pub fn mark_all_desktop_notifications_read(mut self: Pin<&mut Self>) {
+        let mut changed = false;
+        for notification in &mut self.as_mut().rust_mut().desktop_notifications {
+            changed |= !notification.is_read;
+            notification.is_read = true;
+        }
+        if changed {
+            self.as_mut().refresh_desktop_notification_properties();
+        }
+    }
+
+    pub fn report_desktop_tray_smoke_success(&self, reload: bool, initial_revision: i32) -> bool {
+        let policy = self.rust().desktop_tray_policy;
+        let notifications = &self.rust().desktop_notifications;
+        let policy_matches = policy
+            == DesktopTrayPolicy {
+                enabled: true,
+                minimize_to_tray: true,
+                close_to_tray: true,
+                show_sent_to_tray_notification: true,
+                notification_type: DesktopNotificationType::WindowsNotifications,
+            };
+        let notification_matches = if reload {
+            notifications.is_empty()
+        } else {
+            matches!(
+                notifications.as_slice(),
+                [DesktopNotification {
+                    message,
+                    is_error: false,
+                    is_read: true,
+                    ..
+                }] if message == "LaunchBox notification center smoke"
+            )
+        };
+        let revision_matches = if reload {
+            *self.desktop_tray_settings_revision() > 0
+        } else {
+            *self.desktop_tray_settings_revision() > initial_revision
+        };
+        if !policy_matches
+            || !notification_matches
+            || !revision_matches
+            || self.rust().launchbox_root.is_none()
+            || *self.writing()
+        {
+            return false;
+        }
+        eprintln!(
+            "{} revision={} notifications={}",
+            if reload {
+                "DESKTOP_TRAY_RELOAD_SMOKE_COMPLETE"
+            } else {
+                "DESKTOP_TRAY_SMOKE_COMPLETE"
+            },
+            self.desktop_tray_settings_revision(),
+            notifications.len()
+        );
+        true
     }
 
     pub fn prepare_big_box_startup_presentation(mut self: Pin<&mut Self>, path: QString) -> bool {
@@ -27579,6 +28079,7 @@ impl qobject::LibraryController {
                     list_view: loaded.list_view,
                     list_view_column_layout: loaded.list_view_column_layout,
                     box_size: loaded.box_size,
+                    desktop_tray_policy: loaded.desktop_tray_policy,
                     name: loaded.name,
                     message: loaded.message,
                     pending_recovery_count: loaded.pending_recovery_count,
@@ -27953,6 +28454,45 @@ impl qobject::LibraryController {
             Err(BigBoxMarqueeWriteFailure::Other(message)) => {
                 self.as_mut().set_status_message(qstring(format!(
                     "Could not save BigBox marquee settings: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_desktop_tray_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<DesktopTrayWriteSuccess, DesktopTrayWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(written) => {
+                self.as_mut().apply_desktop_tray_policy(written.policy);
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved desktop tray settings. Exact backup: {}",
+                    written.backup.display()
+                )));
+            }
+            Err(DesktopTrayWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(DesktopTrayWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(DesktopTrayWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save desktop tray settings: {message}"
                 )));
             }
         }
@@ -31714,6 +32254,7 @@ impl qobject::LibraryController {
             list_view,
             list_view_column_layout,
             box_size,
+            desktop_tray_policy,
             name,
             message,
             pending_recovery_count,
@@ -31846,6 +32387,7 @@ impl qobject::LibraryController {
             rust.big_box_security_policy = big_box_security_policy;
             rust.big_box_game_action_policy = big_box_game_action_policy;
             rust.big_box_related_games_policy = big_box_related_games_policy;
+            rust.desktop_tray_policy = desktop_tray_policy;
             rust.big_box_related_games_generation =
                 rust.big_box_related_games_generation.wrapping_add(1);
             rust.big_box_screensaver_candidates = big_box_screensaver_candidates;
@@ -32255,6 +32797,7 @@ impl qobject::LibraryController {
         self.as_mut().set_list_view(list_view);
         self.as_mut().refresh_list_view_layout_json();
         self.as_mut().set_box_size(box_size.value());
+        self.as_mut().apply_desktop_tray_policy(desktop_tray_policy);
         self.as_mut().set_include_hidden_games(false);
         self.as_mut().set_include_broken_games(false);
         self.as_mut().set_navigation_filter_kind(QString::default());
@@ -33628,6 +34171,98 @@ mod tests {
         let updated = fs::read_to_string(settings_path).expect("read updated settings");
         assert!(updated.contains("<SortBy>PlayCount</SortBy>"));
         assert!(updated.contains("<SortByDesc>true</SortByDesc>"));
+        assert!(updated.contains("<Theme>Fixture Theme</Theme>"));
+    }
+
+    #[test]
+    fn desktop_tray_payload_is_versioned_and_rejects_unknown_input() {
+        let valid = DesktopTraySettingsPayload {
+            version: DESKTOP_TRAY_SETTINGS_PAYLOAD_VERSION,
+            enabled: true,
+            minimize_to_tray: true,
+            close_to_tray: false,
+            show_sent_to_tray_notification: true,
+            notification_type: "windowsNotifications".into(),
+        };
+        assert_eq!(
+            valid.validate().expect("valid desktop tray policy"),
+            DesktopTrayPolicy {
+                enabled: true,
+                minimize_to_tray: true,
+                close_to_tray: false,
+                show_sent_to_tray_notification: true,
+                notification_type: DesktopNotificationType::WindowsNotifications,
+            }
+        );
+
+        let mut wrong_version = valid.clone();
+        wrong_version.version += 1;
+        assert!(wrong_version.validate().is_err());
+        let mut unknown_type = valid.clone();
+        unknown_type.notification_type = "futureNotificationBackend".into();
+        assert!(unknown_type.validate().is_err());
+        assert!(
+            serde_json::from_value::<DesktopTraySettingsPayload>(serde_json::json!({
+                "version": 1,
+                "enabled": true,
+                "minimizeToTray": true,
+                "closeToTray": true,
+                "showSentToTrayNotification": true,
+                "notificationType": "launchBoxNotifications",
+                "unexpected": true
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn desktop_tray_writer_round_trips_all_13_27_fields_and_keeps_unknown_settings() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).expect("create Data directory");
+        let settings_path = data.join("Settings.xml");
+        let original = include_bytes!("../../../fixtures/launchbox/Data/Settings.xml");
+        fs::write(&settings_path, original).expect("write settings fixture");
+
+        let written = write_desktop_tray_settings(
+            directory.path().to_path_buf(),
+            DesktopTraySettingsPayload {
+                version: DESKTOP_TRAY_SETTINGS_PAYLOAD_VERSION,
+                enabled: true,
+                minimize_to_tray: true,
+                close_to_tray: true,
+                show_sent_to_tray_notification: false,
+                notification_type: "messageBoxes".into(),
+            },
+        )
+        .unwrap_or_else(|error| match error {
+            DesktopTrayWriteFailure::Conflict(message)
+            | DesktopTrayWriteFailure::Other(message)
+            | DesktopTrayWriteFailure::PendingRecovery { message, .. } => {
+                panic!("write desktop tray settings: {message}")
+            }
+        });
+
+        assert_eq!(
+            written.policy,
+            DesktopTrayPolicy {
+                enabled: true,
+                minimize_to_tray: true,
+                close_to_tray: true,
+                show_sent_to_tray_notification: false,
+                notification_type: DesktopNotificationType::MessageBoxes,
+            }
+        );
+        assert_eq!(
+            fs::read(&written.backup).expect("read exact backup"),
+            original
+        );
+        let updated = fs::read_to_string(settings_path).expect("read updated settings");
+        assert!(updated.contains("<EnableSystemTray>true</EnableSystemTray>"));
+        assert!(updated.contains("<MinimizeToSystemTray>true</MinimizeToSystemTray>"));
+        assert!(updated.contains("<CloseToSystemTray>true</CloseToSystemTray>"));
+        assert!(updated.contains("<DontSendTrayReminder>true</DontSendTrayReminder>"));
+        assert!(updated.contains("<NotificationType>2</NotificationType>"));
         assert!(updated.contains("<Theme>Fixture Theme</Theme>"));
     }
 

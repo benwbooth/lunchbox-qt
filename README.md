@@ -80,6 +80,21 @@ cargo run -p lb-shell --bin launchbox -- \
   --map-windows-unc 'server/share=/mnt/network-share'
 ```
 
+LaunchBox now includes the first native system-tray and notification-center
+slice. The visible editor reads and losslessly writes the exact five 13.27
+`Settings.xml` fields, including the negative reminder flag and original
+notification enum integers. Qt supplies one shared tray icon/menu boundary for
+Windows, Linux, and macOS with **Show LaunchBox**, **Notifications**, and
+**Exit**; ordinary close/minimize is intercepted only when the selected option
+is active and the host reports that a tray really exists. The bounded native
+notification center supports raised timestamps, info/error state, read/unread,
+dismiss, and an unread badge. Compiled coverage drives the real editor,
+transaction, rendered notification dialog, exact backup, and fresh-process
+reload. A headless Linux runner deliberately cannot prove a desktop panel, so
+actual icon/menu and host-notification behavior remains a three-host release
+gate. The recovered contract and Wine limitation are documented in
+`analysis/system-tray-13.27.md`.
+
 Library parsing runs on a Rust worker thread and returns through CXX-Qt's queued
 Qt-thread bridge. QML consumes the controller as a real `QAbstractListModel`
 with 51 named identity, state, descriptive-metadata, launch-configuration,

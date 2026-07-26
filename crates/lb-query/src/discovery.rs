@@ -2,9 +2,9 @@ use super::{
     parse_timestamp, playlist_filter_is_supported, playlist_filters_match, GameFilter, GameSort,
 };
 use chrono::{DateTime, Duration, Utc};
-use lb_domain::{Game, PlaylistFilter};
-use lb_integrations::discovery_provider::{
-    DiscoveryCatalog, DiscoveryList, DISCOVERY_LISTS_ENDPOINT, DISCOVERY_LISTS_MAX_ITEMS_PER_LIST,
+use lb_domain::{
+    DiscoveryCatalog, DiscoveryList, Game, PlaylistFilter, DISCOVERY_LISTS_ENDPOINT,
+    DISCOVERY_LISTS_MAX_ITEMS_PER_LIST,
 };
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -735,9 +735,7 @@ mod tests {
 
     #[test]
     fn provider_lists_follow_priority_then_random_contract_and_resolve_exact_games() {
-        use lb_integrations::discovery_provider::{
-            DiscoveryCatalog, DiscoveryCriterion, DiscoveryGame, DiscoveryList,
-        };
+        use lb_domain::{DiscoveryCatalog, DiscoveryCriterion, DiscoveryGame, DiscoveryList};
 
         let mut arcade = game("arcade", "Robotron", "Arcade");
         arcade.database_id = Some(42);
@@ -841,9 +839,7 @@ mod tests {
 
     #[test]
     fn provider_lists_reject_unsupported_semantics_and_enforce_bounds() {
-        use lb_integrations::discovery_provider::{
-            DiscoveryCatalog, DiscoveryCriterion, DiscoveryList,
-        };
+        use lb_domain::{DiscoveryCatalog, DiscoveryCriterion, DiscoveryList};
 
         let mut rated = game("rated", "Rated", "Console");
         rated.star_rating = 5;

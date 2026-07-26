@@ -695,6 +695,17 @@ fn load_settings(
     parse_settings(path, &root, record_name).map(Some)
 }
 
+/// Loads only the desktop Settings.xml document without indexing game data.
+///
+/// Desktop shell policy must be available independently of the potentially
+/// large platform catalog, just as startup presentation uses the corresponding
+/// BigBox-only loader below.
+pub fn load_settings_file(
+    path: impl AsRef<Path>,
+) -> Result<Option<FrontendSettings>, StorageError> {
+    load_settings(path.as_ref(), "Settings")
+}
+
 /// Loads only the small BigBox settings document without indexing the game
 /// library. Application-start presentation uses this before the background
 /// library load so startup media can begin immediately.

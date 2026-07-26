@@ -754,6 +754,7 @@ dependencies = [
  "chrono",
  "encoding_rs",
  "flate2",
+ "lb-domain",
  "lb-platform",
  "md-5",
  "serde",
@@ -805,7 +806,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "lb-domain",
- "lb-integrations",
  "serde",
  "xmltree",
 ]

@@ -48,7 +48,8 @@ diagnostics=$(
     apps/lb-shell/qml/BigBoxMarqueeWindow.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
-    apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
+    apps/lb-shell/qml/LaunchPauseOverlay.qml \
+    apps/lb-shell/qml/LaunchBoxSystemTray.qml 2>&1
 ) || {
   printf '%s\n' "$diagnostics" >&2
   exit 1
@@ -88,7 +89,8 @@ if [[ ! -x "$process_fixture" ]]; then
 fi
 stale_source=$(
   find apps/lb-shell crates tools -type f \
-    \( -name '*.rs' -o -name '*.qml' -o -name Cargo.toml -o -name build.rs \) \
+    \( -name '*.rs' -o -name '*.qml' -o -name '*.svg' \
+      -o -name Cargo.toml -o -name build.rs \) \
     -newer "$binary_dir/launchbox" -print -quit
 )
 if [[ -n "$stale_source" || Cargo.toml -nt "$binary_dir/launchbox" \
@@ -2129,6 +2131,7 @@ launchbox_order_root=$(mktemp -d)
 bigbox_order_root=$(mktemp -d)
 launchbox_list_root=$(mktemp -d)
 launchbox_box_size_root=$(mktemp -d)
+launchbox_desktop_tray_root=$(mktemp -d)
 crud_root=$(mktemp -d)
 additional_application_crud_root=$(mktemp -d)
 additional_application_default_root=$(mktemp -d)
@@ -2165,7 +2168,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$launchbox_desktop_tray_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 
 cp -a fixtures/launchbox/. "$library_filter_root/"
 library_filter_platform="$library_filter_root/Data/Platforms/Fixture Console.xml"
@@ -2451,6 +2454,95 @@ if [[ $(find "$launchbox_box_size_root" -type f \
 fi
 
 echo "LaunchBox 13.27 box-size range, real slider interaction, responsive grid rendering, exact-backup atomic persistence, stable selection, and new-process restoration validated."
+
+cp -a fixtures/launchbox/. "$launchbox_desktop_tray_root/"
+desktop_tray_platform="$launchbox_desktop_tray_root/Data/Platforms/Fixture Console.xml"
+desktop_tray_settings="$launchbox_desktop_tray_root/Data/Settings.xml"
+desktop_tray_screenshot="$launchbox_desktop_tray_root/launchbox-notifications.png"
+cp "$desktop_tray_platform" "$desktop_tray_platform.before-desktop-tray-smoke"
+cp "$desktop_tray_settings" "$desktop_tray_settings.before-desktop-tray-smoke"
+
+desktop_tray_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$launchbox_desktop_tray_root" \
+    --desktop-tray-smoke-test \
+    --desktop-tray-screenshot "$desktop_tray_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$desktop_tray_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'DESKTOP_TRAY_SMOKE_COMPLETE revision=2 notifications=1' \
+  <<< "$desktop_tray_output"; then
+  printf '%s\n' "$desktop_tray_output" >&2
+  echo "LaunchBox did not validate its system-tray editor and notification center." >&2
+  exit 1
+fi
+if [[ ! -s "$desktop_tray_screenshot" ]] \
+  || [[ $(wc -c < "$desktop_tray_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$desktop_tray_screenshot" | tr -d ' \n') \
+    != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$desktop_tray_output" >&2
+  echo "LaunchBox did not render a valid notification-center PNG." >&2
+  exit 1
+fi
+for expected in \
+  '<EnableSystemTray>true</EnableSystemTray>' \
+  '<MinimizeToSystemTray>true</MinimizeToSystemTray>' \
+  '<CloseToSystemTray>true</CloseToSystemTray>' \
+  '<DontSendTrayReminder>false</DontSendTrayReminder>' \
+  '<NotificationType>1</NotificationType>' \
+  '<Theme>Fixture Theme</Theme>'; do
+  if ! rg -Fq "$expected" "$desktop_tray_settings"; then
+    printf '%s\n' "$desktop_tray_output" >&2
+    echo "LaunchBox did not persist desktop tray setting: $expected" >&2
+    exit 1
+  fi
+done
+mapfile -t desktop_tray_backups < <(
+  find "$launchbox_desktop_tray_root" -type f \
+    -name 'Settings.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#desktop_tray_backups[@]} -ne 1 ]] \
+  || ! cmp -s "$desktop_tray_settings.before-desktop-tray-smoke" \
+       "${desktop_tray_backups[0]}"; then
+  printf '%s\n' "$desktop_tray_output" >&2
+  echo "LaunchBox did not retain one exact pre-change desktop Settings.xml backup." >&2
+  exit 1
+fi
+cmp "$desktop_tray_platform.before-desktop-tray-smoke" \
+  "$desktop_tray_platform"
+cp "$desktop_tray_settings" \
+  "$desktop_tray_settings.after-desktop-tray-smoke"
+
+desktop_tray_reload_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
+    --library "$launchbox_desktop_tray_root" \
+    --desktop-tray-reload-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$desktop_tray_reload_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'DESKTOP_TRAY_RELOAD_SMOKE_COMPLETE revision=1 notifications=0' \
+  <<< "$desktop_tray_reload_output"; then
+  printf '%s\n' "$desktop_tray_reload_output" >&2
+  echo "LaunchBox did not restore desktop tray policy in a fresh process." >&2
+  exit 1
+fi
+cmp "$desktop_tray_settings.after-desktop-tray-smoke" \
+  "$desktop_tray_settings"
+cmp "$desktop_tray_platform.before-desktop-tray-smoke" \
+  "$desktop_tray_platform"
+if [[ $(find "$launchbox_desktop_tray_root" -type f \
+  -name 'Settings.xml.lbport-transaction-backup-*' | wc -l) -ne 1 ]]; then
+  echo "Desktop tray reload unexpectedly wrote another Settings.xml backup." >&2
+  exit 1
+fi
+
+echo "LaunchBox 13.27 system-tray policy, cross-platform Qt tray integration, notification-center interactions, rendered UI, exact-backup persistence, and new-process restoration validated."
 
 mkdir -p "$edit_root/Data/Platforms" "$edit_root/Runtime"
 edit_platform="$edit_root/Data/Platforms/Fixture Console.xml"

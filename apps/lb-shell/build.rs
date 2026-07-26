@@ -28,6 +28,8 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/LaunchStartupOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchShutdownOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchPauseOverlay.qml");
+    println!("cargo:rerun-if-changed=qml/LaunchBoxSystemTray.qml");
+    println!("cargo:rerun-if-changed=qml/launchbox-port-tray.svg");
 
     CxxQtBuilder::new_qml_module(
         QmlModule::new("LaunchBoxPort")
@@ -35,6 +37,7 @@ fn main() {
             .depend("QtMultimedia")
             .depend("QtQuick3D")
             .depend("QtQuick3D.Helpers")
+            .depend("Qt.labs.platform")
             .qml_files([
                 "qml/LaunchBoxWindow.qml",
                 "qml/BigBoxWindow.qml",
@@ -60,12 +63,14 @@ fn main() {
                 "qml/LaunchStartupOverlay.qml",
                 "qml/LaunchShutdownOverlay.qml",
                 "qml/LaunchPauseOverlay.qml",
+                "qml/LaunchBoxSystemTray.qml",
             ]),
     )
     .qt_module("Quick")
     .qt_module("QuickControls2")
     .qt_module("Multimedia")
     .qt_module("Quick3D")
+    .qrc_resources(["qml/launchbox-port-tray.svg"])
     .include_dir("include")
     .cpp_file("src/host_screens.cpp")
     .file("src/library_controller.rs")

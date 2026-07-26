@@ -1,53 +1,20 @@
+pub use lb_domain::{
+    DiscoveryCatalog, DiscoveryCriterion, DiscoveryGame, DiscoveryList, DISCOVERY_LISTS_ENDPOINT,
+    DISCOVERY_LISTS_MAX_ITEMS_PER_LIST,
+};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::time::Duration;
 use thiserror::Error;
 
-pub const DISCOVERY_LISTS_ENDPOINT: &str =
-    "https://api.gamesdb.launchbox-app.com/api/discovery-lists";
 pub const DISCOVERY_LISTS_MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 pub const DISCOVERY_LISTS_MAX_LISTS: usize = 256;
 pub const DISCOVERY_LISTS_MAX_GAMES_PER_LIST: usize = 1_000;
 pub const DISCOVERY_LISTS_MAX_CRITERIA_PER_LIST: usize = 64;
-pub const DISCOVERY_LISTS_MAX_ITEMS_PER_LIST: usize = 1_000;
 const DISCOVERY_LISTS_MAX_TEXT_BYTES: usize = 512;
 const DISCOVERY_LISTS_MAX_VALUE_BYTES: usize = 4_096;
 const DISCOVERY_LISTS_TIMEOUT: Duration = Duration::from_secs(8);
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveryCatalog {
-    pub lists: Vec<DiscoveryList>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveryList {
-    pub id: i32,
-    pub title: String,
-    pub subtitle: Option<String>,
-    pub list_type: Option<String>,
-    pub sort_by: Option<String>,
-    pub sort_ascending: Option<bool>,
-    pub priority_rank: Option<i32>,
-    pub minimum_items: Option<usize>,
-    pub maximum_items: Option<usize>,
-    pub games: Option<Vec<DiscoveryGame>>,
-    pub criteria: Option<Vec<DiscoveryCriterion>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveryGame {
-    pub database_id: i32,
-    pub platform: String,
-    pub title: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveryCriterion {
-    pub field: String,
-    pub comparison: String,
-    pub value: String,
-}
 
 pub trait DiscoveryCatalogTransport: Send + Sync {
     fn fetch(&self, url: &str, maximum_bytes: u64) -> Result<Vec<u8>, DiscoveryProviderError>;
