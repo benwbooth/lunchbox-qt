@@ -2336,7 +2336,7 @@ mod tests {
             .execute(
                 "INSERT INTO Games VALUES (
                     4343, 'Fixture Saga (Japan)', 'FIXTURE SAGA', NULL, 2003,
-                    'Japan overview', 1, 'Released', 0, NULL, 4.25, NULL,
+                    'Japan overview', 1, 'Released', 0, NULL, 4.25, 19, NULL,
                     'Fixture Console', 'E', 'Role-Playing', 'Japan Forge',
                     'Japan Press'
                 )",
@@ -2451,7 +2451,7 @@ mod tests {
             .execute(
                 "INSERT INTO Games VALUES (
                     4343, 'Fixture Saga (Japan)', 'FIXTURE SAGA', NULL, 2003,
-                    'Japan overview', 1, 'Released', 0, NULL, 4.25, NULL,
+                    'Japan overview', 1, 'Released', 0, NULL, 4.25, 19, NULL,
                     'Fixture Console', 'E', 'Role-Playing', 'Japan Forge',
                     'Japan Press'
                 )",
@@ -3258,7 +3258,7 @@ mod tests {
                 "INSERT INTO Games VALUES (
                     4343, 'Fixture Saga Collector (USA)', 'FIXTURE SAGA COLLECTOR',
                     NULL, 2004, 'Collector overview', 4, 'Released', 0, NULL,
-                    4.0, NULL, 'Fixture Console', 'E10+', 'Role-Playing',
+                    4.0, 21, NULL, 'Fixture Console', 'E10+', 'Role-Playing',
                     'Collector Forge', 'Collector Press'
                 )",
                 [],

@@ -2,6 +2,10 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use lb_domain::Game;
 use std::cmp::Ordering;
 
+mod related;
+
+pub use related::*;
+
 /// Stable LaunchBox `Settings.xml` values used by the desktop Arrange By
 /// control. The enum deliberately lives in the platform-neutral query crate so
 /// neither QML shell nor any host OS gets a second sorting implementation.

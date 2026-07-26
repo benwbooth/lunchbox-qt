@@ -802,6 +802,22 @@ the high numbered buttons or the exact original active-controller algorithm.
 The complete evidence and native port boundary are recorded in
 `analysis/input-13.27.md`.
 
+The 13.27 `RelatedGamesPopupViewModel` structurally exposes three independent
+`GameSuggester` instances and result collections for Recommended Games,
+Similar Games, and Possible Ports, plus tab, row, page, Enter, and Escape
+navigation. The decoded installed Default resource establishes a centered dark
+three-tab popup, white title/border, blue current row, artwork, score, year,
+platform, notes, and a dimmed cloud treatment for nonlocal results. Four
+inspected installations agree that `ShowGameMenuViewRelatedGames` is enabled.
+An older complete `Settings.xml` preserves exact serialized
+`GameSuggesterSaveData` criteria, filters, and weights for Recommended and
+Similar profiles. No inspected installation preserves a Possible Ports
+profile; public product guidance establishes only exact title on another
+platform. The protected `GameSuggester` method bodies do not establish its
+fuzzy comparison, rounding, cap, or refresh cadence, so those remain explicit
+port-owned behavior and parity gates. The complete evidence and native
+boundary are recorded in `analysis/related-games-13.27.md`.
+
 ## Protection boundary
 
 The assemblies are not ordinary unobfuscated .NET applications:

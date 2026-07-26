@@ -41,6 +41,7 @@ diagnostics=$(
     apps/lb-shell/qml/BigBoxMarqueeSettings.qml \
     apps/lb-shell/qml/BigBoxPinPopup.qml \
     apps/lb-shell/qml/BigBoxPlaylistPopup.qml \
+    apps/lb-shell/qml/BigBoxRelatedGamesPopup.qml \
     apps/lb-shell/qml/BigBoxStarRatingPopup.qml \
     apps/lb-shell/qml/BigBoxSecuritySettings.qml \
     apps/lb-shell/qml/BigBoxMarqueeWindow.qml \
@@ -743,6 +744,71 @@ if find "$playlist_actions_root" -type f \
 fi
 
 echo "BigBox recovered manual-only add/remove playlist actions, fail-closed locked gate, rendered list popup, two committed transactions, exact backup chain, ManualOrder append sentinel, lossless XML, and immutable automatic/generated peer playlists validated."
+
+related_games_root="$test_config_root/related-games-library"
+mkdir -p "$related_games_root"
+cp -a "$media_root/." "$related_games_root/"
+related_games_settings="$related_games_root/Data/BigBoxSettings.xml"
+related_games_database="$related_games_root/Metadata/LaunchBox.Metadata.db"
+related_games_screenshot="$test_config_root/bigbox-related-games.png"
+sed -i \
+  '/<ShowGameMenuFlipBox>true<\/ShowGameMenuFlipBox>/a\    <ShowGameMenuViewRelatedGames>true</ShowGameMenuViewRelatedGames>' \
+  "$related_games_settings"
+sqlite3 "$related_games_database" \
+  < fixtures/launchbox/Metadata/fixture.sql
+sqlite3 "$related_games_database" \
+  "DELETE FROM Games;
+   INSERT INTO Games VALUES (
+     5555, 'Fixture Adventure', 'FIXTURE ADVENTURE',
+     '2001-02-03 00:00:00', 2001,
+     'A database-only port used by the Related Games rendered smoke.',
+     2, 'Released', 1, NULL, 4.8, 64, NULL,
+     'Other Console', 'E', 'Adventure', 'Fixture Labs',
+     'Fixture Publishing'
+   );"
+related_games_manifest="$test_config_root/related-games.before.sha256"
+(
+  cd "$related_games_root"
+  find Data Images Metadata Music -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$related_games_manifest"
+output=$(run_software_rendered_smoke \
+  "$binary_dir/bigbox" \
+    --library "$related_games_root" \
+    --bigbox-related-games-smoke-test \
+    --bigbox-related-games-screenshot "$related_games_screenshot" \
+    --windowed \
+    --path-mappings-file "$empty_path_mappings" 2>&1) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_RELATED_GAMES_SMOKE_COMPLETE seed=fixture-adventure selected=fixture-racer sections=3 metadata=1 revision=' \
+  <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox did not complete the lazy Related Games and stable-ID selection flow." >&2
+  exit 1
+fi
+if [[ ! -s "$related_games_screenshot" ]] \
+  || [[ $(wc -c < "$related_games_screenshot") -lt 4096 ]]; then
+  echo "BigBox Related Games popup did not save a rendered screenshot." >&2
+  exit 1
+fi
+related_games_colors=$(
+  magick "$related_games_screenshot" -format '%k' info:
+)
+if [[ ! "$related_games_colors" =~ ^[0-9]+$ ]] \
+  || ((related_games_colors < 32)); then
+  echo "BigBox Related Games screenshot is blank or insufficiently rendered ($related_games_colors colors)." >&2
+  exit 1
+fi
+(
+  cd "$related_games_root"
+  sha256sum --check "$related_games_manifest"
+) >/dev/null
+
+echo "BigBox lazy Related Games, three recovered tabs, read-only metadata candidates, dimmed cloud rows, rendered popup, and stable installed-game navigation validated."
 
 marquee_root="$test_config_root/marquee-library"
 mkdir -p "$marquee_root"
@@ -3985,7 +4051,7 @@ sqlite3 "$import_root/Metadata/LaunchBox.Metadata.db" \
 sqlite3 "$import_root/Metadata/LaunchBox.Metadata.db" \
   "INSERT INTO Games VALUES (
     4343, 'Fixture Saga Collector (USA)', 'FIXTURE SAGA COLLECTOR', NULL, 2004,
-    'Collector overview', 4, 'Released', 0, NULL, 4.0, NULL,
+    'Collector overview', 4, 'Released', 0, NULL, 4.0, 21, NULL,
     'Fixture Console', 'E10+', 'Role-Playing', 'Collector Forge',
     'Collector Press'
   );"

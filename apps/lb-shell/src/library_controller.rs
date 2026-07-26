@@ -168,6 +168,10 @@ pub mod qobject {
         #[qproperty(bool, big_box_show_game_menu_favorite)]
         #[qproperty(bool, big_box_show_game_menu_playlist_actions)]
         #[qproperty(bool, big_box_show_game_menu_star_rating)]
+        #[qproperty(bool, big_box_show_game_menu_related_games)]
+        #[qproperty(bool, big_box_related_games_loading)]
+        #[qproperty(QString, big_box_related_games_json)]
+        #[qproperty(i32, big_box_related_games_revision)]
         #[qproperty(bool, big_box_show_game_star_rating)]
         #[qproperty(i32, big_box_game_state_revision)]
         #[qproperty(i32, big_box_playlist_membership_revision)]
@@ -1649,6 +1653,15 @@ pub mod qobject {
         fn report_big_box_navigation_smoke_success(self: &LibraryController) -> bool;
 
         #[qinvokable]
+        fn report_big_box_related_games_smoke_success(
+            self: &LibraryController,
+            seed_game_id: QString,
+            selected_game_id: QString,
+            section_count: i32,
+            metadata_database_loaded: bool,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_import_smoke_success(
             self: &LibraryController,
             expected_count: i32,
@@ -1695,6 +1708,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn row_for_game_id(self: &LibraryController, game_id: QString) -> i32;
+
+        #[qinvokable]
+        fn load_big_box_related_games(self: Pin<&mut LibraryController>, game_id: QString) -> bool;
+
+        #[qinvokable]
+        fn reveal_related_game(self: Pin<&mut LibraryController>, game_id: QString) -> i32;
 
         #[qinvokable]
         fn game_id_at(self: &LibraryController, row: i32) -> QString;
@@ -1880,6 +1899,7 @@ use lb_integrations::xemu_bios::{
     audit_xemu_bios, default_xemu_data_directories, XemuBiosAudit, XemuBiosGroupKind,
 };
 use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
+use lb_metadata::MetadataDatabase;
 use lb_platform::{
     background_music_context_key, default_host_path_mappings_path, default_launchbox_ui_state_path,
     default_model_viewer_state_path, default_platform_folders, execute_launch_sequence_controlled,
@@ -1906,8 +1926,10 @@ use lb_platform::{
     BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS, BIG_BOX_SECURITY_PERMISSIONS,
 };
 use lb_query::{
-    compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
-    GameFilter, GameSort, GameStateFilter, MissingMediaFilter,
+    compare_games, filter_game_indices, game_query_result_may_change, related_game_suggestions,
+    select_random_filtered_row, GameFilter, GameSort, GameStateFilter, MissingMediaFilter,
+    RelatedCandidateSource, RelatedGameCandidate, RelatedGameSuggestion, RelatedGamesPolicy,
+    RelatedGamesSection, RelatedProfileSource,
 };
 use lb_storage::{
     delete_directory_if_revision, delete_regular_files_if_revisions, find_emulator_references,
@@ -2232,6 +2254,10 @@ pub struct LibraryControllerRust {
     big_box_show_game_menu_favorite: bool,
     big_box_show_game_menu_playlist_actions: bool,
     big_box_show_game_menu_star_rating: bool,
+    big_box_show_game_menu_related_games: bool,
+    big_box_related_games_loading: bool,
+    big_box_related_games_json: QString,
+    big_box_related_games_revision: i32,
     big_box_show_game_star_rating: bool,
     big_box_game_state_revision: i32,
     big_box_playlist_membership_revision: i32,
@@ -2320,6 +2346,8 @@ pub struct LibraryControllerRust {
     big_box_input_engine: BigBoxInputEngine,
     big_box_security_policy: BigBoxSecurityPolicy,
     big_box_game_action_policy: BigBoxGameActionPolicy,
+    big_box_related_games_policy: RelatedGamesPolicy,
+    big_box_related_games_generation: u64,
     big_box_screensaver_candidates: Vec<BigBoxScreensaverCandidate>,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
@@ -2433,6 +2461,25 @@ struct NavigationEntry {
     visible_in_big_box: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RelatedGamesSectionPayload {
+    key: &'static str,
+    label: &'static str,
+    profile_source: RelatedProfileSource,
+    items: Vec<RelatedGameSuggestion>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RelatedGamesPayload {
+    version: u32,
+    game_id: String,
+    metadata_database_loaded: bool,
+    candidate_count: usize,
+    sections: Vec<RelatedGamesSectionPayload>,
+}
+
 struct LoadedLibrary {
     path: String,
     root: PathBuf,
@@ -2472,6 +2519,7 @@ struct LoadedLibrary {
     big_box_input_policy: BigBoxInputPolicy,
     big_box_security_policy: BigBoxSecurityPolicy,
     big_box_game_action_policy: BigBoxGameActionPolicy,
+    big_box_related_games_policy: RelatedGamesPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2527,6 +2575,7 @@ struct LibraryReplacement {
     big_box_input_policy: BigBoxInputPolicy,
     big_box_security_policy: BigBoxSecurityPolicy,
     big_box_game_action_policy: BigBoxGameActionPolicy,
+    big_box_related_games_policy: RelatedGamesPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2626,6 +2675,7 @@ impl LoadedLibrary {
                 big_box_input_policy: BigBoxInputPolicy::default(),
                 big_box_security_policy: BigBoxSecurityPolicy::default(),
                 big_box_game_action_policy: BigBoxGameActionPolicy::default(),
+                big_box_related_games_policy: RelatedGamesPolicy::default(),
                 big_box_show_game_menu_flip_box: true,
                 details_show_3d_model: true,
                 big_box_show_game_menu_model: true,
@@ -2785,6 +2835,8 @@ impl LoadedLibrary {
         let big_box_security_policy = BigBoxSecurityPolicy::from_settings(data.big_box_settings());
         let big_box_game_action_policy =
             BigBoxGameActionPolicy::from_settings(data.big_box_settings());
+        let big_box_related_games_policy =
+            RelatedGamesPolicy::from_settings(data.settings(), data.big_box_settings());
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
@@ -2856,6 +2908,7 @@ impl LoadedLibrary {
             big_box_input_policy,
             big_box_security_policy,
             big_box_game_action_policy,
+            big_box_related_games_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -2911,6 +2964,128 @@ fn big_box_show_game_menu_model_from_settings(settings: Option<&FrontendSettings
     settings
         .and_then(|settings| settings.get_bool("ShowGameMenuViewModelFullscreen"))
         .unwrap_or(true)
+}
+
+fn build_related_games_payload(
+    policy: RelatedGamesPolicy,
+    games: Vec<Game>,
+    alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
+    launchbox_root: Option<PathBuf>,
+    game_id: &str,
+) -> Result<RelatedGamesPayload, String> {
+    let mut candidates = games
+        .iter()
+        .map(|game| {
+            let alternate_names = alternate_names_by_game
+                .get(&game.id)
+                .into_iter()
+                .flatten()
+                .map(|alternate| alternate.name.clone())
+                .collect();
+            RelatedGameCandidate::from_local_game(game, alternate_names)
+        })
+        .collect::<Vec<_>>();
+    let seed = candidates
+        .iter()
+        .find(|candidate| {
+            candidate
+                .local_game_id
+                .as_deref()
+                .is_some_and(|candidate_id| candidate_id.eq_ignore_ascii_case(game_id))
+        })
+        .cloned()
+        .ok_or_else(|| format!("Related Games seed is no longer available: {game_id}"))?;
+
+    let local_database_ids = candidates
+        .iter()
+        .filter_map(|candidate| candidate.database_id)
+        .collect::<BTreeSet<_>>();
+    let local_title_platforms = candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.title.trim().to_lowercase(),
+                candidate.platform.trim().to_lowercase(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let metadata_path = launchbox_root
+        .as_deref()
+        .map(|root| root.join("Metadata").join("LaunchBox.Metadata.db"));
+    let metadata_database_loaded = metadata_path.as_deref().is_some_and(Path::is_file);
+    if let Some(metadata_path) = metadata_path.filter(|path| path.is_file()) {
+        let database = MetadataDatabase::open(&metadata_path).map_err(|error| error.to_string())?;
+        for metadata in database
+            .suggestion_games()
+            .map_err(|error| error.to_string())?
+        {
+            if local_database_ids.contains(&metadata.game.database_id)
+                || local_title_platforms.contains(&(
+                    metadata.game.name.trim().to_lowercase(),
+                    metadata.game.platform.trim().to_lowercase(),
+                ))
+            {
+                continue;
+            }
+            candidates.push(RelatedGameCandidate {
+                source: RelatedCandidateSource::Database,
+                local_game_id: None,
+                database_id: Some(metadata.game.database_id),
+                title: metadata.game.name,
+                alternate_names: metadata.alternate_titles,
+                platform: metadata.game.platform,
+                notes: metadata.game.overview,
+                release_date: metadata.game.release_date,
+                release_year: metadata.game.release_year,
+                release_type: metadata.game.release_type,
+                series: None,
+                genres: split_related_values(&metadata.game.genres),
+                play_modes: if metadata.game.cooperative {
+                    vec!["Cooperative".to_owned()]
+                } else {
+                    Vec::new()
+                },
+                max_players: metadata
+                    .game
+                    .max_players
+                    .and_then(|value| u32::try_from(value).ok()),
+                rating: metadata.game.esrb,
+                developer: metadata.game.developer,
+                publisher: metadata.game.publisher,
+                star_rating: metadata.game.community_rating.unwrap_or_default(),
+                star_rating_votes: metadata.game.community_rating_count.unwrap_or_default(),
+            });
+        }
+    }
+
+    let sections = RelatedGamesSection::ALL
+        .into_iter()
+        .map(|section| {
+            let profile = policy.profile(section);
+            RelatedGamesSectionPayload {
+                key: section.key(),
+                label: section.label(),
+                profile_source: profile.source,
+                items: related_game_suggestions(profile, &seed, &candidates, 10),
+            }
+        })
+        .collect();
+    Ok(RelatedGamesPayload {
+        version: 1,
+        game_id: game_id.to_owned(),
+        metadata_database_loaded,
+        candidate_count: candidates.len(),
+        sections,
+    })
+}
+
+fn split_related_values(value: &str) -> Vec<String> {
+    value
+        .split([';', ','])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn platform_key(name: &str) -> String {
@@ -17461,6 +17636,7 @@ impl qobject::LibraryController {
                     big_box_input_policy: BigBoxInputPolicy::default(),
                     big_box_security_policy: BigBoxSecurityPolicy::default(),
                     big_box_game_action_policy: BigBoxGameActionPolicy::default(),
+                    big_box_related_games_policy: RelatedGamesPolicy::default(),
                     big_box_show_game_menu_flip_box: true,
                     details_show_3d_model: true,
                     big_box_show_game_menu_model: true,
@@ -24283,6 +24459,70 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_big_box_related_games_smoke_success(
+        &self,
+        seed_game_id: QString,
+        selected_game_id: QString,
+        section_count: i32,
+        metadata_database_loaded: bool,
+    ) -> bool {
+        let seed_game_id = seed_game_id.to_string();
+        let selected_game_id = selected_game_id.to_string();
+        let payload = serde_json::from_str::<serde_json::Value>(
+            &self.big_box_related_games_json().to_string(),
+        )
+        .ok();
+        let sections = payload
+            .as_ref()
+            .and_then(|payload| payload.get("sections"))
+            .and_then(serde_json::Value::as_array);
+        let success = payload
+            .as_ref()
+            .and_then(|payload| payload.get("version"))
+            .and_then(serde_json::Value::as_u64)
+            == Some(1)
+            && payload
+                .as_ref()
+                .and_then(|payload| payload.get("gameId"))
+                .and_then(serde_json::Value::as_str)
+                == Some(seed_game_id.as_str())
+            && payload
+                .as_ref()
+                .and_then(|payload| payload.get("metadataDatabaseLoaded"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(metadata_database_loaded)
+            && sections.map(Vec::len) == usize::try_from(section_count).ok()
+            && sections.is_some_and(|sections| {
+                sections
+                    .iter()
+                    .zip(["recommended", "similar", "possiblePorts"])
+                    .all(|(section, key)| {
+                        section.get("key").and_then(serde_json::Value::as_str) == Some(key)
+                            && section
+                                .get("items")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some()
+                    })
+            })
+            && self
+                .rust()
+                .games
+                .iter()
+                .any(|game| game.id == selected_game_id)
+            && self.row_for_game_id(qstring(&selected_game_id)) >= 0
+            && !*self.big_box_related_games_loading()
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            eprintln!(
+                "BIGBOX_RELATED_GAMES_SMOKE_COMPLETE seed={seed_game_id} selected={selected_game_id} sections={section_count} metadata={} revision={}",
+                usize::from(metadata_database_loaded),
+                self.big_box_related_games_revision()
+            );
+        }
+        success
+    }
+
     pub fn report_import_smoke_success(
         &self,
         expected_count: i32,
@@ -24615,6 +24855,154 @@ impl qobject::LibraryController {
             );
         }
         success
+    }
+
+    pub fn load_big_box_related_games(mut self: Pin<&mut Self>, game_id: QString) -> bool {
+        if !*self.as_ref().big_box_show_game_menu_related_games() {
+            self.as_mut()
+                .set_status_message(qstring("Related Games is disabled in BigBox settings."));
+            return false;
+        }
+        if *self.as_ref().big_box_locked()
+            && !self
+                .as_ref()
+                .rust()
+                .big_box_security_policy
+                .allows_action_key("BigBoxShowDiscoveryCenter")
+        {
+            self.as_mut()
+                .note_big_box_locked_action(qstring("BigBoxShowDiscoveryCenter"));
+            return false;
+        }
+        let game_id = game_id.to_string();
+        if !self
+            .as_ref()
+            .rust()
+            .games
+            .iter()
+            .any(|game| game.id.eq_ignore_ascii_case(&game_id))
+        {
+            self.as_mut().set_status_message(qstring(format!(
+                "Related Games seed is no longer available: {game_id}"
+            )));
+            return false;
+        }
+
+        let (generation, policy, games, alternate_names_by_game, launchbox_root) = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.big_box_related_games_generation =
+                rust.big_box_related_games_generation.wrapping_add(1);
+            (
+                rust.big_box_related_games_generation,
+                rust.big_box_related_games_policy.clone(),
+                rust.games.clone(),
+                rust.alternate_names_by_game.clone(),
+                rust.launchbox_root.clone(),
+            )
+        };
+        self.as_mut().set_big_box_related_games_loading(true);
+        self.as_mut()
+            .set_big_box_related_games_json(QString::default());
+        let revision = self
+            .as_ref()
+            .big_box_related_games_revision()
+            .wrapping_add(1);
+        self.as_mut().set_big_box_related_games_revision(revision);
+        self.as_mut().set_status_message(qstring(format!(
+            "Loading Related Games for {game_id} in the background..."
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("bigbox-related-games".to_owned())
+            .spawn(move || {
+                let result = build_related_games_payload(
+                    policy,
+                    games,
+                    alternate_names_by_game,
+                    launchbox_root,
+                    &game_id,
+                )
+                .and_then(|payload| {
+                    let candidate_count = payload.candidate_count;
+                    let metadata_loaded = payload.metadata_database_loaded;
+                    let section_counts = payload
+                        .sections
+                        .iter()
+                        .map(|section| {
+                            format!("{}={}", section.key, section.items.len())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    eprintln!(
+                        "Related Games payload ready: game={} candidates={candidate_count} metadata={} {section_counts}",
+                        payload.game_id,
+                        usize::from(metadata_loaded)
+                    );
+                    serde_json::to_string(&payload)
+                        .map(|json| (json, candidate_count, metadata_loaded))
+                        .map_err(|error| format!("Could not encode Related Games: {error}"))
+                });
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_big_box_related_games(
+                            generation,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start Related Games loader: {error}"
+            )));
+            self.as_mut().set_big_box_related_games_loading(false);
+            return false;
+        }
+        true
+    }
+
+    pub fn reveal_related_game(mut self: Pin<&mut Self>, game_id: QString) -> i32 {
+        if *self.as_ref().big_box_locked()
+            && !self
+                .as_ref()
+                .rust()
+                .big_box_security_policy
+                .allows_action_key("BigBoxShowDiscoveryCenter")
+        {
+            self.as_mut()
+                .note_big_box_locked_action(qstring("BigBoxShowDiscoveryCenter"));
+            return -1;
+        }
+        let game_id = game_id.to_string();
+        let Some(game) = self
+            .as_ref()
+            .rust()
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(&game_id))
+            .cloned()
+        else {
+            self.as_mut().set_status_message(qstring(format!(
+                "Related game is no longer installed: {game_id}"
+            )));
+            return -1;
+        };
+        self.as_mut().set_search_text(QString::default());
+        self.as_mut().set_platform_filter(QString::default());
+        self.as_mut().set_game_state_filter(qstring("any"));
+        self.as_mut().set_missing_media_filter(qstring("none"));
+        self.as_mut().set_include_hidden_games(game.hidden);
+        self.as_mut().set_include_broken_games(game.broken);
+        self.as_mut().set_navigation_filter_kind(QString::default());
+        self.as_mut().set_navigation_filter_key(QString::default());
+        self.as_mut().rust_mut().category_filter = None;
+        self.as_mut().rust_mut().playlist_filter = None;
+        self.as_mut().refresh_filtered_games();
+        let row = self.as_ref().row_for_game_id(qstring(&game.id));
+        self.as_mut()
+            .set_status_message(qstring(format!("Selected related game: {}.", game.title)));
+        row
     }
 
     pub fn row_for_game_id(&self, game_id: QString) -> i32 {
@@ -26874,6 +27262,7 @@ impl qobject::LibraryController {
                     big_box_input_policy: loaded.big_box_input_policy,
                     big_box_security_policy: loaded.big_box_security_policy,
                     big_box_game_action_policy: loaded.big_box_game_action_policy,
+                    big_box_related_games_policy: loaded.big_box_related_games_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     details_show_3d_model: loaded.details_show_3d_model,
                     big_box_show_game_menu_model: loaded.big_box_show_game_menu_model,
@@ -26910,6 +27299,41 @@ impl qobject::LibraryController {
                     .set_status_message(qstring(format!("Could not load library: {error}")));
             }
         }
+    }
+
+    fn finish_big_box_related_games(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<(String, usize, bool), String>,
+    ) {
+        if self.as_ref().rust().big_box_related_games_generation != generation {
+            return;
+        }
+        match result {
+            Ok((json, candidate_count, metadata_loaded)) => {
+                self.as_mut().set_big_box_related_games_json(qstring(json));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Related Games ready from {candidate_count} candidate(s){}.",
+                    if metadata_loaded {
+                        " including the local metadata database"
+                    } else {
+                        ""
+                    }
+                )));
+            }
+            Err(error) => {
+                self.as_mut()
+                    .set_big_box_related_games_json(QString::default());
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not load Related Games: {error}")));
+            }
+        }
+        let revision = self
+            .as_ref()
+            .big_box_related_games_revision()
+            .wrapping_add(1);
+        self.as_mut().set_big_box_related_games_revision(revision);
+        self.as_mut().set_big_box_related_games_loading(false);
     }
 
     fn finish_rom_import_preview(
@@ -30928,6 +31352,7 @@ impl qobject::LibraryController {
             big_box_input_policy,
             big_box_security_policy,
             big_box_game_action_policy,
+            big_box_related_games_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -31016,6 +31441,8 @@ impl qobject::LibraryController {
             big_box_game_action_policy.show_game_menu_playlist_actions;
         let big_box_show_game_menu_star_rating =
             big_box_game_action_policy.show_game_menu_star_rating;
+        let big_box_show_game_menu_related_games =
+            big_box_related_games_policy.show_game_menu_related_games;
         let big_box_show_game_star_rating = big_box_game_action_policy.show_game_star_rating;
         let details_show_video = game_details_media_policy.show_video;
         let details_auto_play_video = game_details_media_policy.auto_play_video;
@@ -31075,6 +31502,9 @@ impl qobject::LibraryController {
             rust.big_box_input_engine.set_policy(big_box_input_policy);
             rust.big_box_security_policy = big_box_security_policy;
             rust.big_box_game_action_policy = big_box_game_action_policy;
+            rust.big_box_related_games_policy = big_box_related_games_policy;
+            rust.big_box_related_games_generation =
+                rust.big_box_related_games_generation.wrapping_add(1);
             rust.big_box_screensaver_candidates = big_box_screensaver_candidates;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
@@ -31232,6 +31662,17 @@ impl qobject::LibraryController {
             .set_big_box_show_game_menu_playlist_actions(big_box_show_game_menu_playlist_actions);
         self.as_mut()
             .set_big_box_show_game_menu_star_rating(big_box_show_game_menu_star_rating);
+        self.as_mut()
+            .set_big_box_show_game_menu_related_games(big_box_show_game_menu_related_games);
+        self.as_mut().set_big_box_related_games_loading(false);
+        self.as_mut()
+            .set_big_box_related_games_json(QString::default());
+        let related_games_revision = self
+            .as_ref()
+            .big_box_related_games_revision()
+            .wrapping_add(1);
+        self.as_mut()
+            .set_big_box_related_games_revision(related_games_revision);
         self.as_mut()
             .set_big_box_show_game_star_rating(big_box_show_game_star_rating);
         let game_state_revision = self.as_ref().big_box_game_state_revision().wrapping_add(1);
@@ -32789,6 +33230,58 @@ mod tests {
         assert!(big_box_show_game_menu_model_from_settings(Some(&invalid)));
         assert!(details_show_3d_model_from_settings(None));
         assert!(big_box_show_game_menu_model_from_settings(None));
+    }
+
+    #[test]
+    fn related_games_payload_keeps_three_sections_and_installed_ids() {
+        fn game(id: &str, title: &str, platform: &str) -> Game {
+            Game {
+                id: id.to_owned(),
+                title: title.to_owned(),
+                platform: platform.to_owned(),
+                notes: Some("Fixture notes".to_owned()),
+                release_type: Some("Released".to_owned()),
+                genre: Some("Adventure".to_owned()),
+                play_mode: Some("Single Player".to_owned()),
+                max_players: Some(1),
+                rating: Some("E".to_owned()),
+                developer: Some("Fixture Studio".to_owned()),
+                publisher: Some("Fixture Publisher".to_owned()),
+                star_rating_float: 4.5,
+                ..Game::default()
+            }
+        }
+        let payload = build_related_games_payload(
+            RelatedGamesPolicy::default(),
+            vec![
+                game("seed", "Fixture Quest", "Console A"),
+                game("port", "Fixture Quest", "Console B"),
+                game("other", "Another Adventure", "Console A"),
+            ],
+            BTreeMap::new(),
+            None,
+            "seed",
+        )
+        .expect("build Related Games payload");
+
+        assert_eq!(payload.version, 1);
+        assert_eq!(payload.sections.len(), 3);
+        assert_eq!(payload.sections[0].key, "recommended");
+        assert_eq!(payload.sections[1].key, "similar");
+        assert_eq!(payload.sections[2].key, "possiblePorts");
+        assert_eq!(payload.sections[2].items.len(), 1);
+        assert_eq!(
+            payload.sections[2].items[0]
+                .candidate
+                .local_game_id
+                .as_deref(),
+            Some("port")
+        );
+        assert!(!payload.metadata_database_loaded);
+        let json = serde_json::to_value(payload).expect("serialize payload");
+        assert_eq!(json["sections"][2]["profileSource"], "portReconstruction");
+        assert_eq!(json["sections"][2]["items"][0]["source"], "local");
+        assert_eq!(json["sections"][2]["items"][0]["localGameId"], "port");
     }
 
     #[test]

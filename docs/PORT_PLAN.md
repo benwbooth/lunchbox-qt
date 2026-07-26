@@ -433,8 +433,27 @@ prove deterministic manual targets, derived exclusion, locked denial, rendered
 selection, add, real playlist navigation, remove, two exact backup states,
 unknown-field retention, immutable peers, and no recovery manifest. The shared
 path contains no runtime shell or OS-specific path/UI code. Discovery behavior,
-related games, custom-theme bindings, and native Windows/macOS Qt interaction
-remain later parity work. Evidence is in `analysis/game-actions-13.27.md`.
+custom-theme bindings, and native Windows/macOS Qt interaction remain later
+parity work. Evidence is in `analysis/game-actions-13.27.md`.
+
+The first native `BB-004`/`BB-017` Related Games vertical adds the recovered
+Recommended Games, Similar Games, and Possible Ports sections behind
+`ShowGameMenuViewRelatedGames` and the discovery-center security permission.
+A strict bounded parser consumes LaunchBox's serialized
+`GameSuggesterSaveData`; recovered Recommended/Similar criteria, filters, and
+weights feed deterministic Rust scoring over stable-ID local games and an
+optional read-only `LaunchBox.Metadata.db` corpus. Possible Ports uses the
+publicly described exact-title/different-platform rule and is explicitly
+reported as a port reconstruction. A lazy generation-checked worker publishes
+one versioned payload to a centered keyboard/controller/pointer Qt popup;
+installed selection clears incompatible filters and reveals the exact wheel
+ID, while database-only rows remain dimmed and informational. Pure query,
+metadata, and controller tests plus a compiled SQLite-backed rendered scenario
+prove the three-section contract, reconstructed-source marker, real metadata
+candidate, stable installed navigation, and whole-tree immutability. The
+protected fuzzy similarity/rounding/cap, remote metadata refresh, custom-theme
+bindings, and native Windows/macOS Qt interaction remain parity gates. Evidence
+is in `analysis/related-games-13.27.md`.
 
 The current `BB-012` slice recovers the complete 59-action BigBox input
 vocabulary, every action-specific zero/one/four keyboard-slot contract, the

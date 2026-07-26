@@ -7,3 +7,5 @@ license.workspace = true
 [dependencies]
 chrono.workspace = true
 lb-domain.workspace = true
+serde.workspace = true
+xmltree.workspace = true

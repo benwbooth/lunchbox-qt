@@ -217,6 +217,14 @@ ApplicationWindow {
     property bool playlistActionsSmokeFinished: false
     property string playlistActionsSmokeScreenshotPath:
         argumentValue("--bigbox-playlist-actions-screenshot")
+    property bool relatedGamesSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-related-games-smoke-test") >= 0
+    property int relatedGamesSmokePhase: 0
+    property bool relatedGamesSmokeFinished: false
+    property bool relatedGamesScreenshotRequested: false
+    property string relatedGamesScreenshotPath:
+        argumentValue("--bigbox-related-games-screenshot")
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -600,8 +608,24 @@ ApplicationWindow {
         Qt.exit(exitCode)
     }
 
+    function failRelatedGamesSmoke(message, exitCode) {
+        console.error(message
+                      + " phase=" + relatedGamesSmokePhase
+                      + " game=" + selectedBigBoxGameId
+                      + " loading="
+                      + controller.big_box_related_games_loading
+                      + " revision="
+                      + controller.big_box_related_games_revision
+                      + " popup=" + bigBoxRelatedGamesPopup.opened
+                      + " tab=" + bigBoxRelatedGamesPopup.tabIndex
+                      + " status=" + controller.status_message)
+        Qt.exit(exitCode)
+    }
+
     function closeBigBoxSurface() {
-        if (bigBoxPlaylistPopup.opened) {
+        if (bigBoxRelatedGamesPopup.opened) {
+            bigBoxRelatedGamesPopup.cancelEntry()
+        } else if (bigBoxPlaylistPopup.opened) {
             bigBoxPlaylistPopup.cancelEntry()
         } else if (bigBoxStarRatingPopup.opened) {
             bigBoxStarRatingPopup.cancelEntry()
@@ -717,6 +741,8 @@ ApplicationWindow {
             return bigBoxUnlockPopup.handleAction(action)
         if (bigBoxSecuritySettings.opened)
             return bigBoxSecuritySettings.handleAction(action)
+        if (bigBoxRelatedGamesPopup.opened)
+            return bigBoxRelatedGamesPopup.handleAction(action)
         if (bigBoxPlaylistPopup.opened)
             return bigBoxPlaylistPopup.handleAction(action)
         if (bigBoxStarRatingPopup.opened)
@@ -1183,6 +1209,30 @@ ApplicationWindow {
                     selectedBigBoxGameCommunityRating,
                     selectedBigBoxGameCommunityVotes)
         return true
+    }
+
+    function openSelectedRelatedGames() {
+        if (!controller.big_box_show_game_menu_related_games
+                || selectedBigBoxGameId.length === 0
+                || controller.loading || controller.writing
+                || !guardSecurityAction(
+                    "BigBoxShowDiscoveryCenter"))
+            return false
+        if (!bigBoxRelatedGamesPopup.openForGame(
+                selectedBigBoxGameId,
+                selectedBigBoxGameTitle))
+            return false
+        if (!controller.load_big_box_related_games(
+                selectedBigBoxGameId)) {
+            bigBoxRelatedGamesPopup.close()
+            gameList.forceActiveFocus()
+            return false
+        }
+        return true
+    }
+
+    function applyRelatedGamesControllerPayload() {
+        return bigBoxRelatedGamesPopup.applyControllerPayload()
     }
 
     function refreshSelectedBigBoxPlaylistAction() {
@@ -1781,6 +1831,15 @@ ApplicationWindow {
 
         function onInclude_broken_gamesChanged() {
             bigBoxIncludeBrokenCheck.checked = controller.include_broken_games
+        }
+
+        function onBig_box_related_games_revisionChanged() {
+            window.applyRelatedGamesControllerPayload()
+        }
+
+        function onBig_box_related_games_loadingChanged() {
+            if (!controller.big_box_related_games_loading)
+                window.applyRelatedGamesControllerPayload()
         }
 
         function onBig_box_primary_monitor_indexChanged() {
@@ -4313,6 +4372,128 @@ ApplicationWindow {
             761 + window.playlistActionsSmokePhase)
     }
 
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.relatedGamesSmokeTest
+                 && !window.relatedGamesSmokeFinished
+        onTriggered: {
+            if (controller.loading
+                    || window.startupPresentationPending
+                    || controller.library_path.length === 0)
+                return
+            if (window.relatedGamesSmokePhase === 0) {
+                if (window.selectedBigBoxGameId
+                        !== "fixture-adventure")
+                    return
+                if (!controller.big_box_show_game_menu_related_games
+                        || !window.openSelectedRelatedGames()) {
+                    window.failRelatedGamesSmoke(
+                        "BIGBOX_RELATED_GAMES_OPEN_FAILED", 770)
+                    return
+                }
+                window.relatedGamesSmokePhase = 1
+            } else if (window.relatedGamesSmokePhase === 1) {
+                if (controller.big_box_related_games_loading
+                        || !bigBoxRelatedGamesPopup.opened)
+                    return
+                const sections = bigBoxRelatedGamesPopup.sections
+                if (bigBoxRelatedGamesPopup.loadError.length > 0) {
+                    window.failRelatedGamesSmoke(
+                        "BIGBOX_RELATED_GAMES_LOAD_FAILED", 771)
+                    return
+                }
+                // The worker publishes readiness and the revision through
+                // separate Qt properties. Do not inspect the reset
+                // placeholders between those two notifications.
+                if (sections.length === 3
+                        && typeof sections[0].profileSource !== "string")
+                    return
+                if (sections.length !== 3
+                        || sections[0].key !== "recommended"
+                        || sections[1].key !== "similar"
+                        || sections[2].key !== "possiblePorts"
+                        || sections[0].items.length !== 1
+                        || sections[0].items[0].localGameId
+                           !== "fixture-racer"
+                        || sections[2].items.length !== 1
+                        || sections[2].items[0].source
+                           !== "database"
+                        || sections[2].items[0].title
+                           !== "Fixture Adventure"
+                        || sections[2].profileSource
+                           !== "portReconstruction") {
+                    window.failRelatedGamesSmoke(
+                        "BIGBOX_RELATED_GAMES_PAYLOAD_MISMATCH", 771)
+                    return
+                }
+                bigBoxRelatedGamesPopup.switchTab(1)
+                bigBoxRelatedGamesPopup.switchTab(1)
+                window.relatedGamesSmokePhase = 2
+            } else if (window.relatedGamesSmokePhase === 2) {
+                if (bigBoxRelatedGamesPopup.tabIndex !== 2)
+                    return
+                if (window.relatedGamesScreenshotPath.length === 0) {
+                    window.relatedGamesSmokePhase = 3
+                    return
+                }
+                if (window.relatedGamesScreenshotRequested)
+                    return
+                window.relatedGamesScreenshotRequested = true
+                bigBoxRelatedGamesPopup.smokeCaptureTarget.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.relatedGamesScreenshotPath)) {
+                            window.failRelatedGamesSmoke(
+                                "BIGBOX_RELATED_GAMES_SCREENSHOT_FAILED",
+                                772)
+                            return
+                        }
+                        window.relatedGamesSmokePhase = 3
+                    })
+            } else if (window.relatedGamesSmokePhase === 3) {
+                if (!bigBoxRelatedGamesPopup.switchTab(1)
+                        || bigBoxRelatedGamesPopup.tabIndex !== 0
+                        || !bigBoxRelatedGamesPopup.chooseIndex(0)) {
+                    window.failRelatedGamesSmoke(
+                        "BIGBOX_RELATED_GAMES_LOCAL_SELECT_FAILED",
+                        773)
+                    return
+                }
+                window.relatedGamesSmokePhase = 4
+            } else if (window.relatedGamesSmokePhase === 4) {
+                if (bigBoxRelatedGamesPopup.opened
+                        || window.selectedBigBoxGameId
+                           !== "fixture-racer")
+                    return
+                const payload = JSON.parse(
+                    controller.big_box_related_games_json)
+                if (!controller
+                        .report_big_box_related_games_smoke_success(
+                            "fixture-adventure",
+                            "fixture-racer",
+                            payload.sections.length,
+                            payload.metadataDatabaseLoaded)) {
+                    window.failRelatedGamesSmoke(
+                        "BIGBOX_RELATED_GAMES_CONTROLLER_REJECTED",
+                        774)
+                    return
+                }
+                window.relatedGamesSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.relatedGamesSmokeTest
+                 && !window.relatedGamesSmokeFinished
+        onTriggered: window.failRelatedGamesSmoke(
+            "BIGBOX_RELATED_GAMES_SMOKE_TIMEOUT",
+            775 + window.relatedGamesSmokePhase)
+    }
+
     Rectangle {
         anchors.fill: parent
         gradient: Gradient {
@@ -5050,6 +5231,24 @@ ApplicationWindow {
                              "BigBoxSetStarRating")
                 Accessible.name: "Set selected game star rating"
                 onClicked: window.openSelectedStarRating()
+            }
+            Button {
+                id: bigBoxRelatedGamesButton
+                text: controller.big_box_related_games_loading
+                      && bigBoxRelatedGamesPopup.opened
+                      ? "RELATED…" : "RELATED"
+                visible:
+                    controller.big_box_show_game_menu_related_games
+                    && window.selectedBigBoxGameId.length > 0
+                enabled: visible
+                         && !controller.loading
+                         && !controller.writing
+                         && !controller.big_box_related_games_loading
+                         && window.securityActionAllowed(
+                             "BigBoxShowDiscoveryCenter")
+                Accessible.name:
+                    "Show games related to the selected game"
+                onClicked: window.openSelectedRelatedGames()
             }
             Button {
                 id: bigBoxAddToPlaylistButton
@@ -7568,6 +7767,23 @@ ApplicationWindow {
         onSelected: function(row, gameId, playlistId) {
             controller.update_big_box_playlist_membership(
                         row, gameId, playlistId, true)
+            gameList.forceActiveFocus()
+        }
+
+        onCancelled: gameList.forceActiveFocus()
+    }
+
+    BigBoxRelatedGamesPopup {
+        id: bigBoxRelatedGamesPopup
+        controller: controller
+        busy: controller.big_box_related_games_loading
+
+        onSelected: function(gameId) {
+            const row = controller.reveal_related_game(gameId)
+            if (row >= 0) {
+                gameList.currentIndex = row
+                gameList.positionViewAtIndex(row, ListView.Center)
+            }
             gameList.forceActiveFocus()
         }
 

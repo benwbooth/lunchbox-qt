@@ -16,12 +16,19 @@ pub struct MetadataGame {
     pub cooperative: bool,
     pub video_url: Option<String>,
     pub community_rating: Option<f64>,
+    pub community_rating_count: Option<u32>,
     pub wikipedia_url: Option<String>,
     pub platform: String,
     pub esrb: Option<String>,
     pub genres: String,
     pub developer: Option<String>,
     pub publisher: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetadataSuggestionGame {
+    pub game: MetadataGame,
+    pub alternate_titles: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +154,55 @@ impl MetadataDatabase {
         })
     }
 
+    /// Read the metadata candidate corpus used by Related Games.
+    ///
+    /// The database remains read-only. Games and alternate titles are queried
+    /// in stable order so the platform-neutral scoring layer can provide
+    /// deterministic ties on Windows, Linux, and macOS.
+    pub fn suggestion_games(&self) -> Result<Vec<MetadataSuggestionGame>, MetadataError> {
+        let mut alternate_statement = self
+            .connection
+            .prepare(
+                "SELECT DatabaseID, AlternateName
+                 FROM GameAlternateTitles
+                 ORDER BY DatabaseID, AlternateName COLLATE NOCASE, AlternateName",
+            )
+            .map_err(|source| self.query_error(source))?;
+        let mut alternate_titles = BTreeMap::<i64, Vec<String>>::new();
+        for result in alternate_statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|source| self.query_error(source))?
+        {
+            let (database_id, alternate_title) =
+                result.map_err(|source| self.query_error(source))?;
+            alternate_titles
+                .entry(database_id)
+                .or_default()
+                .push(alternate_title);
+        }
+
+        let mut game_statement = self
+            .connection
+            .prepare(ALL_GAMES_SQL)
+            .map_err(|source| self.query_error(source))?;
+        let games = game_statement
+            .query_map([], metadata_game_from_row)
+            .map_err(|source| self.query_error(source))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| self.query_error(source))?;
+        Ok(games
+            .into_iter()
+            .map(|game| MetadataSuggestionGame {
+                alternate_titles: alternate_titles
+                    .remove(&game.database_id)
+                    .unwrap_or_default(),
+                game,
+            })
+            .collect())
+    }
+
     fn search_partial(
         &self,
         platform: &str,
@@ -227,7 +283,7 @@ const EXACT_SEARCH_SQL: &str = "
     SELECT
         g.DatabaseID, g.Name, g.CompareName, g.ReleaseDate, g.ReleaseYear,
         g.Overview, g.MaxPlayers, g.ReleaseType, g.Cooperative, g.VideoURL,
-        g.CommunityRating, g.WikipediaURL, g.Platform, g.ESRB, g.Genres,
+        g.CommunityRating, g.CommunityRatingCount, g.WikipediaURL, g.Platform, g.ESRB, g.Genres,
         g.Developer, g.Publisher, g.Name AS MatchedTitle
     FROM Games g
     WHERE g.Platform = ?1 COLLATE NOCASE
@@ -236,7 +292,7 @@ const EXACT_SEARCH_SQL: &str = "
     SELECT
         g.DatabaseID, g.Name, g.CompareName, g.ReleaseDate, g.ReleaseYear,
         g.Overview, g.MaxPlayers, g.ReleaseType, g.Cooperative, g.VideoURL,
-        g.CommunityRating, g.WikipediaURL, g.Platform, g.ESRB, g.Genres,
+        g.CommunityRating, g.CommunityRatingCount, g.WikipediaURL, g.Platform, g.ESRB, g.Genres,
         g.Developer, g.Publisher, a.AlternateName AS MatchedTitle
     FROM GameAlternateTitles a
     JOIN Games g ON g.DatabaseID = a.DatabaseID
@@ -259,15 +315,24 @@ const GAME_BY_ID_SQL: &str = "
     SELECT
         g.DatabaseID, g.Name, g.CompareName, g.ReleaseDate, g.ReleaseYear,
         g.Overview, g.MaxPlayers, g.ReleaseType, g.Cooperative, g.VideoURL,
-        g.CommunityRating, g.WikipediaURL, g.Platform, g.ESRB, g.Genres,
+        g.CommunityRating, g.CommunityRatingCount, g.WikipediaURL, g.Platform, g.ESRB, g.Genres,
         g.Developer, g.Publisher
     FROM Games g
     WHERE g.DatabaseID = ?1";
 
+const ALL_GAMES_SQL: &str = "
+    SELECT
+        g.DatabaseID, g.Name, g.CompareName, g.ReleaseDate, g.ReleaseYear,
+        g.Overview, g.MaxPlayers, g.ReleaseType, g.Cooperative, g.VideoURL,
+        g.CommunityRating, g.CommunityRatingCount, g.WikipediaURL, g.Platform, g.ESRB, g.Genres,
+        g.Developer, g.Publisher
+    FROM Games g
+    ORDER BY g.DatabaseID";
+
 fn matched_game_from_row(row: &Row<'_>) -> rusqlite::Result<MatchedGame> {
     Ok(MatchedGame {
         game: metadata_game_from_row(row)?,
-        matched_title: row.get(17)?,
+        matched_title: row.get(18)?,
     })
 }
 
@@ -284,12 +349,13 @@ fn metadata_game_from_row(row: &Row<'_>) -> rusqlite::Result<MetadataGame> {
         cooperative: row.get(8)?,
         video_url: row.get(9)?,
         community_rating: row.get(10)?,
-        wikipedia_url: row.get(11)?,
-        platform: row.get(12)?,
-        esrb: row.get(13)?,
-        genres: row.get(14)?,
-        developer: row.get(15)?,
-        publisher: row.get(16)?,
+        community_rating_count: row.get(11)?,
+        wikipedia_url: row.get(12)?,
+        platform: row.get(13)?,
+        esrb: row.get(14)?,
+        genres: row.get(15)?,
+        developer: row.get(16)?,
+        publisher: row.get(17)?,
     })
 }
 
@@ -589,6 +655,26 @@ mod tests {
     }
 
     #[test]
+    fn suggestion_corpus_is_complete_stable_and_includes_alternate_titles() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("LaunchBox.Metadata.db");
+        create_fixture(&path);
+        let database = MetadataDatabase::open(&path).unwrap();
+
+        let games = database.suggestion_games().unwrap();
+        assert_eq!(
+            games
+                .iter()
+                .map(|candidate| candidate.game.database_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+        assert_eq!(games[0].alternate_titles, vec!["Quest Alternate"]);
+        assert_eq!(games[0].game.community_rating_count, Some(11));
+        assert_eq!(games[4].alternate_titles, vec!["Valor Grand Chronicle"]);
+    }
+
+    #[test]
     fn search_uses_recovered_partial_fallback_only_after_exact_results() {
         assert!(!recovered_partial_match("VALOR2", "VALOR"));
         assert!(recovered_partial_match("VALOR 2", "VALOR"));
@@ -665,6 +751,7 @@ mod tests {
                     Cooperative INTEGER NOT NULL,
                     VideoURL TEXT,
                     CommunityRating REAL,
+                    CommunityRatingCount INTEGER,
                     WikipediaURL TEXT,
                     Platform TEXT NOT NULL,
                     ESRB TEXT,
@@ -683,22 +770,22 @@ mod tests {
                     ('Fixture Console', 'Fixture Alias');
                 INSERT INTO Games VALUES
                     (1, 'Fixture Quest (Japan)', 'FIXTURE QUEST', '2001-04-05',
-                     2001, 'Japan overview', 1, 'Released', 0, NULL, 4.1,
+                    2001, 'Japan overview', 1, 'Released', 0, NULL, 4.1, 11,
                      NULL, 'Fixture Console', 'E', 'Role-Playing', 'Studio A',
                      'Publisher A'),
                     (2, 'Fixture Quest (USA)', 'FIXTURE QUEST', NULL,
-                     2002, 'USA overview', 2, 'Released', 1, NULL, 4.2,
+                     2002, 'USA overview', 2, 'Released', 1, NULL, 4.2, 12,
                      NULL, 'Fixture Console', 'E10+', 'Role-Playing', 'Studio B',
                      'Publisher B'),
                     (3, 'Legends of Valor (USA)', 'LEGENDS OF VALOR', NULL,
-                     2003, 'Valor overview', 1, 'Released', 0, NULL, 4.3,
+                     2003, 'Valor overview', 1, 'Released', 0, NULL, 4.3, 13,
                      NULL, 'Fixture Console', 'E', 'Adventure', 'Studio C',
                      'Publisher C'),
                     (4, 'Valor2', 'VALOR2', NULL, 2004, 'Sequel overview', 1,
-                     'Released', 0, NULL, 4.4, NULL, 'Fixture Console', 'E',
+                     'Released', 0, NULL, 4.4, 14, NULL, 'Fixture Console', 'E',
                      'Adventure', 'Studio D', 'Publisher D'),
                     (5, 'Chronicles of Courage', 'CHRONICLES OF COURAGE', NULL,
-                     2005, 'Courage overview', 1, 'Released', 0, NULL, 4.5,
+                     2005, 'Courage overview', 1, 'Released', 0, NULL, 4.5, 15,
                      NULL, 'Fixture Console', 'E', 'Adventure', 'Studio E',
                      'Publisher E');
                 INSERT INTO GameAlternateTitles VALUES

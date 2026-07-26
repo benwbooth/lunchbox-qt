@@ -805,6 +805,8 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "lb-domain",
+ "serde",
+ "xmltree",
 ]
 
 [[package]]
@@ -819,6 +821,7 @@ dependencies = [
  "lb-domain",
  "lb-import",
  "lb-integrations",
+ "lb-metadata",
  "lb-platform",
  "lb-query",
  "lb-storage",

@@ -149,8 +149,25 @@ membership fails closed while locked because no matching recovered permission
 exists. This shared Rust/CXX-Qt/QML path has no runtime shell, Windows path
 rule, or OS-specific UI branch. The evidence, explicit clean-room half-star and
 append-order policies, compiled interaction coverage, and still-open
-discovery/related-game work are recorded in
+discovery work are recorded in
 `analysis/game-actions-13.27.md`.
+
+BigBox now also has a native Related Games popup for the first
+`BB-004`/`BB-017` slice. The settings- and security-gated menu action lazily
+scores installed games plus the optional local `LaunchBox.Metadata.db` on a
+Rust worker, then presents the recovered Recommended Games, Similar Games, and
+Possible Ports tabs. Installed rows retain stable game IDs and return to the
+real wheel selection; database-only rows are visibly dimmed and informational.
+The strict typed profile reader accepts LaunchBox's serialized
+`GameSuggesterSaveData`, while malformed profiles fall back as a whole.
+Recommended and Similar criteria/weights come from an older complete
+installation; Possible Ports and fuzzy matching are explicitly marked
+clean-room reconstructions because their protected algorithms were not
+recoverable. The shared Rust/CXX-Qt/QML path reads metadata SQLite in
+read-only mode, accepts only native media URLs from the existing index, and
+contains no runtime shell, Windows path interpretation, or OS-specific UI
+branch. Evidence and exact parity boundaries are in
+`analysis/related-games-13.27.md`.
 
 LaunchBox also has a resizable selected-game details pane backed directly by
 that role model. Stable game IDs preserve selection through filtering, sorting,
