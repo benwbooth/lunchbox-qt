@@ -16,6 +16,7 @@ ApplicationWindow {
     title: "BigBox Port"
     color: "#07090d"
     onClosing: {
+        startupVideoOverlay.stopForFrontend()
         bigBoxMusicPlayer.stopPlayback(true)
         backgroundMusicPlayer.stopForFrontend()
     }
@@ -44,6 +45,31 @@ ApplicationWindow {
     property string backgroundMusicPlatformFirstUrl: ""
     property string backgroundMusicPlaylistFirstUrl: ""
     property string backgroundMusicCategoryFirstUrl: ""
+    property bool startupVideoSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-startup-video-smoke-test") >= 0
+    property bool startupVideoNaturalEnd:
+        Qt.application.arguments.indexOf(
+            "--bigbox-startup-video-natural-end") >= 0
+    property int startupVideoRequestedIndex: {
+        const argument = argumentValue("--bigbox-startup-video-index")
+        if (argument.length === 0)
+            return -1
+        const value = Number(argument)
+        return Number.isInteger(value) ? value : -1
+    }
+    property bool startupPresentationPending:
+        argumentValue("--library").length > 0
+    property bool startupVideoDecisionMade: false
+    property bool startupLibraryLoadSeen: false
+    property bool startupVideoCompletionSeen: false
+    property bool startupVideoFrameSeen: false
+    property bool startupVideoScreenshotRequested: false
+    property bool startupVideoScreenshotReady:
+        startupVideoScreenshotPath.length === 0
+    property bool startupVideoSmokeFinished: false
+    property string startupVideoScreenshotPath:
+        argumentValue("--bigbox-startup-video-screenshot")
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -223,6 +249,25 @@ ApplicationWindow {
         }
     }
 
+    function beginApplicationStartupPresentation() {
+        if (!startupPresentationPending || startupVideoDecisionMade)
+            return
+        startupVideoDecisionMade = true
+        if (controller.library_path.length > 0
+                && controller.indexed_startup_video_count > 0
+                && startupVideoOverlay.begin(
+                    startupVideoRequestedIndex))
+            return
+        startupPresentationPending = false
+        gameList.forceActiveFocus()
+    }
+
+    function finishApplicationStartupVideo() {
+        startupVideoCompletionSeen = true
+        startupPresentationPending = false
+        gameList.forceActiveFocus()
+    }
+
     function launchGame(row, gameId) {
         bigBoxMusicPlayer.stopPlayback(true)
         backgroundMusicPlayer.stopForFrontend()
@@ -283,7 +328,7 @@ ApplicationWindow {
 
     function playGameMusic(gameId, gameTitle, playNow) {
         if (gameId.length === 0 || controller.loading
-                || controller.writing
+                || controller.writing || startupPresentationPending
                 || controller.game_music_count_for_game(gameId) === 0)
             return false
         bigBoxMediaPlayer.stop()
@@ -296,6 +341,7 @@ ApplicationWindow {
 
     function autoPlaySelectedGameMusicFromList() {
         if (!controller.big_box_auto_play_music_games_list
+                || startupPresentationPending
                 || selectedBigBoxGameId.length === 0)
             return false
         if (controller.game_music_count_for_game(
@@ -672,6 +718,25 @@ ApplicationWindow {
     Connections {
         target: controller
 
+        function onLoadingChanged() {
+            if (controller.loading) {
+                if (window.startupPresentationPending)
+                    window.startupLibraryLoadSeen = true
+            } else if (window.startupPresentationPending
+                       && window.startupLibraryLoadSeen) {
+                Qt.callLater(
+                    window.beginApplicationStartupPresentation)
+            }
+        }
+
+        function onLibrary_pathChanged() {
+            if (window.startupPresentationPending
+                    && window.startupLibraryLoadSeen
+                    && !controller.loading)
+                Qt.callLater(
+                    window.beginApplicationStartupPresentation)
+        }
+
         function onGame_state_filterChanged() {
             const index = window.filterChoiceIndex(
                               window.gameStateFilterChoices,
@@ -818,11 +883,152 @@ ApplicationWindow {
             return
         }
         const library = argumentValue("--library")
-        if (library.length > 0)
+        if (library.length > 0) {
+            startupLibraryLoadSeen = true
             controller.load_library(library)
-        else
+        } else {
             controller.load_fixture()
+        }
         gameList.forceActiveFocus()
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.startupVideoSmokeTest
+                 && !window.startupVideoSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing)
+                return
+            if (!window.startupVideoFrameSeen
+                    && startupVideoOverlay.active
+                    && startupVideoOverlay.duration > 0
+                    && startupVideoOverlay.mediaError
+                       === MediaPlayer.NoError
+                    && startupVideoOverlay.playbackState
+                       === MediaPlayer.PlayingState) {
+                const expectedUrl = controller.startup_video_url_at(
+                                      startupVideoOverlay
+                                      .selectedIndex).toString()
+                const expectedName =
+                    controller.startup_video_file_name_at(
+                        startupVideoOverlay.selectedIndex)
+                if (expectedUrl.length === 0
+                        || startupVideoOverlay
+                           .selectedSource.toString() !== expectedUrl
+                        || startupVideoOverlay.selectedName
+                           !== expectedName) {
+                    console.error(
+                        "BIGBOX_STARTUP_VIDEO_SOURCE_MISMATCH"
+                        + " index="
+                        + startupVideoOverlay.selectedIndex
+                        + " actual="
+                        + startupVideoOverlay
+                          .selectedSource.toString()
+                        + " expected=" + expectedUrl)
+                    Qt.exit(650)
+                    return
+                }
+                window.startupVideoFrameSeen = true
+                window.startupVideoScreenshotRequested = true
+                const continueAfterFrame = function() {
+                    window.startupVideoScreenshotReady = true
+                    if (!window.startupVideoNaturalEnd
+                            && !startupVideoOverlay
+                                .triggerSkipForSmoke()) {
+                        console.error(
+                            "BIGBOX_STARTUP_VIDEO_SKIP_MISSING")
+                        Qt.exit(651)
+                    }
+                }
+                if (window.startupVideoScreenshotPath.length === 0) {
+                    continueAfterFrame()
+                } else {
+                    startupVideoOverlay.grabToImage(function(result) {
+                        if (!result.saveToFile(
+                                window
+                                .startupVideoScreenshotPath)) {
+                            console.error(
+                                "BIGBOX_STARTUP_VIDEO_SCREENSHOT_SAVE_FAILED path="
+                                + window
+                                  .startupVideoScreenshotPath)
+                            Qt.exit(652)
+                            return
+                        }
+                        continueAfterFrame()
+                    })
+                }
+                return
+            }
+            if (!window.startupVideoCompletionSeen
+                    || !window.startupVideoFrameSeen
+                    || !window.startupVideoScreenshotReady)
+                return
+            const completionMatches =
+                window.startupVideoNaturalEnd
+                ? startupVideoOverlay.endedNaturally
+                  && !startupVideoOverlay.skipped
+                : startupVideoOverlay.skipped
+                  && !startupVideoOverlay.endedNaturally
+            if (!completionMatches || startupVideoOverlay.failed
+                    || !controller
+                        .report_startup_video_smoke_success(
+                            startupVideoOverlay
+                            .selectedSource.toString(),
+                            startupVideoOverlay.selectedIndex,
+                            startupVideoOverlay.skipped,
+                            startupVideoOverlay.endedNaturally)) {
+                console.error(
+                    "BIGBOX_STARTUP_VIDEO_CONTROLLER_REJECTED"
+                    + " index="
+                    + startupVideoOverlay.selectedIndex
+                    + " skipped=" + startupVideoOverlay.skipped
+                    + " natural="
+                    + startupVideoOverlay.endedNaturally
+                    + " failed=" + startupVideoOverlay.failed)
+                Qt.exit(653)
+                return
+            }
+            window.startupVideoSmokeFinished = true
+            Qt.quit()
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.startupVideoSmokeTest
+                 && !window.startupVideoSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_STARTUP_VIDEO_TIMEOUT"
+                + " pending="
+                + window.startupPresentationPending
+                + " decision="
+                + window.startupVideoDecisionMade
+                + " active=" + startupVideoOverlay.active
+                + " count="
+                + controller.indexed_startup_video_count
+                + " index="
+                + startupVideoOverlay.selectedIndex
+                + " name="
+                + startupVideoOverlay.selectedName
+                + " state="
+                + startupVideoOverlay.playbackState
+                + " status="
+                + startupVideoOverlay.mediaStatus
+                + " error="
+                + startupVideoOverlay.mediaError
+                + " duration="
+                + startupVideoOverlay.duration
+                + " position="
+                + startupVideoOverlay.position
+                + " frame=" + window.startupVideoFrameSeen
+                + " complete="
+                + window.startupVideoCompletionSeen
+                + " controller="
+                + controller.status_message)
+            Qt.exit(654)
+        }
     }
 
     Timer {
@@ -3913,6 +4119,22 @@ ApplicationWindow {
         }
     }
 
+    BigBoxStartupVideo {
+        id: startupVideoOverlay
+        anchors.fill: parent
+        z: 10000
+        controller: controller
+        awaitingDecision:
+            window.startupPresentationPending && !active
+        outputVolume:
+            Math.max(0, Math.min(
+                1,
+                controller.big_box_startup_video_volume_percent
+                / 100))
+        mutedForSmoke: window.startupVideoSmokeTest
+        onCompleted: window.finishApplicationStartupVideo()
+    }
+
     BoxModelViewer {
         id: bigBoxModelViewer
         parent: Overlay.overlay
@@ -3946,6 +4168,7 @@ ApplicationWindow {
             || controller.writing
             || controller.launching
             || controller.launch_session_active
+            || window.startupPresentationPending
             || bigBoxMusicPlayer.opened
             || (!controller
                 .big_box_play_video_audio_with_background_music

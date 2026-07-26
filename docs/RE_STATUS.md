@@ -224,6 +224,25 @@ not contain the later video-audio coexistence setting. These facts establish
 folder selection and typed policy inputs, but not protected shuffle order,
 notification timing, decoder-specific behavior, or custom-theme overrides.
 
+Application startup video is a separate BigBox path. The recovered
+`StartupVideoView` is a dedicated window whose constructor accepts the primary
+monitor index, selected playback engine, and video priorities; its control
+carries one video path, and `App` retains the startup-video process plus
+`GetStartupVideoPath()`. Release resources establish the observable storage
+contract in two steps: the original feature uses exact
+`Videos\Startup.mp4` instead of the normal splash, while the later random-video
+feature uses direct files placed in `Videos\Startup`. The same release notes
+state that a selected video runs for its full length unless skipped with a key
+or button. The 13.27 settings contract exposes `VideoPlaybackEngine` and
+`VolumeVideo`; the older read-only snapshot stores VLC and volume 75. No
+separate enable scalar appears in that contract, and the inspected older
+installation contains neither startup location, so the port treats presence of
+a safe supported file as enablement and absence as a normal no-video outcome.
+These facts establish location precedence, random choice, completion/skip, and
+typed volume inputs. Protected bodies still prevent claims about the exact
+random generator, priority algorithm, error notification, splash timing,
+controller binding, theming, and monitor/focus behavior.
+
 The implemented cross-platform boundary therefore keeps XML paths lexical,
 resolves them once through the existing native/mapped-Windows service, validates
 bounded regular files, rejects remote/nested/traversing M3U entries, and gives

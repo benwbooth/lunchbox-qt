@@ -17,6 +17,7 @@ const MAX_MUSIC_PLAYLIST_BYTES: u64 = 1024 * 1024;
 const MAX_MEDIA_ITEMS: usize = 1_000_000;
 const MAX_MEDIA_ITEMS_PER_GAME: usize = 512;
 const MAX_MUSIC_TRACKS_PER_GAME: usize = 512;
+const MAX_STARTUP_VIDEOS: usize = 4_096;
 const MAX_BACKGROUND_MUSIC_CONTEXTS: usize = 4_096;
 const MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT: usize = 4_096;
 const MAX_MUSIC_PLAYLIST_ENTRIES: usize = 4_096;
@@ -308,6 +309,32 @@ impl BigBoxBackgroundMusicPolicy {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BigBoxStartupVideoPolicy {
+    pub volume_percent: u8,
+}
+
+impl Default for BigBoxStartupVideoPolicy {
+    fn default() -> Self {
+        Self { volume_percent: 75 }
+    }
+}
+
+impl BigBoxStartupVideoPolicy {
+    pub fn from_settings(settings: Option<&FrontendSettings>) -> Self {
+        let fallback = Self::default();
+        let Some(settings) = settings else {
+            return fallback;
+        };
+        let volume_percent = settings
+            .get_i64("VolumeVideo")
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|value| *value <= 100)
+            .unwrap_or(fallback.volume_percent);
+        Self { volume_percent }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GameSupplementalMediaIndex {
     pub manual_paths_by_game_id: BTreeMap<String, PathBuf>,
@@ -316,9 +343,11 @@ pub struct GameSupplementalMediaIndex {
     pub background_music_paths_by_platform: BTreeMap<String, Vec<PathBuf>>,
     pub background_music_paths_by_playlist: BTreeMap<String, Vec<PathBuf>>,
     pub background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
+    pub startup_video_paths: Vec<PathBuf>,
     pub launchbox_music_policy: LaunchBoxMusicPolicy,
     pub big_box_music_policy: BigBoxMusicPolicy,
     pub big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
+    pub big_box_startup_video_policy: BigBoxStartupVideoPolicy,
     pub report: GameSupplementalMediaIndexReport,
 }
 
@@ -330,6 +359,7 @@ pub struct GameSupplementalMediaIndexReport {
     pub indexed_manuals: usize,
     pub indexed_music_tracks: usize,
     pub indexed_background_music_tracks: usize,
+    pub indexed_startup_videos: usize,
     pub expanded_music_playlists: usize,
     pub unresolved_folders: usize,
     pub unresolved_files: usize,
@@ -931,6 +961,8 @@ pub fn index_game_supplemental_media(
                 .map(Vec::len)
                 .sum::<usize>(),
         );
+    let startup_video_paths = index_startup_videos(launchbox_root, path_resolver, &mut report);
+    report.indexed_startup_videos = startup_video_paths.len();
 
     GameSupplementalMediaIndex {
         manual_paths_by_game_id,
@@ -939,11 +971,13 @@ pub fn index_game_supplemental_media(
         background_music_paths_by_platform: background_music.platform_paths,
         background_music_paths_by_playlist: background_music.playlist_paths,
         background_music_paths_by_category: background_music.category_paths,
+        startup_video_paths,
         launchbox_music_policy: LaunchBoxMusicPolicy::from_settings(launchbox_settings),
         big_box_music_policy: BigBoxMusicPolicy::from_settings(big_box_settings),
         big_box_background_music_policy: BigBoxBackgroundMusicPolicy::from_settings(
             big_box_settings,
         ),
+        big_box_startup_video_policy: BigBoxStartupVideoPolicy::from_settings(big_box_settings),
         report,
     }
 }
@@ -960,6 +994,51 @@ pub fn background_music_context_key(value: &str) -> String {
     portable_storage_name(value)
         .map(|value| normalized_key(&value))
         .unwrap_or_default()
+}
+
+fn index_startup_videos(
+    launchbox_root: &Path,
+    path_resolver: &dyn LaunchPathResolver,
+    report: &mut GameSupplementalMediaIndexReport,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(folder) = path_resolver.resolve(launchbox_root, "Videos/Startup") {
+        if let Some(entries) = optional_safe_directory_entries(&folder, MAX_STARTUP_VIDEOS, report)
+        {
+            for entry in entries {
+                let Ok(file_type) = entry.file_type() else {
+                    report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                    continue;
+                };
+                if file_type.is_symlink() || !file_type.is_file() {
+                    report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                    continue;
+                }
+                let path = entry.path();
+                if validate_supplemental_file(
+                    &path,
+                    SUPPORTED_VIDEO_EXTENSIONS,
+                    MAX_VIDEO_BYTES,
+                    report,
+                ) {
+                    report.scanned_files = report.scanned_files.saturating_add(1);
+                    paths.push(path);
+                }
+            }
+        }
+    }
+    if !paths.is_empty() {
+        return paths;
+    }
+
+    let Ok(legacy_path) = path_resolver.resolve(launchbox_root, "Videos/Startup.mp4") else {
+        return paths;
+    };
+    if validate_supplemental_file(&legacy_path, &["mp4"], MAX_VIDEO_BYTES, report) {
+        report.scanned_files = report.scanned_files.saturating_add(1);
+        paths.push(legacy_path);
+    }
+    paths
 }
 
 fn index_background_music(
@@ -2377,6 +2456,85 @@ mod tests {
             BigBoxBackgroundMusicPolicy::from_settings(Some(&malformed_background)),
             BigBoxBackgroundMusicPolicy::default()
         );
+
+        let startup_video = FrontendSettings {
+            entries: vec![SettingEntry {
+                key: "VolumeVideo".into(),
+                value: "61".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            BigBoxStartupVideoPolicy::from_settings(Some(&startup_video)),
+            BigBoxStartupVideoPolicy { volume_percent: 61 }
+        );
+        let malformed_startup_video = FrontendSettings {
+            entries: vec![SettingEntry {
+                key: "VolumeVideo".into(),
+                value: "101".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        assert_eq!(
+            BigBoxStartupVideoPolicy::from_settings(Some(&malformed_startup_video)),
+            BigBoxStartupVideoPolicy::default()
+        );
+    }
+
+    #[test]
+    fn startup_videos_prefer_the_randomized_folder_and_fall_back_to_legacy_mp4() {
+        let directory = tempfile::tempdir().expect("temporary LaunchBox root");
+        let videos = directory.path().join("Videos");
+        let randomized = videos.join("Startup");
+        fs::create_dir_all(&randomized).expect("startup video folder");
+        fs::write(videos.join("Startup.mp4"), b"legacy").expect("legacy startup video");
+        fs::write(randomized.join("Startup-02.webm"), b"second").expect("second startup video");
+        fs::write(randomized.join("Startup-01.mp4"), b"first").expect("first startup video");
+        fs::write(randomized.join("Ignore.txt"), b"not a video").expect("unsupported file");
+        fs::File::create(randomized.join("Oversized.mp4"))
+            .and_then(|file| file.set_len(MAX_VIDEO_BYTES + 1))
+            .expect("oversized sparse startup video");
+        fs::create_dir(randomized.join("Nested")).expect("nested startup folder");
+
+        let index = index_game_supplemental_media(
+            directory.path(),
+            &[],
+            &[],
+            None,
+            None,
+            &HostPathResolver::default(),
+        );
+        assert_eq!(
+            index.startup_video_paths,
+            [
+                randomized.join("Startup-01.mp4"),
+                randomized.join("Startup-02.webm"),
+            ],
+            "a non-empty randomized folder takes precedence over the legacy file"
+        );
+        assert_eq!(index.report.indexed_startup_videos, 2);
+        assert_eq!(index.report.oversized_files, 1);
+        assert_eq!(index.report.unsafe_entries, 1);
+
+        let legacy_directory = tempfile::tempdir().expect("legacy LaunchBox root");
+        let legacy_videos = legacy_directory.path().join("Videos");
+        fs::create_dir_all(&legacy_videos).expect("legacy videos folder");
+        fs::write(legacy_videos.join("Startup.mp4"), b"legacy").expect("legacy startup video");
+        fs::write(legacy_videos.join("Startup.webm"), b"wrong legacy name")
+            .expect("noncanonical legacy video");
+        let legacy_index = index_game_supplemental_media(
+            legacy_directory.path(),
+            &[],
+            &[],
+            None,
+            None,
+            &HostPathResolver::default(),
+        );
+        assert_eq!(
+            legacy_index.startup_video_paths,
+            [legacy_videos.join("Startup.mp4")]
+        );
+        assert_eq!(legacy_index.report.indexed_startup_videos, 1);
     }
 
     #[test]
@@ -2556,14 +2714,19 @@ mod tests {
         let background = directory
             .path()
             .join("Music/Background/Platforms/Fixture Console");
+        let startup = directory.path().join("Videos/Startup");
         fs::create_dir_all(&background).expect("background music folder");
+        fs::create_dir_all(&startup).expect("startup video folder");
         fs::write(manuals.join("real.pdf"), b"manual").expect("manual");
         fs::write(music.join("real.mp3"), b"track").expect("track");
         fs::write(background.join("real.mp3"), b"background").expect("background track");
+        fs::write(startup.join("real.mp4"), b"startup").expect("startup video");
         symlink(manuals.join("real.pdf"), manuals.join("linked.pdf")).expect("manual symlink");
         symlink(music.join("real.mp3"), music.join("linked.mp3")).expect("music symlink");
         symlink(background.join("real.mp3"), background.join("linked.mp3"))
             .expect("background track symlink");
+        symlink(startup.join("real.mp4"), startup.join("linked.mp4"))
+            .expect("startup video symlink");
         symlink(&manuals, directory.path().join("Linked Manuals")).expect("folder symlink");
         symlink(
             &background,
@@ -2608,7 +2771,8 @@ mod tests {
             .background_music_paths_by_platform
             .get(&background_music_context_key("Linked Console"))
             .is_none());
-        assert!(index.report.unsafe_entries >= 6);
+        assert_eq!(index.startup_video_paths, [startup.join("real.mp4")]);
+        assert!(index.report.unsafe_entries >= 7);
     }
 
     #[cfg(unix)]

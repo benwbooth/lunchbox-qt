@@ -500,6 +500,23 @@ rendering, theme-specific sound integration, broad codec/backend parity,
 configurable global media hotkeys/notifications, and native Windows/macOS Qt
 Multimedia execution remain open.
 
+BigBox application startup videos now use the same cross-platform media
+boundary. Direct regular files in `Videos/Startup` form the randomized
+collection and take precedence over the legacy exact
+`Videos/Startup.mp4` path. Discovery is sorted and bounded; unsupported,
+oversized, nested, symlinked, and non-regular entries are refused. At
+application start the main screen remains behind a black loading surface until
+library indexing selects a native local URL. A lifecycle-owned Qt Multimedia
+player uses `VolumeVideo`, runs the chosen video to its natural end, accepts
+the shared key/tap skip action, fails open on playback errors, and blocks game
+and background music until completion. Compiled scenarios decode genuine
+H.264 through both the randomized and legacy layouts, exercise skip and
+natural completion, render and color-check the presentation, validate the
+selected safe file in Rust, and hash settings plus all media. Original splash
+image/sound-pack behavior, custom startup themes, controller mapping, primary
+monitor routing, original VLC/WMP backend parity, and native Windows/macOS Qt
+Multimedia execution remain open.
+
 LaunchBox also has a three-page manual ROM importer backed by the reusable
 `lb-import` crate. It accepts multiple native files and folders, optional
 recursive discovery and extension filters, file- or folder-derived editable

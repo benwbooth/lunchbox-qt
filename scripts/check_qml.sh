@@ -33,6 +33,7 @@ diagnostics=$(
     apps/lb-shell/qml/BoxModelViewer.qml \
     apps/lb-shell/qml/GameMusicPlayer.qml \
     apps/lb-shell/qml/BackgroundMusicPlayer.qml \
+    apps/lb-shell/qml/BigBoxStartupVideo.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -393,6 +394,130 @@ cmp "$background_music_overlap_settings.before-background-music-smoke" \
 ) >/dev/null
 
 echo "BigBox default/platform/playlist/category background music, typed sound policy, context fallback, Qt decode, previous/pause/next controls, both video-audio coexistence policies, game-music interruption and resume, OSD rendering, and read-only media behavior validated."
+
+startup_video_root="$test_config_root/startup-video-library"
+startup_video_screenshot="$test_config_root/bigbox-startup-video.png"
+mkdir -p "$startup_video_root"
+cp -a "$media_root/." "$startup_video_root/"
+mkdir -p "$startup_video_root/Videos/Startup"
+cp "$fixture_video" "$startup_video_root/Videos/Startup/Startup-01.mp4"
+cp "$fixture_video" "$startup_video_root/Videos/Startup/Startup-02.mp4"
+startup_video_settings="$startup_video_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<VolumeVideo>75</VolumeVideo>#<VolumeVideo>61</VolumeVideo>#' \
+  "$startup_video_settings"
+cp "$startup_video_settings" \
+  "$startup_video_settings.before-startup-video-smoke"
+startup_video_manifest="$test_config_root/startup-video.before.sha256"
+(
+  cd "$startup_video_root"
+  find Images Videos Manuals Music -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$startup_video_manifest"
+startup_video_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$startup_video_root" \
+    --bigbox-startup-video-smoke-test \
+    --bigbox-startup-video-index 1 \
+    --bigbox-startup-video-screenshot "$startup_video_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$startup_video_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos=2 selected=Startup-02.mp4 decode=h264 completion=skip volume=61' \
+  <<< "$startup_video_output"; then
+  printf '%s\n' "$startup_video_output" >&2
+  echo "BigBox did not decode and skip the selected randomized startup video." >&2
+  exit 1
+fi
+if [[ ! -s "$startup_video_screenshot" ]] \
+  || [[ $(wc -c < "$startup_video_screenshot") -lt 1024 ]]; then
+  echo "BigBox did not save a rendered startup-video screenshot." >&2
+  exit 1
+fi
+startup_video_colors=$(
+  magick "$startup_video_screenshot" -format '%k' info:
+)
+if [[ ! "$startup_video_colors" =~ ^[0-9]+$ ]] \
+  || ((startup_video_colors < 64)); then
+  echo "BigBox startup-video screenshot is blank or insufficiently rendered ($startup_video_colors colors)." >&2
+  exit 1
+fi
+
+startup_video_natural_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$startup_video_root" \
+    --bigbox-startup-video-smoke-test \
+    --bigbox-startup-video-natural-end \
+    --bigbox-startup-video-index 0 \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$startup_video_natural_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos=2 selected=Startup-01.mp4 decode=h264 completion=natural volume=61' \
+  <<< "$startup_video_natural_output"; then
+  printf '%s\n' "$startup_video_natural_output" >&2
+  echo "BigBox did not finish the selected randomized startup video naturally." >&2
+  exit 1
+fi
+cmp "$startup_video_settings.before-startup-video-smoke" \
+  "$startup_video_settings"
+(
+  cd "$startup_video_root"
+  sha256sum --check "$startup_video_manifest"
+) >/dev/null
+
+legacy_startup_video_root="$test_config_root/legacy-startup-video-library"
+mkdir -p "$legacy_startup_video_root"
+cp -a "$media_root/." "$legacy_startup_video_root/"
+cp "$fixture_video" "$legacy_startup_video_root/Videos/Startup.mp4"
+legacy_startup_video_settings="$legacy_startup_video_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<VolumeVideo>75</VolumeVideo>#<VolumeVideo>61</VolumeVideo>#' \
+  "$legacy_startup_video_settings"
+cp "$legacy_startup_video_settings" \
+  "$legacy_startup_video_settings.before-startup-video-smoke"
+legacy_startup_video_manifest="$test_config_root/legacy-startup-video.before.sha256"
+(
+  cd "$legacy_startup_video_root"
+  find Images Videos Manuals Music -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$legacy_startup_video_manifest"
+legacy_startup_video_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$legacy_startup_video_root" \
+    --bigbox-startup-video-smoke-test \
+    --bigbox-startup-video-natural-end \
+    --bigbox-startup-video-index 0 \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$legacy_startup_video_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos=1 selected=Startup.mp4 decode=h264 completion=natural volume=61' \
+  <<< "$legacy_startup_video_output"; then
+  printf '%s\n' "$legacy_startup_video_output" >&2
+  echo "BigBox did not decode and naturally finish the legacy startup video." >&2
+  exit 1
+fi
+cmp "$legacy_startup_video_settings.before-startup-video-smoke" \
+  "$legacy_startup_video_settings"
+(
+  cd "$legacy_startup_video_root"
+  sha256sum --check "$legacy_startup_video_manifest"
+) >/dev/null
+
+echo "BigBox randomized and legacy startup-video discovery, native file URLs, real H.264 decode, shared key/tap skip action, natural completion, typed video volume, rendered output, and read-only media behavior validated."
 
 game_details_settings="$media_root/Data/Settings.xml"
 game_details_screenshot="$media_root/launchbox-game-details.png"

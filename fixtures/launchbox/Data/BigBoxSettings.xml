@@ -20,6 +20,7 @@
     <ShowGameMenuPlayMusic>true</ShowGameMenuPlayMusic>
     <ShowGameMenuViewManual>true</ShowGameMenuViewManual>
     <VolumeMusic>75</VolumeMusic>
+    <VolumeVideo>75</VolumeVideo>
     <EnableBackgroundMusic>false</EnableBackgroundMusic>
     <VolumeBackgroundMusic>75</VolumeBackgroundMusic>
     <EnableMusicOnScreenDisplay>true</EnableMusicOnScreenDisplay>
