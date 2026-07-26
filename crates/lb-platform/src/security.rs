@@ -341,6 +341,20 @@ impl BigBoxSecurityPolicy {
         permission.is_none_or(|permission| self.permission_allowed(permission))
     }
 
+    /// Handles both recovered BigBox input actions and menu-only commands.
+    /// Unknown command keys fail closed while BigBox is locked.
+    pub fn allows_action_key(&self, action_key: &str) -> bool {
+        if let Some(action) = BigBoxInputAction::from_key(action_key) {
+            return self.allows_input_action(action);
+        }
+        match action_key {
+            "BigBoxFavoriteGames" => {
+                self.permission_allowed(BigBoxSecurityPermission::FavoriteGames)
+            }
+            _ => false,
+        }
+    }
+
     pub fn allows_navigation_kind(&self, kind: &str) -> bool {
         let permission = match kind {
             "" | "all" => BigBoxSecurityPermission::ChangeFilterAllGames,
@@ -452,6 +466,13 @@ mod tests {
         policy.set_permission(BigBoxSecurityPermission::Exit, true);
         assert!(!policy.allows_navigation_kind("platform"));
         assert!(policy.allows_input_action(BigBoxInputAction::Exit));
+        assert!(policy.allows_action_key("BigBoxExit"));
+        assert!(!policy.allows_action_key("BigBoxFavoriteGames"));
+        policy.set_permission(BigBoxSecurityPermission::FavoriteGames, true);
+        assert!(policy.allows_action_key("BigBoxFavoriteGames"));
+        policy.set_permission(BigBoxSecurityPermission::FavoriteGames, false);
+        assert!(!policy.allows_action_key("BigBoxFavoriteGames"));
+        assert!(!policy.allows_action_key("FutureMenuCommand"));
     }
 
     #[test]

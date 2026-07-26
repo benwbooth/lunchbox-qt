@@ -191,6 +191,18 @@ ApplicationWindow {
         argumentValue("--bigbox-security-pin-screenshot")
     property string securityEditorScreenshotPath:
         argumentValue("--bigbox-security-editor-screenshot")
+    property bool gameActionsSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-game-actions-smoke-test") >= 0
+    property int gameActionsSmokePhase: 0
+    property int gameActionsSmokeStartRevision: -1
+    property bool gameActionsFavoriteFirstSeen: false
+    property bool gameActionsPopupSeen: false
+    property bool gameActionsBlockedFavoriteSeen: false
+    property bool gameActionsScreenshotRequested: false
+    property bool gameActionsSmokeFinished: false
+    property string gameActionsScreenshotPath:
+        argumentValue("--bigbox-game-actions-screenshot")
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -286,8 +298,10 @@ ApplicationWindow {
     property bool selectedBigBoxGameCompleted: false
     property int selectedBigBoxGamePlayCount: 0
     property int selectedBigBoxGameStarRating: 0
+    property real selectedBigBoxGameStarRatingFloat: 0
     property real selectedBigBoxGamePlayTimeSeconds: 0
     property real selectedBigBoxGameCommunityRating: 0
+    property int selectedBigBoxGameCommunityVotes: 0
     property url selectedBigBoxGameFrontImageUrl
     property bool selectedBigBoxGameBoxBackVisible: false
     property int runtimeMasterVolumePercent: 100
@@ -519,8 +533,25 @@ ApplicationWindow {
         Qt.exit(exitCode)
     }
 
+    function failGameActionsSmoke(message, exitCode) {
+        console.error(message
+                      + " phase=" + gameActionsSmokePhase
+                      + " game=" + selectedBigBoxGameId
+                      + " favorite=" + selectedBigBoxGameFavorite
+                      + " rating=" + selectedBigBoxGameStarRatingFloat
+                      + " locked=" + controller.big_box_locked
+                      + " revision="
+                      + controller.big_box_game_state_revision
+                      + " writing=" + controller.writing
+                      + " status=" + controller.status_message)
+        securitySmokeAborting = true
+        Qt.exit(exitCode)
+    }
+
     function closeBigBoxSurface() {
-        if (bigBoxSecuritySettings.opened) {
+        if (bigBoxStarRatingPopup.opened) {
+            bigBoxStarRatingPopup.cancelEntry()
+        } else if (bigBoxSecuritySettings.opened) {
             bigBoxSecuritySettings.close()
         } else if (bigBoxMarqueeSettings.opened) {
             bigBoxMarqueeSettings.close()
@@ -632,6 +663,8 @@ ApplicationWindow {
             return bigBoxUnlockPopup.handleAction(action)
         if (bigBoxSecuritySettings.opened)
             return bigBoxSecuritySettings.handleAction(action)
+        if (bigBoxStarRatingPopup.opened)
+            return bigBoxStarRatingPopup.handleAction(action)
         if (action === "BigBoxLockUnlock")
             return requestLockUnlock()
         if (action === "BigBoxBack") {
@@ -799,6 +832,8 @@ ApplicationWindow {
             return openGameModel(gameList)
         if (action === "BigBoxFlipBox")
             return flipSelectedBox()
+        if (action === "BigBoxSetStarRating")
+            return openSelectedStarRating()
         if (action === "BigBoxFilter") {
             openAttributeFilters()
             return true
@@ -1065,6 +1100,35 @@ ApplicationWindow {
         return true
     }
 
+    function toggleSelectedFavorite() {
+        if (!controller.big_box_show_game_menu_favorite
+                || selectedBigBoxGameId.length === 0
+                || controller.loading || controller.writing
+                || !guardSecurityAction("BigBoxFavoriteGames"))
+            return false
+        return controller.update_big_box_game_state(
+                    gameList.currentIndex,
+                    selectedBigBoxGameId,
+                    !selectedBigBoxGameFavorite,
+                    selectedBigBoxGameStarRatingFloat)
+    }
+
+    function openSelectedStarRating() {
+        if (!controller.big_box_show_game_menu_star_rating
+                || selectedBigBoxGameId.length === 0
+                || controller.loading || controller.writing
+                || !guardSecurityAction("BigBoxSetStarRating"))
+            return false
+        bigBoxStarRatingPopup.openForGame(
+                    gameList.currentIndex,
+                    selectedBigBoxGameId,
+                    selectedBigBoxGameTitle,
+                    selectedBigBoxGameStarRatingFloat,
+                    selectedBigBoxGameCommunityRating,
+                    selectedBigBoxGameCommunityVotes)
+        return true
+    }
+
     function formatPlayTime(seconds) {
         const totalMinutes = Math.floor(Math.max(0, seconds) / 60)
         const hours = Math.floor(totalMinutes / 60)
@@ -1087,8 +1151,10 @@ ApplicationWindow {
         selectedBigBoxGameCompleted = false
         selectedBigBoxGamePlayCount = 0
         selectedBigBoxGameStarRating = 0
+        selectedBigBoxGameStarRatingFloat = 0
         selectedBigBoxGamePlayTimeSeconds = 0
         selectedBigBoxGameCommunityRating = 0
+        selectedBigBoxGameCommunityVotes = 0
         selectedBigBoxGameFrontImageUrl = ""
         selectedBigBoxGameBoxBackVisible = false
     }
@@ -2782,7 +2848,7 @@ ApplicationWindow {
                 window.libraryOrderSmokePhase = 1
             } else if (window.libraryOrderSmokePhase === 1) {
                 if (!window.filteredIdsMatch(
-                            ["fixture-racer", "fixture-adventure",
+                            ["fixture-adventure", "fixture-racer",
                              "fixture-puzzle"])
                         || controller.game_sort !== "PlayCount"
                         || !controller.game_sort_descending) {
@@ -2801,7 +2867,7 @@ ApplicationWindow {
                 }
                 window.libraryOrderSmokeRandomRow =
                     controller.select_random_game("fixture-racer")
-                if (window.libraryOrderSmokeRandomRow < 1
+                if (window.libraryOrderSmokeRandomRow < 0
                         || controller.game_id_at(
                             window.libraryOrderSmokeRandomRow)
                            === "fixture-racer") {
@@ -2823,7 +2889,7 @@ ApplicationWindow {
                 window.libraryOrderSmokePhase = 3
             } else if (window.libraryOrderSmokePhase === 3) {
                 if (!window.filteredIdsMatch(
-                            ["fixture-racer", "fixture-adventure",
+                            ["fixture-adventure", "fixture-racer",
                              "fixture-puzzle"])
                         || !controller.report_library_order_smoke_success(
                             window.libraryOrderSmokeRandomRow,
@@ -3751,6 +3817,177 @@ ApplicationWindow {
             700 + window.securitySmokePhase)
     }
 
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.gameActionsSmokeTest
+                 && !window.gameActionsSmokeFinished
+        onTriggered: {
+            if (controller.loading
+                    || window.startupPresentationPending
+                    || controller.library_path.length === 0)
+                return
+            if (window.gameActionsSmokePhase === 0) {
+                if (window.selectedBigBoxGameId.length === 0)
+                    return
+                if (window.selectedBigBoxGameId
+                        !== "fixture-adventure"
+                        || !window.selectedBigBoxGameFavorite
+                        || window.selectedBigBoxGameStarRating !== 4
+                        || Math.abs(
+                            window.selectedBigBoxGameStarRatingFloat
+                            - 4.5) > 0.000001
+                        || !controller.big_box_locked
+                        || !controller
+                           .big_box_show_star_next_to_favorited_games
+                        || !controller.big_box_show_favorited_games_first
+                        || !controller.big_box_show_game_favorite
+                        || !controller.big_box_show_game_menu_favorite
+                        || !controller
+                           .big_box_show_game_menu_star_rating
+                        || !controller.big_box_show_game_star_rating
+                        || !controller
+                            .big_box_action_allowed_while_locked(
+                                "BigBoxSetStarRating")
+                        || controller
+                           .big_box_action_allowed_while_locked(
+                               "BigBoxFavoriteGames")) {
+                    window.failGameActionsSmoke(
+                        "BIGBOX_GAME_ACTIONS_INITIAL_MISMATCH",
+                        730)
+                    return
+                }
+                window.gameActionsSmokeStartRevision =
+                    controller.big_box_game_state_revision
+                window.gameActionsFavoriteFirstSeen =
+                    controller.game_id_at(0)
+                    === "fixture-adventure"
+                if (window.guardSecurityAction(
+                        "BigBoxFavoriteGames")) {
+                    window.failGameActionsSmoke(
+                        "BIGBOX_GAME_ACTIONS_LOCKED_FAVORITE_ESCAPED",
+                        731)
+                    return
+                }
+                window.gameActionsBlockedFavoriteSeen = true
+                if (!window.dispatchBigBoxInputAction(
+                        "BigBoxSetStarRating")) {
+                    window.failGameActionsSmoke(
+                        "BIGBOX_GAME_ACTIONS_POPUP_MISSING",
+                        732)
+                    return
+                }
+                window.gameActionsSmokePhase = 1
+            } else if (window.gameActionsSmokePhase === 1) {
+                if (!bigBoxStarRatingPopup.opened)
+                    return
+                window.gameActionsPopupSeen = true
+                if (window.gameActionsScreenshotPath.length === 0) {
+                    window.gameActionsSmokePhase = 2
+                    return
+                }
+                if (window.gameActionsScreenshotRequested)
+                    return
+                window.gameActionsScreenshotRequested = true
+                bigBoxStarRatingPopup.smokeCaptureTarget.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.gameActionsScreenshotPath)) {
+                            window.failGameActionsSmoke(
+                                "BIGBOX_GAME_ACTIONS_SCREENSHOT_FAILED",
+                                733)
+                            return
+                        }
+                        window.gameActionsSmokePhase = 2
+                    })
+            } else if (window.gameActionsSmokePhase === 2) {
+                if (!bigBoxStarRatingPopup.opened
+                        || !bigBoxStarRatingPopup
+                            .runSmokeSetRating(2.5)) {
+                    window.failGameActionsSmoke(
+                        "BIGBOX_GAME_ACTIONS_RATING_SAVE_FAILED",
+                        734)
+                    return
+                }
+                window.gameActionsSmokePhase = 3
+            } else if (window.gameActionsSmokePhase === 3) {
+                if (controller.writing
+                        || controller.big_box_game_state_revision
+                           !== window
+                               .gameActionsSmokeStartRevision + 1)
+                    return
+                if (!window.selectedBigBoxGameFavorite
+                        || Math.abs(
+                            window.selectedBigBoxGameStarRatingFloat
+                            - 2.5) > 0.000001
+                        || !window.requestLockUnlock()) {
+                    window.failGameActionsSmoke(
+                        "BIGBOX_GAME_ACTIONS_RATING_COMMIT_MISMATCH",
+                        735)
+                    return
+                }
+                window.gameActionsSmokePhase = 4
+            } else if (window.gameActionsSmokePhase === 4) {
+                if (!bigBoxUnlockPopup.opened)
+                    return
+                if (!bigBoxUnlockPopup.runSmokeEntry("2580")) {
+                    window.failGameActionsSmoke(
+                        "BIGBOX_GAME_ACTIONS_UNLOCK_FAILED",
+                        736)
+                    return
+                }
+                window.gameActionsSmokePhase = 5
+            } else if (window.gameActionsSmokePhase === 5) {
+                if (controller.big_box_locked
+                        || bigBoxUnlockPopup.opened)
+                    return
+                if (!window.toggleSelectedFavorite()) {
+                    window.failGameActionsSmoke(
+                        "BIGBOX_GAME_ACTIONS_FAVORITE_SAVE_FAILED",
+                        737)
+                    return
+                }
+                window.gameActionsSmokePhase = 6
+            } else if (window.gameActionsSmokePhase === 6) {
+                if (controller.writing
+                        || controller.big_box_game_state_revision
+                           !== window
+                               .gameActionsSmokeStartRevision + 2)
+                    return
+                if (window.selectedBigBoxGameFavorite
+                        || Math.abs(
+                            window.selectedBigBoxGameStarRatingFloat
+                            - 2.5) > 0.000001
+                        || !controller
+                            .report_big_box_game_actions_smoke_success(
+                                window.gameActionsSmokeStartRevision,
+                                window.selectedBigBoxGameId,
+                                window.selectedBigBoxGameFavorite,
+                                window
+                                .selectedBigBoxGameStarRatingFloat,
+                                window.gameActionsFavoriteFirstSeen,
+                                window.gameActionsPopupSeen,
+                                window.gameActionsBlockedFavoriteSeen)) {
+                    window.failGameActionsSmoke(
+                        "BIGBOX_GAME_ACTIONS_CONTROLLER_REJECTED",
+                        738)
+                    return
+                }
+                window.gameActionsSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.gameActionsSmokeTest
+                 && !window.gameActionsSmokeFinished
+        onTriggered: window.failGameActionsSmoke(
+            "BIGBOX_GAME_ACTIONS_SMOKE_TIMEOUT",
+            740 + window.gameActionsSmokePhase)
+    }
+
     Rectangle {
         anchors.fill: parent
         gradient: Gradient {
@@ -4208,10 +4445,14 @@ ApplicationWindow {
                         window.selectedBigBoxGameCompleted = gameCompleted
                         window.selectedBigBoxGamePlayCount = gamePlayCount
                         window.selectedBigBoxGameStarRating = gameStarRating
+                        window.selectedBigBoxGameStarRatingFloat =
+                            controller.big_box_star_rating_at(index, gameId)
                         window.selectedBigBoxGamePlayTimeSeconds =
                             gamePlayTimeSeconds
                         window.selectedBigBoxGameCommunityRating =
                             gameCommunityStarRating
+                        window.selectedBigBoxGameCommunityVotes =
+                            gameCommunityStarRatingTotalVotes
                         window.selectedBigBoxGameFrontImageUrl =
                             gameFrontImageUrl
                         if (controller
@@ -4248,7 +4489,11 @@ ApplicationWindow {
                     scale: gameList.currentIndex === index ? 1.0 : 0.88
                     opacity: gameList.currentIndex === index ? 1.0 : 0.55
                     color: gameList.currentIndex === index ? "#253a59" : "#131a24"
-                    border.color: gameFavorite ? "#f0c04a" : "#4775aa"
+                    border.color:
+                        gameFavorite
+                        && controller
+                           .big_box_show_star_next_to_favorited_games
+                        ? "#f0c04a" : "#4775aa"
                     border.width: gameList.currentIndex === index ? 3 : 1
 
                     Behavior on scale { NumberAnimation { duration: 150 } }
@@ -4342,7 +4587,11 @@ ApplicationWindow {
                         }
                         Label {
                             Layout.fillWidth: true
-                            text: (gameFavorite ? "★ FAVORITE    " : "")
+                            text:
+                                  (gameFavorite
+                                   && controller
+                                      .big_box_show_star_next_to_favorited_games
+                                   ? "★ FAVORITE    " : "")
                                   + (gameCompleted ? "✓ COMPLETED" : "")
                             color: "#f0c04a"
                             font.pixelSize: 15
@@ -4441,6 +4690,40 @@ ApplicationWindow {
                 enabled: window.selectedBigBoxGameId.length > 0
                          && !controller.loading && !controller.writing
                 onClicked: window.openGameDetails()
+            }
+            Button {
+                id: bigBoxFavoriteButton
+                text: window.selectedBigBoxGameFavorite
+                      ? "UNFAVORITE" : "FAVORITE"
+                visible:
+                    controller.big_box_show_game_menu_favorite
+                    && window.selectedBigBoxGameId.length > 0
+                enabled: visible
+                         && !controller.loading
+                         && !controller.writing
+                         && window.securityActionAllowed(
+                             "BigBoxFavoriteGames")
+                Accessible.name:
+                    window.selectedBigBoxGameFavorite
+                    ? "Remove selected game from favorites"
+                    : "Add selected game to favorites"
+                onClicked: window.toggleSelectedFavorite()
+            }
+            Button {
+                id: bigBoxStarRatingButton
+                text: "RATE "
+                      + window.selectedBigBoxGameStarRatingFloat
+                        .toFixed(1)
+                visible:
+                    controller.big_box_show_game_menu_star_rating
+                    && window.selectedBigBoxGameId.length > 0
+                enabled: visible
+                         && !controller.loading
+                         && !controller.writing
+                         && window.securityActionAllowed(
+                             "BigBoxSetStarRating")
+                Accessible.name: "Set selected game star rating"
+                onClicked: window.openSelectedStarRating()
             }
             Button {
                 id: bigBoxImagesButton
@@ -5130,7 +5413,8 @@ ApplicationWindow {
                             Label {
                                 Layout.fillWidth: true
                                 text:
-                                    (window.selectedBigBoxGameFavorite
+                                    (controller.big_box_show_game_favorite
+                                     && window.selectedBigBoxGameFavorite
                                      ? "★ FAVORITE    " : "")
                                     + (window.selectedBigBoxGameCompleted
                                        ? "✓ COMPLETED" : "")
@@ -5143,7 +5427,9 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 text:
                                     "Rating  "
-                                    + window.selectedBigBoxGameStarRating
+                                    + window
+                                      .selectedBigBoxGameStarRatingFloat
+                                      .toFixed(1)
                                     + " / 5"
                                     + (window
                                        .selectedBigBoxGameCommunityRating > 0
@@ -5155,6 +5441,8 @@ ApplicationWindow {
                                 color: "#dce7f5"
                                 font.pixelSize: 16
                                 wrapMode: Text.Wrap
+                                visible:
+                                    controller.big_box_show_game_star_rating
                             }
                             Label {
                                 Layout.fillWidth: true
@@ -5797,6 +6085,7 @@ ApplicationWindow {
             || navigationDrawer.opened
             || launchWithDialog.opened
             || bigBoxUnlockPopup.opened
+            || bigBoxStarRatingPopup.opened
             || bigBoxSecuritySettings.opened
             || bigBoxAttractMode.active
         activationCallback: function() {
@@ -5834,6 +6123,7 @@ ApplicationWindow {
             || navigationDrawer.opened
             || launchWithDialog.opened
             || bigBoxUnlockPopup.opened
+            || bigBoxStarRatingPopup.opened
             || bigBoxSecuritySettings.opened
             || bigBoxScreensaver.active
         advanceWheelCallback: window.advanceAttractWheel
@@ -6886,6 +7176,21 @@ ApplicationWindow {
         onCancelled: gameList.forceActiveFocus()
     }
 
+    BigBoxStarRatingPopup {
+        id: bigBoxStarRatingPopup
+        busy: controller.writing
+
+        onSubmitted: function(row, gameId, rating) {
+            controller.update_big_box_game_state(
+                        row, gameId,
+                        window.selectedBigBoxGameFavorite,
+                        rating)
+            gameList.forceActiveFocus()
+        }
+
+        onCancelled: gameList.forceActiveFocus()
+    }
+
     BigBoxMarqueeWindow {
         id: bigBoxMarquee
         controller: controller
@@ -6925,6 +7230,7 @@ ApplicationWindow {
                  && !bigBoxMarqueeSettings.opened
                  && !bigBoxSecuritySettings.opened
                  && !bigBoxUnlockPopup.opened
+                 && !bigBoxStarRatingPopup.opened
         onActivated: window.showLaunchWithSelection()
     }
 
@@ -6937,6 +7243,7 @@ ApplicationWindow {
                  && !bigBoxMarqueeSettings.opened
                  && !bigBoxSecuritySettings.opened
                  && !bigBoxUnlockPopup.opened
+                 && !bigBoxStarRatingPopup.opened
                  && window.navigationAccessAvailable()
         onActivated: {
             if (navigationDrawer.opened) {

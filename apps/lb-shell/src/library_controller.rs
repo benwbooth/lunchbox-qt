@@ -162,6 +162,13 @@ pub mod qobject {
         #[qproperty(bool, big_box_locked)]
         #[qproperty(bool, big_box_show_game_lock_unlock)]
         #[qproperty(i32, big_box_security_settings_revision)]
+        #[qproperty(bool, big_box_show_star_next_to_favorited_games)]
+        #[qproperty(bool, big_box_show_favorited_games_first)]
+        #[qproperty(bool, big_box_show_game_favorite)]
+        #[qproperty(bool, big_box_show_game_menu_favorite)]
+        #[qproperty(bool, big_box_show_game_menu_star_rating)]
+        #[qproperty(bool, big_box_show_game_star_rating)]
+        #[qproperty(i32, big_box_game_state_revision)]
         #[qproperty(bool, big_box_show_game_menu_flip_box)]
         #[qproperty(bool, big_box_show_game_menu_model)]
         #[qproperty(i32, filtered_count)]
@@ -541,6 +548,18 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_big_box_game_actions_smoke_success(
+            self: &LibraryController,
+            initial_revision: i32,
+            game_id: QString,
+            favorite: bool,
+            star_rating: f64,
+            favorite_first_seen: bool,
+            popup_seen: bool,
+            blocked_favorite_seen: bool,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_big_box_marquee_smoke_success(
             self: &LibraryController,
             screen_count: i32,
@@ -908,6 +927,18 @@ pub mod qobject {
 
         #[qinvokable]
         fn select_random_game(self: Pin<&mut LibraryController>, avoid_game_id: QString) -> i32;
+
+        #[qinvokable]
+        fn big_box_star_rating_at(self: &LibraryController, row: i32, game_id: QString) -> f64;
+
+        #[qinvokable]
+        fn update_big_box_game_state(
+            self: Pin<&mut LibraryController>,
+            row: i32,
+            game_id: QString,
+            favorite: bool,
+            star_rating: f64,
+        ) -> bool;
 
         #[qinvokable]
         fn save_game(
@@ -1824,24 +1855,26 @@ use lb_platform::{
     background_music_context_key, default_host_path_mappings_path, default_launchbox_ui_state_path,
     default_model_viewer_state_path, default_platform_folders, execute_launch_sequence_controlled,
     index_big_box_platform_marquee_media, index_big_box_startup_presentation, index_game_media,
-    index_game_supplemental_media, navigation_document_file_name, platform_document_file_name,
-    portable_storage_name, prepare_game_launch_sequence_with_mounts_context_and_resolver,
+    index_game_supplemental_media, navigation_document_file_name, normalize_big_box_star_rating,
+    platform_document_file_name, portable_storage_name,
+    prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
-    project_big_box_screensaver_candidates, qt_key_to_wpf_key_with_modifiers,
+    prioritize_favorite_game_indices, project_big_box_screensaver_candidates,
+    qt_key_to_wpf_key_with_modifiers,
     select_big_box_screensaver_candidate as select_screensaver_candidate_index,
     select_emulator_for_game, wpf_key_to_qt_portable_text, ArchiveExtractor,
-    BigBoxAttractModePolicy, BigBoxBackgroundMusicPolicy, BigBoxGameMarqueeMedia,
-    BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy, BigBoxMarqueeCompatibilityMode,
-    BigBoxMarqueePolicy, BigBoxMusicPolicy, BigBoxPlatformMarqueeMedia, BigBoxScreensaverCandidate,
-    BigBoxScreensaverPolicy, BigBoxSecurityPermission, BigBoxSecurityPolicy,
-    BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, ControllerBinding,
-    FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy, GameDetailsMediaPolicy,
-    GameDetailsWindowState, GameMediaItem, GameMediaKind, GamepadInputEvent, HostPathMappings,
-    HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
-    LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
-    LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
-    ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS,
-    BIG_BOX_SECURITY_PERMISSIONS,
+    BigBoxAttractModePolicy, BigBoxBackgroundMusicPolicy, BigBoxGameActionPolicy,
+    BigBoxGameMarqueeMedia, BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy,
+    BigBoxMarqueeCompatibilityMode, BigBoxMarqueePolicy, BigBoxMusicPolicy,
+    BigBoxPlatformMarqueeMedia, BigBoxScreensaverCandidate, BigBoxScreensaverPolicy,
+    BigBoxSecurityPermission, BigBoxSecurityPolicy, BigBoxStartupPresentationIndex,
+    BigBoxStartupPresentationPolicy, ControllerBinding, FrontendLaunchScreenPolicy,
+    FrontendPauseScreenPolicy, GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem,
+    GameMediaKind, GamepadInputEvent, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy,
+    LaunchBoxUiState, LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver,
+    LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport,
+    LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
+    BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS, BIG_BOX_SECURITY_PERMISSIONS,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
@@ -2164,6 +2197,13 @@ pub struct LibraryControllerRust {
     big_box_locked: bool,
     big_box_show_game_lock_unlock: bool,
     big_box_security_settings_revision: i32,
+    big_box_show_star_next_to_favorited_games: bool,
+    big_box_show_favorited_games_first: bool,
+    big_box_show_game_favorite: bool,
+    big_box_show_game_menu_favorite: bool,
+    big_box_show_game_menu_star_rating: bool,
+    big_box_show_game_star_rating: bool,
+    big_box_game_state_revision: i32,
     big_box_show_game_menu_flip_box: bool,
     big_box_show_game_menu_model: bool,
     filtered_count: i32,
@@ -2248,6 +2288,7 @@ pub struct LibraryControllerRust {
     big_box_platform_marquee_media: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
     big_box_input_engine: BigBoxInputEngine,
     big_box_security_policy: BigBoxSecurityPolicy,
+    big_box_game_action_policy: BigBoxGameActionPolicy,
     big_box_screensaver_candidates: Vec<BigBoxScreensaverCandidate>,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
@@ -2310,6 +2351,7 @@ pub struct LibraryControllerRust {
     big_box_security_failed_unlocks: u64,
     big_box_security_successful_unlocks: u64,
     big_box_security_write_notifications: u64,
+    big_box_game_state_write_notifications: u64,
     delegated_session_completions: u64,
     session_stats_writes: u64,
     session_stats_error: Option<String>,
@@ -2397,6 +2439,7 @@ struct LoadedLibrary {
     big_box_platform_marquee_media: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
     big_box_input_policy: BigBoxInputPolicy,
     big_box_security_policy: BigBoxSecurityPolicy,
+    big_box_game_action_policy: BigBoxGameActionPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2451,6 +2494,7 @@ struct LibraryReplacement {
     big_box_platform_marquee_media: BTreeMap<String, BigBoxPlatformMarqueeMedia>,
     big_box_input_policy: BigBoxInputPolicy,
     big_box_security_policy: BigBoxSecurityPolicy,
+    big_box_game_action_policy: BigBoxGameActionPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2549,6 +2593,7 @@ impl LoadedLibrary {
                 big_box_platform_marquee_media: BTreeMap::new(),
                 big_box_input_policy: BigBoxInputPolicy::default(),
                 big_box_security_policy: BigBoxSecurityPolicy::default(),
+                big_box_game_action_policy: BigBoxGameActionPolicy::default(),
                 big_box_show_game_menu_flip_box: true,
                 details_show_3d_model: true,
                 big_box_show_game_menu_model: true,
@@ -2706,6 +2751,8 @@ impl LoadedLibrary {
             BigBoxInputPolicy::from_settings(data.big_box_settings(), data.input_bindings())
         };
         let big_box_security_policy = BigBoxSecurityPolicy::from_settings(data.big_box_settings());
+        let big_box_game_action_policy =
+            BigBoxGameActionPolicy::from_settings(data.big_box_settings());
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
@@ -2776,6 +2823,7 @@ impl LoadedLibrary {
             big_box_platform_marquee_media,
             big_box_input_policy,
             big_box_security_policy,
+            big_box_game_action_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -3116,6 +3164,12 @@ struct GameWriteSuccess {
     alternate_names: Vec<AlternateName>,
     custom_fields: Vec<CustomField>,
     resolved_model_settings: ResolvedModelSettings,
+    source: PathBuf,
+    backup: PathBuf,
+}
+
+struct BigBoxGameStateWriteSuccess {
+    game: Game,
     source: PathBuf,
     backup: PathBuf,
 }
@@ -6239,6 +6293,73 @@ fn write_box_size_setting(
             BoxSizeWriteFailure::Other("box-size transaction reported no Settings.xml write".into())
         })?;
     Ok(BoxSizeWriteSuccess { backup })
+}
+
+fn write_big_box_game_state(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+    favorite: bool,
+    star_rating: f64,
+) -> Result<BigBoxGameStateWriteSuccess, GameWriteFailure> {
+    let (expected_integer_rating, star_rating) = normalize_big_box_star_rating(star_rating)
+        .map_err(|error| GameWriteFailure::Other(format!("invalid BigBox star rating: {error}")))?;
+    let mut document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let completed = document
+        .library()
+        .games
+        .iter()
+        .find(|game| game.id == game_id)
+        .map(|game| game.completed)
+        .ok_or_else(|| GameWriteFailure::Other(format!("game {game_id} was not found")))?;
+    document
+        .set_big_box_game_state(&game_id, favorite, star_rating)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&document)
+        .map_err(classify_transaction_error)?;
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            GameWriteFailure::Other(
+                "BigBox game-state transaction reported no matching platform write".into(),
+            )
+        })?;
+
+    let committed = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let game = committed
+        .library()
+        .games
+        .iter()
+        .find(|game| game.id == game_id)
+        .cloned()
+        .ok_or_else(|| {
+            GameWriteFailure::Other(format!(
+                "game {game_id} disappeared after the BigBox game-state commit"
+            ))
+        })?;
+    if game.favorite != favorite
+        || game.completed != completed
+        || game.star_rating != expected_integer_rating
+        || (game.star_rating_float - star_rating).abs() > 1.0e-9
+    {
+        return Err(GameWriteFailure::Other(format!(
+            "committed BigBox state for {game_id} did not match the requested favorite/rating values"
+        )));
+    }
+    Ok(BigBoxGameStateWriteSuccess {
+        game,
+        source,
+        backup,
+    })
 }
 
 fn write_game(
@@ -17147,6 +17268,7 @@ impl qobject::LibraryController {
                     big_box_platform_marquee_media: BTreeMap::new(),
                     big_box_input_policy: BigBoxInputPolicy::default(),
                     big_box_security_policy: BigBoxSecurityPolicy::default(),
+                    big_box_game_action_policy: BigBoxGameActionPolicy::default(),
                     big_box_show_game_menu_flip_box: true,
                     details_show_3d_model: true,
                     big_box_show_game_menu_model: true,
@@ -17761,11 +17883,9 @@ impl qobject::LibraryController {
         if !*self.big_box_locked() {
             return true;
         }
-        BigBoxInputAction::from_key(action_key.to_string().trim()).is_some_and(|action| {
-            self.rust()
-                .big_box_security_policy
-                .allows_input_action(action)
-        })
+        self.rust()
+            .big_box_security_policy
+            .allows_action_key(action_key.to_string().trim())
     }
 
     pub fn big_box_navigation_allowed_while_locked(&self, navigation_kind: QString) -> bool {
@@ -18720,6 +18840,69 @@ impl qobject::LibraryController {
                 .set_status_message(qstring(format!("Random selection: {title}")));
         }
         saturating_i32(row)
+    }
+
+    pub fn big_box_star_rating_at(&self, row: i32, game_id: QString) -> f64 {
+        let game_id = game_id.to_string();
+        self.filtered_game(row)
+            .filter(|game| game.id == game_id)
+            .map(|game| game.star_rating_float)
+            .unwrap_or_default()
+    }
+
+    pub fn update_big_box_game_state(
+        mut self: Pin<&mut Self>,
+        row: i32,
+        game_id: QString,
+        favorite: bool,
+        star_rating: f64,
+    ) -> bool {
+        if !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+        let (_, star_rating) = match normalize_big_box_star_rating(star_rating) {
+            Ok(rating) => rating,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not update BigBox game state: {error}."
+                )));
+                return false;
+            }
+        };
+        let game_id = game_id.to_string();
+        let Some((source, root)) = self.as_ref().edit_target(row, &game_id) else {
+            self.as_mut().set_status_message(qstring(
+                "The selected game no longer matches this model; reload and try again.",
+            ));
+            return false;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Saving BigBox favorite and star rating in the background...",
+        ));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("bigbox-game-state-write".to_string())
+            .spawn(move || {
+                let result = write_big_box_game_state(root, source, game_id, favorite, star_rating);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_big_box_game_state_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start BigBox game-state writer: {error}"
+            )));
+            return false;
+        }
+        true
     }
 
     pub fn save_game(mut self: Pin<&mut Self>, row: i32, game_id: QString, edit_payload: QString) {
@@ -21722,6 +21905,77 @@ impl qobject::LibraryController {
                 self.big_box_security_settings_revision(),
                 self.loading(),
                 self.writing()
+            );
+        }
+        success
+    }
+
+    pub fn report_big_box_game_actions_smoke_success(
+        &self,
+        initial_revision: i32,
+        game_id: QString,
+        favorite: bool,
+        star_rating: f64,
+        favorite_first_seen: bool,
+        popup_seen: bool,
+        blocked_favorite_seen: bool,
+    ) -> bool {
+        let game_id = game_id.to_string();
+        let game = self.rust().games.iter().find(|game| game.id == game_id);
+        let policy = self.rust().big_box_game_action_policy;
+        let security = &self.rust().big_box_security_policy;
+        let expected_revision = initial_revision.wrapping_add(2);
+        let game_matches = game.is_some_and(|game| {
+            !game.favorite
+                && !game.completed
+                && game.star_rating == 2
+                && (game.star_rating_float - 2.5).abs() <= 1.0e-9
+        });
+        let success = game_id == "fixture-adventure"
+            && !favorite
+            && (star_rating - 2.5).abs() <= 1.0e-9
+            && favorite_first_seen
+            && popup_seen
+            && blocked_favorite_seen
+            && policy.show_star_next_to_favorited_games
+            && policy.show_favorited_games_first
+            && policy.show_game_favorite
+            && policy.show_game_menu_favorite
+            && policy.show_game_menu_star_rating
+            && policy.show_game_star_rating
+            && security.permission_allowed(BigBoxSecurityPermission::SetStarRating)
+            && !security.permission_allowed(BigBoxSecurityPermission::FavoriteGames)
+            && self.rust().big_box_security_blocked_actions == 1
+            && self.rust().big_box_security_successful_unlocks == 1
+            && self.rust().big_box_security_failed_unlocks == 0
+            && self.rust().big_box_game_state_write_notifications == 2
+            && *self.big_box_game_state_revision() == expected_revision
+            && !*self.big_box_locked()
+            && game_matches
+            && !*self.loading()
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "BIGBOX_GAME_ACTIONS_SMOKE_COMPLETE game=fixture-adventure favorite=0 rating=2.5 integer=2 completed=0 favorite_first=1 popup=1 blocked=1 unlocks=1 writes=2 revision={}",
+                self.big_box_game_state_revision()
+            );
+        } else {
+            eprintln!(
+                "BIGBOX_GAME_ACTIONS_SMOKE_INCOMPLETE game={game_id} favorite={favorite} rating={star_rating} favorite_first={favorite_first_seen} popup={popup_seen} blocked={blocked_favorite_seen} policy={policy:?} security_rating={} security_favorite={} blocked_count={} unlocks={} failures={} writes={} initial_revision={initial_revision} revision={} locked={} game_matches={game_matches} loading={} writing={} conflict={} recovery={}",
+                security.permission_allowed(BigBoxSecurityPermission::SetStarRating),
+                security.permission_allowed(BigBoxSecurityPermission::FavoriteGames),
+                self.rust().big_box_security_blocked_actions,
+                self.rust().big_box_security_successful_unlocks,
+                self.rust().big_box_security_failed_unlocks,
+                self.rust().big_box_game_state_write_notifications,
+                self.big_box_game_state_revision(),
+                self.big_box_locked(),
+                self.loading(),
+                self.writing(),
+                self.write_conflict(),
+                self.pending_recovery_count()
             );
         }
         success
@@ -26196,6 +26450,7 @@ impl qobject::LibraryController {
                     big_box_platform_marquee_media: loaded.big_box_platform_marquee_media,
                     big_box_input_policy: loaded.big_box_input_policy,
                     big_box_security_policy: loaded.big_box_security_policy,
+                    big_box_game_action_policy: loaded.big_box_game_action_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     details_show_3d_model: loaded.details_show_3d_model,
                     big_box_show_game_menu_model: loaded.big_box_show_game_menu_model,
@@ -26719,6 +26974,81 @@ impl qobject::LibraryController {
                 )));
             }
         }
+    }
+
+    fn finish_big_box_game_state_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<BigBoxGameStateWriteSuccess, GameWriteFailure>,
+    ) {
+        if self.as_ref().rust().request_generation != generation {
+            self.as_mut().set_writing(false);
+            return;
+        }
+        match result {
+            Ok(written) => {
+                let actual_index = {
+                    let this = self.as_ref();
+                    let rust = this.rust();
+                    rust.games
+                        .iter()
+                        .zip(&rust.game_sources)
+                        .position(|(game, source)| {
+                            game.id == written.game.id && *source == written.source
+                        })
+                };
+                if let Some(actual_index) = actual_index {
+                    self.as_mut().rust_mut().games[actual_index] = written.game;
+                    self.as_mut()
+                        .rust_mut()
+                        .big_box_game_state_write_notifications = self
+                        .as_ref()
+                        .rust()
+                        .big_box_game_state_write_notifications
+                        .saturating_add(1);
+                    self.as_mut().refresh_big_box_screensaver_candidates();
+                    self.as_mut().refresh_filtered_games();
+                    let revision = self.as_ref().big_box_game_state_revision().wrapping_add(1);
+                    self.as_mut().set_big_box_game_state_revision(revision);
+                    self.as_mut().set_write_conflict(false);
+                    self.as_mut().set_status_message(qstring(format!(
+                        "Saved BigBox favorite and star rating. Exact backup: {}",
+                        written.backup.display()
+                    )));
+                } else {
+                    self.as_mut().set_status_message(qstring(
+                        "The saved game is no longer present in the loaded model; reload required.",
+                    ));
+                }
+            }
+            Err(GameWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(GameWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(GameWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save BigBox favorite/rating state: {message}"
+                )));
+            }
+            Err(GameWriteFailure::Referenced(references)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save BigBox favorite/rating state: {} dependent records were reported unexpectedly.",
+                    references.len()
+                )));
+            }
+        }
+        // Install the committed model state and revision before observers see
+        // the write complete.
+        self.as_mut().set_writing(false);
     }
 
     fn finish_game_write(
@@ -29929,6 +30259,15 @@ impl qobject::LibraryController {
                 .iter()
                 .position(|actual| {
                     let existing = &self.rust().games[*actual];
+                    if *self.frontend_is_big_box()
+                        && self
+                            .rust()
+                            .big_box_game_action_policy
+                            .show_favorited_games_first
+                        && game.favorite != existing.favorite
+                    {
+                        return game.favorite;
+                    }
                     compare_games(game, existing, &filter).is_lt()
                 })
                 .unwrap_or(self.rust().filtered_indices.len()),
@@ -30078,6 +30417,7 @@ impl qobject::LibraryController {
             big_box_platform_marquee_media,
             big_box_input_policy,
             big_box_security_policy,
+            big_box_game_action_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -30156,6 +30496,15 @@ impl qobject::LibraryController {
             saturating_i32(big_box_input_policy.unsupported_controller_rule_count);
         let big_box_pin_configured = big_box_security_policy.pin_configured();
         let big_box_show_game_lock_unlock = big_box_security_policy.show_game_lock_unlock;
+        let big_box_show_star_next_to_favorited_games =
+            big_box_game_action_policy.show_star_next_to_favorited_games;
+        let big_box_show_favorited_games_first =
+            big_box_game_action_policy.show_favorited_games_first;
+        let big_box_show_game_favorite = big_box_game_action_policy.show_game_favorite;
+        let big_box_show_game_menu_favorite = big_box_game_action_policy.show_game_menu_favorite;
+        let big_box_show_game_menu_star_rating =
+            big_box_game_action_policy.show_game_menu_star_rating;
+        let big_box_show_game_star_rating = big_box_game_action_policy.show_game_star_rating;
         let details_show_video = game_details_media_policy.show_video;
         let details_auto_play_video = game_details_media_policy.auto_play_video;
         let platform_counts = collect_platform_counts(&games, &platform_names);
@@ -30170,7 +30519,12 @@ impl qobject::LibraryController {
             sort_descending: game_sort_descending,
             ..GameFilter::default()
         };
-        let filtered_indices = filter_game_indices(&games, &initial_filter);
+        let mut filtered_indices = filter_game_indices(&games, &initial_filter);
+        if *self.as_ref().frontend_is_big_box()
+            && big_box_game_action_policy.show_favorited_games_first
+        {
+            prioritize_favorite_game_indices(&games, &mut filtered_indices);
+        }
         let filtered_count = saturating_i32(filtered_indices.len());
         self.as_mut().begin_reset_model();
         {
@@ -30208,6 +30562,7 @@ impl qobject::LibraryController {
             rust.big_box_platform_marquee_media = big_box_platform_marquee_media;
             rust.big_box_input_engine.set_policy(big_box_input_policy);
             rust.big_box_security_policy = big_box_security_policy;
+            rust.big_box_game_action_policy = big_box_game_action_policy;
             rust.big_box_screensaver_candidates = big_box_screensaver_candidates;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
@@ -30261,6 +30616,7 @@ impl qobject::LibraryController {
             rust.big_box_security_failed_unlocks = 0;
             rust.big_box_security_successful_unlocks = 0;
             rust.big_box_security_write_notifications = 0;
+            rust.big_box_game_state_write_notifications = 0;
             rust.delegated_session_completions = 0;
             rust.pending_shutdown_screen = None;
             rust.emulator_write_notifications = 0;
@@ -30350,6 +30706,22 @@ impl qobject::LibraryController {
             .wrapping_add(1);
         self.as_mut()
             .set_big_box_security_settings_revision(security_revision);
+        self.as_mut().set_big_box_show_star_next_to_favorited_games(
+            big_box_show_star_next_to_favorited_games,
+        );
+        self.as_mut()
+            .set_big_box_show_favorited_games_first(big_box_show_favorited_games_first);
+        self.as_mut()
+            .set_big_box_show_game_favorite(big_box_show_game_favorite);
+        self.as_mut()
+            .set_big_box_show_game_menu_favorite(big_box_show_game_menu_favorite);
+        self.as_mut()
+            .set_big_box_show_game_menu_star_rating(big_box_show_game_menu_star_rating);
+        self.as_mut()
+            .set_big_box_show_game_star_rating(big_box_show_game_star_rating);
+        let game_state_revision = self.as_ref().big_box_game_state_revision().wrapping_add(1);
+        self.as_mut()
+            .set_big_box_game_state_revision(game_state_revision);
         self.as_mut().set_startup_presentation_ready(true);
         let game_media_revision = self.as_ref().game_media_revision().wrapping_add(1);
         self.as_mut().set_game_media_revision(game_media_revision);
@@ -30616,6 +30988,11 @@ impl qobject::LibraryController {
                 } else {
                     indices.clear();
                 }
+            }
+            if *this.frontend_is_big_box()
+                && rust.big_box_game_action_policy.show_favorited_games_first
+            {
+                prioritize_favorite_game_indices(&rust.games, &mut indices);
             }
             indices
         };

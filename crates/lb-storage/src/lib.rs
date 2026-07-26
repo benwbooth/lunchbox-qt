@@ -4582,12 +4582,67 @@ impl PlatformDocument {
         game.favorite = favorite;
         game.completed = completed;
         game.star_rating = star_rating;
+        game.star_rating_float = f64::from(star_rating);
         game.validate()?;
 
         set_child_text(element, "Favorite", &favorite.to_string());
         set_child_text(element, "Completed", &completed.to_string());
         set_child_text(element, "StarRating", &star_rating.to_string());
+        set_child_text(
+            element,
+            "StarRatingFloat",
+            &game.star_rating_float.to_string(),
+        );
         Ok(())
+    }
+
+    /// Applies the game-state fields exposed by BigBox's favorite and
+    /// star-rating quick actions. LaunchBox persists both a floating half-star
+    /// value and its floored legacy integer companion.
+    pub fn set_big_box_game_state(
+        &mut self,
+        id: &str,
+        favorite: bool,
+        star_rating_float: f64,
+    ) -> Result<Game, StorageError> {
+        let scaled = star_rating_float * 2.0;
+        if !star_rating_float.is_finite()
+            || !(0.0..=5.0).contains(&star_rating_float)
+            || (scaled - scaled.round()).abs() > 1.0e-9
+        {
+            return Err(StorageError::InvalidGameRecordEdit {
+                record: "Game",
+                game_id: id.to_string(),
+                reason: "StarRatingFloat must be a half-star value from 0 to 5".into(),
+            });
+        }
+        let normalized = scaled.round() / 2.0;
+        let star_rating = normalized.floor() as u8;
+        let game_index = self
+            .library
+            .games
+            .iter()
+            .position(|game| game.id == id)
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+        let element = self
+            .root
+            .children
+            .iter_mut()
+            .filter_map(XMLNode::as_mut_element)
+            .filter(|element| element.name == "Game")
+            .find(|element| child_text(element, "ID").as_deref() == Some(id))
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+
+        let game = &mut self.library.games[game_index];
+        game.favorite = favorite;
+        game.star_rating = star_rating;
+        game.star_rating_float = normalized;
+        game.validate()?;
+
+        set_child_text(element, "Favorite", &favorite.to_string());
+        set_child_text(element, "StarRating", &star_rating.to_string());
+        set_child_text(element, "StarRatingFloat", &normalized.to_string());
+        Ok(game.clone())
     }
 
     /// Records the point at which a main game successfully starts. LaunchBox
@@ -9953,6 +10008,7 @@ mod tests {
         assert!(!game.favorite);
         assert!(game.completed);
         assert_eq!(game.star_rating, 2);
+        assert_eq!(game.star_rating_float, 2.0);
 
         let bytes = document.to_xml_bytes().expect("serialize fixture");
         let reparsed = PlatformDocument::from_reader("Fixture Console.xml", bytes.as_slice())
@@ -9966,6 +10022,7 @@ mod tests {
         assert!(!game.favorite);
         assert!(game.completed);
         assert_eq!(game.star_rating, 2);
+        assert_eq!(game.star_rating_float, 2.0);
         assert!(String::from_utf8(bytes)
             .expect("UTF-8 XML")
             .contains("<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>"));
@@ -9975,6 +10032,62 @@ mod tests {
             Err(StorageError::InvalidDomain(
                 ValidationError::InvalidStarRating { rating: 6, .. }
             ))
+        ));
+    }
+
+    #[test]
+    fn big_box_game_state_supports_half_stars_and_preserves_unrelated_xml() {
+        let mut document = PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes())
+            .expect("parse fixture");
+        let before = document
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "fixture-adventure")
+            .expect("fixture game");
+        assert!(before.favorite);
+        assert!(!before.completed);
+        assert_eq!(before.star_rating, 4);
+        assert_eq!(before.star_rating_float, 4.5);
+
+        let game = document
+            .set_big_box_game_state("fixture-adventure", false, 2.5)
+            .expect("edit BigBox game state");
+        assert!(!game.favorite);
+        assert!(!game.completed);
+        assert_eq!(game.star_rating, 2);
+        assert_eq!(game.star_rating_float, 2.5);
+
+        let bytes = document.to_xml_bytes().expect("serialize fixture");
+        let xml = String::from_utf8(bytes.clone()).expect("UTF-8 XML");
+        assert!(xml.contains("<Favorite>false</Favorite>"));
+        assert!(xml.contains("<StarRating>2</StarRating>"));
+        assert!(xml.contains("<StarRatingFloat>2.5</StarRatingFloat>"));
+        assert!(xml.contains("<Completed>false</Completed>"));
+        assert!(
+            xml.contains("<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>")
+        );
+
+        let reparsed = PlatformDocument::from_reader("Fixture Console.xml", bytes.as_slice())
+            .expect("reparse edited fixture");
+        let game = reparsed
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "fixture-adventure")
+            .expect("reparsed game");
+        assert!(!game.favorite);
+        assert!(!game.completed);
+        assert_eq!(game.star_rating, 2);
+        assert_eq!(game.star_rating_float, 2.5);
+
+        assert!(matches!(
+            document.set_big_box_game_state("fixture-adventure", true, 2.25),
+            Err(StorageError::InvalidGameRecordEdit { .. })
+        ));
+        assert!(matches!(
+            document.set_big_box_game_state("fixture-adventure", true, f64::NAN),
+            Err(StorageError::InvalidGameRecordEdit { .. })
         ));
     }
 

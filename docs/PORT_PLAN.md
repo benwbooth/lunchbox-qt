@@ -399,6 +399,30 @@ protected length rule is unavailable. Premium entitlement is deliberately not
 bypassed; permissions for features not yet ported and native Windows/macOS Qt
 interaction remain later parity work. The evidence boundary is recorded in
 `analysis/security-13.27.md`.
+
+The current `BB-017` slice implements native BigBox favorites and half-star
+ratings. A typed Rust policy owns the six recovered visibility/order settings,
+observed defaults, stable favorite-first projection, and finite 0-through-5
+half-star validation. The wheel, details, and game menu honor the independent
+settings, while the existing security policy maps the two actions to
+FavoriteGames and SetStarRating. A centered Qt popup follows the recovered
+faded/bright five-star structure and supports keyboard, mapped-controller, and
+pointer input.
+
+One platform-document transaction updates Favorite, legacy integer
+`StarRating`, and `StarRatingFloat` together, retains completion and unknown
+XML, records an exact backup, rereads the committed game, and publishes the
+model/revision before write completion. Pure tests cover settings, validation,
+ordering, lossless persistence, and permission mapping. A compiled Xvfb
+interaction starts locked, proves a denied Favorite action, renders the real
+4.5 popup, commits 2.5, unlocks, removes Favorite, and validates the exact
+original/intermediate backups plus final XML. The half-star increment is
+explicit port-owned policy because protected stepping behavior is unavailable.
+The shared path contains no runtime shell or OS-specific path/UI code.
+Playlists, discovery/random behavior, related games, custom-theme bindings, and
+native Windows/macOS Qt interaction remain later parity work. Evidence is in
+`analysis/game-actions-13.27.md`.
+
 The current `BB-012` slice recovers the complete 59-action BigBox input
 vocabulary, every action-specific zero/one/four keyboard-slot contract, the
 raw WPF key-number contract, gamepad enable/all-controller settings, all 46

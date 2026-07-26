@@ -40,6 +40,7 @@ diagnostics=$(
     apps/lb-shell/qml/BigBoxInputSettings.qml \
     apps/lb-shell/qml/BigBoxMarqueeSettings.qml \
     apps/lb-shell/qml/BigBoxPinPopup.qml \
+    apps/lb-shell/qml/BigBoxStarRatingPopup.qml \
     apps/lb-shell/qml/BigBoxSecuritySettings.qml \
     apps/lb-shell/qml/BigBoxMarqueeWindow.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
@@ -478,6 +479,104 @@ if find "$security_root" -type f \
 fi
 
 echo "BigBox native PIN keypad, startup lock, per-action and navigation gates, wrong/correct unlocks, rendered security editor, PIN replacement, 32-permission transaction, exact backup, redacted diagnostics, and immutable peer data validated."
+
+game_actions_root="$test_config_root/game-actions-library"
+mkdir -p "$game_actions_root"
+cp -a fixtures/launchbox/. "$game_actions_root/"
+game_actions_settings="$game_actions_root/Data/BigBoxSettings.xml"
+game_actions_platform="$game_actions_root/Data/Platforms/Fixture Console.xml"
+sed -i \
+  's#<AllowSettingStarRatingsWhileLocked>false</AllowSettingStarRatingsWhileLocked>#<AllowSettingStarRatingsWhileLocked>true</AllowSettingStarRatingsWhileLocked>#' \
+  "$game_actions_settings"
+sed -i \
+  '/<ShowGameLockUnlock>true<\/ShowGameLockUnlock>/a\    <LockPin>2580</LockPin>' \
+  "$game_actions_settings"
+game_actions_platform_before="$test_config_root/Fixture Console.before-game-actions.xml"
+game_actions_screenshot="$test_config_root/bigbox-star-rating.png"
+cp "$game_actions_platform" "$game_actions_platform_before"
+game_actions_immutable_manifest="$test_config_root/game-actions-immutable.before.sha256"
+(
+  cd "$game_actions_root"
+  find Data Images Metadata Music -type f \
+    ! -path 'Data/Platforms/Fixture Console.xml' -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$game_actions_immutable_manifest"
+output=$(run_software_rendered_smoke \
+  "$binary_dir/bigbox" \
+    --library "$game_actions_root" \
+    --bigbox-game-actions-smoke-test \
+    --bigbox-game-actions-screenshot "$game_actions_screenshot" \
+    --windowed \
+    --path-mappings-file "$empty_path_mappings" 2>&1) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_GAME_ACTIONS_SMOKE_COMPLETE game=fixture-adventure favorite=0 rating=2.5 integer=2 completed=0 favorite_first=1 popup=1 blocked=1 unlocks=1 writes=2 revision=' \
+  <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox did not complete its locked rating, unlock, and favorite transaction flow." >&2
+  exit 1
+fi
+if rg -q '2580' <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox game-action smoke exposed its PIN in runtime diagnostics." >&2
+  exit 1
+fi
+if ! rg -q -U \
+  '(?s)<Game>.*?<Completed>false</Completed>.*?<Favorite>false</Favorite>.*?<ID>fixture-adventure</ID>.*?<StarRating>2</StarRating>.*?<StarRatingFloat>2.5</StarRatingFloat>.*?<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>' \
+  "$game_actions_platform"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox did not persist the expected favorite, half-star, integer companion, completion, and unknown XML fields." >&2
+  exit 1
+fi
+game_actions_backups=(
+  "$game_actions_root"/Data/Platforms/Fixture\ Console.xml.lbport-transaction-backup-*
+)
+if [[ ${#game_actions_backups[@]} -ne 2 ]]; then
+  echo "BigBox game actions did not retain exactly two transaction backups." >&2
+  exit 1
+fi
+original_game_action_backups=0
+intermediate_game_action_backups=0
+for backup in "${game_actions_backups[@]}"; do
+  if cmp -s "$game_actions_platform_before" "$backup"; then
+    ((original_game_action_backups += 1))
+  fi
+  if rg -q -U \
+    '(?s)<Game>.*?<Completed>false</Completed>.*?<Favorite>true</Favorite>.*?<ID>fixture-adventure</ID>.*?<StarRating>2</StarRating>.*?<StarRatingFloat>2.5</StarRatingFloat>' \
+    "$backup"; then
+    ((intermediate_game_action_backups += 1))
+  fi
+done
+if ((original_game_action_backups != 1 \
+  || intermediate_game_action_backups != 1)); then
+  echo "BigBox game-action backups do not form the expected original-to-rating transaction chain." >&2
+  exit 1
+fi
+if [[ ! -s "$game_actions_screenshot" ]] \
+  || [[ $(wc -c < "$game_actions_screenshot") -lt 4096 ]]; then
+  echo "BigBox star-rating popup did not save a rendered screenshot." >&2
+  exit 1
+fi
+game_actions_colors=$(magick "$game_actions_screenshot" -format '%k' info:)
+if [[ ! "$game_actions_colors" =~ ^[0-9]+$ ]] \
+  || ((game_actions_colors < 48)); then
+  echo "BigBox star-rating screenshot is blank or insufficiently rendered ($game_actions_colors colors)." >&2
+  exit 1
+fi
+(
+  cd "$game_actions_root"
+  sha256sum --check "$game_actions_immutable_manifest"
+) >/dev/null
+if find "$game_actions_root" -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "BigBox game actions left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "BigBox recovered favorite/rating settings, favorite-first projection, locked permission gates, rendered half-star popup, two committed state transactions, exact backup chain, lossless XML, and immutable peer data validated."
 
 marquee_root="$test_config_root/marquee-library"
 mkdir -p "$marquee_root"

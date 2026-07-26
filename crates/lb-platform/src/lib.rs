@@ -1,6 +1,7 @@
 mod archive;
 mod attract;
 mod dosbox;
+mod engagement;
 mod input;
 mod m3u;
 mod media;
@@ -17,6 +18,10 @@ pub use archive::{
 };
 pub use attract::{BigBoxAttractModePolicy, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS};
 pub use dosbox::DosBoxPlanError;
+pub use engagement::{
+    normalize_big_box_star_rating, prioritize_favorite_game_indices, BigBoxGameActionPolicy,
+    BigBoxStarRatingError,
+};
 pub use input::{
     qt_key_to_wpf_key, qt_key_to_wpf_key_with_modifiers, wpf_key_to_qt_portable_text,
     BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy, ControllerBinding,
