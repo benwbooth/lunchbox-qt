@@ -40,9 +40,10 @@ acceleration function, filter-selection algorithm, or controller binding
 interpretation. The port therefore does not claim those details as recovered
 parity. It uses a documented 16-step symmetric native curve bounded by the
 persisted minimum/maximum intervals, switches only among non-empty navigation
-rows, supplies an explicit `A` shortcut until the general input-mapping family
-is implemented, and treats key, pointer-button, wheel, and the visible return
-control as exit input.
+rows, and treats key, pointer-button, wheel, and the visible return control as
+exit input. The subsequent `BB-012` vertical routes configured
+`BigBoxStartAttractMode` keyboard and controller bindings through the shared
+native dispatcher.
 
 ## Port boundary
 

@@ -36,6 +36,7 @@ diagnostics=$(
     apps/lb-shell/qml/BigBoxStartupPresentation.qml \
     apps/lb-shell/qml/BigBoxAttractMode.qml \
     apps/lb-shell/qml/BigBoxScreensaver.qml \
+    apps/lb-shell/qml/BigBoxInputRouter.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -257,6 +258,35 @@ for shell in launchbox bigbox; do
 done
 
 echo "LaunchBox and BigBox native-path front artwork indexing, URL delivery, decoding, and rendering validated without library writes."
+
+input_settings="$media_root/Data/BigBoxSettings.xml"
+input_bindings="$media_root/Data/InputBindings.xml"
+cp "$input_settings" "$input_settings.before-input-smoke"
+cp "$input_bindings" "$input_bindings.before-input-smoke"
+output=$(QT_QPA_PLATFORM=offscreen \
+  "$binary_dir/bigbox" \
+    --library "$media_root" \
+    --bigbox-input-smoke-test \
+    --windowed \
+    --path-mappings-file "$empty_path_mappings" 2>&1) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_INPUT_SMOKE_COMPLETE actions=59 keyboard_slots=4 .*controller_rules=18 select=1 back=1 navigation=2 images=1 image_back=1 final=fixture-adventure' \
+  <<< "$output"; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox did not route recovered keyboard and semantic controller input through its live surfaces." >&2
+  exit 1
+fi
+cmp "$input_settings.before-input-smoke" "$input_settings"
+cmp "$input_bindings.before-input-smoke" "$input_bindings"
+(
+  cd "$media_root"
+  sha256sum --check "$media_files_manifest"
+)
+
+echo "BigBox four-slot keyboard mappings, native gamepad boundary, semantic controller rules, distinct Select/Play actions, navigation, nested Back, and image entry validated without library writes."
 
 for shell in launchbox bigbox; do
   screenshot="$media_root/$shell-supplemental-media.png"

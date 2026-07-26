@@ -29,6 +29,7 @@ cxx-qt-lib = { version = "0.8.1", features = ["qt_full"] }
 encoding_rs = "0.8"
 flate2 = "1.1"
 fs2 = "0.4"
+gilrs = { version = "0.11.2", default-features = true }
 libc = "0.2"
 lb-domain = { path = "crates/lb-domain" }
 lb-import = { path = "crates/lb-import" }

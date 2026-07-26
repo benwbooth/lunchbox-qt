@@ -12,6 +12,7 @@ Item {
     property var activationCallback
     property bool blocked: false
     property bool mutedForSmoke: false
+    property real runtimeMasterVolumeScale: 1.0
     property bool active: false
     property string lastStartSource: ""
     property string lastStopReason: ""
@@ -298,6 +299,7 @@ Item {
                 1,
                 root.controller.big_box_screensaver_video_volume_percent
                 * root.controller.big_box_screensaver_master_volume_percent
+                * root.runtimeMasterVolumeScale
                 / 10000))
     }
 
@@ -534,7 +536,7 @@ Item {
                 spacing: 12
 
                 Label {
-                    text: "PRESS ENTER TO EXPLORE"
+                    text: "PRESS SELECT OR PLAY TO EXPLORE"
                     color: "#d8e5f3"
                     font.pixelSize: 14
                     font.bold: true

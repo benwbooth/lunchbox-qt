@@ -786,6 +786,22 @@ bodies still conceal exact random rounding/order, transition details, and
 input-binding interpretation. The evidence and port boundary are recorded in
 `analysis/screensaver-13.27.md`.
 
+Three fresh 13.27 installations also agree on the complete persisted BigBox
+input contract. `BigBoxSettings.xml` stores `EnableGamepad`,
+`UseAllControllers`, and normally four WPF `Key` integer slots per configurable
+action. The nonzero defaults cover four directions, Select, Back, Play,
+PageUp/PageDown, Flip, Music, Images, Exit, volume, and PDF zoom. Zero is
+unbound. The structural extraction retains 59 BigBox `InputAction` values and
+`ControllerBinding` values for `Button1` through `Button32`, D-pad, both
+sticks, and both triggers. Each `InputBindings.xml` contains 36 rules, exactly
+18 of which are the shared fresh-install BigBox defaults; rules also have an
+optional hold binding. These independent files establish action names,
+keyboard slots, semantic controller rules, and chords without relying on
+protected method bodies. They do not establish device-specific mapping for
+the high numbered buttons or the exact original active-controller algorithm.
+The complete evidence and native port boundary are recorded in
+`analysis/input-13.27.md`.
+
 ## Protection boundary
 
 The assemblies are not ordinary unobfuscated .NET applications:

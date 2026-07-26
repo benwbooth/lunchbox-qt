@@ -80,7 +80,7 @@
             xvfb-run
           ];
 
-        buildInputs = qtModules ++ [ pkgs.libGL ];
+        buildInputs = qtModules ++ [ pkgs.libGL ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ];
 
         cargoWrapped = pkgs.writeShellScriptBin "cargo" ''
           export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"

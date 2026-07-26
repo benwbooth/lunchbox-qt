@@ -10783,9 +10783,9 @@ mod tests {
                 AuxiliaryDocumentKind::InputBindings => document.set_record_field(
                     "InputBinding",
                     "InputAction",
-                    "Play",
+                    "BigBoxPlayGame",
                     "ControllerBinding",
-                    "ButtonB",
+                    "Button7",
                 ),
                 AuxiliaryDocumentKind::ImportBlacklist => document.set_record_field(
                     "IgnoredGameId",

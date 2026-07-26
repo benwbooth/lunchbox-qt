@@ -1034,7 +1034,7 @@ mod tests {
 
         assert_eq!(index.parents().len(), 2);
         assert_eq!(index.game_controllers().len(), 1);
-        assert_eq!(index.input_bindings().len(), 1);
+        assert_eq!(index.input_bindings().len(), 18);
         assert_eq!(index.ignored_game_ids(), &["fixture-ignored-game"]);
         assert_eq!(index.list_cache().len(), 1);
     }
@@ -1106,7 +1106,7 @@ mod tests {
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 50);
+        assert_eq!(big_box.entries.len(), 60);
         assert_eq!(big_box.get_bool("EnableScreensaver"), Some(true));
         assert_eq!(big_box.get_i64("ScreensaverDelay"), Some(300));
         assert_eq!(big_box.get_i64("ScreensaverMinimumSwapTime"), Some(30_000));

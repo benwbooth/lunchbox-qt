@@ -149,9 +149,10 @@ media tree without writes.
 
 BigBox exposes the same stable-ID media collection through a dedicated
 full-screen game-details layer, matching the stock theme's separate image,
-image/video, and details presenters. Select **Details** or press `D`, then use
-left/right to wrap through media, Space to play or pause, Enter to launch, and
-Escape to return to the game wheel. The screen includes selectable thumbnails,
+image/video, and details presenters. Select **Details** or use mapped Select,
+then use mapped left/right to wrap through media, Select to play or pause,
+Play Game to launch, and Back to return to the game wheel. The screen includes
+selectable thumbnails,
 one active Qt Multimedia player, previous/next and mute controls, local and
 community ratings, play statistics, metadata, and notes. Playback stops when
 the layer closes, and recycled game delegates never own a media player. Its
@@ -162,7 +163,8 @@ closes through Back, proves the player stops, and verifies every media and
 library byte remains unchanged.
 
 BigBox now also exposes the recovered image-only path independently of video.
-Select **Images**, press `I`, or choose **View Image** from an image in Details.
+Select **Images**, use mapped Show Images (whose recovered default is `I`), or
+choose **View Image** from an image in Details.
 Previous/Next, Page Up/Down, and Enter switch among the indexed image families;
 `+`, `-`, and `0` zoom or return to fit, while the mouse wheel, drag, arrows,
 and visible controls zoom and pan. Because the protected 13.27 implementation
@@ -193,7 +195,8 @@ after.
 
 Both frontends now share one typed Qt Quick 3D model preview.
 LaunchBox opens it from the settings-gated **3D Model** Details action or `M`;
-BigBox uses its settings-gated game-menu action or `M`. Distinct safely indexed
+BigBox uses its settings-gated game-menu action or mapped Show Model. Distinct
+safely indexed
 front, back, spine, and `Box - Full` files feed six real faces. When the
 resolved setting enables full scans, the viewer uses the recovered spine-width
 ratio to crop the observed back-spine-front scan layout into the three visible
@@ -537,7 +540,7 @@ and combines the separate attract navigation/master volumes. Compiled enabled
 and disabled scenarios prove automatic and manual entry, wheel/filter changes,
 decoded sound, volume, actual return/input controls, rendered UI, and immutable
 library data. The protected product's exact curve, filter algorithm, and
-binding interpretation remain explicitly open rather than being inferred.
+view-switch behavior remain explicitly open rather than being inferred.
 
 The first native BigBox screensaver subset recovers the four 13.27 presentation
 families and all nine persisted screensaver/video settings into a typed Rust
@@ -552,8 +555,21 @@ the wheel. Video and master volume are composed without a helper process or
 runtime shell. Compiled enabled and disabled scenarios exercise automatic and
 manual entry, all four rendered views, genuine H.264 playback, swaps,
 return/explore actions, and immutable settings/media. Exact protected random
-rounding, transitions, controller mapping, custom-theme fidelity, and native
+rounding, transitions, custom-theme fidelity, and native
 Windows/macOS Qt Multimedia execution remain explicit parity gates.
+
+The first native BigBox input subset reads the recovered 59-action vocabulary,
+four keyboard slots, WPF key integers, gamepad enable/all-controller policy,
+hold chords, and 18 default controller rules directly from LaunchBox XML.
+Typed Rust converts persisted Windows key values into Qt portable sequences
+and routes semantic controller events from native Linux, Windows, and macOS
+`gilrs` backends into one central QML dispatcher. There are no scan codes,
+platform device paths, shell commands, or OS API handles in QML. Pure tests
+freeze the full contract, and a compiled offscreen scenario drives Select,
+Back, D-pad, and Images through CXX-Qt to exercise real details, wheel, and
+image-view transitions. Windows and both macOS architecture targets compile
+the backend; native physical-device/application interaction remains a
+real-host release gate.
 
 LaunchBox also has a three-page manual ROM importer backed by the reusable
 `lb-import` crate. It accepts multiple native files and folders, optional

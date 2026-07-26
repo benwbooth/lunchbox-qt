@@ -51,8 +51,9 @@ The protected 13.27 implementation does not expose its exact random-number
 rounding, candidate ordering, transition implementation, or controller-binding
 interpretation. The port therefore keeps those points explicit: inclusive
 deterministic entropy injection in Rust, stable-ID candidates in library order,
-native Qt transitions, and a visible manual action until the general input
-mapping family is implemented.
+and native Qt transitions. The subsequent `BB-012` vertical routes configured
+`BigBoxStartScreensaver`, Select/Play, and Back bindings through the shared
+native dispatcher.
 
 ## Port boundary
 

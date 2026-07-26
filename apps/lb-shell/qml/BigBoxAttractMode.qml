@@ -12,6 +12,7 @@ Item {
     property var focusReturnCallback
     property bool blocked: false
     property bool mutedForSmoke: false
+    property real runtimeMasterVolumeScale: 1.0
     property bool active: false
     property string phase: "idle"
     property string lastStartSource: ""
@@ -218,6 +219,7 @@ Item {
                     .big_box_attract_mode_navigation_sound_volume_percent
                 * root.controller
                   .big_box_attract_mode_master_volume_percent
+                * root.runtimeMasterVolumeScale
                 / 10000))
     }
 

@@ -277,13 +277,14 @@ large or hostile libraries isolated. Pure tests and compiled offscreen
 SVG/H.264 decode, selection, autoplay, play/pause, actual-thumbnail, and
 rendered-gallery scenarios cover both frontends without media writes. BigBox's
 first three `BB-004` subsets follow the stock theme's separate image,
-image/video, and game-details presenters: `D`/Details opens one full-screen
-stable-ID layer outside recycled delegates; left/right or Previous/Next wraps
-the collection, Space/play-pause and mute control video, Enter launches, and
-Back/Escape stops playback and returns to the game wheel. A metadata/notes
-column accompanies the media. `I`, the real Images button, or View Image from
-details opens a second image-only full-screen surface over the same bounded
-native-URL index. Previous/next, Enter, and page actions switch image types;
+image/video, and game-details presenters: Details or mapped Select opens one
+full-screen stable-ID layer outside recycled delegates; mapped left/right or
+Previous/Next wraps the collection; Select/play-pause and mute control video;
+the distinct Play Game action launches; and mapped Back stops playback and
+returns to the game wheel. A metadata/notes column accompanies the media.
+Mapped Show Images, the real Images button, or View Image from details opens a
+second image-only full-screen surface over the same bounded native-URL index.
+Previous/next, Select, and page actions switch image types;
 the explicit port policy clamps zoom to 100–400% in 25% increments, resets fit
 and pan on type changes, and supports wheel, mouse drag, directional keys, and
 visible pan/zoom controls. Back returns to details when nested or to the wheel
@@ -371,6 +372,23 @@ bounded swaps, disabled-auto behavior, stable selection, and whole-tree
 immutability. Exact protected random rounding, transition/controller-binding
 behavior, custom themes, and native Windows/macOS multimedia remain later
 parity work.
+The current `BB-012` slice recovers the complete 59-action BigBox input
+vocabulary, every observed keyboard setting and four-slot convention, the WPF
+key-number contract, gamepad enable/all-controller settings, hold chords, and
+the exact 18 default controller rules. A typed `lb-platform` policy converts
+persisted Windows key values into Qt portable sequences, groups duplicate
+sequences, validates configured semantic rules, owns press edges and
+controller-selection state, and feeds one central QML action dispatcher.
+Native `gilrs` backends provide hot-plugged Linux, Windows, and macOS gamepad
+events without a runtime helper shell or OS-specific device path in QML.
+Ten pure tests plus one compiled offscreen interaction prove the recovered
+contract and actual details, back, wheel-navigation, and image-view routes.
+The Windows and both Darwin cross-target gates compile the backend. Binding
+editors, keyboard automation/mouse options, raw high-button device mappings,
+global input while a game owns focus, and real-device/native Qt validation on
+Windows and both macOS architectures remain later parity work. The evidence
+and deliberate device-mapping boundary are recorded in
+`analysis/input-13.27.md`.
 The current `DESK-004`/`BB-004` media vertical adds settings-prioritized box
 backs and one shared front/back Qt presenter to the LaunchBox grid and BigBox
 wheel. The exact recovered back priority is applied at the native-path index

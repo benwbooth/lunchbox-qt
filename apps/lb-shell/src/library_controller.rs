@@ -130,6 +130,13 @@ pub mod qobject {
         #[qproperty(i32, big_box_screensaver_video_volume_percent)]
         #[qproperty(i32, big_box_screensaver_master_volume_percent)]
         #[qproperty(i32, big_box_screensaver_candidate_count)]
+        #[qproperty(bool, big_box_gamepad_enabled)]
+        #[qproperty(bool, big_box_use_all_controllers)]
+        #[qproperty(i32, big_box_gamepad_connected_count)]
+        #[qproperty(QString, big_box_gamepad_status)]
+        #[qproperty(i32, big_box_controller_rule_count)]
+        #[qproperty(i32, big_box_unsupported_controller_rule_count)]
+        #[qproperty(i32, big_box_input_revision)]
         #[qproperty(bool, big_box_show_game_menu_flip_box)]
         #[qproperty(bool, big_box_show_game_menu_model)]
         #[qproperty(i32, filtered_count)]
@@ -313,6 +320,26 @@ pub mod qobject {
 
         #[qinvokable]
         fn big_box_attract_mode_wheel_interval_ms(self: &LibraryController, step: i32) -> i32;
+
+        #[qinvokable]
+        fn big_box_keyboard_binding_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn big_box_keyboard_sequence_at(self: &LibraryController, binding_index: i32) -> QString;
+
+        #[qinvokable]
+        fn big_box_keyboard_actions_at(self: &LibraryController, binding_index: i32) -> QString;
+
+        #[qinvokable]
+        fn poll_big_box_gamepad_action(self: Pin<&mut LibraryController>) -> QString;
+
+        #[qinvokable]
+        fn submit_big_box_controller_event(
+            self: Pin<&mut LibraryController>,
+            device_id: i32,
+            binding: QString,
+            pressed: bool,
+        ) -> bool;
 
         #[qinvokable]
         fn select_big_box_screensaver_candidate(
@@ -1013,6 +1040,17 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_big_box_input_smoke_success(
+            self: &LibraryController,
+            select_count: i32,
+            back_count: i32,
+            navigation_count: i32,
+            image_open_count: i32,
+            image_back_count: i32,
+            final_game_id: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_big_box_screensaver_smoke_success(
             self: &LibraryController,
             expected_enabled: bool,
@@ -1560,12 +1598,13 @@ use lb_platform::{
     project_big_box_screensaver_candidates,
     select_big_box_screensaver_candidate as select_screensaver_candidate_index,
     select_emulator_for_game, ArchiveExtractor, BigBoxAttractModePolicy,
-    BigBoxBackgroundMusicPolicy, BigBoxMusicPolicy, BigBoxScreensaverCandidate,
-    BigBoxScreensaverPolicy, BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy,
+    BigBoxBackgroundMusicPolicy, BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy,
+    BigBoxMusicPolicy, BigBoxScreensaverCandidate, BigBoxScreensaverPolicy,
+    BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, ControllerBinding,
     FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy, GameDetailsMediaPolicy,
-    GameDetailsWindowState, GameMediaItem, GameMediaKind, HostPathMappings, HostPathResolver,
-    LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand, LaunchKind,
-    LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
+    GameDetailsWindowState, GameMediaItem, GameMediaKind, GamepadInputEvent, HostPathMappings,
+    HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
+    LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
     LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
     ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS,
 };
@@ -1872,6 +1911,13 @@ pub struct LibraryControllerRust {
     big_box_screensaver_video_volume_percent: i32,
     big_box_screensaver_master_volume_percent: i32,
     big_box_screensaver_candidate_count: i32,
+    big_box_gamepad_enabled: bool,
+    big_box_use_all_controllers: bool,
+    big_box_gamepad_connected_count: i32,
+    big_box_gamepad_status: QString,
+    big_box_controller_rule_count: i32,
+    big_box_unsupported_controller_rule_count: i32,
+    big_box_input_revision: i32,
     big_box_show_game_menu_flip_box: bool,
     big_box_show_game_menu_model: bool,
     filtered_count: i32,
@@ -1952,6 +1998,7 @@ pub struct LibraryControllerRust {
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_attract_mode_policy: BigBoxAttractModePolicy,
     big_box_screensaver_policy: BigBoxScreensaverPolicy,
+    big_box_input_engine: BigBoxInputEngine,
     big_box_screensaver_candidates: Vec<BigBoxScreensaverCandidate>,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
@@ -2093,6 +2140,7 @@ struct LoadedLibrary {
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_attract_mode_policy: BigBoxAttractModePolicy,
     big_box_screensaver_policy: BigBoxScreensaverPolicy,
+    big_box_input_policy: BigBoxInputPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2143,6 +2191,7 @@ struct LibraryReplacement {
     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_attract_mode_policy: BigBoxAttractModePolicy,
     big_box_screensaver_policy: BigBoxScreensaverPolicy,
+    big_box_input_policy: BigBoxInputPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2237,6 +2286,7 @@ impl LoadedLibrary {
                 big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
                 big_box_attract_mode_policy: BigBoxAttractModePolicy::default(),
                 big_box_screensaver_policy: BigBoxScreensaverPolicy::default(),
+                big_box_input_policy: BigBoxInputPolicy::default(),
                 big_box_show_game_menu_flip_box: true,
                 details_show_3d_model: true,
                 big_box_show_game_menu_model: true,
@@ -2381,6 +2431,8 @@ impl LoadedLibrary {
             BigBoxAttractModePolicy::from_settings(data.big_box_settings());
         let big_box_screensaver_policy =
             BigBoxScreensaverPolicy::from_settings(data.big_box_settings());
+        let big_box_input_policy =
+            BigBoxInputPolicy::from_settings(data.big_box_settings(), data.input_bindings());
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
@@ -2447,6 +2499,7 @@ impl LoadedLibrary {
             big_box_startup_presentation_policy,
             big_box_attract_mode_policy,
             big_box_screensaver_policy,
+            big_box_input_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -16235,6 +16288,7 @@ impl qobject::LibraryController {
                     big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
                     big_box_attract_mode_policy: BigBoxAttractModePolicy::default(),
                     big_box_screensaver_policy: BigBoxScreensaverPolicy::default(),
+                    big_box_input_policy: BigBoxInputPolicy::default(),
                     big_box_show_game_menu_flip_box: true,
                     details_show_3d_model: true,
                     big_box_show_game_menu_model: true,
@@ -16563,6 +16617,98 @@ impl qobject::LibraryController {
                 .big_box_attract_mode_policy
                 .wheel_interval_ms(step) as usize,
         )
+    }
+
+    pub fn big_box_keyboard_binding_count(&self) -> i32 {
+        saturating_i32(
+            self.rust()
+                .big_box_input_engine
+                .policy()
+                .keyboard_bindings()
+                .len(),
+        )
+    }
+
+    pub fn big_box_keyboard_sequence_at(&self, binding_index: i32) -> QString {
+        let Ok(binding_index) = usize::try_from(binding_index) else {
+            return QString::default();
+        };
+        self.rust()
+            .big_box_input_engine
+            .policy()
+            .keyboard_bindings()
+            .get(binding_index)
+            .map(|(sequence, _)| qstring(sequence))
+            .unwrap_or_default()
+    }
+
+    pub fn big_box_keyboard_actions_at(&self, binding_index: i32) -> QString {
+        let Ok(binding_index) = usize::try_from(binding_index) else {
+            return QString::default();
+        };
+        self.rust()
+            .big_box_input_engine
+            .policy()
+            .keyboard_bindings()
+            .get(binding_index)
+            .map(|(_, actions)| {
+                qstring(
+                    actions
+                        .iter()
+                        .map(|action| action.key())
+                        .collect::<Vec<_>>()
+                        .join("|"),
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn poll_big_box_gamepad_action(mut self: Pin<&mut Self>) -> QString {
+        let (action, status, connected_count) = {
+            let engine = &mut self.as_mut().rust_mut().big_box_input_engine;
+            let action = engine.poll_action();
+            (
+                action,
+                engine.backend_status().label(),
+                engine.connected_gamepad_count(),
+            )
+        };
+        let connected_count = saturating_i32(connected_count);
+        if *self.as_ref().big_box_gamepad_connected_count() != connected_count {
+            self.as_mut()
+                .set_big_box_gamepad_connected_count(connected_count);
+        }
+        if self.as_ref().big_box_gamepad_status().to_string() != status {
+            self.as_mut().set_big_box_gamepad_status(qstring(status));
+        }
+        action
+            .map(BigBoxInputAction::key)
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn submit_big_box_controller_event(
+        mut self: Pin<&mut Self>,
+        device_id: i32,
+        binding: QString,
+        pressed: bool,
+    ) -> bool {
+        let Ok(device_id) = u64::try_from(device_id) else {
+            return false;
+        };
+        let Some(binding) = ControllerBinding::parse(binding.to_string().trim()) else {
+            return false;
+        };
+        let event = if pressed {
+            GamepadInputEvent::Pressed { device_id, binding }
+        } else {
+            GamepadInputEvent::Released { device_id, binding }
+        };
+        self.as_mut()
+            .rust_mut()
+            .big_box_input_engine
+            .submit_semantic_event(event);
+        true
     }
 
     pub fn select_big_box_screensaver_candidate(
@@ -20010,6 +20156,67 @@ impl qobject::LibraryController {
             let enabled = u8::from(expected_enabled);
             eprintln!(
                 "BIGBOX_ATTRACT_MODE_SMOKE_COMPLETE enabled={enabled} wheel_steps={wheel_steps} movement_cycles={movement_cycles} filter_switches={filter_switches} auto_delay_ms={automatic_delay_elapsed_ms} manual=1 input_exit={input_stop_count} sounds=2 sound=wav volume=20 curve=80-20-80"
+            );
+        }
+        success
+    }
+
+    pub fn report_big_box_input_smoke_success(
+        &self,
+        select_count: i32,
+        back_count: i32,
+        navigation_count: i32,
+        image_open_count: i32,
+        image_back_count: i32,
+        final_game_id: QString,
+    ) -> bool {
+        let policy = self.rust().big_box_input_engine.policy();
+        let success = policy.gamepad_enabled
+            && !policy.use_all_controllers
+            && policy.controller_rule_count() == 18
+            && policy.unsupported_controller_rule_count == 0
+            && policy.keyboard_sequence(BigBoxInputAction::Select, 0) == Some("Return")
+            && policy.keyboard_sequence(BigBoxInputAction::Select, 1) == Some("A")
+            && policy.keyboard_sequence(BigBoxInputAction::Back, 0) == Some("Esc")
+            && policy.keyboard_sequence(BigBoxInputAction::PlayGame, 0) == Some("P")
+            && policy.keyboard_sequence(BigBoxInputAction::FlipBox, 0) == Some("F")
+            && policy.keyboard_sequence(BigBoxInputAction::ShowImages, 0) == Some("I")
+            && policy.keyboard_sequence(BigBoxInputAction::StartAttractMode, 0) == Some("U")
+            && policy.keyboard_sequence(BigBoxInputAction::RandomGame, 0) == Some("R")
+            && policy.keyboard_sequence(BigBoxInputAction::StartScreensaver, 0) == Some("V")
+            && *self.big_box_gamepad_enabled()
+            && !*self.big_box_use_all_controllers()
+            && *self.big_box_controller_rule_count() == 18
+            && *self.big_box_unsupported_controller_rule_count() == 0
+            && *self.big_box_input_revision() > 0
+            && self.big_box_keyboard_binding_count() >= 20
+            && select_count == 1
+            && back_count == 1
+            && navigation_count == 2
+            && image_open_count == 1
+            && image_back_count == 1
+            && final_game_id.to_string() == "fixture-adventure"
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            eprintln!(
+                "BIGBOX_INPUT_SMOKE_COMPLETE actions=59 keyboard_slots=4 keyboard_bindings={} controller_rules=18 select=1 back=1 navigation=2 images=1 image_back=1 final=fixture-adventure backend={}",
+                self.big_box_keyboard_binding_count(),
+                self.big_box_gamepad_status()
+            );
+        } else {
+            eprintln!(
+                "BIGBOX_INPUT_SMOKE_INCOMPLETE select={select_count} back={back_count} navigation={navigation_count} images={image_open_count} image_back={image_back_count} final={} enabled={} all_controllers={} keyboard_bindings={} controller_rules={} unsupported={} revision={} loading={} writing={} backend={}",
+                final_game_id.to_string(),
+                self.big_box_gamepad_enabled(),
+                self.big_box_use_all_controllers(),
+                self.big_box_keyboard_binding_count(),
+                self.big_box_controller_rule_count(),
+                self.big_box_unsupported_controller_rule_count(),
+                self.big_box_input_revision(),
+                self.loading(),
+                self.writing(),
+                self.big_box_gamepad_status()
             );
         }
         success
@@ -24428,6 +24635,7 @@ impl qobject::LibraryController {
                     big_box_startup_presentation_policy: loaded.big_box_startup_presentation_policy,
                     big_box_attract_mode_policy: loaded.big_box_attract_mode_policy,
                     big_box_screensaver_policy: loaded.big_box_screensaver_policy,
+                    big_box_input_policy: loaded.big_box_input_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     details_show_3d_model: loaded.details_show_3d_model,
                     big_box_show_game_menu_model: loaded.big_box_show_game_menu_model,
@@ -28124,6 +28332,7 @@ impl qobject::LibraryController {
             big_box_startup_presentation_policy,
             big_box_attract_mode_policy,
             big_box_screensaver_policy,
+            big_box_input_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -28187,6 +28396,12 @@ impl qobject::LibraryController {
         );
         let big_box_screensaver_candidate_count =
             saturating_i32(big_box_screensaver_candidates.len());
+        let big_box_gamepad_enabled = big_box_input_policy.gamepad_enabled;
+        let big_box_use_all_controllers = big_box_input_policy.use_all_controllers;
+        let big_box_controller_rule_count =
+            saturating_i32(big_box_input_policy.controller_rule_count());
+        let big_box_unsupported_controller_rule_count =
+            saturating_i32(big_box_input_policy.unsupported_controller_rule_count);
         let details_show_video = game_details_media_policy.show_video;
         let details_auto_play_video = game_details_media_policy.auto_play_video;
         let platform_counts = collect_platform_counts(&games, &platform_names);
@@ -28235,6 +28450,7 @@ impl qobject::LibraryController {
             rust.big_box_startup_presentation_policy = big_box_startup_presentation_policy;
             rust.big_box_attract_mode_policy = big_box_attract_mode_policy;
             rust.big_box_screensaver_policy = big_box_screensaver_policy;
+            rust.big_box_input_engine.set_policy(big_box_input_policy);
             rust.big_box_screensaver_candidates = big_box_screensaver_candidates;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
@@ -28346,6 +28562,21 @@ impl qobject::LibraryController {
             .set_indexed_startup_sound_count(indexed_startup_sound_count);
         self.as_mut()
             .set_indexed_attract_move_sound_count(indexed_attract_move_sound_count);
+        self.as_mut()
+            .set_big_box_gamepad_enabled(big_box_gamepad_enabled);
+        self.as_mut()
+            .set_big_box_use_all_controllers(big_box_use_all_controllers);
+        self.as_mut().set_big_box_gamepad_connected_count(0);
+        self.as_mut()
+            .set_big_box_gamepad_status(qstring("Not initialized"));
+        self.as_mut()
+            .set_big_box_controller_rule_count(big_box_controller_rule_count);
+        self.as_mut().set_big_box_unsupported_controller_rule_count(
+            big_box_unsupported_controller_rule_count,
+        );
+        let big_box_input_revision = self.as_ref().big_box_input_revision().wrapping_add(1);
+        self.as_mut()
+            .set_big_box_input_revision(big_box_input_revision);
         self.as_mut().set_startup_presentation_ready(true);
         let game_media_revision = self.as_ref().game_media_revision().wrapping_add(1);
         self.as_mut().set_game_media_revision(game_media_revision);

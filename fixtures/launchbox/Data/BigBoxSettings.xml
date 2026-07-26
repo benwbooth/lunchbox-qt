@@ -50,6 +50,16 @@
     <PlayVideoAudioWithBackgroundMusic>false</PlayVideoAudioWithBackgroundMusic>
     <ShowGameMenuFlipBox>true</ShowGameMenuFlipBox>
     <ShowGameMenuViewModelFullscreen>true</ShowGameMenuViewModelFullscreen>
+    <EnableGamepad>true</EnableGamepad>
+    <UseAllControllers>false</UseAllControllers>
+    <KeyboardSelect>6</KeyboardSelect>
+    <KeyboardSelect2>44</KeyboardSelect2>
+    <KeyboardBack>13</KeyboardBack>
+    <KeyboardPlay>59</KeyboardPlay>
     <KeyboardFlipBox>49</KeyboardFlipBox>
+    <KeyboardViewImages>52</KeyboardViewImages>
+    <KeyboardStartAttractMode>64</KeyboardStartAttractMode>
+    <KeyboardSelectRandomGame>61</KeyboardSelectRandomGame>
+    <KeyboardStartScreensaver>65</KeyboardStartScreensaver>
   </BigBoxSettings>
 </LaunchBox>

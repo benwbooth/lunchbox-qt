@@ -1,6 +1,7 @@
 mod archive;
 mod attract;
 mod dosbox;
+mod input;
 mod m3u;
 mod media;
 mod model_viewer_state;
@@ -15,6 +16,10 @@ pub use archive::{
 };
 pub use attract::{BigBoxAttractModePolicy, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS};
 pub use dosbox::DosBoxPlanError;
+pub use input::{
+    wpf_key_to_qt_portable_text, BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy,
+    ControllerBinding, GamepadBackendStatus, GamepadInputEvent, BIG_BOX_INPUT_ACTIONS,
+};
 pub use m3u::M3uPreparationError;
 pub use media::{
     background_music_context_key, front_image_type_priorities, index_big_box_startup_presentation,
