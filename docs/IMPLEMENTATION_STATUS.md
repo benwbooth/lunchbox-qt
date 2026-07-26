@@ -320,7 +320,8 @@ recovered 13.27 contract and a synthetic fixture.
   With selection, additional applications,
   and priority-ordered automatic before/after hooks now work in both shells;
   the recovered LaunchBox 3.1 contract supplies the 30-second before-app wait
-  ceiling, but current Wine limitations prevent 13.27 oracle verification.
+  ceiling, but those scenarios have not yet been verified against the repaired,
+  slow-starting 13.27 Wine desktop oracle.
   PlayCount and LastPlayed now commit when the directly spawned primary child
   starts; PlayTime adds the supervised session's elapsed whole seconds after
   exit for both main games and selected additional applications. This matches
@@ -332,9 +333,12 @@ recovered 13.27 contract and a synthetic fixture.
   pause scripts/global input/audio/fade/timing exclusion, remaining save workflows, controller
   behavior, and the remaining emulator-specific adapters remain unimplemented.
 - Runtime visual/behavior parity against licensed LaunchBox and premium BigBox
-  has not been established. Wine installed 13.27 and now runs limited
-  managed-code probes for selected protected contracts, including
-  `ModelSettings`, but it does not provide a reliable complete WPF UI oracle.
+  has not been established. A reversible UI Automation replacement now lets
+  Wine paint the complete LaunchBox 13.27 desktop after a repeatable
+  approximately 60-second focus timeout, in addition to running selected
+  managed probes. Licensed BigBox loads the real 35,869-game data snapshot,
+  but its pure-WPF window remains black; exact BigBox visual and interaction
+  parity still needs a supported Windows runtime.
 
 ## Next implementation gate
 

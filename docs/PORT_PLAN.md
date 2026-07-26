@@ -837,7 +837,8 @@ The next milestone is
 to close the remaining
 Phase 0/1 evidence and product-safety gates:
 
-1. Make the 13.27 oracle run in a supported Windows VM if Wine remains blocked.
+1. Run the 13.27 BigBox oracle in a supported Windows VM; the repaired Wine
+   prefix now paints LaunchBox but still cannot paint BigBox's WPF surface.
 2. Capture first-run and edit/import/launch diffs for the fixture.
 3. Convert the first ten critical runtime scenarios into structured fixtures
    and map them to feature-matrix IDs.

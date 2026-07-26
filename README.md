@@ -7,11 +7,17 @@ cross-platform LaunchBox-compatible front end built with Rust, Qt 6, QML, and
 The local LaunchBox 13.27 Windows oracle has been installed with Wine and all
 first-party managed assemblies have been structurally decompiled. The original
 installation and decompiled proprietary sources are intentionally ignored;
-derived inventories and specifications live in this repository.
+derived inventories and specifications live in this repository. A reversible
+native UI Automation replacement now lets the real LaunchBox desktop render
+under Wine after a 60-second focus timeout. BigBox loads a licensed real
+library but still paints black because of a separate WPF render-thread
+incompatibility; the exact boundary is recorded rather than treated as native
+port behavior.
 
 ## Current artifacts
 
 - [Reverse-engineering status](docs/RE_STATUS.md)
+- [LaunchBox 13.27 Wine oracle boundary](analysis/wine-oracle-13.27.md)
 - [Static feature matrix](docs/FEATURE_MATRIX.md)
 - [Port architecture and execution plan](docs/PORT_PLAN.md)
 - [Current implementation and verification status](docs/IMPLEMENTATION_STATUS.md)
@@ -92,7 +98,7 @@ dismiss, and an unread badge. Compiled coverage drives the real editor,
 transaction, rendered notification dialog, exact backup, and fresh-process
 reload. A headless Linux runner deliberately cannot prove a desktop panel, so
 actual icon/menu and host-notification behavior remains a three-host release
-gate. The recovered contract and Wine limitation are documented in
+gate. The recovered contract and Wine boundary are documented in
 `analysis/system-tray-13.27.md`.
 
 Library parsing runs on a Rust worker thread and returns through CXX-Qt's queued

@@ -4,8 +4,10 @@ This is the first mechanically grounded feature census for the port. It is
 derived from installed resources, semantic classes, menu actions, view models,
 plugin contracts, emulator adapters, and shipped themes. It is intentionally
 called a **static** matrix: protected method bodies and the currently failing
-Wine launch mean exact workflows, edge cases, and premium gating still need
-runtime-oracle scenarios.
+Wine BigBox renderer mean exact workflows and edge cases still need
+runtime-oracle scenarios. The repaired Wine prefix can paint LaunchBox after a
+60-second UI Automation timeout and can exercise BigBox's license and library
+load gates, but BigBox's WPF surface remains black.
 
 Evidence abbreviations:
 

@@ -15,14 +15,32 @@ isolated workspace-local prefix.
 | Installed footprint | approximately 1.5 GiB |
 | Runtime | self-contained .NET 9.0.16, `win-x64`, WPF/Windows Desktop |
 | Installer result | `Installation process succeeded.` in `oracle/installer.log` |
+| LaunchBox UI | renders after a repeatable approximately 60-second focus timeout |
+| BigBox UI | library loads, but Wine's WPF surface remains black |
 
-The setup payload completed before the automatically launched LaunchBox process
-threw a managed Wine exception. That launch failure does not invalidate the
-installed files. The complete WPF LaunchBox/BigBox application is still not a
-reliable Wine UI oracle, so end-to-end visual and workflow comparison requires
-a supported Windows VM.
+The setup payload was intact. The original automatically launched process died
+because Wine's built-in UI Automation runtime does not implement
+`UiaSetFocus`; a managed first-chance exception hook recovered the exact
+`RawUiaSetFocus`/`AutomationElement.SetFocus` stack behind the generic
+`0xe0434352` and `0x80004005` report. The isolated prefix now selects a
+compatible native UI Automation runtime already present locally, while
+retaining both Wine 11.8 DLLs as reversible backups. The full LaunchBox desktop
+now paints without the diagnostic hook after its activation handler waits
+almost exactly 60 seconds and catches a focus failure.
 
-Wine is now a proven limited managed-code oracle. A temporary self-contained
+BigBox has a distinct boundary. With the owner's ignored license and a working
+copy of the older real data snapshot, it loads all 35,869 games and creates its
+real navigation stack, but its WPF surface is black. The stock theme raises
+`0x88980406` at `DUCE.Channel.SyncFlush`; a simplified Old Default text view
+avoids that exception but still produces an all-black capture. WPF software
+rendering, WineD3D, DXVK, a Wine virtual desktop, a clean Xvfb display, and
+theme/media simplification did not fix it. LaunchBox is therefore a usable but
+slow Wine visual oracle; BigBox visual and interaction parity still requires a
+supported Windows runtime. The exact diagnosis, hashes, reversible prefix
+state, and negative experiments are in
+`analysis/wine-oracle-13.27.md`.
+
+Wine remains a proven managed-code oracle. A temporary self-contained
 .NET 9 `win-x64` reflection host was placed beside the installed first-party
 assemblies and run inside the isolated prefix. It loaded and invoked protected
 13.27 model-settings code successfully. The probe and copied host artifacts
@@ -347,7 +365,8 @@ syntactic H: mapping, 16,740 resolve. The recovered plugin contract establishes
 the meanings of automatic before/after and wait-for-exit flags, while the
 installed 3.1 changelog supplies the 30-second before-app wait ceiling. These
 sources and deterministic native fixtures specify the current implementation;
-13.27 runtime parity remains unverified while the Wine oracle cannot run.
+13.27 runtime parity remains unverified because these launch scenarios have not
+yet been exercised against the repaired, slow-starting Wine desktop oracle.
 
 The recovered 13.27 editor contract exposes name/path/command line,
 before/after/wait behavior, emulator and DOSBox choice, priority, disc and side,
@@ -727,8 +746,8 @@ Platform editing has a similarly explicit static boundary. The 13.27
 metadata and folder APIs, and `AddEditPlatformViewModel` contains the expected
 metadata/folder/document edit surface. The port now edits those mutable fields
 and source-indexed folder rows losslessly, but deliberately keeps platform
-identity read-only because the protected save body and failing Wine runtime do
-not establish the required game/emulator/playlist/parent/controller/settings
+identity read-only because the protected save body and current runtime captures
+do not establish the required game/emulator/playlist/parent/controller/settings
 and filename rename behavior.
 
 Playlist editing now has the same explicit evidence boundary. `IPlaylist`
@@ -844,9 +863,10 @@ Therefore:
 
 ## Next reverse-engineering work
 
-1. Establish the complete WPF runtime oracle in a disposable supported Windows
-   VM; continue using the isolated Wine prefix only for managed probes that
-   produce independently checkable, non-user-specific contracts.
+1. Establish the BigBox WPF runtime oracle in a disposable supported Windows
+   VM. Use the repaired Wine prefix for deliberate LaunchBox desktop
+   observation and managed probes, while retaining only independently
+   checkable, non-user-specific evidence.
 2. Create a tiny deterministic library fixture and capture first-run files,
    XML/SQLite schemas, settings, screenshots, process launches, and file diffs.
 3. Turn every feature-matrix row into one or more repeatable oracle scenarios.

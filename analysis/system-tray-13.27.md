@@ -102,11 +102,16 @@ the safe unavailable-host path rather than pretending to exercise a desktop
 panel. Actual icon/menu activation, close/minimize interception, and host
 notifications remain Windows, Linux-desktop, and macOS real-host gates.
 
-## Wine limitation
+## Wine boundary
 
-The full installed LaunchBox 13.27 UI currently reaches CoreCLR, WinForms, WPF,
-and the LaunchBox assemblies, then Wine surfaces a managed exception as
-`0xe0434352` with `0x80004005`. The installed payload is intact and the targeted
-reflection probe works, but the full UI is not a reliable visual oracle until
-the original managed exception message can be recovered. Static contracts and
-small reflection probes remain usable evidence in the meantime.
+The original `0xe0434352`/`0x80004005` report is now resolved. A temporary
+first-chance exception hook traced it to Wine's unimplemented
+`uiautomationcore!UiaSetFocus`, called through
+`AutomationElement.SetFocus()`. The ignored oracle prefix now uses a
+reversible compatible native UI Automation runtime and the complete LaunchBox
+desktop paints after a repeatable approximately 60-second focus timeout.
+
+This does not prove the real tray surface on Linux, Windows, or macOS, and
+BigBox still has a separate WPF render blocker. The hashes, registry override,
+observed exceptions, and negative rendering experiments are recorded in
+`analysis/wine-oracle-13.27.md`.
