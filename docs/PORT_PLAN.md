@@ -332,20 +332,29 @@ real navigation, audio decode, control wiring, OSD rendering, local URLs, and
 whole-tree immutability without a helper shell. Custom-theme sound integration,
 configurable global bindings/notifications, broad codec parity, and native
 Windows/macOS playback remain later slices.
-The current `BB-007` slice implements the application-startup video independently
-of the per-game startup/shutdown overlays. A bounded read-only index prefers
-direct supported files in the recovered `Videos/Startup` randomized folder and
-falls back only to exact legacy `Videos/Startup.mp4`. CXX-Qt publishes native
-local URLs plus typed `VolumeVideo`; BigBox keeps the main screen covered during
-the load/selection decision, chooses randomly in production, plays through one
-lifecycle-owned Qt Multimedia surface, blocks background/game music, and
-hands off on a shared key/tap skip, natural end, or fail-open decoder error.
-Pure precedence/bounds/symlink/policy tests and three compiled genuine-H.264
-scenarios prove both discovery layouts, skip and natural completion, rendered
-output, exact safe source selection, and whole-tree immutability without any
-runtime helper shell. Splash image/sound-pack behavior, custom themes,
-controller bindings, primary-monitor routing, original VLC/WMP backend parity,
-and native Windows/macOS playback remain later slices.
+The current `BB-007` slice implements the application startup presentation
+independently of the per-game startup/shutdown overlays. A bounded, read-only
+probe loads only BigBox startup settings and media before the background
+library index begins. It prefers direct supported files in the recovered
+`Videos/Startup` randomized folder and falls back only to exact legacy
+`Videos/Startup.mp4`. With no video, it applies typed
+`ShowStartupSplashScreen`, `PlayStartupSound`, `SoundPack`,
+`VolumeStartupSound`, and `VolumeMaster`; the selected pack prefers bounded
+direct WAV files in `Sounds/<pack>/Startup` over exact legacy
+`Sounds/<pack>/Startup.wav`. CXX-Qt publishes guarded native URLs and the
+typed policy. BigBox chooses randomly in production, owns separate Qt
+Multimedia video and sound players, keeps the port-owned splash over the
+background load, blocks background/game music, and hands video off on the
+shared key/tap skip, natural end, or fail-open decoder error.
+
+Pure precedence/bounds/symlink/policy tests and six compiled scenarios prove
+both H.264 layouts, skip and natural completion, both WAV layouts, enabled and
+disabled settings, master-adjusted volume, rendered output, early-probe timing,
+exact safe source selection, and whole-tree immutability without any runtime
+helper shell. The proprietary branded splash is not copied. Exact artwork and
+custom-theme parity, packaged-theme sound precedence, controller bindings,
+primary-monitor routing, video-and-startup-sound coexistence, original VLC/WMP
+backend parity, and native Windows/macOS playback remain later slices.
 The current `DESK-004`/`BB-004` media vertical adds settings-prioritized box
 backs and one shared front/back Qt presenter to the LaunchBox grid and BigBox
 wheel. The exact recovered back priority is applied at the native-path index

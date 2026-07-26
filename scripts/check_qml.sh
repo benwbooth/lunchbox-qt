@@ -33,7 +33,7 @@ diagnostics=$(
     apps/lb-shell/qml/BoxModelViewer.qml \
     apps/lb-shell/qml/GameMusicPlayer.qml \
     apps/lb-shell/qml/BackgroundMusicPlayer.qml \
-    apps/lb-shell/qml/BigBoxStartupVideo.qml \
+    apps/lb-shell/qml/BigBoxStartupPresentation.qml \
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml 2>&1
@@ -170,6 +170,7 @@ fixture_video="$media_root/Videos/Fixture Console/fixture-adventure.mp4"
 fixture_manual="$media_root/Manuals/Fixture Console/fixture-adventure.pdf"
 fixture_music_first="$media_root/Music/Fixture Console/Fixture Adventure-01.mp3"
 fixture_music_second="$media_root/Music/Fixture Console/Fixture Adventure-02.mp3"
+fixture_startup_sound="$test_config_root/fixture-startup.wav"
 mkdir -p \
   "$(dirname "$fixture_video")" \
   "$(dirname "$fixture_manual")" \
@@ -178,6 +179,8 @@ base64 --decode fixtures/media/fixture-video.mp4.base64 > "$fixture_video"
 base64 --decode fixtures/media/fixture-manual.pdf.base64 > "$fixture_manual"
 base64 --decode fixtures/media/fixture-music.mp3.gz.base64 \
   | gzip --decompress > "$fixture_music_first"
+base64 --decode fixtures/media/fixture-startup.wav.gz.base64 \
+  | gzip --decompress > "$fixture_startup_sound"
 cp "$fixture_music_first" "$fixture_music_second"
 background_music_files=(
   "$media_root/Music/Background/Default-01.mp3"
@@ -201,6 +204,11 @@ fi
 if [[ $(sha256sum "$fixture_manual" | cut -d' ' -f1) \
   != 52a03172ce1339ed39ad214396e16a10d65af40543ae4f7a4289545cc554bae1 ]]; then
   echo "Decoded game-manual fixture does not match its pinned source." >&2
+  exit 1
+fi
+if [[ $(sha256sum "$fixture_startup_sound" | cut -d' ' -f1) \
+  != ff01eea0f9e23153752ee48cc0a74771dc234f7a84a2da7a879c72538ddffec7 ]]; then
+  echo "Decoded startup-sound fixture does not match its pinned source." >&2
   exit 1
 fi
 for fixture_music in \
@@ -428,7 +436,7 @@ startup_video_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos=2 selected=Startup-02.mp4 decode=h264 completion=skip volume=61' \
+  'BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos=2 selected=Startup-02.mp4 decode=h264 completion=skip volume=61 probe_before_load=1' \
   <<< "$startup_video_output"; then
   printf '%s\n' "$startup_video_output" >&2
   echo "BigBox did not decode and skip the selected randomized startup video." >&2
@@ -461,7 +469,7 @@ startup_video_natural_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos=2 selected=Startup-01.mp4 decode=h264 completion=natural volume=61' \
+  'BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos=2 selected=Startup-01.mp4 decode=h264 completion=natural volume=61 probe_before_load=1' \
   <<< "$startup_video_natural_output"; then
   printf '%s\n' "$startup_video_natural_output" >&2
   echo "BigBox did not finish the selected randomized startup video naturally." >&2
@@ -504,7 +512,7 @@ legacy_startup_video_output=$(
   exit 1
 }
 if ! rg -q \
-  'BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos=1 selected=Startup.mp4 decode=h264 completion=natural volume=61' \
+  'BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos=1 selected=Startup.mp4 decode=h264 completion=natural volume=61 probe_before_load=1' \
   <<< "$legacy_startup_video_output"; then
   printf '%s\n' "$legacy_startup_video_output" >&2
   echo "BigBox did not decode and naturally finish the legacy startup video." >&2
@@ -517,7 +525,153 @@ cmp "$legacy_startup_video_settings.before-startup-video-smoke" \
   sha256sum --check "$legacy_startup_video_manifest"
 ) >/dev/null
 
-echo "BigBox randomized and legacy startup-video discovery, native file URLs, real H.264 decode, shared key/tap skip action, natural completion, typed video volume, rendered output, and read-only media behavior validated."
+startup_splash_root="$test_config_root/startup-splash-library"
+startup_splash_screenshot="$test_config_root/bigbox-startup-splash.png"
+startup_splash_sound_folder="$startup_splash_root/Sounds/Fixture Sounds/Startup"
+mkdir -p "$startup_splash_root"
+cp -a "$media_root/." "$startup_splash_root/"
+mkdir -p "$startup_splash_sound_folder"
+cp "$fixture_startup_sound" \
+  "$startup_splash_sound_folder/STARTUP001.wav"
+cp "$fixture_startup_sound" \
+  "$startup_splash_sound_folder/STARTUP002.wav"
+cp "$fixture_startup_sound" \
+  "$startup_splash_root/Sounds/Fixture Sounds/Startup.wav"
+startup_splash_settings="$startup_splash_root/Data/BigBoxSettings.xml"
+cp "$startup_splash_settings" \
+  "$startup_splash_settings.before-startup-splash-smoke"
+startup_splash_manifest="$test_config_root/startup-splash.before.sha256"
+(
+  cd "$startup_splash_root"
+  find Images Videos Manuals Music Sounds -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$startup_splash_manifest"
+startup_splash_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$startup_splash_root" \
+    --bigbox-startup-splash-smoke-test \
+    --bigbox-startup-sound-index 1 \
+    --bigbox-startup-splash-screenshot "$startup_splash_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$startup_splash_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_STARTUP_SPLASH_SMOKE_COMPLETE enabled=1 sounds=2 selected=STARTUP002.wav decode=wav probe_before_load=1 splash=1 audio=1 volume=32' \
+  <<< "$startup_splash_output"; then
+  printf '%s\n' "$startup_splash_output" >&2
+  echo "BigBox did not render its startup splash and decode the selected randomized startup sound." >&2
+  exit 1
+fi
+if [[ ! -s "$startup_splash_screenshot" ]] \
+  || [[ $(wc -c < "$startup_splash_screenshot") -lt 1024 ]]; then
+  echo "BigBox did not save a rendered startup-splash screenshot." >&2
+  exit 1
+fi
+startup_splash_colors=$(
+  magick "$startup_splash_screenshot" -format '%k' info:
+)
+if [[ ! "$startup_splash_colors" =~ ^[0-9]+$ ]] \
+  || ((startup_splash_colors < 64)); then
+  echo "BigBox startup-splash screenshot is blank or insufficiently rendered ($startup_splash_colors colors)." >&2
+  exit 1
+fi
+cmp "$startup_splash_settings.before-startup-splash-smoke" \
+  "$startup_splash_settings"
+(
+  cd "$startup_splash_root"
+  sha256sum --check "$startup_splash_manifest"
+) >/dev/null
+
+startup_splash_disabled_root="$test_config_root/startup-splash-disabled-library"
+mkdir -p "$startup_splash_disabled_root"
+cp -a "$startup_splash_root/." "$startup_splash_disabled_root/"
+startup_splash_disabled_settings="$startup_splash_disabled_root/Data/BigBoxSettings.xml"
+sed -i \
+  's#<ShowStartupSplashScreen>true</ShowStartupSplashScreen>#<ShowStartupSplashScreen>false</ShowStartupSplashScreen>#' \
+  "$startup_splash_disabled_settings"
+sed -i \
+  's#<PlayStartupSound>true</PlayStartupSound>#<PlayStartupSound>false</PlayStartupSound>#' \
+  "$startup_splash_disabled_settings"
+cp "$startup_splash_disabled_settings" \
+  "$startup_splash_disabled_settings.before-startup-splash-smoke"
+startup_splash_disabled_manifest="$test_config_root/startup-splash-disabled.before.sha256"
+(
+  cd "$startup_splash_disabled_root"
+  find Images Videos Manuals Music Sounds -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$startup_splash_disabled_manifest"
+startup_splash_disabled_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$startup_splash_disabled_root" \
+    --bigbox-startup-splash-disabled-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$startup_splash_disabled_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_STARTUP_SPLASH_SMOKE_COMPLETE enabled=0 sounds=2 selected=none decode=wav probe_before_load=1 splash=0 audio=0 volume=32' \
+  <<< "$startup_splash_disabled_output"; then
+  printf '%s\n' "$startup_splash_disabled_output" >&2
+  echo "BigBox did not honor disabled startup splash and sound settings." >&2
+  exit 1
+fi
+cmp "$startup_splash_disabled_settings.before-startup-splash-smoke" \
+  "$startup_splash_disabled_settings"
+(
+  cd "$startup_splash_disabled_root"
+  sha256sum --check "$startup_splash_disabled_manifest"
+) >/dev/null
+
+legacy_startup_sound_root="$test_config_root/legacy-startup-sound-library"
+legacy_startup_sound_folder="$legacy_startup_sound_root/Sounds/Fixture Sounds"
+mkdir -p "$legacy_startup_sound_root"
+cp -a "$media_root/." "$legacy_startup_sound_root/"
+mkdir -p "$legacy_startup_sound_folder"
+cp "$fixture_startup_sound" \
+  "$legacy_startup_sound_folder/Startup.wav"
+legacy_startup_sound_settings="$legacy_startup_sound_root/Data/BigBoxSettings.xml"
+cp "$legacy_startup_sound_settings" \
+  "$legacy_startup_sound_settings.before-startup-splash-smoke"
+legacy_startup_sound_manifest="$test_config_root/legacy-startup-sound.before.sha256"
+(
+  cd "$legacy_startup_sound_root"
+  find Images Videos Manuals Music Sounds -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$legacy_startup_sound_manifest"
+legacy_startup_sound_output=$(
+  QT_QPA_PLATFORM=offscreen "$binary_dir/bigbox" \
+    --windowed \
+    --library "$legacy_startup_sound_root" \
+    --bigbox-startup-splash-smoke-test \
+    --bigbox-startup-sound-index 0 \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$legacy_startup_sound_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BIGBOX_STARTUP_SPLASH_SMOKE_COMPLETE enabled=1 sounds=1 selected=Startup.wav decode=wav probe_before_load=1 splash=1 audio=1 volume=32' \
+  <<< "$legacy_startup_sound_output"; then
+  printf '%s\n' "$legacy_startup_sound_output" >&2
+  echo "BigBox did not decode the legacy single-file startup sound." >&2
+  exit 1
+fi
+cmp "$legacy_startup_sound_settings.before-startup-splash-smoke" \
+  "$legacy_startup_sound_settings"
+(
+  cd "$legacy_startup_sound_root"
+  sha256sum --check "$legacy_startup_sound_manifest"
+) >/dev/null
+
+echo "BigBox early startup probe, randomized and legacy startup-video discovery, native file URLs, real H.264 decode, shared key/tap skip action, natural completion, typed video volume, port-owned cross-platform splash rendering, randomized-folder and legacy WAV startup sounds, disabled presentation settings, master-adjusted sound volume, and read-only media behavior validated."
 
 game_details_settings="$media_root/Data/Settings.xml"
 game_details_screenshot="$media_root/launchbox-game-details.png"

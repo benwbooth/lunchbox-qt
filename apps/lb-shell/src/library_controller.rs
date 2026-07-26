@@ -80,6 +80,8 @@ pub mod qobject {
         #[qproperty(i32, indexed_music_track_count)]
         #[qproperty(i32, indexed_background_music_track_count)]
         #[qproperty(i32, indexed_startup_video_count)]
+        #[qproperty(i32, indexed_startup_sound_count)]
+        #[qproperty(bool, startup_presentation_ready)]
         #[qproperty(i32, game_media_revision)]
         #[qproperty(i32, model_settings_revision)]
         #[qproperty(bool, details_show_video)]
@@ -102,6 +104,11 @@ pub mod qobject {
         #[qproperty(bool, big_box_context_specific_background_music)]
         #[qproperty(bool, big_box_play_video_audio_with_background_music)]
         #[qproperty(i32, big_box_startup_video_volume_percent)]
+        #[qproperty(bool, big_box_show_startup_splash_screen)]
+        #[qproperty(bool, big_box_play_startup_sound)]
+        #[qproperty(i32, big_box_startup_sound_volume_percent)]
+        #[qproperty(i32, big_box_master_volume_percent)]
+        #[qproperty(QString, big_box_sound_pack)]
         #[qproperty(bool, big_box_show_game_menu_flip_box)]
         #[qproperty(bool, big_box_show_game_menu_model)]
         #[qproperty(i32, filtered_count)]
@@ -186,6 +193,12 @@ pub mod qobject {
         fn load_library(self: Pin<&mut LibraryController>, path: QString);
 
         #[qinvokable]
+        fn prepare_big_box_startup_presentation(
+            self: Pin<&mut LibraryController>,
+            path: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn local_path_from_url(self: &LibraryController, value: QString) -> QString;
 
         #[qinvokable]
@@ -264,6 +277,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn startup_video_file_name_at(self: &LibraryController, video_index: i32) -> QString;
+
+        #[qinvokable]
+        fn startup_sound_url_at(self: &LibraryController, sound_index: i32) -> QUrl;
+
+        #[qinvokable]
+        fn startup_sound_file_name_at(self: &LibraryController, sound_index: i32) -> QString;
 
         #[qinvokable]
         fn game_model_settings_json_for_game(self: &LibraryController, game_id: QString)
@@ -869,6 +888,18 @@ pub mod qobject {
             selected_index: i32,
             skipped: bool,
             ended_naturally: bool,
+            probe_ready_before_load: bool,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_startup_splash_smoke_success(
+            self: &LibraryController,
+            expected_enabled: bool,
+            selected_sound_url: QString,
+            selected_sound_index: i32,
+            probe_ready_before_load: bool,
+            splash_was_visible: bool,
+            sound_played: bool,
         ) -> bool;
 
         #[qinvokable]
@@ -1397,17 +1428,17 @@ use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
 use lb_platform::{
     background_music_context_key, default_host_path_mappings_path, default_launchbox_ui_state_path,
     default_model_viewer_state_path, default_platform_folders, execute_launch_sequence_controlled,
-    index_game_media, index_game_supplemental_media, navigation_document_file_name,
-    platform_document_file_name, portable_storage_name,
+    index_big_box_startup_presentation, index_game_media, index_game_supplemental_media,
+    navigation_document_file_name, platform_document_file_name, portable_storage_name,
     prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     select_emulator_for_game, ArchiveExtractor, BigBoxBackgroundMusicPolicy, BigBoxMusicPolicy,
-    BigBoxStartupVideoPolicy, FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy,
-    GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem, GameMediaKind, HostPathMappings,
-    HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
-    LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
-    LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
-    ModelRotationLock, ModelViewerState,
+    BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, FrontendLaunchScreenPolicy,
+    FrontendPauseScreenPolicy, GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem,
+    GameMediaKind, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState,
+    LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy,
+    LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy,
+    LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, select_random_filtered_row,
@@ -1415,12 +1446,13 @@ use lb_query::{
 };
 use lb_storage::{
     delete_directory_if_revision, delete_regular_files_if_revisions, find_emulator_references,
-    find_game_references, find_platform_references, pending_transaction_manifests,
-    recover_pending_transactions, replace_directory_from_source_if_revisions,
-    replace_regular_file_from_source_if_revisions, AuxiliaryDocument, DirectoryRevision,
-    EmulatorReference, FileRevision, GameReference, IndexedGameSaveMetadataEdit,
-    IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction, NewGame,
-    NewGameMetadata, PlatformDocument, PlatformReference, StorageError, TransactionError,
+    find_game_references, find_platform_references, load_big_box_settings_file,
+    pending_transaction_manifests, recover_pending_transactions,
+    replace_directory_from_source_if_revisions, replace_regular_file_from_source_if_revisions,
+    AuxiliaryDocument, DirectoryRevision, EmulatorReference, FileRevision, GameReference,
+    IndexedGameSaveMetadataEdit, IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex,
+    LibraryTransaction, NewGame, NewGameMetadata, PlatformDocument, PlatformReference,
+    StorageError, TransactionError,
 };
 use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
@@ -1661,6 +1693,8 @@ pub struct LibraryControllerRust {
     indexed_music_track_count: i32,
     indexed_background_music_track_count: i32,
     indexed_startup_video_count: i32,
+    indexed_startup_sound_count: i32,
+    startup_presentation_ready: bool,
     game_media_revision: i32,
     model_settings_revision: i32,
     details_show_video: bool,
@@ -1683,6 +1717,11 @@ pub struct LibraryControllerRust {
     big_box_context_specific_background_music: bool,
     big_box_play_video_audio_with_background_music: bool,
     big_box_startup_video_volume_percent: i32,
+    big_box_show_startup_splash_screen: bool,
+    big_box_play_startup_sound: bool,
+    big_box_startup_sound_volume_percent: i32,
+    big_box_master_volume_percent: i32,
+    big_box_sound_pack: QString,
     big_box_show_game_menu_flip_box: bool,
     big_box_show_game_menu_model: bool,
     filtered_count: i32,
@@ -1754,11 +1793,12 @@ pub struct LibraryControllerRust {
     background_music_paths_by_playlist: BTreeMap<String, Vec<PathBuf>>,
     background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
     startup_video_paths: Vec<PathBuf>,
+    startup_sound_paths: Vec<PathBuf>,
     game_details_media_policy: GameDetailsMediaPolicy,
     launchbox_music_policy: LaunchBoxMusicPolicy,
     big_box_music_policy: BigBoxMusicPolicy,
     big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
-    big_box_startup_video_policy: BigBoxStartupVideoPolicy,
+    big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     filtered_indices: Vec<usize>,
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
@@ -1890,11 +1930,12 @@ struct LoadedLibrary {
     background_music_paths_by_playlist: BTreeMap<String, Vec<PathBuf>>,
     background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
     startup_video_paths: Vec<PathBuf>,
+    startup_sound_paths: Vec<PathBuf>,
     game_details_media_policy: GameDetailsMediaPolicy,
     launchbox_music_policy: LaunchBoxMusicPolicy,
     big_box_music_policy: BigBoxMusicPolicy,
     big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
-    big_box_startup_video_policy: BigBoxStartupVideoPolicy,
+    big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -1936,11 +1977,12 @@ struct LibraryReplacement {
     background_music_paths_by_playlist: BTreeMap<String, Vec<PathBuf>>,
     background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
     startup_video_paths: Vec<PathBuf>,
+    startup_sound_paths: Vec<PathBuf>,
     game_details_media_policy: GameDetailsMediaPolicy,
     launchbox_music_policy: LaunchBoxMusicPolicy,
     big_box_music_policy: BigBoxMusicPolicy,
     big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
-    big_box_startup_video_policy: BigBoxStartupVideoPolicy,
+    big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     big_box_show_game_menu_flip_box: bool,
     details_show_3d_model: bool,
     big_box_show_game_menu_model: bool,
@@ -2026,11 +2068,12 @@ impl LoadedLibrary {
                 background_music_paths_by_playlist: BTreeMap::new(),
                 background_music_paths_by_category: BTreeMap::new(),
                 startup_video_paths: Vec::new(),
+                startup_sound_paths: Vec::new(),
                 game_details_media_policy: GameDetailsMediaPolicy::default(),
                 launchbox_music_policy: LaunchBoxMusicPolicy::default(),
                 big_box_music_policy: BigBoxMusicPolicy::default(),
                 big_box_background_music_policy: BigBoxBackgroundMusicPolicy::default(),
-                big_box_startup_video_policy: BigBoxStartupVideoPolicy::default(),
+                big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
                 big_box_show_game_menu_flip_box: true,
                 details_show_3d_model: true,
                 big_box_show_game_menu_model: true,
@@ -2151,6 +2194,7 @@ impl LoadedLibrary {
         let indexed_background_music_track_count =
             supplemental_report.indexed_background_music_tracks;
         let indexed_startup_video_count = supplemental_report.indexed_startup_videos;
+        let indexed_startup_sound_count = supplemental_report.indexed_startup_sounds;
         let manual_paths_by_game_id = supplemental_media_index.manual_paths_by_game_id;
         let music_paths_by_game_id = supplemental_media_index.music_paths_by_game_id;
         let background_music_paths = supplemental_media_index.background_music_paths;
@@ -2161,18 +2205,20 @@ impl LoadedLibrary {
         let background_music_paths_by_category =
             supplemental_media_index.background_music_paths_by_category;
         let startup_video_paths = supplemental_media_index.startup_video_paths;
+        let startup_sound_paths = supplemental_media_index.startup_sound_paths;
         let launchbox_music_policy = supplemental_media_index.launchbox_music_policy;
         let big_box_music_policy = supplemental_media_index.big_box_music_policy;
         let big_box_background_music_policy =
             supplemental_media_index.big_box_background_music_policy;
-        let big_box_startup_video_policy = supplemental_media_index.big_box_startup_video_policy;
+        let big_box_startup_presentation_policy =
+            supplemental_media_index.big_box_startup_presentation_policy;
         let playlist_count = data.playlists().len();
         let emulator_count = data
             .emulator_configuration()
             .map(|configuration| configuration.emulators.len())
             .unwrap_or_default();
         let message = format!(
-            "Loaded {} games, {front_image_count} front images, {indexed_media_count} detail media items, {indexed_manual_count} manuals, {indexed_music_track_count} game-music tracks, {indexed_background_music_track_count} background-music tracks, {indexed_startup_video_count} startup videos, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s (media: {} files across {} folders; supplemental: {} files across {} folders; {} unsafe, {} oversized, {} unresolved, {} truncated).",
+            "Loaded {} games, {front_image_count} front images, {indexed_media_count} detail media items, {indexed_manual_count} manuals, {indexed_music_track_count} game-music tracks, {indexed_background_music_track_count} background-music tracks, {indexed_startup_video_count} startup videos, {indexed_startup_sound_count} startup sounds, {additional_application_count} additional applications, {game_save_count} game saves, {mount_count} DOSBox mounts, {playlist_count} playlists, and {emulator_count} emulators from {platform_count} platforms in {:.3}s (media: {} files across {} folders; supplemental: {} files across {} folders; {} unsafe, {} oversized, {} unresolved, {} truncated).",
             games.len(),
             started.elapsed().as_secs_f64(),
             media_report.scanned_files,
@@ -2223,11 +2269,12 @@ impl LoadedLibrary {
             background_music_paths_by_playlist,
             background_music_paths_by_category,
             startup_video_paths,
+            startup_sound_paths,
             game_details_media_policy,
             launchbox_music_policy,
             big_box_music_policy,
             big_box_background_music_policy,
-            big_box_startup_video_policy,
+            big_box_startup_presentation_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -16007,11 +16054,12 @@ impl qobject::LibraryController {
                     background_music_paths_by_playlist: BTreeMap::new(),
                     background_music_paths_by_category: BTreeMap::new(),
                     startup_video_paths: Vec::new(),
+                    startup_sound_paths: Vec::new(),
                     game_details_media_policy: GameDetailsMediaPolicy::default(),
                     launchbox_music_policy: LaunchBoxMusicPolicy::default(),
                     big_box_music_policy: BigBoxMusicPolicy::default(),
                     big_box_background_music_policy: BigBoxBackgroundMusicPolicy::default(),
-                    big_box_startup_video_policy: BigBoxStartupVideoPolicy::default(),
+                    big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::default(),
                     big_box_show_game_menu_flip_box: true,
                     details_show_3d_model: true,
                     big_box_show_game_menu_model: true,
@@ -16087,6 +16135,44 @@ impl qobject::LibraryController {
             self.as_mut()
                 .set_status_message(qstring(format!("Could not start library loader: {error}")));
         }
+    }
+
+    pub fn prepare_big_box_startup_presentation(mut self: Pin<&mut Self>, path: QString) -> bool {
+        let started = Instant::now();
+        let root = PathBuf::from(path.to_string());
+        self.as_mut().set_startup_presentation_ready(false);
+        if !root.is_dir() {
+            self.as_mut().set_status_message(qstring(
+                "BigBox startup presentation requires a LaunchBox directory.",
+            ));
+            return false;
+        }
+        if !self.as_mut().initialize_host_path_mappings() {
+            return false;
+        }
+        let settings_path = root.join("Data/BigBoxSettings.xml");
+        let settings = match load_big_box_settings_file(&settings_path) {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not read BigBox startup settings: {error}"
+                )));
+                return false;
+            }
+        };
+        let resolver = self.as_ref().rust().path_resolver.clone();
+        let presentation = index_big_box_startup_presentation(&root, settings.as_ref(), &resolver);
+        let video_count = presentation.video_paths.len();
+        let sound_count = presentation.sound_paths.len();
+        let unsafe_count = presentation.report.unsafe_entries;
+        let oversized_count = presentation.report.oversized_files;
+        self.as_mut()
+            .apply_big_box_startup_presentation(presentation);
+        eprintln!(
+            "BigBox startup presentation ready in {:.3}s: {video_count} videos, {sound_count} sounds, {unsafe_count} unsafe, {oversized_count} oversized.",
+            started.elapsed().as_secs_f64()
+        );
+        true
     }
 
     pub fn local_path_from_url(&self, value: QString) -> QString {
@@ -16267,6 +16353,19 @@ impl qobject::LibraryController {
 
     pub fn startup_video_file_name_at(&self, video_index: i32) -> QString {
         self.startup_video_path(video_index)
+            .and_then(|path| path.file_name())
+            .map(|name| qstring(name.to_string_lossy()))
+            .unwrap_or_default()
+    }
+
+    pub fn startup_sound_url_at(&self, sound_index: i32) -> QUrl {
+        self.startup_sound_path(sound_index)
+            .map(|path| QUrl::from_local_file(&qstring(path.to_string_lossy())))
+            .unwrap_or_default()
+    }
+
+    pub fn startup_sound_file_name_at(&self, sound_index: i32) -> QString {
+        self.startup_sound_path(sound_index)
             .and_then(|path| path.file_name())
             .map(|name| qstring(name.to_string_lossy()))
             .unwrap_or_default()
@@ -19427,6 +19526,7 @@ impl qobject::LibraryController {
         selected_index: i32,
         skipped: bool,
         ended_naturally: bool,
+        probe_ready_before_load: bool,
     ) -> bool {
         let paths = &self.rust().startup_video_paths;
         let expected_names: &[&str] = match paths.len() {
@@ -19457,6 +19557,8 @@ impl qobject::LibraryController {
             && selected_url.as_ref() == selected_path
             && skipped != ended_naturally
             && *self.big_box_startup_video_volume_percent() == 61
+            && probe_ready_before_load
+            && *self.startup_presentation_ready()
             && !*self.loading()
             && !*self.writing();
         if success {
@@ -19466,7 +19568,85 @@ impl qobject::LibraryController {
                 .and_then(|name| name.to_str())
                 .unwrap_or_default();
             eprintln!(
-                "BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos={} selected={selected_name} decode=h264 completion={completion} volume=61",
+                "BIGBOX_STARTUP_VIDEO_SMOKE_COMPLETE videos={} selected={selected_name} decode=h264 completion={completion} volume=61 probe_before_load=1",
+                paths.len()
+            );
+        }
+        success
+    }
+
+    pub fn report_startup_splash_smoke_success(
+        &self,
+        expected_enabled: bool,
+        selected_sound_url: QString,
+        selected_sound_index: i32,
+        probe_ready_before_load: bool,
+        splash_was_visible: bool,
+        sound_played: bool,
+    ) -> bool {
+        let paths = &self.rust().startup_sound_paths;
+        let expected_names: &[&str] = match paths.len() {
+            1 => &["Startup.wav"],
+            2 => &["STARTUP001.wav", "STARTUP002.wav"],
+            _ => &[],
+        };
+        let safe_regular_file = |path: &Path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        };
+        let paths_match = !expected_names.is_empty()
+            && paths
+                .iter()
+                .zip(expected_names)
+                .all(|(path, expected_name)| {
+                    path.file_name().and_then(|name| name.to_str()) == Some(*expected_name)
+                        && safe_regular_file(path)
+                });
+        let selected_index_usize = usize::try_from(selected_sound_index).ok();
+        let selected_path = selected_index_usize.and_then(|index| paths.get(index));
+        let selected_url_text = selected_sound_url.to_string();
+        let selected_url = if selected_url_text.trim().is_empty() {
+            None
+        } else {
+            QUrl::from_user_input(&selected_sound_url, &QString::default())
+                .to_local_file()
+                .map(|path| PathBuf::from(path.to_string()))
+        };
+        let enabled_state_matches = if expected_enabled {
+            *self.big_box_show_startup_splash_screen()
+                && *self.big_box_play_startup_sound()
+                && splash_was_visible
+                && sound_played
+                && selected_path.is_some()
+                && selected_url.as_ref() == selected_path
+        } else {
+            !*self.big_box_show_startup_splash_screen()
+                && !*self.big_box_play_startup_sound()
+                && !splash_was_visible
+                && !sound_played
+                && selected_sound_index == -1
+                && selected_url.is_none()
+        };
+        let success = paths_match
+            && *self.indexed_startup_sound_count() == saturating_i32(paths.len())
+            && *self.big_box_startup_sound_volume_percent() == 64
+            && *self.big_box_master_volume_percent() == 50
+            && self.big_box_sound_pack().to_string() == "Fixture Sounds"
+            && probe_ready_before_load
+            && *self.startup_presentation_ready()
+            && enabled_state_matches
+            && !*self.loading()
+            && !*self.writing();
+        if success {
+            let selected_name = selected_path
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or("none");
+            let enabled = u8::from(expected_enabled);
+            let splash = u8::from(splash_was_visible);
+            let audio = u8::from(sound_played);
+            eprintln!(
+                "BIGBOX_STARTUP_SPLASH_SMOKE_COMPLETE enabled={enabled} sounds={} selected={selected_name} decode=wav probe_before_load=1 splash={splash} audio={audio} volume=32",
                 paths.len()
             );
         }
@@ -23771,11 +23951,12 @@ impl qobject::LibraryController {
                     background_music_paths_by_playlist: loaded.background_music_paths_by_playlist,
                     background_music_paths_by_category: loaded.background_music_paths_by_category,
                     startup_video_paths: loaded.startup_video_paths,
+                    startup_sound_paths: loaded.startup_sound_paths,
                     game_details_media_policy: loaded.game_details_media_policy,
                     launchbox_music_policy: loaded.launchbox_music_policy,
                     big_box_music_policy: loaded.big_box_music_policy,
                     big_box_background_music_policy: loaded.big_box_background_music_policy,
-                    big_box_startup_video_policy: loaded.big_box_startup_video_policy,
+                    big_box_startup_presentation_policy: loaded.big_box_startup_presentation_policy,
                     big_box_show_game_menu_flip_box: loaded.big_box_show_game_menu_flip_box,
                     details_show_3d_model: loaded.details_show_3d_model,
                     big_box_show_game_menu_model: loaded.big_box_show_game_menu_model,
@@ -27396,6 +27577,46 @@ impl qobject::LibraryController {
         self.as_mut().set_platform_revision(revision);
     }
 
+    fn apply_big_box_startup_presentation(
+        mut self: Pin<&mut Self>,
+        presentation: BigBoxStartupPresentationIndex,
+    ) {
+        let BigBoxStartupPresentationIndex {
+            video_paths,
+            sound_paths,
+            policy,
+            ..
+        } = presentation;
+        let video_count = saturating_i32(video_paths.len());
+        let sound_count = saturating_i32(sound_paths.len());
+        let show_splash_screen = policy.show_splash_screen;
+        let play_startup_sound = policy.play_startup_sound;
+        let video_volume_percent = i32::from(policy.video_volume_percent);
+        let startup_sound_volume_percent = i32::from(policy.startup_sound_volume_percent);
+        let master_volume_percent = i32::from(policy.master_volume_percent);
+        let sound_pack = qstring(&policy.sound_pack);
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.startup_video_paths = video_paths;
+            rust.startup_sound_paths = sound_paths;
+            rust.big_box_startup_presentation_policy = policy;
+        }
+        self.as_mut().set_indexed_startup_video_count(video_count);
+        self.as_mut().set_indexed_startup_sound_count(sound_count);
+        self.as_mut()
+            .set_big_box_show_startup_splash_screen(show_splash_screen);
+        self.as_mut()
+            .set_big_box_play_startup_sound(play_startup_sound);
+        self.as_mut()
+            .set_big_box_startup_video_volume_percent(video_volume_percent);
+        self.as_mut()
+            .set_big_box_startup_sound_volume_percent(startup_sound_volume_percent);
+        self.as_mut()
+            .set_big_box_master_volume_percent(master_volume_percent);
+        self.as_mut().set_big_box_sound_pack(sound_pack);
+        self.as_mut().set_startup_presentation_ready(true);
+    }
+
     fn replace_library(mut self: Pin<&mut Self>, replacement: LibraryReplacement) {
         let LibraryReplacement {
             games,
@@ -27418,11 +27639,12 @@ impl qobject::LibraryController {
             background_music_paths_by_playlist,
             background_music_paths_by_category,
             startup_video_paths,
+            startup_sound_paths,
             game_details_media_policy,
             launchbox_music_policy,
             big_box_music_policy,
             big_box_background_music_policy,
-            big_box_startup_video_policy,
+            big_box_startup_presentation_policy,
             big_box_show_game_menu_flip_box,
             details_show_3d_model,
             big_box_show_game_menu_model,
@@ -27476,6 +27698,7 @@ impl qobject::LibraryController {
                 ),
         );
         let indexed_startup_video_count = saturating_i32(startup_video_paths.len());
+        let indexed_startup_sound_count = saturating_i32(startup_sound_paths.len());
         let details_show_video = game_details_media_policy.show_video;
         let details_auto_play_video = game_details_media_policy.auto_play_video;
         let platform_counts = collect_platform_counts(&games, &platform_names);
@@ -27515,11 +27738,12 @@ impl qobject::LibraryController {
             rust.background_music_paths_by_playlist = background_music_paths_by_playlist;
             rust.background_music_paths_by_category = background_music_paths_by_category;
             rust.startup_video_paths = startup_video_paths;
+            rust.startup_sound_paths = startup_sound_paths;
             rust.game_details_media_policy = game_details_media_policy;
             rust.launchbox_music_policy = launchbox_music_policy;
             rust.big_box_music_policy = big_box_music_policy;
             rust.big_box_background_music_policy = big_box_background_music_policy;
-            rust.big_box_startup_video_policy = big_box_startup_video_policy;
+            rust.big_box_startup_presentation_policy = big_box_startup_presentation_policy;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
             rust.platform_counts = platform_counts;
@@ -27626,6 +27850,9 @@ impl qobject::LibraryController {
             .set_indexed_background_music_track_count(indexed_background_music_track_count);
         self.as_mut()
             .set_indexed_startup_video_count(indexed_startup_video_count);
+        self.as_mut()
+            .set_indexed_startup_sound_count(indexed_startup_sound_count);
+        self.as_mut().set_startup_presentation_ready(true);
         let game_media_revision = self.as_ref().game_media_revision().wrapping_add(1);
         self.as_mut().set_game_media_revision(game_media_revision);
         let model_settings_revision = self.as_ref().model_settings_revision().wrapping_add(1);
@@ -27676,11 +27903,27 @@ impl qobject::LibraryController {
             .set_big_box_play_video_audio_with_background_music(
                 background_music_policy.play_video_audio_with_background_music,
             );
-        let startup_video_policy = self.as_ref().rust().big_box_startup_video_policy.clone();
+        let startup_policy = self
+            .as_ref()
+            .rust()
+            .big_box_startup_presentation_policy
+            .clone();
         self.as_mut()
             .set_big_box_startup_video_volume_percent(i32::from(
-                startup_video_policy.volume_percent,
+                startup_policy.video_volume_percent,
             ));
+        self.as_mut()
+            .set_big_box_show_startup_splash_screen(startup_policy.show_splash_screen);
+        self.as_mut()
+            .set_big_box_play_startup_sound(startup_policy.play_startup_sound);
+        self.as_mut()
+            .set_big_box_startup_sound_volume_percent(i32::from(
+                startup_policy.startup_sound_volume_percent,
+            ));
+        self.as_mut()
+            .set_big_box_master_volume_percent(i32::from(startup_policy.master_volume_percent));
+        self.as_mut()
+            .set_big_box_sound_pack(qstring(startup_policy.sound_pack));
         self.as_mut()
             .set_big_box_show_game_menu_flip_box(big_box_show_game_menu_flip_box);
         self.as_mut()
@@ -27860,6 +28103,11 @@ impl qobject::LibraryController {
     fn startup_video_path(&self, video_index: i32) -> Option<&PathBuf> {
         let video_index = usize::try_from(video_index).ok()?;
         self.rust().startup_video_paths.get(video_index)
+    }
+
+    fn startup_sound_path(&self, sound_index: i32) -> Option<&PathBuf> {
+        let sound_index = usize::try_from(sound_index).ok()?;
+        self.rust().startup_sound_paths.get(sound_index)
     }
 
     fn validate_image_viewer_smoke(

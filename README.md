@@ -500,22 +500,30 @@ rendering, theme-specific sound integration, broad codec/backend parity,
 configurable global media hotkeys/notifications, and native Windows/macOS Qt
 Multimedia execution remain open.
 
-BigBox application startup videos now use the same cross-platform media
-boundary. Direct regular files in `Videos/Startup` form the randomized
-collection and take precedence over the legacy exact
-`Videos/Startup.mp4` path. Discovery is sorted and bounded; unsupported,
-oversized, nested, symlinked, and non-regular entries are refused. At
-application start the main screen remains behind a black loading surface until
-library indexing selects a native local URL. A lifecycle-owned Qt Multimedia
-player uses `VolumeVideo`, runs the chosen video to its natural end, accepts
-the shared key/tap skip action, fails open on playback errors, and blocks game
-and background music until completion. Compiled scenarios decode genuine
-H.264 through both the randomized and legacy layouts, exercise skip and
-natural completion, render and color-check the presentation, validate the
-selected safe file in Rust, and hash settings plus all media. Original splash
-image/sound-pack behavior, custom startup themes, controller mapping, primary
-monitor routing, original VLC/WMP backend parity, and native Windows/macOS Qt
-Multimedia execution remain open.
+BigBox application startup presentation now uses the same cross-platform media
+boundary. A small settings/media probe runs before the background library
+index, so presentation starts during the load instead of after it. Direct
+regular files in `Videos/Startup` form the randomized video collection and
+take precedence over exact legacy `Videos/Startup.mp4`. When no video exists,
+typed `ShowStartupSplashScreen` controls an original port-owned Qt splash and
+typed `PlayStartupSound`, `SoundPack`, `VolumeStartupSound`, and `VolumeMaster`
+select and scale either direct WAV files in `Sounds/<pack>/Startup` or exact
+legacy `Sounds/<pack>/Startup.wav`. Discovery is sorted and bounded;
+unsupported, oversized, nested, symlinked, and non-regular entries are
+refused. The lifecycle-owned Qt Multimedia players use native local URLs; a
+video runs to its natural end or the shared key/tap skip, while the no-video
+splash remains through the library load and its startup WAV decodes
+independently. Background and game music stay blocked until handoff.
+
+Compiled scenarios decode genuine H.264 through both video layouts, exercise
+skip and natural completion, decode both startup-sound layouts, prove enabled
+and disabled splash/sound policy, render and color-check both presentations,
+require the startup probe before background loading, validate selected safe
+files in Rust, and hash settings plus all media. The proprietary LaunchBox
+splash artwork is deliberately not copied. Exact branded artwork/theme
+fidelity, custom-theme packaged sound precedence, controller mapping, primary
+monitor routing, original VLC/WMP backend parity, video-and-startup-sound
+coexistence, and native Windows/macOS Qt Multimedia execution remain open.
 
 LaunchBox also has a three-page manual ROM importer backed by the reusable
 `lb-import` crate. It accepts multiple native files and folders, optional

@@ -224,24 +224,43 @@ not contain the later video-audio coexistence setting. These facts establish
 folder selection and typed policy inputs, but not protected shuffle order,
 notification timing, decoder-specific behavior, or custom-theme overrides.
 
-Application startup video is a separate BigBox path. The recovered
+Application startup presentation is a separate BigBox path. The recovered
 `StartupVideoView` is a dedicated window whose constructor accepts the primary
 monitor index, selected playback engine, and video priorities; its control
 carries one video path, and `App` retains the startup-video process plus
-`GetStartupVideoPath()`. Release resources establish the observable storage
-contract in two steps: the original feature uses exact
+`GetStartupVideoPath()`. Release resources establish the observable video
+storage contract in two steps: the original feature uses exact
 `Videos\Startup.mp4` instead of the normal splash, while the later random-video
 feature uses direct files placed in `Videos\Startup`. The same release notes
 state that a selected video runs for its full length unless skipped with a key
 or button. The 13.27 settings contract exposes `VideoPlaybackEngine` and
 `VolumeVideo`; the older read-only snapshot stores VLC and volume 75. No
-separate enable scalar appears in that contract, and the inspected older
-installation contains neither startup location, so the port treats presence of
-a safe supported file as enablement and absence as a normal no-video outcome.
-These facts establish location precedence, random choice, completion/skip, and
-typed volume inputs. Protected bodies still prevent claims about the exact
-random generator, priority algorithm, error notification, splash timing,
-controller binding, theming, and monitor/focus behavior.
+separate video-enable scalar appears, and the inspected older installation
+contains neither video location, so the port treats presence of a safe
+supported file as enablement and absence as the no-video path.
+
+The no-video path has additional concrete evidence. Recovered
+`BigBoxSettings` properties and the value-free 13.27 schema contain
+`ShowStartupSplashScreen`, `PlayStartupSound`, `SoundPack`,
+`VolumeStartupSound`, and `VolumeMaster`. Fresh 13.27 Wine settings and the
+older real installation both store enabled splash and sound, startup/master
+volumes 100, and `Sci-Fi Set 3 by Clavius`. Installed sound packs demonstrate
+exact single-file `Sounds\<pack>\Startup.wav` and multi-file
+`Sounds\<pack>\Startup\*.wav` layouts. Release resources date separate startup
+volume to 6.10 and multiple sounds per sound type plus theme-packaged sounds to
+11.13. The recovered BigBox resource set also contains a proprietary
+transparent startup logo; it is evidence for the branded splash, not an asset
+the port redistributes.
+
+These facts establish video location precedence, random selection,
+completion/skip, the splash/sound toggles, selected pack, both installed WAV
+layouts, and typed volume inputs. They do not establish protected random
+generator details, video-priority behavior, whether startup sound coexists
+with a startup video, custom-theme sound precedence, exact artwork/animation
+timing, error notifications, controller binding, or monitor/focus behavior.
+The port therefore starts video alone when one is available and otherwise
+uses its own non-proprietary splash plus the selected standalone sound pack;
+those unresolved behaviors stay explicitly open.
 
 The implemented cross-platform boundary therefore keeps XML paths lexical,
 resolves them once through the existing native/mapped-Windows service, validates

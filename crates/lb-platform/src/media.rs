@@ -11,6 +11,7 @@ const MAX_PLATFORM_FOLDERS: usize = 4_096;
 const MAX_FILES_PER_FOLDER: usize = 100_000;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_VIDEO_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_SOUND_EFFECT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MANUAL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MUSIC_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_MUSIC_PLAYLIST_BYTES: u64 = 1024 * 1024;
@@ -18,6 +19,7 @@ const MAX_MEDIA_ITEMS: usize = 1_000_000;
 const MAX_MEDIA_ITEMS_PER_GAME: usize = 512;
 const MAX_MUSIC_TRACKS_PER_GAME: usize = 512;
 const MAX_STARTUP_VIDEOS: usize = 4_096;
+const MAX_STARTUP_SOUNDS: usize = 256;
 const MAX_BACKGROUND_MUSIC_CONTEXTS: usize = 4_096;
 const MAX_BACKGROUND_MUSIC_TRACKS_PER_CONTEXT: usize = 4_096;
 const MAX_MUSIC_PLAYLIST_ENTRIES: usize = 4_096;
@@ -66,6 +68,8 @@ const SUPPORTED_MUSIC_INDEX_EXTENSIONS: &[&str] = &[
     "aac", "ac3", "aiff", "alac", "amr", "ape", "dts", "flac", "it", "m3u", "m4a", "mod", "mp3",
     "nsf", "ogg", "opus", "qcp", "s3m", "sid", "spc", "wav", "wma", "xm",
 ];
+
+const SUPPORTED_STARTUP_SOUND_EXTENSIONS: &[&str] = &["wav"];
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum GameMediaKind {
@@ -310,29 +314,83 @@ impl BigBoxBackgroundMusicPolicy {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BigBoxStartupVideoPolicy {
-    pub volume_percent: u8,
+pub struct BigBoxStartupPresentationPolicy {
+    pub show_splash_screen: bool,
+    pub play_startup_sound: bool,
+    pub video_volume_percent: u8,
+    pub startup_sound_volume_percent: u8,
+    pub master_volume_percent: u8,
+    pub sound_pack: String,
 }
 
-impl Default for BigBoxStartupVideoPolicy {
+impl Default for BigBoxStartupPresentationPolicy {
     fn default() -> Self {
-        Self { volume_percent: 75 }
+        Self {
+            show_splash_screen: true,
+            play_startup_sound: true,
+            video_volume_percent: 75,
+            startup_sound_volume_percent: 100,
+            master_volume_percent: 100,
+            sound_pack: String::new(),
+        }
     }
 }
 
-impl BigBoxStartupVideoPolicy {
+impl BigBoxStartupPresentationPolicy {
     pub fn from_settings(settings: Option<&FrontendSettings>) -> Self {
         let fallback = Self::default();
         let Some(settings) = settings else {
             return fallback;
         };
-        let volume_percent = settings
+        let show_splash_screen = settings
+            .get_bool("ShowStartupSplashScreen")
+            .unwrap_or(fallback.show_splash_screen);
+        let play_startup_sound = settings
+            .get_bool("PlayStartupSound")
+            .unwrap_or(fallback.play_startup_sound);
+        let video_volume_percent = settings
             .get_i64("VolumeVideo")
             .and_then(|value| u8::try_from(value).ok())
             .filter(|value| *value <= 100)
-            .unwrap_or(fallback.volume_percent);
-        Self { volume_percent }
+            .unwrap_or(fallback.video_volume_percent);
+        let startup_sound_volume_percent = settings
+            .get_i64("VolumeStartupSound")
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|value| *value <= 100)
+            .unwrap_or(fallback.startup_sound_volume_percent);
+        let master_volume_percent = settings
+            .get_i64("VolumeMaster")
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|value| *value <= 100)
+            .unwrap_or(fallback.master_volume_percent);
+        let sound_pack = settings
+            .get("SoundPack")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| {
+                portable_storage_name(value)
+                    .ok()
+                    .filter(|safe| safe == value)
+                    .map(|_| value.to_string())
+            })
+            .unwrap_or_default();
+        Self {
+            show_splash_screen,
+            play_startup_sound,
+            video_volume_percent,
+            startup_sound_volume_percent,
+            master_volume_percent,
+            sound_pack,
+        }
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BigBoxStartupPresentationIndex {
+    pub video_paths: Vec<PathBuf>,
+    pub sound_paths: Vec<PathBuf>,
+    pub policy: BigBoxStartupPresentationPolicy,
+    pub report: GameSupplementalMediaIndexReport,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -344,10 +402,11 @@ pub struct GameSupplementalMediaIndex {
     pub background_music_paths_by_playlist: BTreeMap<String, Vec<PathBuf>>,
     pub background_music_paths_by_category: BTreeMap<String, Vec<PathBuf>>,
     pub startup_video_paths: Vec<PathBuf>,
+    pub startup_sound_paths: Vec<PathBuf>,
     pub launchbox_music_policy: LaunchBoxMusicPolicy,
     pub big_box_music_policy: BigBoxMusicPolicy,
     pub big_box_background_music_policy: BigBoxBackgroundMusicPolicy,
-    pub big_box_startup_video_policy: BigBoxStartupVideoPolicy,
+    pub big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy,
     pub report: GameSupplementalMediaIndexReport,
 }
 
@@ -360,6 +419,7 @@ pub struct GameSupplementalMediaIndexReport {
     pub indexed_music_tracks: usize,
     pub indexed_background_music_tracks: usize,
     pub indexed_startup_videos: usize,
+    pub indexed_startup_sounds: usize,
     pub expanded_music_playlists: usize,
     pub unresolved_folders: usize,
     pub unresolved_files: usize,
@@ -963,6 +1023,15 @@ pub fn index_game_supplemental_media(
         );
     let startup_video_paths = index_startup_videos(launchbox_root, path_resolver, &mut report);
     report.indexed_startup_videos = startup_video_paths.len();
+    let startup_sound_paths = index_startup_sounds(
+        launchbox_root,
+        big_box_settings
+            .and_then(|settings| settings.get("SoundPack"))
+            .unwrap_or_default(),
+        path_resolver,
+        &mut report,
+    );
+    report.indexed_startup_sounds = startup_sound_paths.len();
 
     GameSupplementalMediaIndex {
         manual_paths_by_game_id,
@@ -972,12 +1041,15 @@ pub fn index_game_supplemental_media(
         background_music_paths_by_playlist: background_music.playlist_paths,
         background_music_paths_by_category: background_music.category_paths,
         startup_video_paths,
+        startup_sound_paths,
         launchbox_music_policy: LaunchBoxMusicPolicy::from_settings(launchbox_settings),
         big_box_music_policy: BigBoxMusicPolicy::from_settings(big_box_settings),
         big_box_background_music_policy: BigBoxBackgroundMusicPolicy::from_settings(
             big_box_settings,
         ),
-        big_box_startup_video_policy: BigBoxStartupVideoPolicy::from_settings(big_box_settings),
+        big_box_startup_presentation_policy: BigBoxStartupPresentationPolicy::from_settings(
+            big_box_settings,
+        ),
         report,
     }
 }
@@ -994,6 +1066,30 @@ pub fn background_music_context_key(value: &str) -> String {
     portable_storage_name(value)
         .map(|value| normalized_key(&value))
         .unwrap_or_default()
+}
+
+pub fn index_big_box_startup_presentation(
+    launchbox_root: &Path,
+    big_box_settings: Option<&FrontendSettings>,
+    path_resolver: &dyn LaunchPathResolver,
+) -> BigBoxStartupPresentationIndex {
+    let mut report = GameSupplementalMediaIndexReport::default();
+    let video_paths = index_startup_videos(launchbox_root, path_resolver, &mut report);
+    report.indexed_startup_videos = video_paths.len();
+    let policy = BigBoxStartupPresentationPolicy::from_settings(big_box_settings);
+    let sound_paths = index_startup_sounds(
+        launchbox_root,
+        &policy.sound_pack,
+        path_resolver,
+        &mut report,
+    );
+    report.indexed_startup_sounds = sound_paths.len();
+    BigBoxStartupPresentationIndex {
+        video_paths,
+        sound_paths,
+        policy,
+        report,
+    }
 }
 
 fn index_startup_videos(
@@ -1035,6 +1131,73 @@ fn index_startup_videos(
         return paths;
     };
     if validate_supplemental_file(&legacy_path, &["mp4"], MAX_VIDEO_BYTES, report) {
+        report.scanned_files = report.scanned_files.saturating_add(1);
+        paths.push(legacy_path);
+    }
+    paths
+}
+
+fn index_startup_sounds(
+    launchbox_root: &Path,
+    sound_pack: &str,
+    path_resolver: &dyn LaunchPathResolver,
+    report: &mut GameSupplementalMediaIndexReport,
+) -> Vec<PathBuf> {
+    let sound_pack = sound_pack.trim();
+    if sound_pack.is_empty() {
+        return Vec::new();
+    }
+    let Ok(safe_sound_pack) = portable_storage_name(sound_pack) else {
+        report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+        return Vec::new();
+    };
+    if safe_sound_pack != sound_pack {
+        report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+        return Vec::new();
+    }
+
+    let pack_path = format!("Sounds/{safe_sound_pack}");
+    let Ok(pack_root) = path_resolver.resolve(launchbox_root, &pack_path) else {
+        report.unresolved_folders = report.unresolved_folders.saturating_add(1);
+        return Vec::new();
+    };
+    let startup_folder = pack_root.join("Startup");
+    let mut paths = Vec::new();
+    if let Some(entries) =
+        optional_safe_directory_entries(&startup_folder, MAX_STARTUP_SOUNDS, report)
+    {
+        for entry in entries {
+            let Ok(file_type) = entry.file_type() else {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                continue;
+            };
+            if file_type.is_symlink() || !file_type.is_file() {
+                report.unsafe_entries = report.unsafe_entries.saturating_add(1);
+                continue;
+            }
+            let path = entry.path();
+            if validate_supplemental_file(
+                &path,
+                SUPPORTED_STARTUP_SOUND_EXTENSIONS,
+                MAX_SOUND_EFFECT_BYTES,
+                report,
+            ) {
+                report.scanned_files = report.scanned_files.saturating_add(1);
+                paths.push(path);
+            }
+        }
+    }
+    if !paths.is_empty() {
+        return paths;
+    }
+
+    let legacy_path = pack_root.join("Startup.wav");
+    if validate_supplemental_file(
+        &legacy_path,
+        SUPPORTED_STARTUP_SOUND_EXTENSIONS,
+        MAX_SOUND_EFFECT_BYTES,
+        report,
+    ) {
         report.scanned_files = report.scanned_files.saturating_add(1);
         paths.push(legacy_path);
     }
@@ -2457,27 +2620,78 @@ mod tests {
             BigBoxBackgroundMusicPolicy::default()
         );
 
-        let startup_video = FrontendSettings {
-            entries: vec![SettingEntry {
-                key: "VolumeVideo".into(),
-                value: "61".into(),
-            }],
+        let startup_presentation = FrontendSettings {
+            entries: vec![
+                SettingEntry {
+                    key: "ShowStartupSplashScreen".into(),
+                    value: "false".into(),
+                },
+                SettingEntry {
+                    key: "PlayStartupSound".into(),
+                    value: "true".into(),
+                },
+                SettingEntry {
+                    key: "VolumeVideo".into(),
+                    value: "61".into(),
+                },
+                SettingEntry {
+                    key: "VolumeStartupSound".into(),
+                    value: "64".into(),
+                },
+                SettingEntry {
+                    key: "VolumeMaster".into(),
+                    value: "50".into(),
+                },
+                SettingEntry {
+                    key: "SoundPack".into(),
+                    value: "Fixture Sounds".into(),
+                },
+            ],
             ..FrontendSettings::default()
         };
         assert_eq!(
-            BigBoxStartupVideoPolicy::from_settings(Some(&startup_video)),
-            BigBoxStartupVideoPolicy { volume_percent: 61 }
+            BigBoxStartupPresentationPolicy::from_settings(Some(&startup_presentation)),
+            BigBoxStartupPresentationPolicy {
+                show_splash_screen: false,
+                play_startup_sound: true,
+                video_volume_percent: 61,
+                startup_sound_volume_percent: 64,
+                master_volume_percent: 50,
+                sound_pack: "Fixture Sounds".into(),
+            }
         );
-        let malformed_startup_video = FrontendSettings {
-            entries: vec![SettingEntry {
-                key: "VolumeVideo".into(),
-                value: "101".into(),
-            }],
+        let malformed_startup_presentation = FrontendSettings {
+            entries: vec![
+                SettingEntry {
+                    key: "ShowStartupSplashScreen".into(),
+                    value: "sometimes".into(),
+                },
+                SettingEntry {
+                    key: "PlayStartupSound".into(),
+                    value: String::new(),
+                },
+                SettingEntry {
+                    key: "VolumeVideo".into(),
+                    value: "101".into(),
+                },
+                SettingEntry {
+                    key: "VolumeStartupSound".into(),
+                    value: "-1".into(),
+                },
+                SettingEntry {
+                    key: "VolumeMaster".into(),
+                    value: "101".into(),
+                },
+                SettingEntry {
+                    key: "SoundPack".into(),
+                    value: "../Unsafe".into(),
+                },
+            ],
             ..FrontendSettings::default()
         };
         assert_eq!(
-            BigBoxStartupVideoPolicy::from_settings(Some(&malformed_startup_video)),
-            BigBoxStartupVideoPolicy::default()
+            BigBoxStartupPresentationPolicy::from_settings(Some(&malformed_startup_presentation)),
+            BigBoxStartupPresentationPolicy::default()
         );
     }
 
@@ -2535,6 +2749,78 @@ mod tests {
             [legacy_videos.join("Startup.mp4")]
         );
         assert_eq!(legacy_index.report.indexed_startup_videos, 1);
+    }
+
+    #[test]
+    fn startup_sounds_prefer_the_selected_packs_randomized_folder_then_legacy_wav() {
+        let directory = tempfile::tempdir().expect("temporary LaunchBox root");
+        let sounds = directory.path().join("Sounds/Fixture Sounds");
+        let randomized = sounds.join("Startup");
+        fs::create_dir_all(&randomized).expect("startup sound folder");
+        fs::write(sounds.join("Startup.wav"), b"legacy").expect("legacy startup sound");
+        fs::write(randomized.join("STARTUP002.wav"), b"second").expect("second startup sound");
+        fs::write(randomized.join("STARTUP001.WAV"), b"first").expect("first startup sound");
+        fs::write(randomized.join("Ignore.mp3"), b"unsupported").expect("unsupported sound");
+        fs::File::create(randomized.join("Oversized.wav"))
+            .and_then(|file| file.set_len(MAX_SOUND_EFFECT_BYTES + 1))
+            .expect("oversized sparse startup sound");
+        fs::create_dir(randomized.join("Nested")).expect("nested startup sound folder");
+        let configured = FrontendSettings {
+            entries: vec![SettingEntry {
+                key: "SoundPack".into(),
+                value: "Fixture Sounds".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+
+        let index = index_big_box_startup_presentation(
+            directory.path(),
+            Some(&configured),
+            &HostPathResolver::default(),
+        );
+        assert_eq!(
+            index.sound_paths,
+            [
+                randomized.join("STARTUP001.WAV"),
+                randomized.join("STARTUP002.wav"),
+            ],
+            "a non-empty multi-sound folder takes precedence over Startup.wav"
+        );
+        assert_eq!(index.report.indexed_startup_sounds, 2);
+        assert_eq!(index.report.oversized_files, 1);
+        assert_eq!(index.report.unsafe_entries, 1);
+
+        let legacy_directory = tempfile::tempdir().expect("legacy LaunchBox root");
+        let legacy_sounds = legacy_directory.path().join("Sounds/Fixture Sounds");
+        fs::create_dir_all(&legacy_sounds).expect("legacy sound pack");
+        fs::write(legacy_sounds.join("Startup.wav"), b"legacy").expect("legacy startup sound");
+        fs::write(legacy_sounds.join("Startup.mp3"), b"unsupported")
+            .expect("unsupported legacy startup sound");
+        let legacy_index = index_big_box_startup_presentation(
+            legacy_directory.path(),
+            Some(&configured),
+            &HostPathResolver::default(),
+        );
+        assert_eq!(
+            legacy_index.sound_paths,
+            [legacy_sounds.join("Startup.wav")]
+        );
+        assert_eq!(legacy_index.report.indexed_startup_sounds, 1);
+
+        let unsafe_settings = FrontendSettings {
+            entries: vec![SettingEntry {
+                key: "SoundPack".into(),
+                value: "../Fixture Sounds".into(),
+            }],
+            ..FrontendSettings::default()
+        };
+        let unsafe_index = index_big_box_startup_presentation(
+            directory.path(),
+            Some(&unsafe_settings),
+            &HostPathResolver::default(),
+        );
+        assert!(unsafe_index.sound_paths.is_empty());
+        assert!(unsafe_index.policy.sound_pack.is_empty());
     }
 
     #[test]
@@ -2715,18 +3001,26 @@ mod tests {
             .path()
             .join("Music/Background/Platforms/Fixture Console");
         let startup = directory.path().join("Videos/Startup");
+        let startup_sounds = directory.path().join("Sounds/Fixture Sounds/Startup");
         fs::create_dir_all(&background).expect("background music folder");
         fs::create_dir_all(&startup).expect("startup video folder");
+        fs::create_dir_all(&startup_sounds).expect("startup sound folder");
         fs::write(manuals.join("real.pdf"), b"manual").expect("manual");
         fs::write(music.join("real.mp3"), b"track").expect("track");
         fs::write(background.join("real.mp3"), b"background").expect("background track");
         fs::write(startup.join("real.mp4"), b"startup").expect("startup video");
+        fs::write(startup_sounds.join("real.wav"), b"startup sound").expect("startup sound");
         symlink(manuals.join("real.pdf"), manuals.join("linked.pdf")).expect("manual symlink");
         symlink(music.join("real.mp3"), music.join("linked.mp3")).expect("music symlink");
         symlink(background.join("real.mp3"), background.join("linked.mp3"))
             .expect("background track symlink");
         symlink(startup.join("real.mp4"), startup.join("linked.mp4"))
             .expect("startup video symlink");
+        symlink(
+            startup_sounds.join("real.wav"),
+            startup_sounds.join("linked.wav"),
+        )
+        .expect("startup sound symlink");
         symlink(&manuals, directory.path().join("Linked Manuals")).expect("folder symlink");
         symlink(
             &background,
@@ -2751,13 +3045,20 @@ mod tests {
                 folder_path: r"Music\Fixture Console".into(),
             },
         ];
+        let big_box_settings = FrontendSettings {
+            entries: vec![SettingEntry {
+                key: "SoundPack".into(),
+                value: "Fixture Sounds".into(),
+            }],
+            ..FrontendSettings::default()
+        };
 
         let index = index_game_supplemental_media(
             directory.path(),
             &[fixture],
             &folders,
             None,
-            None,
+            Some(&big_box_settings),
             &HostPathResolver::default(),
         );
         assert!(index.manual_paths_by_game_id.is_empty());
@@ -2772,7 +3073,8 @@ mod tests {
             .get(&background_music_context_key("Linked Console"))
             .is_none());
         assert_eq!(index.startup_video_paths, [startup.join("real.mp4")]);
-        assert!(index.report.unsafe_entries >= 7);
+        assert_eq!(index.startup_sound_paths, [startup_sounds.join("real.wav")]);
+        assert!(index.report.unsafe_entries >= 8);
     }
 
     #[cfg(unix)]

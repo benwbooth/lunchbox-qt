@@ -3,6 +3,11 @@
   <BigBoxSettings>
     <Theme>Fixture BigBox Theme</Theme>
     <EnableAttractMode>true</EnableAttractMode>
+    <ShowStartupSplashScreen>true</ShowStartupSplashScreen>
+    <PlayStartupSound>true</PlayStartupSound>
+    <SoundPack>Fixture Sounds</SoundPack>
+    <VolumeStartupSound>64</VolumeStartupSound>
+    <VolumeMaster>50</VolumeMaster>
     <UseStartupScreen>true</UseStartupScreen>
     <StartupTheme>Fixture BigBox Startup</StartupTheme>
     <MinimumStartupScreenDisplayTime>700</MinimumStartupScreenDisplayTime>

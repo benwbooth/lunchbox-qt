@@ -691,6 +691,15 @@ fn load_settings(
     parse_settings(path, &root, record_name).map(Some)
 }
 
+/// Loads only the small BigBox settings document without indexing the game
+/// library. Application-start presentation uses this before the background
+/// library load so startup media can begin immediately.
+pub fn load_big_box_settings_file(
+    path: impl AsRef<Path>,
+) -> Result<Option<FrontendSettings>, StorageError> {
+    load_settings(path.as_ref(), "BigBoxSettings")
+}
+
 fn parse_settings(
     path: &Path,
     root: &Element,
@@ -1097,8 +1106,13 @@ mod tests {
         assert_eq!(settings.image_type_settings.len(), 1);
 
         let big_box = index.big_box_settings().expect("BigBox settings");
-        assert_eq!(big_box.entries.len(), 29);
+        assert_eq!(big_box.entries.len(), 34);
         assert_eq!(big_box.get_bool("EnableAttractMode"), Some(true));
+        assert_eq!(big_box.get_bool("ShowStartupSplashScreen"), Some(true));
+        assert_eq!(big_box.get_bool("PlayStartupSound"), Some(true));
+        assert_eq!(big_box.get("SoundPack"), Some("Fixture Sounds"));
+        assert_eq!(big_box.get_i64("VolumeStartupSound"), Some(64));
+        assert_eq!(big_box.get_i64("VolumeMaster"), Some(50));
         assert_eq!(
             big_box.get_bool("ShowGameMenuViewModelFullscreen"),
             Some(true)
@@ -1128,5 +1142,11 @@ mod tests {
         assert_eq!(big_box.get_i64("VolumeMusic"), Some(75));
         assert_eq!(big_box.get_bool("ShowGameMenuFlipBox"), Some(true));
         assert_eq!(big_box.get("KeyboardFlipBox"), Some("49"));
+
+        let startup_only =
+            load_big_box_settings_file(directory.path().join("Data/BigBoxSettings.xml"))
+                .expect("load only BigBox settings")
+                .expect("BigBox settings document");
+        assert_eq!(startup_only, *big_box);
     }
 }

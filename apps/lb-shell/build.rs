@@ -10,7 +10,7 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/ModelSettingsEditor.qml");
     println!("cargo:rerun-if-changed=qml/GameMusicPlayer.qml");
     println!("cargo:rerun-if-changed=qml/BackgroundMusicPlayer.qml");
-    println!("cargo:rerun-if-changed=qml/BigBoxStartupVideo.qml");
+    println!("cargo:rerun-if-changed=qml/BigBoxStartupPresentation.qml");
     println!("cargo:rerun-if-changed=qml/LaunchStartupOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchShutdownOverlay.qml");
     println!("cargo:rerun-if-changed=qml/LaunchPauseOverlay.qml");
@@ -30,7 +30,7 @@ fn main() {
                 "qml/ModelSettingsEditor.qml",
                 "qml/GameMusicPlayer.qml",
                 "qml/BackgroundMusicPlayer.qml",
-                "qml/BigBoxStartupVideo.qml",
+                "qml/BigBoxStartupPresentation.qml",
                 "qml/LaunchStartupOverlay.qml",
                 "qml/LaunchShutdownOverlay.qml",
                 "qml/LaunchPauseOverlay.qml",
