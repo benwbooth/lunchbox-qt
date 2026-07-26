@@ -203,6 +203,20 @@ ApplicationWindow {
     property bool gameActionsSmokeFinished: false
     property string gameActionsScreenshotPath:
         argumentValue("--bigbox-game-actions-screenshot")
+    property bool playlistActionsSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--bigbox-playlist-actions-smoke-test") >= 0
+    property int playlistActionsSmokePhase: 0
+    property int playlistActionsSmokeStartRevision: -1
+    property string playlistActionsSmokeGameId: ""
+    property string playlistActionsSmokePlaylistId: ""
+    property int playlistActionsSmokeAddTargetCount: 0
+    property bool playlistActionsSmokePopupSeen: false
+    property bool playlistActionsSmokeBlockedSeen: false
+    property bool playlistActionsSmokeScreenshotRequested: false
+    property bool playlistActionsSmokeFinished: false
+    property string playlistActionsSmokeScreenshotPath:
+        argumentValue("--bigbox-playlist-actions-screenshot")
     property bool gameDetailsMediaSmokeTest:
         Qt.application.arguments.indexOf(
             "--bigbox-game-details-media-smoke-test") >= 0
@@ -304,6 +318,23 @@ ApplicationWindow {
     property int selectedBigBoxGameCommunityVotes: 0
     property url selectedBigBoxGameFrontImageUrl
     property bool selectedBigBoxGameBoxBackVisible: false
+    property var selectedBigBoxPlaylistAction: ({
+        version: 1,
+        gameId: "",
+        addTargets: [],
+        removeCurrent: null
+    })
+    readonly property int selectedBigBoxPlaylistAddTargetCount:
+        selectedBigBoxPlaylistAction !== null
+        && Array.isArray(selectedBigBoxPlaylistAction.addTargets)
+        ? selectedBigBoxPlaylistAction.addTargets.length : 0
+    readonly property var selectedBigBoxPlaylistRemoveCurrent:
+        selectedBigBoxPlaylistAction !== null
+        ? selectedBigBoxPlaylistAction.removeCurrent : null
+    readonly property int playlistMembershipRevision:
+        controller.big_box_playlist_membership_revision
+    onPlaylistMembershipRevisionChanged: Qt.callLater(
+        window.refreshSelectedBigBoxPlaylistAction)
     property int runtimeMasterVolumePercent: 100
     readonly property url selectedBigBoxGameBackImageUrl: {
         const revision = controller.game_media_revision
@@ -548,8 +579,31 @@ ApplicationWindow {
         Qt.exit(exitCode)
     }
 
+    function failPlaylistActionsSmoke(message, exitCode) {
+        console.error(message
+                      + " phase=" + playlistActionsSmokePhase
+                      + " game=" + selectedBigBoxGameId
+                      + " filter=" + controller.navigation_filter_kind
+                      + ":" + controller.navigation_filter_key
+                      + " targets="
+                      + selectedBigBoxPlaylistAddTargetCount
+                      + " remove="
+                      + (selectedBigBoxPlaylistRemoveCurrent === null
+                         ? "none"
+                         : selectedBigBoxPlaylistRemoveCurrent.playlistId)
+                      + " locked=" + controller.big_box_locked
+                      + " revision="
+                      + controller.big_box_playlist_membership_revision
+                      + " writing=" + controller.writing
+                      + " status=" + controller.status_message)
+        securitySmokeAborting = true
+        Qt.exit(exitCode)
+    }
+
     function closeBigBoxSurface() {
-        if (bigBoxStarRatingPopup.opened) {
+        if (bigBoxPlaylistPopup.opened) {
+            bigBoxPlaylistPopup.cancelEntry()
+        } else if (bigBoxStarRatingPopup.opened) {
             bigBoxStarRatingPopup.cancelEntry()
         } else if (bigBoxSecuritySettings.opened) {
             bigBoxSecuritySettings.close()
@@ -663,6 +717,8 @@ ApplicationWindow {
             return bigBoxUnlockPopup.handleAction(action)
         if (bigBoxSecuritySettings.opened)
             return bigBoxSecuritySettings.handleAction(action)
+        if (bigBoxPlaylistPopup.opened)
+            return bigBoxPlaylistPopup.handleAction(action)
         if (bigBoxStarRatingPopup.opened)
             return bigBoxStarRatingPopup.handleAction(action)
         if (action === "BigBoxLockUnlock")
@@ -1129,6 +1185,68 @@ ApplicationWindow {
         return true
     }
 
+    function refreshSelectedBigBoxPlaylistAction() {
+        const emptyPayload = {
+            version: 1,
+            gameId: selectedBigBoxGameId,
+            addTargets: [],
+            removeCurrent: null
+        }
+        if (selectedBigBoxGameId.length === 0
+                || gameList.currentIndex < 0) {
+            selectedBigBoxPlaylistAction = emptyPayload
+            return false
+        }
+        let payload
+        try {
+            payload = JSON.parse(
+                controller.big_box_playlist_action_json(
+                    gameList.currentIndex,
+                    selectedBigBoxGameId))
+        } catch (error) {
+            selectedBigBoxPlaylistAction = emptyPayload
+            return false
+        }
+        if (payload === null
+                || payload.version !== 1
+                || payload.gameId !== selectedBigBoxGameId
+                || !Array.isArray(payload.addTargets)) {
+            selectedBigBoxPlaylistAction = emptyPayload
+            return false
+        }
+        selectedBigBoxPlaylistAction = payload
+        return true
+    }
+
+    function openSelectedPlaylistPopup() {
+        if (!controller.big_box_show_game_menu_playlist_actions
+                || selectedBigBoxPlaylistAddTargetCount <= 0
+                || selectedBigBoxGameId.length === 0
+                || controller.loading || controller.writing
+                || !guardSecurityAction("BigBoxPlaylistActions"))
+            return false
+        const count = bigBoxPlaylistPopup.openForGame(
+            gameList.currentIndex,
+            selectedBigBoxGameId,
+            selectedBigBoxGameTitle,
+            JSON.stringify(selectedBigBoxPlaylistAction))
+        return count > 0
+    }
+
+    function removeSelectedFromCurrentPlaylist() {
+        if (!controller.big_box_show_game_menu_playlist_actions
+                || selectedBigBoxPlaylistRemoveCurrent === null
+                || selectedBigBoxGameId.length === 0
+                || controller.loading || controller.writing
+                || !guardSecurityAction("BigBoxPlaylistActions"))
+            return false
+        return controller.update_big_box_playlist_membership(
+            gameList.currentIndex,
+            selectedBigBoxGameId,
+            selectedBigBoxPlaylistRemoveCurrent.playlistId,
+            false)
+    }
+
     function formatPlayTime(seconds) {
         const totalMinutes = Math.floor(Math.max(0, seconds) / 60)
         const hours = Math.floor(totalMinutes / 60)
@@ -1157,6 +1275,12 @@ ApplicationWindow {
         selectedBigBoxGameCommunityVotes = 0
         selectedBigBoxGameFrontImageUrl = ""
         selectedBigBoxGameBoxBackVisible = false
+        selectedBigBoxPlaylistAction = {
+            version: 1,
+            gameId: "",
+            addTargets: [],
+            removeCurrent: null
+        }
     }
 
     function showLaunchWithSelection() {
@@ -3988,6 +4112,207 @@ ApplicationWindow {
             740 + window.gameActionsSmokePhase)
     }
 
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.playlistActionsSmokeTest
+                 && !window.playlistActionsSmokeFinished
+        onTriggered: {
+            if (controller.loading
+                    || window.startupPresentationPending
+                    || controller.library_path.length === 0)
+                return
+            if (window.playlistActionsSmokePhase === 0) {
+                if (window.selectedBigBoxGameId.length === 0)
+                    return
+                window.refreshSelectedBigBoxPlaylistAction()
+                const payload = window.selectedBigBoxPlaylistAction
+                if (window.selectedBigBoxGameId
+                        !== "fixture-adventure"
+                        || !controller.big_box_locked
+                        || !controller
+                            .big_box_show_game_menu_playlist_actions
+                        || window.selectedBigBoxPlaylistAddTargetCount
+                           !== 1
+                        || payload.addTargets[0].playlistId
+                           !== "manual-playlist"
+                        || payload.removeCurrent !== null
+                        || window.securityActionAllowed(
+                            "BigBoxPlaylistActions")) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_INITIAL_MISMATCH",
+                        750)
+                    return
+                }
+                window.playlistActionsSmokeStartRevision =
+                    controller.big_box_playlist_membership_revision
+                window.playlistActionsSmokeGameId =
+                    window.selectedBigBoxGameId
+                window.playlistActionsSmokePlaylistId =
+                    payload.addTargets[0].playlistId
+                window.playlistActionsSmokeAddTargetCount =
+                    window.selectedBigBoxPlaylistAddTargetCount
+                if (window.guardSecurityAction(
+                        "BigBoxPlaylistActions")) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_LOCKED_ACTION_ESCAPED",
+                        751)
+                    return
+                }
+                window.playlistActionsSmokeBlockedSeen = true
+                if (!window.requestLockUnlock()) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_UNLOCK_POPUP_MISSING",
+                        752)
+                    return
+                }
+                window.playlistActionsSmokePhase = 1
+            } else if (window.playlistActionsSmokePhase === 1) {
+                if (!bigBoxUnlockPopup.opened)
+                    return
+                if (!bigBoxUnlockPopup.runSmokeEntry("2580")) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_UNLOCK_FAILED",
+                        753)
+                    return
+                }
+                window.playlistActionsSmokePhase = 2
+            } else if (window.playlistActionsSmokePhase === 2) {
+                if (controller.big_box_locked
+                        || bigBoxUnlockPopup.opened)
+                    return
+                window.refreshSelectedBigBoxPlaylistAction()
+                if (!window.openSelectedPlaylistPopup()) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_POPUP_MISSING",
+                        754)
+                    return
+                }
+                window.playlistActionsSmokePhase = 3
+            } else if (window.playlistActionsSmokePhase === 3) {
+                if (!bigBoxPlaylistPopup.opened)
+                    return
+                window.playlistActionsSmokePopupSeen = true
+                if (window.playlistActionsSmokeScreenshotPath.length
+                        === 0) {
+                    window.playlistActionsSmokePhase = 4
+                    return
+                }
+                if (window.playlistActionsSmokeScreenshotRequested)
+                    return
+                window.playlistActionsSmokeScreenshotRequested = true
+                bigBoxPlaylistPopup.smokeCaptureTarget.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window
+                                .playlistActionsSmokeScreenshotPath)) {
+                            window.failPlaylistActionsSmoke(
+                                "BIGBOX_PLAYLIST_ACTIONS_SCREENSHOT_FAILED",
+                                755)
+                            return
+                        }
+                        window.playlistActionsSmokePhase = 4
+                    })
+            } else if (window.playlistActionsSmokePhase === 4) {
+                if (!bigBoxPlaylistPopup.opened
+                        || !bigBoxPlaylistPopup.runSmokeSelect(0)) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_ADD_FAILED",
+                        756)
+                    return
+                }
+                window.playlistActionsSmokePhase = 5
+            } else if (window.playlistActionsSmokePhase === 5) {
+                if (controller.writing
+                        || controller
+                           .big_box_playlist_membership_revision
+                           !== window
+                              .playlistActionsSmokeStartRevision + 1)
+                    return
+                window.refreshSelectedBigBoxPlaylistAction()
+                if (window.selectedBigBoxPlaylistAddTargetCount
+                        !== 0) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_ADD_COMMIT_MISMATCH",
+                        757)
+                    return
+                }
+                const index = window.bigBoxNavigationIndex(
+                    "playlist",
+                    window.playlistActionsSmokePlaylistId)
+                if (index < 0
+                        || !window.activateNavigationRow(index + 1)) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_NAVIGATION_MISSING",
+                        758)
+                    return
+                }
+                window.playlistActionsSmokePhase = 6
+            } else if (window.playlistActionsSmokePhase === 6) {
+                if (controller.navigation_filter_kind
+                        !== "playlist"
+                        || controller.navigation_filter_key
+                           !== window
+                              .playlistActionsSmokePlaylistId
+                        || window.selectedBigBoxGameId
+                           !== window.playlistActionsSmokeGameId)
+                    return
+                window.refreshSelectedBigBoxPlaylistAction()
+                if (window.selectedBigBoxPlaylistRemoveCurrent
+                        === null
+                        || window
+                           .selectedBigBoxPlaylistRemoveCurrent
+                           .playlistId
+                           !== window
+                              .playlistActionsSmokePlaylistId
+                        || !window
+                            .removeSelectedFromCurrentPlaylist()) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_REMOVE_FAILED",
+                        759)
+                    return
+                }
+                window.playlistActionsSmokePhase = 7
+            } else if (window.playlistActionsSmokePhase === 7) {
+                if (controller.writing
+                        || controller
+                           .big_box_playlist_membership_revision
+                           !== window
+                              .playlistActionsSmokeStartRevision + 2
+                        || controller.filtered_count !== 1
+                        || window.selectedBigBoxGameId
+                           !== "fixture-puzzle")
+                    return
+                if (!controller
+                        .report_big_box_playlist_actions_smoke_success(
+                            window
+                            .playlistActionsSmokeStartRevision,
+                            window.playlistActionsSmokeGameId,
+                            window.playlistActionsSmokePlaylistId,
+                            window.playlistActionsSmokePopupSeen,
+                            window.playlistActionsSmokeBlockedSeen,
+                            window
+                            .playlistActionsSmokeAddTargetCount)) {
+                    window.failPlaylistActionsSmoke(
+                        "BIGBOX_PLAYLIST_ACTIONS_CONTROLLER_REJECTED",
+                        760)
+                    return
+                }
+                window.playlistActionsSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.playlistActionsSmokeTest
+                 && !window.playlistActionsSmokeFinished
+        onTriggered: window.failPlaylistActionsSmoke(
+            "BIGBOX_PLAYLIST_ACTIONS_SMOKE_TIMEOUT",
+            761 + window.playlistActionsSmokePhase)
+    }
+
     Rectangle {
         anchors.fill: parent
         gradient: Gradient {
@@ -4455,6 +4780,7 @@ ApplicationWindow {
                             gameCommunityStarRatingTotalVotes
                         window.selectedBigBoxGameFrontImageUrl =
                             gameFrontImageUrl
+                        window.refreshSelectedBigBoxPlaylistAction()
                         if (controller
                                 .big_box_auto_play_music_games_list)
                             Qt.callLater(
@@ -4724,6 +5050,48 @@ ApplicationWindow {
                              "BigBoxSetStarRating")
                 Accessible.name: "Set selected game star rating"
                 onClicked: window.openSelectedStarRating()
+            }
+            Button {
+                id: bigBoxAddToPlaylistButton
+                text: "ADD TO PLAYLIST"
+                visible:
+                    controller.big_box_show_game_menu_playlist_actions
+                    && window.selectedBigBoxGameId.length > 0
+                    && window.selectedBigBoxPlaylistAddTargetCount > 0
+                enabled: visible
+                         && !controller.loading
+                         && !controller.writing
+                         && window.securityActionAllowed(
+                             "BigBoxPlaylistActions")
+                Accessible.name: "Add selected game to a playlist"
+                onClicked: window.openSelectedPlaylistPopup()
+            }
+            Button {
+                id: bigBoxRemoveFromPlaylistButton
+                text: window.selectedBigBoxPlaylistRemoveCurrent === null
+                      ? "REMOVE FROM PLAYLIST"
+                      : "REMOVE FROM "
+                        + window
+                          .selectedBigBoxPlaylistRemoveCurrent.name
+                          .toUpperCase()
+                visible:
+                    controller.big_box_show_game_menu_playlist_actions
+                    && window.selectedBigBoxGameId.length > 0
+                    && window.selectedBigBoxPlaylistRemoveCurrent
+                       !== null
+                enabled: visible
+                         && !controller.loading
+                         && !controller.writing
+                         && window.securityActionAllowed(
+                             "BigBoxPlaylistActions")
+                Accessible.name:
+                    window.selectedBigBoxPlaylistRemoveCurrent === null
+                    ? "Remove selected game from playlist"
+                    : "Remove selected game from "
+                      + window
+                        .selectedBigBoxPlaylistRemoveCurrent.name
+                onClicked:
+                    window.removeSelectedFromCurrentPlaylist()
             }
             Button {
                 id: bigBoxImagesButton
@@ -6085,6 +6453,7 @@ ApplicationWindow {
             || navigationDrawer.opened
             || launchWithDialog.opened
             || bigBoxUnlockPopup.opened
+            || bigBoxPlaylistPopup.opened
             || bigBoxStarRatingPopup.opened
             || bigBoxSecuritySettings.opened
             || bigBoxAttractMode.active
@@ -6123,6 +6492,7 @@ ApplicationWindow {
             || navigationDrawer.opened
             || launchWithDialog.opened
             || bigBoxUnlockPopup.opened
+            || bigBoxPlaylistPopup.opened
             || bigBoxStarRatingPopup.opened
             || bigBoxSecuritySettings.opened
             || bigBoxScreensaver.active
@@ -7191,6 +7561,19 @@ ApplicationWindow {
         onCancelled: gameList.forceActiveFocus()
     }
 
+    BigBoxPlaylistPopup {
+        id: bigBoxPlaylistPopup
+        busy: controller.writing
+
+        onSelected: function(row, gameId, playlistId) {
+            controller.update_big_box_playlist_membership(
+                        row, gameId, playlistId, true)
+            gameList.forceActiveFocus()
+        }
+
+        onCancelled: gameList.forceActiveFocus()
+    }
+
     BigBoxMarqueeWindow {
         id: bigBoxMarquee
         controller: controller
@@ -7230,6 +7613,7 @@ ApplicationWindow {
                  && !bigBoxMarqueeSettings.opened
                  && !bigBoxSecuritySettings.opened
                  && !bigBoxUnlockPopup.opened
+                 && !bigBoxPlaylistPopup.opened
                  && !bigBoxStarRatingPopup.opened
         onActivated: window.showLaunchWithSelection()
     }
@@ -7243,6 +7627,7 @@ ApplicationWindow {
                  && !bigBoxMarqueeSettings.opened
                  && !bigBoxSecuritySettings.opened
                  && !bigBoxUnlockPopup.opened
+                 && !bigBoxPlaylistPopup.opened
                  && !bigBoxStarRatingPopup.opened
                  && window.navigationAccessAvailable()
         onActivated: {

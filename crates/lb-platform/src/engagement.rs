@@ -6,14 +6,17 @@ const HALF_STAR_EPSILON: f64 = 1.0e-9;
 
 /// Recovered LaunchBox 13.27 BigBox settings that govern favorites and ratings.
 ///
-/// All six values are `true` in three independent fresh 13.27 installations.
-/// Missing or malformed settings therefore fall back to the observed defaults.
+/// Six values are serialized as `true` in three independent fresh 13.27
+/// installations. `ShowGameMenuPlaylistActions` is omitted there and its
+/// recovered 13.27 settings getter defaults to `true`. Missing or malformed
+/// settings therefore fall back to those observed defaults.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BigBoxGameActionPolicy {
     pub show_star_next_to_favorited_games: bool,
     pub show_favorited_games_first: bool,
     pub show_game_favorite: bool,
     pub show_game_menu_favorite: bool,
+    pub show_game_menu_playlist_actions: bool,
     pub show_game_menu_star_rating: bool,
     pub show_game_star_rating: bool,
 }
@@ -25,6 +28,7 @@ impl Default for BigBoxGameActionPolicy {
             show_favorited_games_first: true,
             show_game_favorite: true,
             show_game_menu_favorite: true,
+            show_game_menu_playlist_actions: true,
             show_game_menu_star_rating: true,
             show_game_star_rating: true,
         }
@@ -50,6 +54,9 @@ impl BigBoxGameActionPolicy {
             show_game_menu_favorite: settings
                 .get_bool("ShowGameMenuFavorite")
                 .unwrap_or(fallback.show_game_menu_favorite),
+            show_game_menu_playlist_actions: settings
+                .get_bool("ShowGameMenuPlaylistActions")
+                .unwrap_or(fallback.show_game_menu_playlist_actions),
             show_game_menu_star_rating: settings
                 .get_bool("ShowGameMenuStarRating")
                 .unwrap_or(fallback.show_game_menu_star_rating),
@@ -127,12 +134,13 @@ mod tests {
     }
 
     #[test]
-    fn defaults_match_three_fresh_launchbox_13_27_installations() {
+    fn defaults_match_recovered_launchbox_13_27_values() {
         let policy = BigBoxGameActionPolicy::from_settings(None);
         assert!(policy.show_star_next_to_favorited_games);
         assert!(policy.show_favorited_games_first);
         assert!(policy.show_game_favorite);
         assert!(policy.show_game_menu_favorite);
+        assert!(policy.show_game_menu_playlist_actions);
         assert!(policy.show_game_menu_star_rating);
         assert!(policy.show_game_star_rating);
     }
@@ -144,6 +152,7 @@ mod tests {
             ("ShowFavoritedGamesFirst", "FALSE"),
             ("ShowGameFavorite", "sometimes"),
             ("ShowGameMenuFavorite", "false"),
+            ("ShowGameMenuPlaylistActions", "false"),
             ("ShowGameMenuStarRating", "false"),
             ("ShowGameStarRating", "false"),
         ])));
@@ -151,6 +160,7 @@ mod tests {
         assert!(!policy.show_favorited_games_first);
         assert!(policy.show_game_favorite);
         assert!(!policy.show_game_menu_favorite);
+        assert!(!policy.show_game_menu_playlist_actions);
         assert!(!policy.show_game_menu_star_rating);
         assert!(!policy.show_game_star_rating);
     }

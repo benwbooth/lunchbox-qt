@@ -400,14 +400,15 @@ bypassed; permissions for features not yet ported and native Windows/macOS Qt
 interaction remain later parity work. The evidence boundary is recorded in
 `analysis/security-13.27.md`.
 
-The current `BB-017` slice implements native BigBox favorites and half-star
-ratings. A typed Rust policy owns the six recovered visibility/order settings,
-observed defaults, stable favorite-first projection, and finite 0-through-5
-half-star validation. The wheel, details, and game menu honor the independent
-settings, while the existing security policy maps the two actions to
-FavoriteGames and SetStarRating. A centered Qt popup follows the recovered
-faded/bright five-star structure and supports keyboard, mapped-controller, and
-pointer input.
+The current `BB-017` slices implement native BigBox favorites, half-star
+ratings, and selected-game manual-playlist membership. A typed Rust policy owns
+six observed favorite/rating defaults plus the omitted-but-getter-defaulted
+playlist-action setting, stable favorite-first projection, and finite
+0-through-5 half-star validation. The wheel, details, and game menu honor the
+independent settings, while the existing security policy maps Favorite/Rating
+to FavoriteGames and SetStarRating. The centered Qt star and list popups follow
+the recovered faded/bright-star and dark blue-selection structures and support
+keyboard, mapped-controller, and pointer input.
 
 One platform-document transaction updates Favorite, legacy integer
 `StarRating`, and `StarRatingFloat` together, retains completion and unknown
@@ -418,10 +419,22 @@ interaction starts locked, proves a denied Favorite action, renders the real
 4.5 popup, commits 2.5, unlocks, removes Favorite, and validates the exact
 original/intermediate backups plus final XML. The half-star increment is
 explicit port-owned policy because protected stepping behavior is unavailable.
-The shared path contains no runtime shell or OS-specific path/UI code.
-Playlists, discovery/random behavior, related games, custom-theme bindings, and
-native Windows/macOS Qt interaction remain later parity work. Evidence is in
-`analysis/game-actions-13.27.md`.
+
+Playlist targets are restricted to manual, non-generated documents and only
+show actual membership changes. A typed `PlaylistGame` mutation rejects
+derived playlists, retains filters and unknown XML, uses one recoverable
+auxiliary-document transaction, selects its exact backup, rereads the committed
+playlist, refreshes live playlist filtering, and publishes a separate
+revision. The append row uses `ManualOrder=-1`, observed on later-added rows in
+the older real installation, because the protected 13.27 assignment is
+unavailable. With no matching recovered locked-mode permission, the central
+policy fails the action closed. Pure tests and a second compiled interaction
+prove deterministic manual targets, derived exclusion, locked denial, rendered
+selection, add, real playlist navigation, remove, two exact backup states,
+unknown-field retention, immutable peers, and no recovery manifest. The shared
+path contains no runtime shell or OS-specific path/UI code. Discovery behavior,
+related games, custom-theme bindings, and native Windows/macOS Qt interaction
+remain later parity work. Evidence is in `analysis/game-actions-13.27.md`.
 
 The current `BB-012` slice recovers the complete 59-action BigBox input
 vocabulary, every action-specific zero/one/four keyboard-slot contract, the

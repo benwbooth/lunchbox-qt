@@ -134,18 +134,22 @@ Premium entitlement remains separate and is not bypassed. Recovered defaults,
 the keypad evidence, clean-room 32-digit safety bound, and remaining parity
 gates are documented in `analysis/security-13.27.md`.
 
-BigBox now also has native favorite and half-star rating actions for the first
-`BB-017` slice. The wheel, details, and game menu independently honor the six
-recovered visibility/order settings; favorite-first ordering is stable; and
-the centered Qt popup renders a fractional five-star overlay with keyboard,
-mapped-controller, and pointer controls. Favorite, legacy integer rating, and
-floating rating are committed together through a lossless platform transaction
-with an exact backup and committed reread. Existing completion and unknown XML
-remain untouched. The actions use the recovered FavoriteGames and
-SetStarRating security gates. This shared Rust/CXX-Qt/QML path has no runtime
-shell, Windows path rule, or OS-specific UI branch. The evidence, explicit
-clean-room half-star policy, compiled interaction coverage, and still-open
-playlists/discovery/related-game work are recorded in
+BigBox now also has native favorite, half-star rating, and manual-playlist
+membership actions for the current `BB-017` slice. The wheel, details, and game
+menu independently honor the seven recovered visibility/order settings;
+favorite-first ordering is stable; and the centered Qt star and list popups
+accept keyboard, mapped-controller, and pointer controls. Favorite and both
+rating fields are committed together through a lossless platform transaction.
+Add/Remove Playlist targets only manual, non-generated playlists, uses typed
+`PlaylistGame` rows, and commits the exact auxiliary document through the same
+recoverable transaction boundary. Both paths retain exact backups, reread and
+verify committed state, preserve unrelated and unknown XML, and publish live
+revisions. Favorite/Rating use the recovered security permissions; playlist
+membership fails closed while locked because no matching recovered permission
+exists. This shared Rust/CXX-Qt/QML path has no runtime shell, Windows path
+rule, or OS-specific UI branch. The evidence, explicit clean-room half-star and
+append-order policies, compiled interaction coverage, and still-open
+discovery/related-game work are recorded in
 `analysis/game-actions-13.27.md`.
 
 LaunchBox also has a resizable selected-game details pane backed directly by
