@@ -1061,9 +1061,10 @@ mod tests {
 
         let index = LaunchBoxDataIndex::load(directory.path()).expect("load complete fixture");
         let settings = index.settings().expect("LaunchBox settings");
-        assert_eq!(settings.entries.len(), 26);
+        assert_eq!(settings.entries.len(), 27);
         assert_eq!(settings.get("Theme"), Some("Fixture Theme"));
         assert_eq!(settings.get_bool("DebugLog"), Some(false));
+        assert_eq!(settings.get_bool("AutoBackup"), Some(false));
         assert_eq!(settings.get_bool("UseStartupScreen"), Some(true));
         assert_eq!(settings.get_bool("ShowDetails3dModel"), Some(true));
         assert_eq!(

@@ -3,6 +3,7 @@
   <Settings>
     <Theme>Fixture Theme</Theme>
     <DebugLog>false</DebugLog>
+    <AutoBackup>false</AutoBackup>
     <UseStartupScreen>true</UseStartupScreen>
     <StartupTheme>Fixture Desktop Startup</StartupTheme>
     <MinimumStartupScreenDisplayTime>600</MinimumStartupScreenDisplayTime>

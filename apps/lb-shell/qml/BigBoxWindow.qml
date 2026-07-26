@@ -16,11 +16,18 @@ ApplicationWindow {
     title: "BigBox Port"
     color: "#07090d"
     onClosing: function(close) {
-        if (!window.securitySmokeAborting
+        if (!window.applicationClosing
+                && !window.securitySmokeAborting
                 && !window.guardSecurityAction("BigBoxExit")) {
             close.accepted = false
             return
         }
+        if (!window.applicationClosing)
+            window.requestApplicationExit()
+        close.accepted = controller.application_shutdown_backup_ready
+    }
+
+    function stopForApplicationExit() {
         bigBoxScreensaver.stopMode("frontend")
         bigBoxAttractMode.stopMode("frontend")
         startupPresentationOverlay.stopForFrontend()
@@ -29,7 +36,21 @@ ApplicationWindow {
         bigBoxMarquee.requestedVisible = false
         bigBoxMarquee.stopPlayback()
     }
+
+    function requestApplicationExit() {
+        if (!window.applicationClosing) {
+            window.applicationClosing = true
+            window.stopForApplicationExit()
+        }
+        if (controller.begin_application_shutdown_backup())
+            Qt.quit()
+        return true
+    }
     property bool smokeTest: Qt.application.arguments.indexOf("--smoke-test") >= 0
+    property bool automaticDataBackupSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--automatic-data-backup-smoke-test") >= 0
+    property bool automaticDataBackupSmokeFinished: false
     property bool mediaSmokeTest: Qt.application.arguments.indexOf("--media-smoke-test") >= 0
     property bool mediaSmokeFinished: false
     property bool supplementalMediaSmokeTest:
@@ -185,6 +206,7 @@ ApplicationWindow {
     property int securitySmokeSuccessfulUnlocks: 0
     property bool securitySmokeFinished: false
     property bool securitySmokeAborting: false
+    property bool applicationClosing: false
     property bool securityPinScreenshotRequested: false
     property bool securityEditorScreenshotRequested: false
     property string securityPinScreenshotPath:
@@ -584,7 +606,7 @@ ApplicationWindow {
                     "launchbox", window.selectedBigBoxGameId))
             return false
         window.frontendHandoffSmokeFinished = true
-        Qt.quit()
+        window.requestApplicationExit()
         return true
     }
 
@@ -801,13 +823,13 @@ ApplicationWindow {
                 return true
             if (!guardSecurityAction("BigBoxExit"))
                 return true
-            Qt.quit()
+            requestApplicationExit()
             return true
         }
         if (action === "BigBoxExit") {
             if (!guardSecurityAction(action))
                 return true
-            Qt.quit()
+            requestApplicationExit()
             return true
         }
         if (!guardSecurityAction(action))
@@ -1834,8 +1856,67 @@ ApplicationWindow {
         id: controller
     }
 
+    Timer {
+        interval: 50
+        repeat: true
+        running: window.applicationClosing
+                 && !controller.application_shutdown_backup_ready
+        onTriggered: {
+            if (controller.begin_application_shutdown_backup())
+                Qt.quit()
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.automaticDataBackupSmokeTest
+                 && !window.automaticDataBackupSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.automatic_data_backup_running
+                    || controller.automatic_data_backup_revision !== 1)
+                return
+            if (!controller.auto_data_backup_enabled) {
+                console.error(
+                    "BIGBOX_AUTO_DATA_BACKUP_SMOKE_BAD_STARTUP_POLICY")
+                Qt.exit(716)
+                return
+            }
+            window.automaticDataBackupSmokeFinished = true
+            window.securitySmokeAborting = true
+            window.requestApplicationExit()
+        }
+    }
+
+    Timer {
+        interval: 45000
+        running: window.automaticDataBackupSmokeTest
+                 && !window.automaticDataBackupSmokeFinished
+        onTriggered: {
+            console.error(
+                "BIGBOX_AUTO_DATA_BACKUP_SMOKE_TIMEOUT loading="
+                + controller.loading
+                + " writing=" + controller.writing
+                + " automaticRunning="
+                + controller.automatic_data_backup_running
+                + " revision="
+                + controller.automatic_data_backup_revision
+                + " enabled=" + controller.auto_data_backup_enabled
+                + " status=" + controller.status_message)
+            window.securitySmokeAborting = true
+            Qt.exit(717)
+        }
+    }
+
     Connections {
         target: controller
+
+        function onApplication_shutdown_backup_readyChanged() {
+            if (window.applicationClosing
+                    && controller.application_shutdown_backup_ready)
+                Qt.callLater(Qt.quit)
+        }
 
         function onLoadingChanged() {
             if (controller.loading) {

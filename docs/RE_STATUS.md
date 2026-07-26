@@ -62,17 +62,20 @@ technical listings place `Data` contents directly at archive root, retain the
 two document directories, and carry optional and nested documents without an
 enclosing `Data/` folder. No user game/platform names, paths, or XML values are
 checked in. The protected create, restore, and options bodies remain stubs in
-the structural decompilation, so exact dialog/error sequencing and automatic
-scheduling are still unavailable.
+the structural decompilation, so exact dialog/error sequencing and protected
+automatic scheduling remain unavailable.
 
-The first clean-room native subset uses those recovered storage facts for
-manual create/restore only. It retains unknown safe data, rejects links,
+The clean-room native subset uses those recovered storage facts for manual
+create/restore plus automatic startup/shutdown in both frontends. It retains
+unknown safe data, rejects links,
 traversal/collisions, malformed core XML, and bounded-size violations, calls
 7-Zip directly without a shell, re-extracts every new archive for exact
 content verification, and restores through a revision-checked atomic directory
-replacement with a retained recovery tree. The evidence, port-owned limits,
-compiled scenario, and remaining automatic-policy gap are recorded in
-`analysis/data-backup-13.27.md`.
+replacement with a retained recovery tree. Typed `AutoBackup` persistence,
+all four exact archive names, shutdown waiting, shared cross-process locking,
+and strict newest-25 retention preserve manual/unrecognized archives. The
+evidence, portable scheduling decision, port-owned limits, and compiled
+scenarios are recorded in `analysis/data-backup-13.27.md`.
 
 ## Older real installation schema
 

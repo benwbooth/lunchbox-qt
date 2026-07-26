@@ -87,7 +87,7 @@ cargo run -p lb-shell --bin launchbox -- \
   --map-windows-unc 'server/share=/mnt/network-share'
 ```
 
-LaunchBox now exposes native **Data Backup…** controls for the first
+LaunchBox now exposes native **Data Backup…** controls for the current
 `LIB-018` subset. Create writes the complete `Data` contents at `.7z` archive
 root, hashes the source, invokes 7-Zip directly, then boundedly re-extracts and
 byte-verifies the snapshot before reporting success. Restore validates the
@@ -97,8 +97,14 @@ retains the displaced tree as a recovery directory, and reloads the library.
 Unknown safe files remain lossless; ROMs and media siblings are never included.
 The compiled Qt scenario creates, independently extracts, mutates, restores,
 reloads, and exact-compares both active and recovery trees while hashing media
-peers unchanged. Automatic startup/shutdown backup and the recovered 25-file
-retention policy remain open.
+peers unchanged. The same dialog losslessly persists `AutoBackup`; LaunchBox
+and BigBox create exact-name verified startup and shutdown snapshots, wait for
+the shutdown snapshot before exiting, and share newest-25 retention across the
+four recognized name forms. Manual, malformed, future, and unrecognized
+archives are never retention candidates. A second compiled scenario proves
+both frontends, the true-false-true settings backup chain, exact retention,
+valid archives, and unchanged peers. Native Windows/macOS interaction and
+exact protected scheduling/error sequencing remain open.
 
 LaunchBox now includes the first native system-tray and notification-center
 slice. The visible editor reads and losslessly writes the exact five 13.27

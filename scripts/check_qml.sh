@@ -497,6 +497,200 @@ diff -r "$data_backup_mutated" "${data_backup_recoveries[0]}"
 
 echo "LaunchBox rendered manual Data backup/restore controls, exact 13.27 archive-root shape, bounded re-extraction verification, atomic whole-tree replacement, live model reload, retained mutated recovery tree, and immutable media peers validated without a shell."
 
+automatic_launchbox_root="$test_config_root/automatic-launchbox-backup-library"
+cp -a "$media_root" "$automatic_launchbox_root"
+automatic_launchbox_settings="$automatic_launchbox_root/Data/Settings.xml"
+sed -i \
+  's|<AutoBackup>false</AutoBackup>|<AutoBackup>true</AutoBackup>|' \
+  "$automatic_launchbox_settings"
+mkdir -p "$automatic_launchbox_root/Backups"
+for day in $(seq -w 1 25); do
+  printf 'recognized automatic seed %s\n' "$day" \
+    > "$automatic_launchbox_root/Backups/Automatic LaunchBox Startup Data Backup 2026-01-$day 01-00-00.7z"
+done
+printf 'manual archive sentinel\n' \
+  > "$automatic_launchbox_root/Backups/Manual Data Backup sentinel.7z"
+printf 'unrecognized automatic sentinel\n' \
+  > "$automatic_launchbox_root/Backups/Automatic Future Frontend Startup Data Backup 2026-01-01 01-00-00.7z"
+automatic_launchbox_manual_digest=$(
+  sha256sum \
+    "$automatic_launchbox_root/Backups/Manual Data Backup sentinel.7z" \
+    | cut -d' ' -f1
+)
+automatic_launchbox_unknown_digest=$(
+  sha256sum \
+    "$automatic_launchbox_root/Backups/Automatic Future Frontend Startup Data Backup 2026-01-01 01-00-00.7z" \
+    | cut -d' ' -f1
+)
+
+output=$(
+  QT_QPA_PLATFORM=offscreen \
+    "$binary_dir/launchbox" \
+    --library "$automatic_launchbox_root" \
+    --automatic-data-backup-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+for marker in \
+  'AUTOMATIC_DATA_BACKUP_CREATED frontend=launchbox event=startup ' \
+  'AUTOMATIC_DATA_BACKUP_CREATED frontend=launchbox event=shutdown ' \
+  'AUTO_DATA_BACKUP_SETTING_SAVED enabled=false revision=1 ' \
+  'AUTO_DATA_BACKUP_SETTING_SAVED enabled=true revision=2 '; do
+  if ! rg -q -F "$marker" <<< "$output"; then
+    printf '%s\n' "$output" >&2
+    echo "LaunchBox automatic data-backup smoke is missing marker: $marker" >&2
+    exit 1
+  fi
+done
+automatic_launchbox_recognized_count=$(
+  find "$automatic_launchbox_root/Backups" -maxdepth 1 -type f \
+    -printf '%f\n' \
+    | rg -c \
+      '^Automatic (LaunchBox (Startup|Shutdown)|Big Box (Startup|Shutdown)) Data Backup [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}-[0-9]{2}-[0-9]{2}\.7z$'
+)
+if [[ "$automatic_launchbox_recognized_count" -ne 25 ]] \
+  || [[ -e "$automatic_launchbox_root/Backups/Automatic LaunchBox Startup Data Backup 2026-01-01 01-00-00.7z" ]] \
+  || [[ -e "$automatic_launchbox_root/Backups/Automatic LaunchBox Startup Data Backup 2026-01-02 01-00-00.7z" ]] \
+  || [[ ! -e "$automatic_launchbox_root/Backups/Automatic LaunchBox Startup Data Backup 2026-01-03 01-00-00.7z" ]]; then
+  printf '%s\n' "$output" >&2
+  echo "LaunchBox automatic retention did not keep the newest 25 exact recognized names." >&2
+  exit 1
+fi
+if [[ $(sha256sum \
+          "$automatic_launchbox_root/Backups/Manual Data Backup sentinel.7z" \
+          | cut -d' ' -f1) != "$automatic_launchbox_manual_digest" ]] \
+  || [[ $(sha256sum \
+          "$automatic_launchbox_root/Backups/Automatic Future Frontend Startup Data Backup 2026-01-01 01-00-00.7z" \
+          | cut -d' ' -f1) != "$automatic_launchbox_unknown_digest" ]]; then
+  echo "LaunchBox automatic retention changed a manual or unrecognized archive." >&2
+  exit 1
+fi
+if ! rg -q '<AutoBackup>true</AutoBackup>' \
+  "$automatic_launchbox_settings"; then
+  printf '%s\n' "$output" >&2
+  echo "LaunchBox did not persist the final enabled automatic-backup setting." >&2
+  exit 1
+fi
+mapfile -t automatic_launchbox_setting_backups < <(
+  find "$automatic_launchbox_root/Data" -maxdepth 1 -type f \
+    -name 'Settings.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#automatic_launchbox_setting_backups[@]} -ne 2 ]]; then
+  echo "LaunchBox automatic-backup setting edits did not retain two exact backups." >&2
+  exit 1
+fi
+automatic_launchbox_enabled_backups=0
+automatic_launchbox_disabled_backups=0
+for backup in "${automatic_launchbox_setting_backups[@]}"; do
+  if rg -q '<AutoBackup>true</AutoBackup>' "$backup"; then
+    ((automatic_launchbox_enabled_backups += 1))
+  elif rg -q '<AutoBackup>false</AutoBackup>' "$backup"; then
+    ((automatic_launchbox_disabled_backups += 1))
+  fi
+done
+if [[ "$automatic_launchbox_enabled_backups" -ne 1 \
+  || "$automatic_launchbox_disabled_backups" -ne 1 ]]; then
+  echo "LaunchBox automatic-backup setting backups do not prove the true-false-true chain." >&2
+  exit 1
+fi
+mapfile -t automatic_launchbox_created_archives < <(
+  find "$automatic_launchbox_root/Backups" -maxdepth 1 -type f \
+    -name 'Automatic LaunchBox * Data Backup *.7z' -size +64c -print
+)
+if [[ ${#automatic_launchbox_created_archives[@]} -ne 2 ]]; then
+  printf '%s\n' "$output" >&2
+  echo "LaunchBox did not retain exactly its verified startup and shutdown archives." >&2
+  exit 1
+fi
+for archive in "${automatic_launchbox_created_archives[@]}"; do
+  7z t -bd -bb0 -- "$archive" >/dev/null
+done
+if find "$automatic_launchbox_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "LaunchBox automatic data backups left a recovery manifest behind." >&2
+  exit 1
+fi
+
+automatic_bigbox_root="$test_config_root/automatic-bigbox-backup-library"
+cp -a "$media_root" "$automatic_bigbox_root"
+automatic_bigbox_settings="$automatic_bigbox_root/Data/Settings.xml"
+sed -i \
+  's|<AutoBackup>false</AutoBackup>|<AutoBackup>true</AutoBackup>|' \
+  "$automatic_bigbox_settings"
+cp -a "$automatic_bigbox_root/Data" \
+  "$test_config_root/automatic-bigbox-data-before"
+mkdir -p "$automatic_bigbox_root/Backups"
+for day in $(seq -w 1 25); do
+  printf 'recognized Big Box automatic seed %s\n' "$day" \
+    > "$automatic_bigbox_root/Backups/Automatic Big Box Startup Data Backup 2026-01-$day 01-00-00.7z"
+done
+printf 'Big Box manual archive sentinel\n' \
+  > "$automatic_bigbox_root/Backups/Manual Big Box Data Backup sentinel.7z"
+automatic_bigbox_manual_digest=$(
+  sha256sum \
+    "$automatic_bigbox_root/Backups/Manual Big Box Data Backup sentinel.7z" \
+    | cut -d' ' -f1
+)
+
+output=$(
+  QT_QPA_PLATFORM=offscreen \
+    "$binary_dir/bigbox" \
+    --windowed \
+    --library "$automatic_bigbox_root" \
+    --automatic-data-backup-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$output" >&2
+  exit 1
+}
+for marker in \
+  'AUTOMATIC_DATA_BACKUP_CREATED frontend=bigbox event=startup ' \
+  'AUTOMATIC_DATA_BACKUP_CREATED frontend=bigbox event=shutdown '; do
+  if ! rg -q -F "$marker" <<< "$output"; then
+    printf '%s\n' "$output" >&2
+    echo "BigBox automatic data-backup smoke is missing marker: $marker" >&2
+    exit 1
+  fi
+done
+automatic_bigbox_recognized_count=$(
+  find "$automatic_bigbox_root/Backups" -maxdepth 1 -type f \
+    -printf '%f\n' \
+    | rg -c \
+      '^Automatic (LaunchBox (Startup|Shutdown)|Big Box (Startup|Shutdown)) Data Backup [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}-[0-9]{2}-[0-9]{2}\.7z$'
+)
+if [[ "$automatic_bigbox_recognized_count" -ne 25 ]] \
+  || [[ -e "$automatic_bigbox_root/Backups/Automatic Big Box Startup Data Backup 2026-01-01 01-00-00.7z" ]] \
+  || [[ -e "$automatic_bigbox_root/Backups/Automatic Big Box Startup Data Backup 2026-01-02 01-00-00.7z" ]] \
+  || [[ ! -e "$automatic_bigbox_root/Backups/Automatic Big Box Startup Data Backup 2026-01-03 01-00-00.7z" ]]; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox automatic retention did not keep the newest 25 exact recognized names." >&2
+  exit 1
+fi
+if [[ $(sha256sum \
+          "$automatic_bigbox_root/Backups/Manual Big Box Data Backup sentinel.7z" \
+          | cut -d' ' -f1) != "$automatic_bigbox_manual_digest" ]]; then
+  echo "BigBox automatic retention changed a manual archive." >&2
+  exit 1
+fi
+diff -r "$test_config_root/automatic-bigbox-data-before" \
+  "$automatic_bigbox_root/Data"
+mapfile -t automatic_bigbox_created_archives < <(
+  find "$automatic_bigbox_root/Backups" -maxdepth 1 -type f \
+    -name 'Automatic Big Box * Data Backup *.7z' -size +64c -print
+)
+if [[ ${#automatic_bigbox_created_archives[@]} -ne 2 ]]; then
+  printf '%s\n' "$output" >&2
+  echo "BigBox did not retain exactly its verified startup and shutdown archives." >&2
+  exit 1
+fi
+for archive in "${automatic_bigbox_created_archives[@]}"; do
+  7z t -bd -bb0 -- "$archive" >/dev/null
+done
+
+echo "LaunchBox and BigBox exact startup/shutdown automatic archive names, verified snapshots, rendered setting toggle, lossless true-false-true transaction chain, shared newest-25 retention, manual/unknown preservation, and clean shutdown waiting validated."
+
 input_settings="$media_root/Data/BigBoxSettings.xml"
 input_bindings="$media_root/Data/InputBindings.xml"
 cp "$input_settings" "$input_settings.before-input-smoke"

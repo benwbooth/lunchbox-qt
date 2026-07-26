@@ -1,6 +1,7 @@
 use crate::{
     ArchiveCreationError, ArchiveExtractionError, ArchiveExtractionLimits, ArchiveExtractor,
 };
+use chrono::NaiveDateTime;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use sha2::{Digest, Sha256};
@@ -22,6 +23,67 @@ const REQUIRED_ROOT_FILES: &[&str] = &[
     "Settings.xml",
 ];
 const REQUIRED_ROOT_DIRECTORIES: &[&str] = &["Platforms", "Playlists"];
+pub const AUTOMATIC_DATA_BACKUP_RETENTION: usize = 25;
+const AUTOMATIC_DATA_BACKUP_TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H-%M-%S";
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum AutomaticDataBackupKind {
+    LaunchBoxStartup,
+    LaunchBoxShutdown,
+    BigBoxStartup,
+    BigBoxShutdown,
+}
+
+impl AutomaticDataBackupKind {
+    pub const ALL: [Self; 4] = [
+        Self::LaunchBoxStartup,
+        Self::LaunchBoxShutdown,
+        Self::BigBoxStartup,
+        Self::BigBoxShutdown,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LaunchBoxStartup => "Automatic LaunchBox Startup Data Backup",
+            Self::LaunchBoxShutdown => "Automatic LaunchBox Shutdown Data Backup",
+            Self::BigBoxStartup => "Automatic Big Box Startup Data Backup",
+            Self::BigBoxShutdown => "Automatic Big Box Shutdown Data Backup",
+        }
+    }
+
+    pub const fn event_label(self) -> &'static str {
+        match self {
+            Self::LaunchBoxStartup | Self::BigBoxStartup => "startup",
+            Self::LaunchBoxShutdown | Self::BigBoxShutdown => "shutdown",
+        }
+    }
+
+    pub const fn frontend_label(self) -> &'static str {
+        match self {
+            Self::LaunchBoxStartup | Self::LaunchBoxShutdown => "launchbox",
+            Self::BigBoxStartup | Self::BigBoxShutdown => "bigbox",
+        }
+    }
+
+    pub fn archive_name(self, timestamp: NaiveDateTime) -> String {
+        format!(
+            "{} {}.7z",
+            self.label(),
+            timestamp.format(AUTOMATIC_DATA_BACKUP_TIMESTAMP_FORMAT)
+        )
+    }
+
+    fn parse_name(name: &str) -> Option<(Self, NaiveDateTime)> {
+        let stem = name.strip_suffix(".7z")?;
+        Self::ALL.into_iter().find_map(|kind| {
+            let timestamp = stem.strip_prefix(kind.label())?.strip_prefix(' ')?;
+            let timestamp =
+                NaiveDateTime::parse_from_str(timestamp, AUTOMATIC_DATA_BACKUP_TIMESTAMP_FORMAT)
+                    .ok()?;
+            Some((kind, timestamp))
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DataBackupLimits {
@@ -64,6 +126,13 @@ pub struct DataTreeRevision {
 pub struct DataBackupReport {
     pub archive: PathBuf,
     pub revision: DataTreeRevision,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutomaticDataBackupReport {
+    pub backup: DataBackupReport,
+    pub kind: AutomaticDataBackupKind,
+    pub removed_archives: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +197,29 @@ impl DataBackupService {
             let _ = fs::remove_file(archive);
         }
         result
+    }
+
+    /// Creates one observed-name automatic archive and retains only the 25
+    /// newest recognized automatic data backups.
+    ///
+    /// Manual and unrecognized files are never retention candidates.
+    pub fn create_automatic(
+        &self,
+        data_directory: &Path,
+        backup_directory: &Path,
+        kind: AutomaticDataBackupKind,
+        timestamp: NaiveDateTime,
+    ) -> Result<AutomaticDataBackupReport, DataBackupError> {
+        ensure_real_backup_directory(backup_directory)?;
+        let archive = backup_directory.join(kind.archive_name(timestamp));
+        let backup = self.create(data_directory, &archive)?;
+        let removed_archives =
+            prune_automatic_data_backups(backup_directory, AUTOMATIC_DATA_BACKUP_RETENTION)?;
+        Ok(AutomaticDataBackupReport {
+            backup,
+            kind,
+            removed_archives,
+        })
     }
 
     /// Extracts and validates a candidate 13.27-compatible `Data` snapshot
@@ -389,6 +481,81 @@ fn validate_required_layout(root: &Path) -> Result<(), DataBackupError> {
     Ok(())
 }
 
+fn ensure_real_backup_directory(directory: &Path) -> Result<(), DataBackupError> {
+    match fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            Ok(())
+        }
+        Ok(_) => Err(DataBackupError::BackupDirectoryNotReal {
+            path: directory.to_path_buf(),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(directory)
+            .map_err(|source| DataBackupError::Io {
+                path: directory.to_path_buf(),
+                source,
+            }),
+        Err(source) => Err(DataBackupError::Io {
+            path: directory.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn prune_automatic_data_backups(
+    directory: &Path,
+    retention: usize,
+) -> Result<Vec<PathBuf>, DataBackupError> {
+    let mut candidates = fs::read_dir(directory)
+        .map_err(|source| DataBackupError::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?
+        .filter_map(|result| result.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).ok()?;
+            if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+                return None;
+            }
+            let name = entry.file_name().into_string().ok()?;
+            let (kind, timestamp) = AutomaticDataBackupKind::parse_name(&name)?;
+            Some((timestamp, kind, name, path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+
+    let remove_count = candidates.len().saturating_sub(retention);
+    let mut removed = Vec::with_capacity(remove_count);
+    for (_, _, _, path) in candidates.into_iter().take(remove_count) {
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|source| DataBackupError::AutomaticRetention {
+                path: path.clone(),
+                source,
+            })?;
+        if !metadata.file_type().is_file()
+            || metadata.file_type().is_symlink()
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(AutomaticDataBackupKind::parse_name)
+                .is_none()
+        {
+            return Err(DataBackupError::AutomaticRetentionChanged { path });
+        }
+        fs::remove_file(&path).map_err(|source| DataBackupError::AutomaticRetention {
+            path: path.clone(),
+            source,
+        })?;
+        removed.push(path);
+    }
+    Ok(removed)
+}
+
 fn validate_document_directory(directory: &Path) -> Result<(), DataBackupError> {
     let entries = fs::read_dir(directory).map_err(|source| DataBackupError::Io {
         path: directory.to_path_buf(),
@@ -529,6 +696,16 @@ pub enum DataBackupError {
         path: PathBuf,
         actual: u64,
         limit: u64,
+    },
+    #[error("automatic data-backup directory is not a real directory: {path}")]
+    BackupDirectoryNotReal { path: PathBuf },
+    #[error("automatic data-backup retention candidate changed before deletion: {path}")]
+    AutomaticRetentionChanged { path: PathBuf },
+    #[error("could not remove expired automatic data backup {path}: {source}")]
+    AutomaticRetention {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
     #[error("LaunchBox data snapshot is missing required file or directory {path}")]
     MissingRequiredEntry { path: PathBuf },
@@ -689,5 +866,99 @@ mod tests {
             inspect_data_tree(&fixture.path().join("Data"), limits),
             Err(DataBackupError::MemberSizeLimit { .. })
         ));
+    }
+
+    #[test]
+    fn automatic_names_are_exact_and_retention_ignores_manual_unknown_and_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let backups = directory.path().join("Backups");
+        fs::create_dir(&backups).unwrap();
+        for day in 1..=27 {
+            let timestamp = NaiveDateTime::parse_from_str(
+                &format!("2026-01-{day:02} 12-00-00"),
+                AUTOMATIC_DATA_BACKUP_TIMESTAMP_FORMAT,
+            )
+            .unwrap();
+            let kind = AutomaticDataBackupKind::ALL[(day - 1) % 4];
+            fs::write(backups.join(kind.archive_name(timestamp)), [day as u8]).unwrap();
+        }
+        let manual = backups.join("Manual Data Backup.7z");
+        let unknown = backups.join("Automatic LaunchBox Startup Data Backup not-a-date.7z");
+        fs::write(&manual, b"manual").unwrap();
+        fs::write(&unknown, b"unknown").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                &manual,
+                backups.join("Automatic LaunchBox Startup Data Backup 2025-01-01 00-00-00.7z"),
+            )
+            .unwrap();
+        }
+
+        let removed =
+            prune_automatic_data_backups(&backups, AUTOMATIC_DATA_BACKUP_RETENTION).unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(removed.iter().all(|path| !path.exists()));
+        assert_eq!(fs::read(&manual).unwrap(), b"manual");
+        assert_eq!(fs::read(&unknown).unwrap(), b"unknown");
+        assert_eq!(
+            fs::read_dir(&backups)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.file_type().is_ok_and(|file_type| file_type.is_file())
+                        && entry
+                            .file_name()
+                            .to_str()
+                            .and_then(AutomaticDataBackupKind::parse_name)
+                            .is_some()
+                })
+                .count(),
+            AUTOMATIC_DATA_BACKUP_RETENTION
+        );
+    }
+
+    #[test]
+    fn creates_an_exact_automatic_backup_and_prunes_only_recognized_archives() {
+        let fixture = tempfile::tempdir().unwrap();
+        write_fixture(fixture.path(), "Original");
+        let backups = fixture.path().join("Backups");
+        fs::create_dir(&backups).unwrap();
+        for day in 1..=AUTOMATIC_DATA_BACKUP_RETENTION {
+            let timestamp = NaiveDateTime::parse_from_str(
+                &format!("2025-01-{day:02} 00-00-00"),
+                AUTOMATIC_DATA_BACKUP_TIMESTAMP_FORMAT,
+            )
+            .unwrap();
+            fs::write(
+                backups.join(AutomaticDataBackupKind::LaunchBoxStartup.archive_name(timestamp)),
+                b"old",
+            )
+            .unwrap();
+        }
+        let manual = backups.join("Custom LaunchBox Data Backup 2025.7z");
+        fs::write(&manual, b"manual").unwrap();
+        let service =
+            DataBackupService::new(ArchiveExtractor::new("7z"), DataBackupLimits::default());
+        let timestamp =
+            NaiveDateTime::parse_from_str("2026-07-26 17-30-00", "%Y-%m-%d %H-%M-%S").unwrap();
+
+        let report = service
+            .create_automatic(
+                &fixture.path().join("Data"),
+                &backups,
+                AutomaticDataBackupKind::BigBoxShutdown,
+                timestamp,
+            )
+            .unwrap();
+
+        assert_eq!(report.kind, AutomaticDataBackupKind::BigBoxShutdown);
+        assert_eq!(report.removed_archives.len(), 1);
+        assert_eq!(
+            report.backup.archive.file_name().unwrap(),
+            "Automatic Big Box Shutdown Data Backup 2026-07-26 17-30-00.7z"
+        );
+        assert!(report.backup.archive.is_file());
+        assert_eq!(fs::read(manual).unwrap(), b"manual");
     }
 }

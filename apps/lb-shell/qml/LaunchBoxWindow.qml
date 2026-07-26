@@ -26,8 +26,7 @@ ApplicationWindow {
             window.sendToSystemTray("close")
             return
         }
-        close.accepted = true
-        window.finalizeApplicationExit()
+        close.accepted = window.finalizeApplicationExit()
     }
     onVisibilityChanged: {
         if (visibility === Window.Minimized
@@ -46,13 +45,14 @@ ApplicationWindow {
 
     function finalizeApplicationExit() {
         if (window.applicationClosing)
-            return
+            return controller.application_shutdown_backup_ready
         window.applicationClosing = true
         launchBoxMusicPlayer.stopPlayback(true)
         gameDetailsLayoutSaveTimer.stop()
         window.persistGameDetailsLayout(
                     controller.show_game_details,
                     controller.game_details_popped_out)
+        return controller.begin_application_shutdown_backup()
     }
 
     function sendToSystemTray(reason) {
@@ -82,8 +82,8 @@ ApplicationWindow {
             return false
         window.frontendHandoffSmokeFinished = true
         window.forceApplicationExit = true
-        window.finalizeApplicationExit()
-        Qt.quit()
+        if (window.finalizeApplicationExit())
+            Qt.quit()
         return true
     }
 
@@ -237,6 +237,11 @@ ApplicationWindow {
             "--data-backup-restore-smoke-test") >= 0
     property bool dataBackupSmokeStarted: false
     property bool dataBackupSmokeFinished: false
+    property bool automaticDataBackupSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--automatic-data-backup-smoke-test") >= 0
+    property int automaticDataBackupSmokePhase: 0
+    property bool automaticDataBackupSmokeFinished: false
     property string pendingDataBackupRestorePath: ""
     readonly property string requestedDataBackupPath:
         argumentValue("--data-backup-path")
@@ -1407,6 +1412,12 @@ ApplicationWindow {
     Connections {
         target: controller
 
+        function onApplication_shutdown_backup_readyChanged() {
+            if (window.applicationClosing
+                    && controller.application_shutdown_backup_ready)
+                Qt.callLater(Qt.quit)
+        }
+
         function onLoadingChanged() {
             if (controller.loading
                     || window.requestedFrontendSelection.length === 0)
@@ -1770,8 +1781,19 @@ ApplicationWindow {
             }
             window.dataBackupSmokeFinished = true
             window.forceApplicationExit = true
-            window.finalizeApplicationExit()
-            Qt.quit()
+            if (window.finalizeApplicationExit())
+                Qt.quit()
+        }
+    }
+
+    Timer {
+        interval: 50
+        repeat: true
+        running: window.applicationClosing
+                 && !controller.application_shutdown_backup_ready
+        onTriggered: {
+            if (controller.begin_application_shutdown_backup())
+                Qt.quit()
         }
     }
 
@@ -1791,6 +1813,93 @@ ApplicationWindow {
                 + " revision=" + controller.data_backup_revision
                 + " status=" + controller.status_message)
             Qt.exit(709)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
+        running: window.automaticDataBackupSmokeTest
+                 && !window.automaticDataBackupSmokeFinished
+        onTriggered: {
+            if (controller.loading || controller.writing
+                    || controller.automatic_data_backup_running)
+                return
+            if (window.automaticDataBackupSmokePhase === 0) {
+                if (controller.automatic_data_backup_revision !== 1)
+                    return
+                if (!controller.auto_data_backup_enabled) {
+                    console.error(
+                        "AUTO_DATA_BACKUP_SMOKE_BAD_STARTUP_POLICY")
+                    Qt.exit(710)
+                    return
+                }
+                dataBackupDialog.open()
+                if (!automaticDataBackupCheckBox.activate(false)) {
+                    console.error(
+                        "AUTO_DATA_BACKUP_SMOKE_DISABLE_REJECTED status="
+                        + controller.status_message)
+                    Qt.exit(711)
+                    return
+                }
+                window.automaticDataBackupSmokePhase = 1
+                return
+            }
+            if (window.automaticDataBackupSmokePhase === 1) {
+                if (controller.auto_data_backup_settings_revision !== 1)
+                    return
+                if (controller.auto_data_backup_enabled) {
+                    console.error(
+                        "AUTO_DATA_BACKUP_SMOKE_DISABLE_DID_NOT_PERSIST")
+                    Qt.exit(712)
+                    return
+                }
+                if (!automaticDataBackupCheckBox.activate(true)) {
+                    console.error(
+                        "AUTO_DATA_BACKUP_SMOKE_ENABLE_REJECTED status="
+                        + controller.status_message)
+                    Qt.exit(713)
+                    return
+                }
+                window.automaticDataBackupSmokePhase = 2
+                return
+            }
+            if (window.automaticDataBackupSmokePhase === 2) {
+                if (controller.auto_data_backup_settings_revision !== 2)
+                    return
+                if (!controller.auto_data_backup_enabled) {
+                    console.error(
+                        "AUTO_DATA_BACKUP_SMOKE_ENABLE_DID_NOT_PERSIST")
+                    Qt.exit(714)
+                    return
+                }
+                window.automaticDataBackupSmokeFinished = true
+                window.forceApplicationExit = true
+                if (window.finalizeApplicationExit())
+                    Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 45000
+        running: window.automaticDataBackupSmokeTest
+                 && !window.automaticDataBackupSmokeFinished
+        onTriggered: {
+            console.error(
+                "AUTO_DATA_BACKUP_SMOKE_TIMEOUT phase="
+                + window.automaticDataBackupSmokePhase
+                + " loading=" + controller.loading
+                + " writing=" + controller.writing
+                + " automaticRunning="
+                + controller.automatic_data_backup_running
+                + " backupRevision="
+                + controller.automatic_data_backup_revision
+                + " settingsRevision="
+                + controller.auto_data_backup_settings_revision
+                + " enabled=" + controller.auto_data_backup_enabled
+                + " status=" + controller.status_message)
+            Qt.exit(715)
         }
     }
 
@@ -5766,13 +5875,42 @@ ApplicationWindow {
                 text: "Create one verified .7z snapshot of the LaunchBox Data folder, or atomically restore one. Archives are bounded and checked for traversal, links, duplicate names, malformed core XML, and source changes. ROMs and media are never included."
             }
 
+            CheckBox {
+                id: automaticDataBackupCheckBox
+                text: "Create automatic data backups on startup and shutdown"
+                Accessible.name: "Automatic LaunchBox and BigBox data backups"
+                checked: controller.auto_data_backup_enabled
+                enabled: window.dataBackupControlsAvailable()
+
+                function activate(requested) {
+                    if (!enabled)
+                        return false
+                    return controller.save_auto_data_backup_enabled(requested)
+                }
+
+                onClicked: {
+                    if (!controller.save_auto_data_backup_enabled(checked))
+                        checked = controller.auto_data_backup_enabled
+                }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#aeb9c8"
+                text: "Automatic LaunchBox and Big Box startup and shutdown snapshots are stored in Backups. The 25 newest recognized automatic snapshots are retained; manual and unrecognized archives are never removed."
+            }
+
             Label {
                 Layout.fillWidth: true
                 wrapMode: Text.WrapAnywhere
                 color: "#aeb9c8"
-                text: controller.last_data_backup_path.length > 0
-                      ? "Last archive: "
-                        + controller.last_data_backup_path
+                text: controller.last_automatic_data_backup_path.length > 0
+                      ? "Last automatic archive: "
+                        + controller.last_automatic_data_backup_path
+                      : controller.last_data_backup_path.length > 0
+                        ? "Last manual archive: "
+                          + controller.last_data_backup_path
                       : "No data backup has been created or restored in this session."
             }
 

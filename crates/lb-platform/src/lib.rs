@@ -21,8 +21,9 @@ pub use archive::{
 };
 pub use attract::{BigBoxAttractModePolicy, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS};
 pub use data_backup::{
-    inspect_data_tree, DataBackupError, DataBackupLimits, DataBackupReport, DataBackupService,
-    DataTreeRevision, PreparedDataRestore,
+    inspect_data_tree, AutomaticDataBackupKind, AutomaticDataBackupReport, DataBackupError,
+    DataBackupLimits, DataBackupReport, DataBackupService, DataTreeRevision, PreparedDataRestore,
+    AUTOMATIC_DATA_BACKUP_RETENTION,
 };
 pub use dosbox::DosBoxPlanError;
 pub use engagement::{

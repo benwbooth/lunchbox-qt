@@ -213,6 +213,12 @@ pub mod qobject {
         #[qproperty(i32, pending_recovery_count)]
         #[qproperty(i32, data_backup_revision)]
         #[qproperty(QString, last_data_backup_path)]
+        #[qproperty(bool, auto_data_backup_enabled)]
+        #[qproperty(i32, auto_data_backup_settings_revision)]
+        #[qproperty(bool, automatic_data_backup_running)]
+        #[qproperty(i32, automatic_data_backup_revision)]
+        #[qproperty(QString, last_automatic_data_backup_path)]
+        #[qproperty(bool, application_shutdown_backup_ready)]
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
         #[qproperty(QString, last_added_game_id)]
@@ -297,6 +303,12 @@ pub mod qobject {
             restored: bool,
             expected_title: QString,
         ) -> bool;
+
+        #[qinvokable]
+        fn save_auto_data_backup_enabled(self: Pin<&mut LibraryController>, enabled: bool) -> bool;
+
+        #[qinvokable]
+        fn begin_application_shutdown_backup(self: Pin<&mut LibraryController>) -> bool;
 
         #[qinvokable]
         fn desktop_tray_settings_json(self: &LibraryController) -> QString;
@@ -1963,13 +1975,13 @@ use cxx_qt_lib::{
 };
 use lb_domain::{
     built_in_model_settings, resolve_model_settings, AdditionalApplication,
-    AdditionalApplicationEdit, AlternateName, ArgbColor, BoxSize, CustomField,
-    DesktopNotificationType, DesktopTrayPolicy, Emulator, EmulatorConfiguration, EmulatorPlatform,
-    FrontendSettings, Game, GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit,
-    InputBinding, ListViewColumnLayout, ModelSettings, ModelSettingsSource, ModelSize, ModelType,
-    Mount, NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory,
-    PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
-    ResolvedModelSettings, UNASSIGNED_EMULATOR_ID,
+    AdditionalApplicationEdit, AlternateName, ApplicationDataBackupPolicy, ArgbColor, BoxSize,
+    CustomField, DesktopNotificationType, DesktopTrayPolicy, Emulator, EmulatorConfiguration,
+    EmulatorPlatform, FrontendSettings, Game, GameLaunchConfiguration, GameMetadata, GameSave,
+    GameSaveMetadataEdit, InputBinding, ListViewColumnLayout, ModelSettings, ModelSettingsSource,
+    ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship, PlatformCatalog,
+    PlatformCategory, PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument,
+    PlaylistFilter, PlaylistGame, ResolvedModelSettings, UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -2045,19 +2057,20 @@ use lb_platform::{
     qt_key_to_wpf_key_with_modifiers,
     select_big_box_screensaver_candidate as select_screensaver_candidate_index,
     select_emulator_for_game, wpf_key_to_qt_portable_text, ArchiveExtractor,
-    BigBoxAttractModePolicy, BigBoxBackgroundMusicPolicy, BigBoxGameActionPolicy,
-    BigBoxGameMarqueeMedia, BigBoxInputAction, BigBoxInputEngine, BigBoxInputPolicy,
-    BigBoxMarqueeCompatibilityMode, BigBoxMarqueePolicy, BigBoxMusicPolicy,
-    BigBoxPlatformMarqueeMedia, BigBoxScreensaverCandidate, BigBoxScreensaverPolicy,
-    BigBoxSecurityPermission, BigBoxSecurityPolicy, BigBoxStartupPresentationIndex,
-    BigBoxStartupPresentationPolicy, ControllerBinding, DataBackupReport, DataBackupService,
-    FrontendHandoffActivity, FrontendHandoffPlan, FrontendKind, FrontendLaunchScreenPolicy,
-    FrontendPauseScreenPolicy, GameDetailsMediaPolicy, GameDetailsWindowState, GameMediaItem,
-    GameMediaKind, GamepadInputEvent, HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy,
-    LaunchBoxUiState, LaunchContext, LaunchControlCommand, LaunchKind, LaunchPathResolver,
-    LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent, LaunchSequenceReport,
-    LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget, ModelRotationLock, ModelViewerState,
-    BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS, BIG_BOX_SECURITY_PERMISSIONS,
+    AutomaticDataBackupKind, AutomaticDataBackupReport, BigBoxAttractModePolicy,
+    BigBoxBackgroundMusicPolicy, BigBoxGameActionPolicy, BigBoxGameMarqueeMedia, BigBoxInputAction,
+    BigBoxInputEngine, BigBoxInputPolicy, BigBoxMarqueeCompatibilityMode, BigBoxMarqueePolicy,
+    BigBoxMusicPolicy, BigBoxPlatformMarqueeMedia, BigBoxScreensaverCandidate,
+    BigBoxScreensaverPolicy, BigBoxSecurityPermission, BigBoxSecurityPolicy,
+    BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, ControllerBinding,
+    DataBackupReport, DataBackupService, FrontendHandoffActivity, FrontendHandoffPlan,
+    FrontendKind, FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy, GameDetailsMediaPolicy,
+    GameDetailsWindowState, GameMediaItem, GameMediaKind, GamepadInputEvent, HostPathMappings,
+    HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
+    LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
+    LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
+    ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS,
+    BIG_BOX_SECURITY_PERMISSIONS,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, playlist_filters_match,
@@ -2435,6 +2448,12 @@ pub struct LibraryControllerRust {
     pending_recovery_count: i32,
     data_backup_revision: i32,
     last_data_backup_path: QString,
+    auto_data_backup_enabled: bool,
+    auto_data_backup_settings_revision: i32,
+    automatic_data_backup_running: bool,
+    automatic_data_backup_revision: i32,
+    last_automatic_data_backup_path: QString,
+    application_shutdown_backup_ready: bool,
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
     last_added_game_id: QString,
@@ -2545,6 +2564,9 @@ pub struct LibraryControllerRust {
     model_viewer_state_initialized: bool,
     list_view_column_layout: ListViewColumnLayout,
     desktop_tray_policy: DesktopTrayPolicy,
+    application_data_backup_policy: ApplicationDataBackupPolicy,
+    automatic_startup_backup_attempted: bool,
+    automatic_shutdown_backup_attempted: bool,
     desktop_notifications: Vec<DesktopNotification>,
     request_generation: u64,
     random_selection_counter: u64,
@@ -2704,6 +2726,7 @@ struct LoadedLibrary {
     list_view_column_layout: ListViewColumnLayout,
     box_size: BoxSize,
     desktop_tray_policy: DesktopTrayPolicy,
+    application_data_backup_policy: ApplicationDataBackupPolicy,
 }
 
 struct LibraryReplacement {
@@ -2761,6 +2784,7 @@ struct LibraryReplacement {
     list_view_column_layout: ListViewColumnLayout,
     box_size: BoxSize,
     desktop_tray_policy: DesktopTrayPolicy,
+    application_data_backup_policy: ApplicationDataBackupPolicy,
     name: String,
     message: String,
     pending_recovery_count: usize,
@@ -2862,6 +2886,7 @@ impl LoadedLibrary {
                 list_view_column_layout: ListViewColumnLayout::default(),
                 box_size: BoxSize::default(),
                 desktop_tray_policy: DesktopTrayPolicy::default(),
+                application_data_backup_policy: ApplicationDataBackupPolicy::default(),
             });
         }
 
@@ -2872,6 +2897,8 @@ impl LoadedLibrary {
         let list_view_column_layout = ListViewColumnLayout::from_settings(data.settings());
         let box_size = BoxSize::from_settings(data.settings());
         let desktop_tray_policy = DesktopTrayPolicy::from_settings(data.settings());
+        let application_data_backup_policy =
+            ApplicationDataBackupPolicy::from_settings(data.settings());
         let launchbox_launch_screen_policy =
             FrontendLaunchScreenPolicy::from_settings(data.settings())
                 .map_err(|error| error.to_string())?;
@@ -3097,6 +3124,7 @@ impl LoadedLibrary {
             list_view_column_layout,
             box_size,
             desktop_tray_policy,
+            application_data_backup_policy,
         })
     }
 }
@@ -3862,6 +3890,11 @@ struct BigBoxMarqueeWriteSuccess {
 
 struct DesktopTrayWriteSuccess {
     policy: DesktopTrayPolicy,
+    backup: PathBuf,
+}
+
+struct AutoDataBackupSettingWriteSuccess {
+    policy: ApplicationDataBackupPolicy,
     backup: PathBuf,
 }
 
@@ -6678,6 +6711,62 @@ fn restore_launchbox_data_backup(
         recovery_directory: report.backup,
         file_count,
     })
+}
+
+fn create_automatic_launchbox_data_backup(
+    root: PathBuf,
+    kind: AutomaticDataBackupKind,
+) -> Result<AutomaticDataBackupReport, String> {
+    let _guard = LibraryWriteGuard::acquire(&root).map_err(|error| error.to_string())?;
+    DataBackupService::for_launchbox_root(&root)
+        .create_automatic(
+            &root.join("Data"),
+            &root.join("Backups"),
+            kind,
+            Local::now().naive_local(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn write_auto_data_backup_setting(
+    root: PathBuf,
+    enabled: bool,
+) -> Result<AutoDataBackupSettingWriteSuccess, DesktopTrayWriteFailure> {
+    let requested = ApplicationDataBackupPolicy { enabled };
+    let settings_path = root.join("Data").join("Settings.xml");
+    let mut settings = AuxiliaryDocument::load(&settings_path)
+        .map_err(|error| DesktopTrayWriteFailure::Other(error.to_string()))?;
+    settings
+        .set_single_record_field("Settings", "AutoBackup", &enabled.to_string())
+        .map_err(|error| DesktopTrayWriteFailure::Other(error.to_string()))?;
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_desktop_tray_transaction_error)?;
+    transaction
+        .stage_auxiliary(&settings)
+        .map_err(classify_desktop_tray_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_desktop_tray_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == settings_path)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            DesktopTrayWriteFailure::Other(
+                "automatic data-backup transaction reported no Settings.xml write".into(),
+            )
+        })?;
+    let settings = load_settings_file(&settings_path)
+        .map_err(|error| DesktopTrayWriteFailure::Other(error.to_string()))?;
+    let policy = ApplicationDataBackupPolicy::from_settings(settings.as_ref());
+    if policy != requested {
+        return Err(DesktopTrayWriteFailure::Other(
+            "committed automatic data-backup setting did not round-trip".into(),
+        ));
+    }
+    Ok(AutoDataBackupSettingWriteSuccess { policy, backup })
 }
 
 fn write_desktop_tray_settings(
@@ -18210,6 +18299,7 @@ impl qobject::LibraryController {
                     list_view_column_layout: ListViewColumnLayout::default(),
                     box_size: BoxSize::default(),
                     desktop_tray_policy: DesktopTrayPolicy::default(),
+                    application_data_backup_policy: ApplicationDataBackupPolicy::default(),
                     name: "Fixture Console".into(),
                     message: "Embedded compatibility fixture".into(),
                     pending_recovery_count: 0,
@@ -18439,6 +18529,130 @@ impl qobject::LibraryController {
             );
         }
         success
+    }
+
+    pub fn save_auto_data_backup_enabled(mut self: Pin<&mut Self>, enabled: bool) -> bool {
+        if *self.as_ref().frontend_is_big_box() {
+            self.as_mut().set_status_message(qstring(
+                "Edit automatic data-backup settings from LaunchBox desktop mode.",
+            ));
+            return false;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Load a LaunchBox library before editing automatic data backups.",
+            ));
+            return false;
+        };
+        if !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+        if self.as_ref().rust().application_data_backup_policy.enabled == enabled {
+            return true;
+        }
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(
+            "Saving the automatic data-backup setting in the background...",
+        ));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-auto-data-backup-setting-write".into())
+            .spawn(move || {
+                let result = write_auto_data_backup_setting(root, enabled);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_auto_data_backup_setting_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the automatic data-backup setting writer: {error}"
+            )));
+            return false;
+        }
+        true
+    }
+
+    pub fn begin_application_shutdown_backup(mut self: Pin<&mut Self>) -> bool {
+        if *self.as_ref().application_shutdown_backup_ready() {
+            return true;
+        }
+        if self.as_ref().rust().automatic_shutdown_backup_attempted {
+            return false;
+        }
+        if *self.as_ref().automatic_data_backup_running()
+            || self.as_ref().library_operation_active()
+            || *self.as_ref().launch_session_active()
+            || *self.as_ref().startup_screen_active()
+            || *self.as_ref().pause_screen_active()
+        {
+            return false;
+        }
+
+        let root = self.as_ref().rust().launchbox_root.clone();
+        let enabled = self.as_ref().rust().application_data_backup_policy.enabled;
+        let pending_recovery = *self.as_ref().pending_recovery_count();
+        let write_conflict = *self.as_ref().write_conflict();
+        self.as_mut().rust_mut().automatic_shutdown_backup_attempted = true;
+
+        let Some(_) = root else {
+            eprintln!(
+                "AUTOMATIC_DATA_BACKUP_SKIPPED frontend={} event=shutdown reason=no-launchbox-root",
+                if *self.as_ref().frontend_is_big_box() {
+                    "bigbox"
+                } else {
+                    "launchbox"
+                }
+            );
+            self.as_mut().set_application_shutdown_backup_ready(true);
+            return true;
+        };
+        if !enabled {
+            eprintln!(
+                "AUTOMATIC_DATA_BACKUP_SKIPPED frontend={} event=shutdown reason=disabled",
+                if *self.as_ref().frontend_is_big_box() {
+                    "bigbox"
+                } else {
+                    "launchbox"
+                }
+            );
+            self.as_mut().set_application_shutdown_backup_ready(true);
+            return true;
+        }
+        if pending_recovery > 0 || write_conflict {
+            eprintln!(
+                "AUTOMATIC_DATA_BACKUP_SKIPPED frontend={} event=shutdown reason={}",
+                if *self.as_ref().frontend_is_big_box() {
+                    "bigbox"
+                } else {
+                    "launchbox"
+                },
+                if pending_recovery > 0 {
+                    "pending-recovery"
+                } else {
+                    "write-conflict"
+                }
+            );
+            self.as_mut().set_application_shutdown_backup_ready(true);
+            return true;
+        }
+
+        let kind = if *self.as_ref().frontend_is_big_box() {
+            AutomaticDataBackupKind::BigBoxShutdown
+        } else {
+            AutomaticDataBackupKind::LaunchBoxShutdown
+        };
+        if !self.as_mut().begin_automatic_data_backup(kind) {
+            self.as_mut().set_application_shutdown_backup_ready(true);
+            return true;
+        }
+        false
     }
 
     pub fn desktop_tray_settings_json(&self) -> QString {
@@ -28498,6 +28712,60 @@ impl qobject::LibraryController {
         Some(root)
     }
 
+    fn begin_automatic_data_backup(
+        mut self: Pin<&mut Self>,
+        kind: AutomaticDataBackupKind,
+    ) -> bool {
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            return false;
+        };
+        if *self.as_ref().automatic_data_backup_running()
+            || self.as_ref().library_operation_active()
+            || *self.as_ref().launch_session_active()
+            || *self.as_ref().startup_screen_active()
+            || *self.as_ref().pause_screen_active()
+            || *self.as_ref().pending_recovery_count() > 0
+            || *self.as_ref().write_conflict()
+        {
+            return false;
+        }
+
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_automatic_data_backup_running(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Creating the automatic {} data backup...",
+            kind.event_label()
+        )));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name(format!(
+                "{}-automatic-{}-data-backup",
+                kind.frontend_label(),
+                kind.event_label()
+            ))
+            .spawn(move || {
+                let result = create_automatic_launchbox_data_backup(root, kind);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_automatic_data_backup(generation, kind, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_automatic_data_backup_running(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start the automatic {} data-backup worker: {error}",
+                kind.event_label()
+            )));
+            return false;
+        }
+        true
+    }
+
     fn finish_background_load(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -28566,6 +28834,7 @@ impl qobject::LibraryController {
                     list_view_column_layout: loaded.list_view_column_layout,
                     box_size: loaded.box_size,
                     desktop_tray_policy: loaded.desktop_tray_policy,
+                    application_data_backup_policy: loaded.application_data_backup_policy,
                     name: loaded.name,
                     message: loaded.message,
                     pending_recovery_count: loaded.pending_recovery_count,
@@ -28576,6 +28845,41 @@ impl qobject::LibraryController {
                     self.as_mut().rust_mut().pending_post_reload_message.take();
                 if let Some(message) = post_reload_message {
                     self.as_mut().set_status_message(qstring(message));
+                }
+                if !self.as_ref().rust().automatic_startup_backup_attempted {
+                    self.as_mut().rust_mut().automatic_startup_backup_attempted = true;
+                    let enabled = self.as_ref().rust().application_data_backup_policy.enabled;
+                    let has_root = self.as_ref().rust().launchbox_root.is_some();
+                    let pending_recovery = *self.as_ref().pending_recovery_count();
+                    if enabled && has_root && pending_recovery == 0 {
+                        let kind = if *self.as_ref().frontend_is_big_box() {
+                            AutomaticDataBackupKind::BigBoxStartup
+                        } else {
+                            AutomaticDataBackupKind::LaunchBoxStartup
+                        };
+                        if !self.as_mut().begin_automatic_data_backup(kind) {
+                            eprintln!(
+                                "AUTOMATIC_DATA_BACKUP_SKIPPED frontend={} event=startup reason=operation-active",
+                                kind.frontend_label()
+                            );
+                        }
+                    } else {
+                        eprintln!(
+                            "AUTOMATIC_DATA_BACKUP_SKIPPED frontend={} event=startup reason={}",
+                            if *self.as_ref().frontend_is_big_box() {
+                                "bigbox"
+                            } else {
+                                "launchbox"
+                            },
+                            if !enabled {
+                                "disabled"
+                            } else if !has_root {
+                                "no-launchbox-root"
+                            } else {
+                                "pending-recovery"
+                            }
+                        );
+                    }
                 }
             }
             Err(error) => {
@@ -28981,6 +29285,120 @@ impl qobject::LibraryController {
                     "Could not save desktop tray settings: {message}"
                 )));
             }
+        }
+    }
+
+    fn finish_auto_data_backup_setting_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<AutoDataBackupSettingWriteSuccess, DesktopTrayWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(written) => {
+                self.as_mut().rust_mut().application_data_backup_policy = written.policy;
+                self.as_mut()
+                    .set_auto_data_backup_enabled(written.policy.enabled);
+                let revision = self
+                    .as_ref()
+                    .auto_data_backup_settings_revision()
+                    .wrapping_add(1);
+                self.as_mut()
+                    .set_auto_data_backup_settings_revision(revision);
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Saved automatic data-backup setting. Exact backup: {}",
+                    written.backup.display()
+                )));
+                eprintln!(
+                    "AUTO_DATA_BACKUP_SETTING_SAVED enabled={} revision={} backup={}",
+                    written.policy.enabled,
+                    revision,
+                    written.backup.display()
+                );
+            }
+            Err(DesktopTrayWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict: {message}. Reload before retrying."
+                )));
+            }
+            Err(DesktopTrayWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(DesktopTrayWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not save automatic data-backup setting: {message}"
+                )));
+            }
+        }
+    }
+
+    fn finish_automatic_data_backup(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        kind: AutomaticDataBackupKind,
+        result: Result<AutomaticDataBackupReport, String>,
+    ) {
+        self.as_mut().set_writing(false);
+        self.as_mut().set_automatic_data_backup_running(false);
+        let is_shutdown = matches!(
+            kind,
+            AutomaticDataBackupKind::LaunchBoxShutdown | AutomaticDataBackupKind::BigBoxShutdown
+        );
+        if self.as_ref().rust().request_generation == generation {
+            match result {
+                Ok(report) => {
+                    let archive = report.backup.archive.to_string_lossy().into_owned();
+                    self.as_mut()
+                        .set_last_automatic_data_backup_path(qstring(&archive));
+                    let revision = self
+                        .as_ref()
+                        .automatic_data_backup_revision()
+                        .wrapping_add(1);
+                    self.as_mut().set_automatic_data_backup_revision(revision);
+                    self.as_mut().set_write_conflict(false);
+                    self.as_mut().set_status_message(qstring(format!(
+                        "Created automatic {} data backup {} with {} files; removed {} expired automatic backup(s).",
+                        kind.event_label(),
+                        report.backup.archive.display(),
+                        report.backup.revision.file_count,
+                        report.removed_archives.len()
+                    )));
+                    eprintln!(
+                        "AUTOMATIC_DATA_BACKUP_CREATED frontend={} event={} path={} files={} directories={} bytes={} sha256={} removed={}",
+                        kind.frontend_label(),
+                        kind.event_label(),
+                        report.backup.archive.display(),
+                        report.backup.revision.file_count,
+                        report.backup.revision.directory_count,
+                        report.backup.revision.byte_len,
+                        report.backup.revision.sha256,
+                        report.removed_archives.len()
+                    );
+                }
+                Err(error) => {
+                    self.as_mut().set_status_message(qstring(format!(
+                        "Could not create automatic {} data backup: {error}",
+                        kind.event_label()
+                    )));
+                    eprintln!(
+                        "AUTOMATIC_DATA_BACKUP_FAILED frontend={} event={} error={error}",
+                        kind.frontend_label(),
+                        kind.event_label()
+                    );
+                }
+            }
+        }
+        if is_shutdown {
+            self.as_mut().set_application_shutdown_backup_ready(true);
         }
     }
 
@@ -32818,6 +33236,7 @@ impl qobject::LibraryController {
             list_view_column_layout,
             box_size,
             desktop_tray_policy,
+            application_data_backup_policy,
             name,
             message,
             pending_recovery_count,
@@ -32951,6 +33370,7 @@ impl qobject::LibraryController {
             rust.big_box_game_action_policy = big_box_game_action_policy;
             rust.big_box_related_games_policy = big_box_related_games_policy;
             rust.desktop_tray_policy = desktop_tray_policy;
+            rust.application_data_backup_policy = application_data_backup_policy;
             rust.big_box_related_games_generation =
                 rust.big_box_related_games_generation.wrapping_add(1);
             rust.big_box_screensaver_candidates = big_box_screensaver_candidates;
@@ -33361,6 +33781,8 @@ impl qobject::LibraryController {
         self.as_mut().refresh_list_view_layout_json();
         self.as_mut().set_box_size(box_size.value());
         self.as_mut().apply_desktop_tray_policy(desktop_tray_policy);
+        self.as_mut()
+            .set_auto_data_backup_enabled(application_data_backup_policy.enabled);
         self.as_mut().set_include_hidden_games(false);
         self.as_mut().set_include_broken_games(false);
         self.as_mut().set_navigation_filter_kind(QString::default());
