@@ -7,6 +7,7 @@ mod frontend_handoff;
 mod input;
 mod m3u;
 mod media;
+mod media_migration;
 mod model_viewer_state;
 mod path;
 mod path_settings;
@@ -50,6 +51,10 @@ pub use media::{
     FrontImageIndexReport, GameDetailsMediaPolicy, GameMediaIndex, GameMediaIndexReport,
     GameMediaItem, GameMediaKind, GameSupplementalMediaIndex, GameSupplementalMediaIndexReport,
     LaunchBoxMusicPolicy,
+};
+pub use media_migration::{
+    create_media_migration_directories, plan_game_media_migration, GameMediaMigrationError,
+    GameMediaMigrationMove, GameMediaMigrationPlan,
 };
 pub use model_viewer_state::{
     default_model_viewer_state_path, ModelRotationLock, ModelViewerState, ModelViewerStateError,

@@ -10,6 +10,7 @@ pub enum BulkGameEditorKind {
     Date,
     LexicalPath,
     Emulator,
+    Platform,
     MultiValue,
     CustomField,
 }
@@ -24,6 +25,7 @@ impl BulkGameEditorKind {
             Self::Date => "date",
             Self::LexicalPath => "lexicalPath",
             Self::Emulator => "emulator",
+            Self::Platform => "platform",
             Self::MultiValue => "multiValue",
             Self::CustomField => "customField",
         }
@@ -51,6 +53,7 @@ pub enum BulkGameField {
     MaxPlayers,
     Notes,
     PlayMode,
+    Platform,
     Progress,
     Publisher,
     Rating,
@@ -81,6 +84,7 @@ impl BulkGameField {
             Self::MaxPlayers => "maxPlayers",
             Self::Notes => "notes",
             Self::PlayMode => "playMode",
+            Self::Platform => "platform",
             Self::Progress => "progress",
             Self::Publisher => "publisher",
             Self::Rating => "rating",
@@ -167,6 +171,12 @@ pub const BULK_GAME_FIELDS: &[BulkGameFieldDefinition] = &[
         label: "Play Mode",
         editor: BulkGameEditorKind::MultiValue,
         clearable: true,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::Platform,
+        label: "Platform",
+        editor: BulkGameEditorKind::Platform,
+        clearable: false,
     },
     BulkGameFieldDefinition {
         field: BulkGameField::Progress,
@@ -451,6 +461,7 @@ mod tests {
         assert!(keys.contains("starRating"));
         assert!(keys.contains("videoPath"));
         assert!(keys.contains("customField"));
+        assert!(keys.contains("platform"));
     }
 
     #[test]

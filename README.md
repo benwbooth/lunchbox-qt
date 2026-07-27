@@ -62,15 +62,19 @@ read-only, leaves source XML byte-identical, and represents unavailable
 storefront or MAME-derived values as blank rather than false.
 
 Selected audit rows now also open the first native **Bulk Edit** vertical. Its
-Rust-owned catalog exposes 25 typed metadata/state/launch fields, including
-Broken, Hide, half-star ratings, Video Path, and Custom Field. Set/Clear and
-the supported multi-value Add/Remove operations are versioned and validated;
-stable game IDs are re-resolved immediately before every affected platform XML
-commits in one recoverable transaction. Each document gets an exact backup,
-unknown XML is retained, and persisted paths remain uninterpreted lexical
-data. The conditional Platform/media-migration page, complete original field
-catalog, model/controller bulk surfaces, additional-application emulator
-propagation, and Windows/macOS oracle gates remain open; the exact boundary is
+Rust-owned catalog exposes 26 typed metadata/state/launch fields, including
+Broken, Hide, Platform, half-star ratings, Video Path, and Custom Field.
+Set/Clear and the supported multi-value Add/Remove operations are versioned
+and validated. Platform moves complete game-owned XML plus manual-playlist
+references between existing platform documents; its conditional page can
+migrate safely indexed images/videos, preserve media subpaths, and update
+explicit video paths. XML and file moves commit together through one
+recoverable transaction, while truncated indexes, shared media, unsafe
+directories, and portable target collisions fail closed. Unknown XML remains
+intact and persisted path rules stay in the shared cross-platform resolver.
+The complete original field catalog, model/controller bulk surfaces,
+additional-application emulator propagation, exact original cancellation
+behavior, and Windows/macOS oracle gates remain open; the exact boundary is
 recorded in `analysis/game-bulk-edit-13.27.md`.
 
 Read an existing installation without modifying it:

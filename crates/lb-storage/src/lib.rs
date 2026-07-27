@@ -488,6 +488,14 @@ pub struct RemovedGameRecords {
     pub remediation: GameRemovalRemediation,
 }
 
+/// Exact game-owned XML records transferred between two platform documents.
+/// Unknown children on every moved element are retained.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransferredGameRecords {
+    pub game: Game,
+    pub inventory: GameRemovalInventory,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum PlatformReferenceKind {
     Game,
@@ -1999,6 +2007,51 @@ impl AuxiliaryDocument {
             Ok(())
         })?;
         Ok(report)
+    }
+
+    /// Retargets the denormalized platform name on manual playlist rows for
+    /// games moved between platform documents. Stable game IDs and every
+    /// unknown playlist-row child remain unchanged.
+    pub fn retarget_playlist_game_platforms(
+        &mut self,
+        destinations_by_game_id: &BTreeMap<String, String>,
+    ) -> Result<usize, StorageError> {
+        self.ensure_operation_kind(
+            "retarget playlist game platforms",
+            AuxiliaryDocumentKind::Playlist,
+        )?;
+        let destinations = destinations_by_game_id
+            .iter()
+            .map(|(id, platform)| (id.to_lowercase(), platform.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if destinations.is_empty() {
+            return Ok(0);
+        }
+        let mut changed = 0usize;
+        self.mutate(|root| {
+            for element in root
+                .children
+                .iter_mut()
+                .filter_map(XMLNode::as_mut_element)
+                .filter(|element| element.name == "PlaylistGame")
+            {
+                let Some(game_id) = optional_child(element, "GameId") else {
+                    continue;
+                };
+                let Some(destination) = destinations.get(&game_id.to_lowercase()) else {
+                    continue;
+                };
+                if optional_child(element, "GamePlatform")
+                    .is_some_and(|platform| platform_names_equal(&platform, destination))
+                {
+                    continue;
+                }
+                set_child_text(element, "GamePlatform", destination);
+                changed = changed.saturating_add(1);
+            }
+            Ok(())
+        })?;
+        Ok(changed)
     }
 
     /// Updates one playlist and its ordered filter/game rows without
@@ -5228,6 +5281,183 @@ impl PlatformDocument {
         })
     }
 
+    /// Moves one game and every modeled record it owns to another platform
+    /// document while retaining each complete XML element, including unknown
+    /// children. The two in-memory documents change only after both candidate
+    /// roots parse and validate successfully.
+    pub fn transfer_game_to(
+        &mut self,
+        destination: &mut PlatformDocument,
+        id: &str,
+    ) -> Result<TransferredGameRecords, StorageError> {
+        if self.source_path == destination.source_path {
+            return Err(StorageError::SamePlatformTransfer {
+                path: self.source_path.clone(),
+            });
+        }
+        let game = self
+            .library
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(id))
+            .cloned()
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+        if destination
+            .library
+            .games
+            .iter()
+            .any(|candidate| candidate.id.eq_ignore_ascii_case(&game.id))
+        {
+            return Err(StorageError::DuplicateGameId {
+                id: game.id.clone(),
+            });
+        }
+
+        let exact_id = game.id.clone();
+        let mut source_root = self.root.clone();
+        let mut destination_root = destination.root.clone();
+        let mut inventory = GameRemovalInventory::default();
+        let mut moved = Vec::<Element>::new();
+        source_root.children.retain_mut(|node| {
+            let Some(element) = node.as_mut_element() else {
+                return true;
+            };
+            let owner_field = match element.name.as_str() {
+                "Game" => Some("ID"),
+                "ModelSettings" => Some("GameId"),
+                "AdditionalApplication" | "Mount" | "AlternateName" | "CustomField" => {
+                    Some("GameID")
+                }
+                "GameControllerSupport" | "GameSave" => Some("GameId"),
+                _ => None,
+            };
+            let is_owned = owner_field.is_some_and(|field| {
+                optional_child(element, field)
+                    .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+            });
+            if !is_owned {
+                return true;
+            }
+            match element.name.as_str() {
+                "Game" => inventory.games = inventory.games.saturating_add(1),
+                "ModelSettings" => {
+                    inventory.model_settings = inventory.model_settings.saturating_add(1)
+                }
+                "AdditionalApplication" => {
+                    inventory.additional_applications =
+                        inventory.additional_applications.saturating_add(1)
+                }
+                "Mount" => inventory.mounts = inventory.mounts.saturating_add(1),
+                "AlternateName" => {
+                    inventory.alternate_names = inventory.alternate_names.saturating_add(1)
+                }
+                "CustomField" => {
+                    inventory.custom_fields = inventory.custom_fields.saturating_add(1)
+                }
+                "GameControllerSupport" => {
+                    inventory.controller_support = inventory.controller_support.saturating_add(1)
+                }
+                "GameSave" => inventory.game_saves = inventory.game_saves.saturating_add(1),
+                _ => unreachable!("owned platform record family"),
+            }
+            moved.push(element.clone());
+            false
+        });
+        if inventory.games != 1 {
+            return Err(StorageError::InvalidGameRecordEdit {
+                record: "Game",
+                game_id: exact_id,
+                reason: format!(
+                    "expected exactly one game element during platform transfer, found {}",
+                    inventory.games
+                ),
+            });
+        }
+
+        let destination_name = destination.library.name.clone();
+        for mut element in moved {
+            if element.name == "Game" {
+                set_child_text(&mut element, "Platform", &destination_name);
+            }
+            let insertion = platform_record_insertion_index(&destination_root, &element.name);
+            destination_root
+                .children
+                .insert(insertion, XMLNode::Element(element));
+        }
+
+        let mut source_bytes = Vec::new();
+        write_xml_root(&source_root, &mut source_bytes)?;
+        let source_replacement = Self::from_reader_for_platform(
+            self.source_path.clone(),
+            source_bytes.as_slice(),
+            self.library.name.clone(),
+        )?;
+        let mut destination_bytes = Vec::new();
+        write_xml_root(&destination_root, &mut destination_bytes)?;
+        let destination_replacement = Self::from_reader_for_platform(
+            destination.source_path.clone(),
+            destination_bytes.as_slice(),
+            destination_name,
+        )?;
+
+        self.root = source_replacement.root;
+        self.library = source_replacement.library;
+        destination.root = destination_replacement.root;
+        destination.library = destination_replacement.library;
+        let moved_game = destination
+            .library
+            .games
+            .iter()
+            .find(|candidate| candidate.id.eq_ignore_ascii_case(&game.id))
+            .cloned()
+            .expect("validated destination contains transferred game");
+        Ok(TransferredGameRecords {
+            game: moved_game,
+            inventory,
+        })
+    }
+
+    /// Updates explicit video paths after their files were planned for a
+    /// platform-media migration. `None` leaves the corresponding field
+    /// unchanged; the supplied strings remain lexical LaunchBox paths.
+    pub fn set_game_video_paths(
+        &mut self,
+        id: &str,
+        video_path: Option<&str>,
+        theme_video_path: Option<&str>,
+    ) -> Result<Game, StorageError> {
+        let game_index = self
+            .library
+            .games
+            .iter()
+            .position(|game| game.id.eq_ignore_ascii_case(id))
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+        let exact_id = self.library.games[game_index].id.clone();
+        let element = self
+            .root
+            .children
+            .iter_mut()
+            .filter_map(XMLNode::as_mut_element)
+            .filter(|element| element.name == "Game")
+            .find(|element| {
+                optional_child(element, "ID")
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(&exact_id))
+            })
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: exact_id.clone(),
+            })?;
+        if let Some(path) = video_path {
+            set_optional_child_text(element, "VideoPath", Some(path));
+            self.library.games[game_index].video_path = Some(path.to_string());
+        }
+        if let Some(path) = theme_video_path {
+            set_optional_child_text(element, "ThemeVideoPath", Some(path));
+            self.library.games[game_index].theme_video_path = Some(path.to_string());
+        }
+        self.library.games[game_index].validate()?;
+        Ok(self.library.games[game_index].clone())
+    }
+
     pub fn set_game_title(&mut self, id: &str, title: &str) -> Result<(), StorageError> {
         if title.trim().is_empty() {
             return Err(StorageError::EmptyGameTitle { id: id.to_string() });
@@ -5877,6 +6107,13 @@ impl PlatformDocument {
             }
             BulkGameField::CustomField => {
                 self.apply_bulk_custom_field_edit(id, edit)?;
+            }
+            BulkGameField::Platform => {
+                return Err(StorageError::InvalidGameRecordEdit {
+                    record: "Game",
+                    game_id: id.to_string(),
+                    reason: "platform changes require a cross-document library transaction".into(),
+                });
             }
             field => {
                 let mut metadata = GameMetadata::from(&original);
@@ -9832,6 +10069,8 @@ pub enum StorageError {
     EmptyGameApplicationPath { id: String },
     #[error("game ID {id} already exists")]
     DuplicateGameId { id: String },
+    #[error("cannot transfer a game within the same platform document: {path}")]
+    SamePlatformTransfer { path: PathBuf },
     #[error("invalid game combine/expand request: {reason}")]
     InvalidGameGrouping { reason: String },
     #[error("{scope} model settings must target {expected} and no other identity")]
@@ -14065,5 +14304,95 @@ mod tests {
             fs::read(&first_path).expect("first after conflict"),
             before_first
         );
+    }
+
+    #[test]
+    fn platform_transfer_moves_owned_xml_losslessly_and_retargets_playlists() {
+        let mut source = PlatformDocument::from_reader_for_platform(
+            "Data/Platforms/Fixture Console.xml",
+            include_str!("../../../fixtures/launchbox/Data/Platforms/Fixture Console.xml")
+                .as_bytes(),
+            "Fixture Console",
+        )
+        .unwrap();
+        let mut destination = PlatformDocument::from_reader_for_platform(
+            "Data/Platforms/Target Console.xml",
+            br#"<LaunchBox><FutureTargetRoot>keep-target</FutureTargetRoot></LaunchBox>"#
+                .as_slice(),
+            "Target Console",
+        )
+        .unwrap();
+
+        let transferred = source
+            .transfer_game_to(&mut destination, "FIXTURE-ADVENTURE")
+            .expect("transfer complete game record family");
+        assert_eq!(transferred.game.platform, "Target Console");
+        assert_eq!(transferred.inventory.games, 1);
+        assert_eq!(transferred.inventory.additional_applications, 1);
+        assert_eq!(transferred.inventory.alternate_names, 1);
+        assert_eq!(transferred.inventory.custom_fields, 1);
+        assert_eq!(transferred.inventory.game_saves, 1);
+        assert_eq!(transferred.inventory.model_settings, 1);
+        assert!(source
+            .library()
+            .games
+            .iter()
+            .all(|game| game.id != "fixture-adventure"));
+
+        let source_xml = String::from_utf8(source.to_xml_bytes().unwrap()).unwrap();
+        let destination_xml = String::from_utf8(destination.to_xml_bytes().unwrap()).unwrap();
+        assert!(source_xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+        assert!(destination_xml.contains("<FutureTargetRoot>keep-target</FutureTargetRoot>"));
+        assert!(destination_xml.contains("<Platform>Target Console</Platform>"));
+        assert!(destination_xml
+            .contains("<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>"));
+        assert!(destination_xml.contains(
+            "<FutureAdditionalApplicationElement>keep-additional-app-data</FutureAdditionalApplicationElement>"
+        ));
+        assert!(destination_xml.contains(
+            "<FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>"
+        ));
+
+        destination
+            .set_game_video_paths(
+                "fixture-adventure",
+                Some(r"Videos\Target Console\fixture-adventure.mp4"),
+                Some(r"Videos\Target Console\Theme\fixture-adventure.mp4"),
+            )
+            .unwrap();
+        let destination_xml = String::from_utf8(destination.to_xml_bytes().unwrap()).unwrap();
+        assert!(destination_xml
+            .contains(r"<VideoPath>Videos\Target Console\fixture-adventure.mp4</VideoPath>"));
+        assert!(destination_xml.contains(
+            r"<ThemeVideoPath>Videos\Target Console\Theme\fixture-adventure.mp4</ThemeVideoPath>"
+        ));
+
+        let playlist_fixture = include_str!(
+            "../../../fixtures/launchbox/Data/Playlists/Fixture Playlist.xml"
+        )
+        .replace(
+            "</PlaylistGame>",
+            "<FuturePlaylistGameField>keep-playlist-data</FuturePlaylistGameField></PlaylistGame>",
+        );
+        let mut playlist = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Playlist,
+            "Data/Playlists/Fixture Playlist.xml",
+            playlist_fixture.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            playlist
+                .retarget_playlist_game_platforms(
+                    &[("fixture-adventure".into(), "Target Console".into())]
+                        .into_iter()
+                        .collect()
+                )
+                .unwrap(),
+            1
+        );
+        let playlist_xml = String::from_utf8(playlist.to_xml_bytes().unwrap()).unwrap();
+        assert!(playlist_xml.contains("<GamePlatform>Target Console</GamePlatform>"));
+        assert!(playlist_xml
+            .contains("<FuturePlaylistGameField>keep-playlist-data</FuturePlaylistGameField>"));
     }
 }

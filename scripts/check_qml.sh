@@ -2653,12 +2653,14 @@ cp -a fixtures/launchbox/. "$bulk_edit_root/"
 bulk_edit_platform="$bulk_edit_root/Data/Platforms/Fixture Console.xml"
 bulk_edit_before="$bulk_edit_root/Fixture Console.before-bulk-edit.xml"
 bulk_edit_screenshot="$bulk_edit_root/bulk-edit-confirmation.png"
+bulk_edit_platform_screenshot="$bulk_edit_root/bulk-edit-platform-media.png"
 cp "$bulk_edit_platform" "$bulk_edit_before"
 bulk_edit_output=$(
   run_rendered_smoke "$binary_dir/launchbox" \
     --library "$bulk_edit_root" \
     --bulk-edit-smoke-test \
     --bulk-edit-screenshot "$bulk_edit_screenshot" \
+    --bulk-edit-platform-screenshot "$bulk_edit_platform_screenshot" \
     --path-mappings-file "$empty_path_mappings" 2>&1
 ) || {
   printf '%s\n' "$bulk_edit_output" >&2
@@ -2677,6 +2679,14 @@ if [[ ! -s "$bulk_edit_screenshot" ]] \
       | tr -d ' \n') != 89504e470d0a1a0a ]]; then
   printf '%s\n' "$bulk_edit_output" >&2
   echo "LaunchBox did not render a valid bulk-edit confirmation PNG." >&2
+  exit 1
+fi
+if [[ ! -s "$bulk_edit_platform_screenshot" ]] \
+  || [[ $(wc -c < "$bulk_edit_platform_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$bulk_edit_platform_screenshot" \
+      | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$bulk_edit_output" >&2
+  echo "LaunchBox did not render the platform media-migration page." >&2
   exit 1
 fi
 if [[ $(rg -c '<Publisher>Bulk Smoke Publisher</Publisher>' \
@@ -2704,7 +2714,7 @@ if [[ ${#bulk_edit_backups[@]} -ne 1 ]] \
   exit 1
 fi
 
-echo "LaunchBox native bulk edit validated stable selected IDs, typed Publisher mutation, confirmation rendering, one recoverable transaction, unknown XML/path preservation, and an exact backup."
+echo "LaunchBox native bulk edit validated stable selected IDs, the conditional platform media-migration page, typed Publisher mutation, confirmation rendering, one recoverable transaction, unknown XML/path preservation, and an exact backup."
 
 cp -a fixtures/launchbox/. "$launchbox_order_root/"
 cp -a fixtures/launchbox/. "$bigbox_order_root/"

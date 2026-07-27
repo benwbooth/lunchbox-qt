@@ -14,6 +14,8 @@ Dialog {
     property bool booleanValue: true
     property real ratingValue: 0
     property string customFieldName: ""
+    property bool migrateMedia: true
+    property var platforms: []
     property alias smokeCaptureTarget: surface
 
     readonly property var selectedField:
@@ -40,6 +42,7 @@ Dialog {
 
     function rebuildFields() {
         const result = []
+        const platformResult = []
         if (controller !== null) {
             for (let index = 0;
                  index < controller.bulk_edit_field_count(); ++index) {
@@ -51,8 +54,12 @@ Dialog {
                         controller.bulk_edit_field_clearable_at(index)
                 })
             }
+            for (let index = 0;
+                 index < controller.platform_entry_count; ++index)
+                platformResult.push(controller.platform_name_at(index))
         }
         fields = result
+        platforms = platformResult
     }
 
     function resetEditor() {
@@ -64,6 +71,7 @@ Dialog {
         booleanValue = true
         ratingValue = 0
         customFieldName = ""
+        migrateMedia = true
     }
 
     function openWizard() {
@@ -114,6 +122,8 @@ Dialog {
             request.text = textValue
         if (editor === "customField")
             request.customFieldName = customFieldName
+        if (editor === "platform")
+            request.migrateMedia = migrateMedia
         return request
     }
 
@@ -126,6 +136,8 @@ Dialog {
             return booleanValue ? "set to Yes" : "set to No"
         if (editor === "rating")
             return "set to " + ratingValue.toFixed(1) + " stars"
+        if (editor === "platform")
+            return "move to \"" + textValue + "\""
         const prefix = operation === "add" ? "add "
                      : operation === "remove" ? "remove "
                      : "set to "
@@ -143,6 +155,8 @@ Dialog {
                    || customFieldName.trim().length > 0
         if (editor === "boolean" || editor === "rating")
             return true
+        if (editor === "platform")
+            return platforms.length > 0 && textValue.trim().length > 0
         if (editor === "customField"
                 && customFieldName.trim().length === 0)
             return false
@@ -157,7 +171,7 @@ Dialog {
         if (!controller.apply_bulk_edit(
                     JSON.stringify(requestObject())))
             return false
-        page = 3
+        page = 4
         return true
     }
 
@@ -167,6 +181,22 @@ Dialog {
                 selectedFieldIndex = index
                 operation = "set"
                 textValue = value
+                page = 3
+                return true
+            }
+        }
+        return false
+    }
+
+    function smokeSelectPlatform(value, migrate) {
+        for (let index = 0; index < fields.length; ++index) {
+            if (fields[index].key === "platform"
+                    && platforms.indexOf(value) >= 0) {
+                selectedFieldIndex = index
+                operation = "set"
+                textValue = value
+                migrateMedia = migrate
+                platformSelector.currentIndex = platforms.indexOf(value)
                 page = 2
                 return true
             }
@@ -188,7 +218,7 @@ Dialog {
         target: root.controller
 
         function onBulkEditRevisionChanged() {
-            if (root.page === 3 && !root.controller.writing)
+            if (root.page === 4 && !root.controller.writing)
                 resultLabel.forceActiveFocus()
         }
     }
@@ -211,7 +241,8 @@ Dialog {
                     Layout.fillWidth: true
                     text: root.page === 0 ? "Welcome"
                           : root.page === 1 ? "Choose a field and value"
-                          : root.page === 2 ? "Confirm changes"
+                          : root.page === 2 ? "Migrate game media"
+                          : root.page === 3 ? "Confirm changes"
                           : root.complete ? "Changes applied"
                           : root.controller !== null
                             && root.controller.writing
@@ -301,6 +332,11 @@ Dialog {
                             root.operation = "set"
                             root.textValue = ""
                             root.customFieldName = ""
+                            if (root.editor === "platform"
+                                    && root.platforms.length > 0) {
+                                platformSelector.currentIndex = 0
+                                root.textValue = root.platforms[0]
+                            }
                         }
                     }
 
@@ -322,6 +358,7 @@ Dialog {
                     Label {
                         visible: root.editor !== "boolean"
                                  && root.editor !== "rating"
+                                 && root.editor !== "platform"
                         text: "Operation"
                         color: "#c7d2dc"
                     }
@@ -331,6 +368,7 @@ Dialog {
                         objectName: "bulkEditOperationSelector"
                         visible: root.editor !== "boolean"
                                  && root.editor !== "rating"
+                                 && root.editor !== "platform"
                         Layout.fillWidth: true
                         model: root.operationModel()
                         onActivated: function(index) {
@@ -344,8 +382,10 @@ Dialog {
                               : root.editor === "rating" ? "Rating"
                               : root.editor === "lexicalPath"
                                 ? "Stored path"
-                                : root.editor === "emulator"
+                              : root.editor === "emulator"
                                   ? "Emulator ID"
+                                  : root.editor === "platform"
+                                    ? "Destination platform"
                                   : "Value"
                         color: "#c7d2dc"
                     }
@@ -399,6 +439,7 @@ Dialog {
                                  && root.editor !== "boolean"
                                  && root.editor !== "rating"
                                  && root.editor !== "multilineText"
+                                 && root.editor !== "platform"
                         Layout.fillWidth: true
                         placeholderText:
                             root.editor === "lexicalPath"
@@ -409,12 +450,71 @@ Dialog {
                         onTextEdited: root.textValue = text
                     }
 
+                    ComboBox {
+                        id: platformSelector
+                        objectName: "bulkEditPlatformValue"
+                        visible: root.editor === "platform"
+                        Layout.fillWidth: true
+                        model: root.platforms
+                        onActivated: function(index) {
+                            root.textValue = root.platforms[index]
+                        }
+                    }
+
                     Label {
                         Layout.fillWidth: true
                         visible: root.editor === "lexicalPath"
                         text: "Paths are persisted as LaunchBox lexical data. "
                               + "They are not interpreted as Linux, Windows, "
                               + "or macOS host paths by this editor."
+                        color: "#91a4b5"
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Item { Layout.fillHeight: true }
+                }
+
+                ColumnLayout {
+                    spacing: 18
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: "The games being edited may have images and "
+                              + "videos associated with them. Would you like "
+                              + "to migrate that media to the new platform "
+                              + "folders? Otherwise, it will no longer be "
+                              + "associated with the games."
+                        color: "#dfe8ef"
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 17
+                    }
+
+                    RadioButton {
+                        objectName: "bulkEditMigrateMediaYes"
+                        text: "Yes, I would like to migrate my media."
+                        checked: root.migrateMedia
+                        onToggled: {
+                            if (checked)
+                                root.migrateMedia = true
+                        }
+                    }
+
+                    RadioButton {
+                        objectName: "bulkEditMigrateMediaNo"
+                        text: "No, I would not like to migrate my media."
+                        checked: !root.migrateMedia
+                        onToggled: {
+                            if (checked)
+                                root.migrateMedia = false
+                        }
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Migration is limited to safely indexed image "
+                              + "and video files. Shared-title ambiguity or "
+                              + "an existing destination file stops the whole "
+                              + "transaction before any XML is replaced."
                         color: "#91a4b5"
                         wrapMode: Text.WordWrap
                     }
@@ -450,6 +550,12 @@ Dialog {
                             text: root.selectedField === null ? ""
                                   : root.selectedField.label + ": "
                                     + root.valueDescription()
+                                    + (root.editor === "platform"
+                                       ? "\n\nImages and videos: "
+                                         + (root.migrateMedia
+                                            ? "migrate to the destination folders"
+                                            : "leave in the current folders")
+                                       : "")
                                     + "\n\nAll affected platform documents "
                                     + "commit together or none do."
                             color: "#dfe8ef"
@@ -506,14 +612,20 @@ Dialog {
 
                 Button {
                     text: "Cancel"
-                    visible: root.page < 3
+                    visible: root.page < 4
                     onClicked: root.closeWizard()
                 }
 
                 Button {
                     text: "Back"
                     visible: root.page === 1 || root.page === 2
-                    onClicked: --root.page
+                             || root.page === 3
+                    onClicked: {
+                        if (root.page === 3 && root.editor !== "platform")
+                            root.page = 1
+                        else
+                            --root.page
+                    }
                 }
 
                 Item { Layout.fillWidth: true }
@@ -521,7 +633,7 @@ Dialog {
                 Button {
                     objectName: "bulkEditStartOverButton"
                     text: "Make Another Change"
-                    visible: root.page === 3 && root.complete
+                    visible: root.page === 4 && root.complete
                     onClicked: {
                         root.page = 1
                         operationSelector.currentIndex = 0
@@ -534,7 +646,7 @@ Dialog {
                 Button {
                     objectName: "bulkEditCloseButton"
                     text: "Close"
-                    visible: root.page === 3
+                    visible: root.page === 4
                              && root.controller !== null
                              && !root.controller.writing
                     onClicked: root.closeWizard()
@@ -542,12 +654,15 @@ Dialog {
 
                 Button {
                     objectName: "bulkEditContinueButton"
-                    text: root.page === 2 ? "Apply Changes" : "Continue"
-                    visible: root.page < 3
+                    text: root.page === 3 ? "Apply Changes" : "Continue"
+                    visible: root.page < 4
                     enabled: root.page !== 1 || root.editorIsValid()
                     onClicked: {
-                        if (root.page === 2)
+                        if (root.page === 3)
                             root.applyRequest()
+                        else if (root.page === 1
+                                 && root.editor !== "platform")
+                            root.page = 3
                         else
                             ++root.page
                     }

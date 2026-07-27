@@ -257,17 +257,21 @@ titles, sorting, selection, export, and edit handoff. Exact protected grid
 behavior, authoritative MAME/storefront providers, native Windows/macOS
 interaction remain audit work.
 
-The first `LIB-015` bulk-edit vertical is also implemented. Its 25-field
-Rust-owned catalog drives native editor families and a Welcome, field,
-confirmation, and apply/result wizard. Stable audit-selected IDs are resolved
-to exact platform sources immediately before one optimistic recoverable
-transaction; every affected document commits together and receives an exact
-backup. Multi-value operations are bounded, ratings require half-star values,
-unknown XML remains lossless, and persisted paths remain lexical data.
-Platform/media migration, the complete original field/combination catalog,
-model/controller/Custom DOSBox bulk surfaces, additional-application emulator
-propagation, exact restart/cancel/progress behavior, and Windows/macOS oracle
-interaction are the next bulk-editor boundaries. See
+The current `LIB-015` bulk-edit vertical has a 26-field Rust-owned catalog and
+all five recovered wizard positions, including the conditional Platform media
+choice. Stable audit-selected IDs are resolved to exact platform sources
+immediately before one optimistic recoverable transaction. Ordinary fields
+edit every affected document together. Platform changes transfer complete
+game-owned XML and playlist references to an existing destination; optionally
+indexed images/videos move in the same file/XML transaction with explicit
+video-path rewrites and exact backups. Truncated scans, shared files, unsafe
+directory chains, and portable collisions refuse the complete operation.
+Multi-value operations are bounded, ratings require half-star values, unknown
+XML remains lossless, and platform path resolution is outside QML/storage.
+The complete original field/combination catalog, model/controller/Custom
+DOSBox bulk surfaces, additional-application emulator propagation, exact
+original collision/cancellation/restart/progress behavior, and Windows/macOS
+oracle interaction are the next bulk-editor boundaries. See
 `analysis/game-bulk-edit-13.27.md`.
 
 The repository and a narrow library-browsing vertical slice now exist. Exact

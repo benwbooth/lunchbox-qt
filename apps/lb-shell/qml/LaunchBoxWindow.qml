@@ -182,6 +182,9 @@ ApplicationWindow {
     property bool bulkEditScreenshotRequested: false
     property string bulkEditScreenshotPath:
         argumentValue("--bulk-edit-screenshot")
+    property bool bulkEditPlatformScreenshotRequested: false
+    property string bulkEditPlatformScreenshotPath:
+        argumentValue("--bulk-edit-platform-screenshot")
     property bool gameDetailsSmokeTest:
         Qt.application.arguments.indexOf("--game-details-smoke-test") >= 0
     property int gameDetailsSmokePhase: 0
@@ -1925,9 +1928,9 @@ ApplicationWindow {
                     return
                 }
                 gameAuditDialog.closeAudit()
-                if (!bulkEditDialog.smokeSelectPublisher(
-                            "Bulk Smoke Publisher")) {
-                    console.error("BULK_EDIT_SMOKE_FIELD_FAILED")
+                if (!bulkEditDialog.smokeSelectPlatform(
+                            "Fixture Console", true)) {
+                    console.error("BULK_EDIT_SMOKE_PLATFORM_FIELD_FAILED")
                     Qt.exit(489)
                     return
                 }
@@ -1935,8 +1938,40 @@ ApplicationWindow {
                 return
             }
             if (window.bulkEditSmokePhase === 1) {
-                if (window.bulkEditScreenshotPath.length === 0) {
+                if (window.bulkEditPlatformScreenshotPath.length === 0) {
                     window.bulkEditSmokePhase = 2
+                    return
+                }
+                if (window.bulkEditPlatformScreenshotRequested)
+                    return
+                window.bulkEditPlatformScreenshotRequested = true
+                bulkEditDialog.smokeCaptureTarget.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.bulkEditPlatformScreenshotPath)) {
+                            console.error(
+                                "BULK_EDIT_PLATFORM_SCREENSHOT_SAVE_FAILED path="
+                                + window.bulkEditPlatformScreenshotPath)
+                            Qt.exit(489)
+                            return
+                        }
+                        window.bulkEditSmokePhase = 2
+                    })
+                return
+            }
+            if (window.bulkEditSmokePhase === 2) {
+                if (!bulkEditDialog.smokeSelectPublisher(
+                            "Bulk Smoke Publisher")) {
+                    console.error("BULK_EDIT_SMOKE_FIELD_FAILED")
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 3
+                return
+            }
+            if (window.bulkEditSmokePhase === 3) {
+                if (window.bulkEditScreenshotPath.length === 0) {
+                    window.bulkEditSmokePhase = 4
                     return
                 }
                 if (window.bulkEditScreenshotRequested)
@@ -1952,21 +1987,21 @@ ApplicationWindow {
                             Qt.exit(489)
                             return
                         }
-                        window.bulkEditSmokePhase = 2
+                        window.bulkEditSmokePhase = 4
                     })
                 return
             }
-            if (window.bulkEditSmokePhase === 2) {
+            if (window.bulkEditSmokePhase === 4) {
                 if (!bulkEditDialog.applyRequest()) {
                     console.error("BULK_EDIT_SMOKE_APPLY_FAILED status="
                                   + controller.status_message)
                     Qt.exit(489)
                     return
                 }
-                window.bulkEditSmokePhase = 3
+                window.bulkEditSmokePhase = 5
                 return
             }
-            if (window.bulkEditSmokePhase !== 3 || controller.writing)
+            if (window.bulkEditSmokePhase !== 5 || controller.writing)
                 return
             if (!controller.report_bulk_edit_smoke_success(
                         2, "publisher", "Bulk Smoke Publisher")) {

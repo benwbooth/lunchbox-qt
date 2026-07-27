@@ -2243,11 +2243,12 @@ use lb_integrations::xemu_bios::{
 use lb_integrations::{DiscoveredEmulatorSave, EmulatorSaveKind};
 use lb_metadata::MetadataDatabase;
 use lb_platform::{
-    background_music_context_key, default_host_path_mappings_path, default_launchbox_ui_state_path,
+    background_music_context_key, create_media_migration_directories,
+    default_host_path_mappings_path, default_launchbox_ui_state_path,
     default_model_viewer_state_path, default_platform_folders, execute_launch_sequence_controlled,
     index_big_box_platform_marquee_media, index_big_box_startup_presentation, index_game_media,
     index_game_supplemental_media, navigation_document_file_name, normalize_big_box_star_rating,
-    platform_document_file_name, portable_storage_name,
+    plan_game_media_migration, platform_document_file_name, portable_storage_name,
     prepare_game_launch_sequence_with_mounts_context_and_resolver,
     prepare_selected_additional_application_sequence_with_mounts_context_and_resolver,
     prioritize_favorite_game_indices, project_big_box_screensaver_candidates,
@@ -2262,12 +2263,12 @@ use lb_platform::{
     BigBoxStartupPresentationIndex, BigBoxStartupPresentationPolicy, ControllerBinding,
     DataBackupReport, DataBackupService, FrontendHandoffActivity, FrontendHandoffPlan,
     FrontendKind, FrontendLaunchScreenPolicy, FrontendPauseScreenPolicy, GameDetailsMediaPolicy,
-    GameDetailsWindowState, GameMediaItem, GameMediaKind, GamepadInputEvent, HostPathMappings,
-    HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext, LaunchControlCommand,
-    LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence, LaunchSequenceEvent,
-    LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy, LaunchTarget,
-    ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS, BIG_BOX_INPUT_ACTIONS,
-    BIG_BOX_SECURITY_PERMISSIONS,
+    GameDetailsWindowState, GameMediaIndex, GameMediaItem, GameMediaKind, GamepadInputEvent,
+    HostPathMappings, HostPathResolver, LaunchBoxMusicPolicy, LaunchBoxUiState, LaunchContext,
+    LaunchControlCommand, LaunchKind, LaunchPathResolver, LaunchPausePolicy, LaunchSequence,
+    LaunchSequenceEvent, LaunchSequenceReport, LaunchShutdownPolicy, LaunchStartupPolicy,
+    LaunchTarget, ModelRotationLock, ModelViewerState, BIG_BOX_ATTRACT_MODE_WHEEL_STEPS,
+    BIG_BOX_INPUT_ACTIONS, BIG_BOX_SECURITY_PERMISSIONS,
 };
 use lb_query::{
     compare_games, filter_game_indices, game_query_result_may_change, playlist_filters_match,
@@ -3830,8 +3831,10 @@ struct GameWriteSuccess {
 }
 
 struct BulkGameWriteSuccess {
-    games: Vec<(PathBuf, Game)>,
+    games: Vec<(PathBuf, PathBuf, Game)>,
     backups: Vec<PathBuf>,
+    media_moves: Vec<(PathBuf, PathBuf)>,
+    media_refresh: Option<GameMediaIndex>,
 }
 
 struct BigBoxGameStateWriteSuccess {
@@ -4668,10 +4671,11 @@ struct BulkGameEditPayload {
     boolean: Option<bool>,
     number: Option<f64>,
     custom_field_name: Option<String>,
+    migrate_media: Option<bool>,
 }
 
 impl BulkGameEditPayload {
-    fn into_edit(self) -> Result<BulkGameEdit, String> {
+    fn into_edit(self) -> Result<BulkGameWriteRequest, String> {
         if self.version != BULK_GAME_EDIT_PAYLOAD_VERSION {
             return Err(format!(
                 "unsupported bulk editor payload version {}; expected {}",
@@ -4687,8 +4691,24 @@ impl BulkGameEditPayload {
             custom_field_name: self.custom_field_name,
         };
         edit.validate().map_err(|error| error.to_string())?;
-        Ok(edit)
+        if edit.field == BulkGameField::Platform {
+            if self.migrate_media.is_none() {
+                return Err("a platform change requires an explicit media-migration choice".into());
+            }
+        } else if self.migrate_media.is_some() {
+            return Err("media migration is only valid for a platform change".into());
+        }
+        Ok(BulkGameWriteRequest {
+            edit,
+            migrate_media: self.migrate_media.unwrap_or(false),
+        })
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BulkGameWriteRequest {
+    edit: BulkGameEdit,
+    migrate_media: bool,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -7602,12 +7622,16 @@ fn write_big_box_playlist_membership(
 fn write_bulk_game_edit(
     root: PathBuf,
     targets: Vec<(PathBuf, String)>,
-    edit: BulkGameEdit,
+    request: BulkGameWriteRequest,
+    path_resolver: HostPathResolver,
 ) -> Result<BulkGameWriteSuccess, GameWriteFailure> {
     if targets.is_empty() {
         return Err(GameWriteFailure::Other(
             "the bulk-edit target set is empty".into(),
         ));
+    }
+    if request.edit.field == BulkGameField::Platform {
+        return write_platform_bulk_game_edit(root, targets, request, path_resolver);
     }
     let mut by_source = BTreeMap::<PathBuf, Vec<String>>::new();
     for (source, id) in targets {
@@ -7626,9 +7650,9 @@ fn write_bulk_game_edit(
                 )));
             }
             let game = document
-                .apply_bulk_game_edit(&id, &edit)
+                .apply_bulk_game_edit(&id, &request.edit)
                 .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
-            games.push((source.clone(), game));
+            games.push((source.clone(), source.clone(), game));
         }
         documents.push(document);
     }
@@ -7651,7 +7675,287 @@ fn write_bulk_game_edit(
             documents.len()
         )));
     }
-    Ok(BulkGameWriteSuccess { games, backups })
+    Ok(BulkGameWriteSuccess {
+        games,
+        backups,
+        media_moves: Vec::new(),
+        media_refresh: None,
+    })
+}
+
+fn write_platform_bulk_game_edit(
+    root: PathBuf,
+    targets: Vec<(PathBuf, String)>,
+    request: BulkGameWriteRequest,
+    path_resolver: HostPathResolver,
+) -> Result<BulkGameWriteSuccess, GameWriteFailure> {
+    let root = fs::canonicalize(&root).map_err(|error| {
+        GameWriteFailure::Other(format!("could not resolve library root: {error}"))
+    })?;
+    let destination_requested = request
+        .edit
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| GameWriteFailure::Other("a destination platform is required".into()))?;
+    let data = LaunchBoxDataIndex::load(&root)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let destination_library = data
+        .platforms()
+        .platforms()
+        .iter()
+        .find(|platform| platform.name.eq_ignore_ascii_case(destination_requested))
+        .ok_or_else(|| {
+            GameWriteFailure::Other(format!(
+                "destination platform was not found: {destination_requested}"
+            ))
+        })?;
+    let destination_name = destination_library.name.clone();
+    let destination_source = destination_library.source_path.clone();
+
+    let mut original_sources = BTreeMap::<String, PathBuf>::new();
+    let mut selected_ids = BTreeSet::new();
+    for (source, id) in &targets {
+        let key = id.to_lowercase();
+        if !selected_ids.insert(id.clone())
+            || original_sources.insert(key, source.clone()).is_some()
+        {
+            return Err(GameWriteFailure::Other(format!(
+                "game {id} appears more than once in the bulk-edit target set"
+            )));
+        }
+    }
+    let indexed_games = data.platforms().games().cloned().collect::<Vec<_>>();
+    let indexed_by_id = indexed_games
+        .iter()
+        .map(|game| (game.id.to_lowercase(), game))
+        .collect::<BTreeMap<_, _>>();
+    for (key, source) in &original_sources {
+        let game = indexed_by_id.get(key).ok_or_else(|| {
+            GameWriteFailure::Other(format!(
+                "selected game changed before platform transfer: {key}"
+            ))
+        })?;
+        if game.platform.eq_ignore_ascii_case(&destination_name) && *source != destination_source {
+            return Err(GameWriteFailure::Other(format!(
+                "game {} reports destination platform {} from a different source document",
+                game.id, destination_name
+            )));
+        }
+    }
+
+    let folders = data
+        .platform_catalog()
+        .map(|catalog| catalog.folders.as_slice())
+        .unwrap_or_default();
+    let media_plan = if request.migrate_media {
+        plan_game_media_migration(
+            &root,
+            &indexed_games,
+            folders,
+            &selected_ids,
+            &destination_name,
+            &path_resolver,
+        )
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?
+    } else {
+        Default::default()
+    };
+
+    let mut destination =
+        PlatformDocument::load_for_platform(&destination_source, destination_name.clone())
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let mut source_documents = Vec::new();
+    let mut moved_destinations = BTreeMap::<String, String>::new();
+    let mut by_source = BTreeMap::<PathBuf, Vec<String>>::new();
+    for (source, id) in &targets {
+        if *source != destination_source {
+            by_source
+                .entry(source.clone())
+                .or_default()
+                .push(id.clone());
+        }
+    }
+    for (source, ids) in by_source {
+        let source_platform = ids
+            .first()
+            .and_then(|id| indexed_by_id.get(&id.to_lowercase()))
+            .map(|game| game.platform.clone())
+            .ok_or_else(|| {
+                GameWriteFailure::Other(format!(
+                    "could not resolve source platform for {}",
+                    source.display()
+                ))
+            })?;
+        let mut document = PlatformDocument::load_for_platform(&source, source_platform)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let mut seen = BTreeSet::new();
+        for id in ids {
+            if !seen.insert(id.to_lowercase()) {
+                return Err(GameWriteFailure::Other(format!(
+                    "game {id} appears more than once in source {}",
+                    source.display()
+                )));
+            }
+            let transferred = document
+                .transfer_game_to(&mut destination, &id)
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            moved_destinations.insert(transferred.game.id.clone(), destination_name.clone());
+        }
+        source_documents.push(document);
+    }
+
+    let mut explicit_video_updates = BTreeMap::<String, (Option<String>, Option<String>)>::new();
+    if request.migrate_media {
+        for id in &selected_ids {
+            let Some(game) = indexed_by_id.get(&id.to_lowercase()) else {
+                continue;
+            };
+            let mut update = (None, None);
+            for (stored_path, target) in [
+                (game.video_path.as_deref(), &mut update.0),
+                (game.theme_video_path.as_deref(), &mut update.1),
+            ] {
+                let Some(stored_path) = stored_path else {
+                    continue;
+                };
+                let Ok(resolved) = path_resolver.resolve(&root, stored_path) else {
+                    continue;
+                };
+                let Ok(source) = fs::canonicalize(resolved) else {
+                    continue;
+                };
+                let Some(destination_path) = media_plan.target_for_source(&source) else {
+                    continue;
+                };
+                *target = Some(
+                    path_resolver
+                        .stored_path_for_host_path(&root, destination_path)
+                        .map_err(|error| GameWriteFailure::Other(error.to_string()))?,
+                );
+            }
+            if update.0.is_some() || update.1.is_some() {
+                explicit_video_updates.insert(game.id.clone(), update);
+            }
+        }
+    }
+    for (game_id, (video_path, theme_video_path)) in explicit_video_updates {
+        destination
+            .set_game_video_paths(&game_id, video_path.as_deref(), theme_video_path.as_deref())
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    }
+
+    let mut playlist_documents = Vec::new();
+    if !moved_destinations.is_empty() {
+        for playlist in data.playlists() {
+            let mut document = AuxiliaryDocument::load(&playlist.source_path)
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            let changed = document
+                .retarget_playlist_game_platforms(&moved_destinations)
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            if changed > 0 {
+                playlist_documents.push(document);
+            }
+        }
+    }
+
+    if !media_plan.moves.is_empty() {
+        create_media_migration_directories(&root, &media_plan)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    }
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    for entry in &media_plan.moves {
+        let revision = FileRevision::read(&entry.source)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        transaction
+            .stage_file_copy_with_revision(&entry.source, &entry.target, revision.clone())
+            .map_err(classify_transaction_error)?;
+        transaction
+            .stage_file_delete_with_revision(&entry.source, revision)
+            .map_err(classify_transaction_error)?;
+    }
+    for document in &source_documents {
+        transaction
+            .stage_platform(document)
+            .map_err(classify_transaction_error)?;
+    }
+    if !moved_destinations.is_empty() {
+        transaction
+            .stage_platform(&destination)
+            .map_err(classify_transaction_error)?;
+    }
+    for document in &playlist_documents {
+        transaction
+            .stage_auxiliary(document)
+            .map_err(classify_transaction_error)?;
+    }
+
+    let mut backups = Vec::new();
+    if !transaction.is_empty() {
+        let report = transaction.commit().map_err(classify_transaction_error)?;
+        backups.extend(report.writes.into_iter().map(|write| write.backup));
+        backups.extend(
+            report
+                .deleted_targets
+                .into_iter()
+                .map(|deleted| deleted.backup),
+        );
+    }
+    let games = targets
+        .into_iter()
+        .map(|(original_source, id)| {
+            let game = if original_source == destination_source {
+                indexed_by_id
+                    .get(&id.to_lowercase())
+                    .cloned()
+                    .cloned()
+                    .ok_or_else(|| {
+                        GameWriteFailure::Other(format!(
+                            "committed destination game was not found: {id}"
+                        ))
+                    })?
+            } else {
+                destination
+                    .library()
+                    .games
+                    .iter()
+                    .find(|game| game.id.eq_ignore_ascii_case(&id))
+                    .cloned()
+                    .ok_or_else(|| {
+                        GameWriteFailure::Other(format!(
+                            "committed transferred game was not found: {id}"
+                        ))
+                    })?
+            };
+            Ok((original_source, destination_source.clone(), game))
+        })
+        .collect::<Result<Vec<_>, GameWriteFailure>>()?;
+    let moved_games = games
+        .iter()
+        .filter(|(original_source, new_source, _)| original_source != new_source)
+        .map(|(_, _, game)| game.clone())
+        .collect::<Vec<_>>();
+    let media_refresh = (!moved_games.is_empty()).then(|| {
+        index_game_media(
+            &root,
+            &moved_games,
+            folders,
+            data.settings(),
+            &path_resolver,
+        )
+    });
+    let media_moves = media_plan
+        .moves
+        .into_iter()
+        .map(|entry| (entry.source, entry.target))
+        .collect();
+    Ok(BulkGameWriteSuccess {
+        games,
+        backups,
+        media_moves,
+        media_refresh,
+    })
 }
 
 fn write_game(
@@ -19078,6 +19382,7 @@ impl qobject::LibraryController {
         }
         let target_count = targets.len();
         let generation = self.as_ref().rust().request_generation;
+        let path_resolver = self.as_ref().rust().path_resolver.clone();
         self.as_mut().set_writing(true);
         self.as_mut().set_bulk_edit_completed_count(0);
         self.as_mut()
@@ -19092,7 +19397,7 @@ impl qobject::LibraryController {
         let spawn_result = std::thread::Builder::new()
             .name("launchbox-bulk-game-write".to_string())
             .spawn(move || {
-                let result = write_bulk_game_edit(root, targets, payload);
+                let result = write_bulk_game_edit(root, targets, payload, path_resolver);
                 qt_thread
                     .queue(move |mut controller| {
                         controller
@@ -31931,9 +32236,25 @@ impl qobject::LibraryController {
         }
         match result {
             Ok(success) => {
-                let BulkGameWriteSuccess { games, backups } = success;
+                let BulkGameWriteSuccess {
+                    games,
+                    backups,
+                    media_moves,
+                    media_refresh,
+                } = success;
                 let completed = saturating_i32(games.len());
-                for (source, game) in games {
+                let moved_platforms = games
+                    .iter()
+                    .filter(|(original_source, new_source, _)| original_source != new_source)
+                    .map(|(_, _, game)| (game.id.to_lowercase(), game.platform.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                let moved_game_ids = games
+                    .iter()
+                    .filter(|(original_source, new_source, _)| original_source != new_source)
+                    .map(|(_, _, game)| game.id.clone())
+                    .collect::<BTreeSet<_>>();
+                let media_move_count = media_moves.len();
+                for (original_source, new_source, game) in games {
                     let actual_index = {
                         let this = self.as_ref();
                         this.rust()
@@ -31941,7 +32262,7 @@ impl qobject::LibraryController {
                             .iter()
                             .zip(&this.rust().game_sources)
                             .position(|(candidate, candidate_source)| {
-                                candidate.id == game.id && *candidate_source == source
+                                candidate.id == game.id && *candidate_source == original_source
                             })
                     };
                     let Some(actual_index) = actual_index else {
@@ -31954,19 +32275,73 @@ impl qobject::LibraryController {
                         return;
                     };
                     self.as_mut().rust_mut().games[actual_index] = game;
+                    self.as_mut().rust_mut().game_sources[actual_index] = new_source;
+                }
+                if !moved_game_ids.is_empty() {
+                    let media_refresh = media_refresh.unwrap_or_default();
+                    let mut rust = self.as_mut().rust_mut();
+                    for game_id in &moved_game_ids {
+                        rust.front_image_paths.remove(game_id);
+                        rust.back_image_paths.remove(game_id);
+                        rust.spine_image_paths.remove(game_id);
+                        rust.full_image_paths.remove(game_id);
+                        rust.game_media_by_game_id.remove(game_id);
+                    }
+                    rust.front_image_paths
+                        .extend(media_refresh.front_paths_by_game_id);
+                    rust.back_image_paths
+                        .extend(media_refresh.back_paths_by_game_id);
+                    rust.spine_image_paths
+                        .extend(media_refresh.spine_paths_by_game_id);
+                    rust.full_image_paths
+                        .extend(media_refresh.full_paths_by_game_id);
+                    rust.game_media_by_game_id
+                        .extend(media_refresh.items_by_game_id);
+                }
+                if !moved_platforms.is_empty() {
+                    for playlist in &mut self.as_mut().rust_mut().navigation_catalog.playlists {
+                        for game in &mut playlist.games {
+                            if let Some(platform) =
+                                moved_platforms.get(&game.game_id.to_lowercase())
+                            {
+                                game.game_platform = platform.clone();
+                            }
+                        }
+                    }
+                }
+                if !moved_game_ids.is_empty() {
+                    let front_image_count =
+                        saturating_i32(self.as_ref().rust().front_image_paths.len());
+                    self.as_mut().set_front_image_count(front_image_count);
+                    let indexed_media_count = saturating_i32(
+                        self.as_ref()
+                            .rust()
+                            .game_media_by_game_id
+                            .values()
+                            .map(Vec::len)
+                            .sum::<usize>(),
+                    );
+                    self.as_mut().set_indexed_media_count(indexed_media_count);
+                    let revision = self.as_ref().game_media_revision().wrapping_add(1);
+                    self.as_mut().set_game_media_revision(revision);
                 }
                 self.as_mut().refresh_big_box_screensaver_candidates();
                 self.as_mut().refresh_filtered_games();
+                self.as_mut().update_library_counts();
                 self.as_mut().set_write_conflict(false);
                 self.as_mut().set_bulk_edit_completed_count(completed);
-                let backup_summary = backups
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let backup_summary = if backups.is_empty() {
+                    "none needed".to_string()
+                } else {
+                    backups
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
                 let result_message = format!(
-                    "Updated {completed} games across {} platform document(s). Exact backup(s): {backup_summary}",
-                    backups.len()
+                    "Updated {completed} games and moved {media_move_count} media file(s) in one recoverable transaction with {} exact backup(s): {backup_summary}",
+                    backups.len(),
                 );
                 self.as_mut()
                     .set_bulk_edit_result_message(qstring(result_message.clone()));
@@ -42044,9 +42419,10 @@ mod tests {
         .expect("typed bulk payload")
         .into_edit()
         .expect("validated bulk payload");
-        assert_eq!(parsed.field, BulkGameField::Publisher);
-        assert_eq!(parsed.operation, BulkGameEditOperation::Set);
-        assert_eq!(parsed.text.as_deref(), Some("Bulk Publisher"));
+        assert_eq!(parsed.edit.field, BulkGameField::Publisher);
+        assert_eq!(parsed.edit.operation, BulkGameEditOperation::Set);
+        assert_eq!(parsed.edit.text.as_deref(), Some("Bulk Publisher"));
+        assert!(!parsed.migrate_media);
 
         let wrong_version = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
@@ -42075,6 +42451,282 @@ mod tests {
         assert!(cross_editor
             .expect_err("boolean field requires a boolean")
             .contains("boolean value"));
+
+        let platform = serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 1,
+                "field": "platform",
+                "operation": "set",
+                "text": "Target Console",
+                "migrateMedia": true
+            }"#,
+        )
+        .expect("platform payload")
+        .into_edit()
+        .expect("validated platform request");
+        assert_eq!(platform.edit.field, BulkGameField::Platform);
+        assert!(platform.migrate_media);
+        assert!(serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 1,
+                "field": "platform",
+                "operation": "set",
+                "text": "Target Console"
+            }"#,
+        )
+        .unwrap()
+        .into_edit()
+        .unwrap_err()
+        .contains("explicit media-migration choice"));
+    }
+
+    #[test]
+    fn platform_bulk_edit_moves_xml_playlist_images_and_videos_in_one_transaction() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let platform_directory = root.join("Data/Platforms");
+        let playlist_directory = root.join("Data/Playlists");
+        fs::create_dir_all(&platform_directory).unwrap();
+        fs::create_dir_all(&playlist_directory).unwrap();
+        let source_path = platform_directory.join("Source.xml");
+        let target_path = platform_directory.join("Target.xml");
+        fs::write(
+            &source_path,
+            br#"<LaunchBox>
+  <Game><ID>move-game</ID><Title>Move Game</Title><Platform>Source</Platform><ApplicationPath>Games\Source\move.rom</ApplicationPath><VideoPath>Videos\Source\Move Game.mp4</VideoPath><FutureGameField>keep-game</FutureGameField></Game>
+  <CustomField><GameID>move-game</GameID><Name>Cabinet</Name><Value>Upright</Value><FutureCustomField>keep-field</FutureCustomField></CustomField>
+  <FutureSourceRoot>keep-source</FutureSourceRoot>
+</LaunchBox>"#,
+        )
+        .unwrap();
+        fs::write(
+            &target_path,
+            br#"<LaunchBox><FutureTargetRoot>keep-target</FutureTargetRoot></LaunchBox>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Data/Platforms.xml"),
+            br#"<LaunchBox>
+  <Platform><Name>Source</Name></Platform>
+  <Platform><Name>Target</Name></Platform>
+  <PlatformFolder><Platform>Source</Platform><MediaType>Box - Front</MediaType><FolderPath>Images\Source\Box - Front</FolderPath></PlatformFolder>
+  <PlatformFolder><Platform>Source</Platform><MediaType>Video</MediaType><FolderPath>Videos\Source</FolderPath></PlatformFolder>
+  <PlatformFolder><Platform>Target</Platform><MediaType>Box - Front</MediaType><FolderPath>Images\Target\Box - Front</FolderPath></PlatformFolder>
+  <PlatformFolder><Platform>Target</Platform><MediaType>Video</MediaType><FolderPath>Videos\Target</FolderPath></PlatformFolder>
+</LaunchBox>"#,
+        )
+        .unwrap();
+        let playlist_path = playlist_directory.join("Move List.xml");
+        fs::write(
+            &playlist_path,
+            br#"<LaunchBox>
+  <Playlist><PlaylistId>move-list</PlaylistId><Name>Move List</Name></Playlist>
+  <PlaylistGame><GameId>move-game</GameId><GameTitle>Move Game</GameTitle><GamePlatform>Source</GamePlatform><FuturePlaylistField>keep-playlist-row</FuturePlaylistField></PlaylistGame>
+</LaunchBox>"#,
+        )
+        .unwrap();
+        let image = root.join("Images/Source/Box - Front/Move Game.png");
+        let video = root.join("Videos/Source/Move Game.mp4");
+        fs::create_dir_all(image.parent().unwrap()).unwrap();
+        fs::create_dir_all(video.parent().unwrap()).unwrap();
+        fs::write(&image, b"image bytes").unwrap();
+        fs::write(&video, b"video bytes").unwrap();
+
+        let result = write_bulk_game_edit(
+            root.to_path_buf(),
+            vec![(source_path.clone(), "move-game".into())],
+            BulkGameWriteRequest {
+                edit: BulkGameEdit {
+                    field: BulkGameField::Platform,
+                    operation: BulkGameEditOperation::Set,
+                    text: Some("Target".into()),
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+                migrate_media: true,
+            },
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|_| panic!("platform transfer transaction failed"));
+
+        assert_eq!(result.games.len(), 1);
+        assert_eq!(result.games[0].0, source_path);
+        assert_eq!(result.games[0].1, target_path);
+        assert_eq!(result.games[0].2.platform, "Target");
+        assert_eq!(result.media_moves.len(), 2);
+        let media_refresh = result
+            .media_refresh
+            .as_ref()
+            .expect("moved games must be re-indexed after commit");
+        assert_eq!(
+            media_refresh
+                .front_paths_by_game_id
+                .get("move-game")
+                .map(PathBuf::as_path),
+            Some(
+                root.join("Images/Target/Box - Front/Move Game.png")
+                    .as_path()
+            )
+        );
+        assert_eq!(
+            media_refresh
+                .items_by_game_id
+                .get("move-game")
+                .map(Vec::len),
+            Some(2)
+        );
+        assert!(!image.exists());
+        assert!(!video.exists());
+        assert_eq!(
+            fs::read(root.join("Images/Target/Box - Front/Move Game.png")).unwrap(),
+            b"image bytes"
+        );
+        assert_eq!(
+            fs::read(root.join("Videos/Target/Move Game.mp4")).unwrap(),
+            b"video bytes"
+        );
+        let source_xml = fs::read_to_string(&source_path).unwrap();
+        let target_xml = fs::read_to_string(&target_path).unwrap();
+        let playlist_xml = fs::read_to_string(&playlist_path).unwrap();
+        assert!(!source_xml.contains("<ID>move-game</ID>"));
+        assert!(source_xml.contains("<FutureSourceRoot>keep-source</FutureSourceRoot>"));
+        assert!(target_xml.contains("<Platform>Target</Platform>"));
+        assert!(target_xml.contains("<FutureGameField>keep-game</FutureGameField>"));
+        assert!(target_xml.contains("<FutureCustomField>keep-field</FutureCustomField>"));
+        assert!(target_xml.contains(r"<VideoPath>Videos\Target\Move Game.mp4</VideoPath>"));
+        assert!(playlist_xml.contains("<GamePlatform>Target</GamePlatform>"));
+        assert!(
+            playlist_xml.contains("<FuturePlaylistField>keep-playlist-row</FuturePlaylistField>")
+        );
+        assert!(pending_transaction_manifests(root).unwrap().is_empty());
+        assert!(result.backups.len() >= 5);
+    }
+
+    #[test]
+    fn platform_bulk_edit_without_media_migration_refreshes_associations() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let platform_directory = root.join("Data/Platforms");
+        fs::create_dir_all(&platform_directory).unwrap();
+        let source_path = platform_directory.join("Source.xml");
+        let target_path = platform_directory.join("Target.xml");
+        fs::write(
+            &source_path,
+            br#"<LaunchBox>
+  <Game><ID>leave-media</ID><Title>Leave Media</Title><Platform>Source</Platform><ApplicationPath>Games\Source\leave.rom</ApplicationPath></Game>
+</LaunchBox>"#,
+        )
+        .unwrap();
+        fs::write(&target_path, b"<LaunchBox />").unwrap();
+        fs::write(
+            root.join("Data/Platforms.xml"),
+            br#"<LaunchBox>
+  <Platform><Name>Source</Name></Platform>
+  <Platform><Name>Target</Name></Platform>
+  <PlatformFolder><Platform>Source</Platform><MediaType>Box - Front</MediaType><FolderPath>Images\Source\Box - Front</FolderPath></PlatformFolder>
+  <PlatformFolder><Platform>Target</Platform><MediaType>Box - Front</MediaType><FolderPath>Images\Target\Box - Front</FolderPath></PlatformFolder>
+</LaunchBox>"#,
+        )
+        .unwrap();
+        let source_image = root.join("Images/Source/Box - Front/Leave Media.png");
+        fs::create_dir_all(source_image.parent().unwrap()).unwrap();
+        fs::write(&source_image, b"leave in place").unwrap();
+
+        let result = write_bulk_game_edit(
+            root.to_path_buf(),
+            vec![(source_path, "leave-media".into())],
+            BulkGameWriteRequest {
+                edit: BulkGameEdit {
+                    field: BulkGameField::Platform,
+                    operation: BulkGameEditOperation::Set,
+                    text: Some("Target".into()),
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+                migrate_media: false,
+            },
+            HostPathResolver::default(),
+        )
+        .unwrap_or_else(|_| panic!("platform transfer transaction failed"));
+
+        assert!(result.media_moves.is_empty());
+        assert!(source_image.is_file());
+        let media_refresh = result
+            .media_refresh
+            .expect("moved games must be re-indexed after commit");
+        assert!(!media_refresh
+            .front_paths_by_game_id
+            .contains_key("leave-media"));
+        assert!(!media_refresh.items_by_game_id.contains_key("leave-media"));
+    }
+
+    #[test]
+    fn platform_bulk_edit_target_collision_leaves_xml_and_media_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let platform_directory = root.join("Data/Platforms");
+        fs::create_dir_all(&platform_directory).unwrap();
+        let source_path = platform_directory.join("Source.xml");
+        let target_path = platform_directory.join("Target.xml");
+        let source_xml = br#"<LaunchBox>
+  <Game><ID>collision-game</ID><Title>Collision Game</Title><Platform>Source</Platform><ApplicationPath>Games\Source\collision.rom</ApplicationPath><FutureGameField>keep-game</FutureGameField></Game>
+  <FutureSourceRoot>keep-source</FutureSourceRoot>
+</LaunchBox>"#;
+        let target_xml =
+            br#"<LaunchBox><FutureTargetRoot>keep-target</FutureTargetRoot></LaunchBox>"#;
+        fs::write(&source_path, source_xml).unwrap();
+        fs::write(&target_path, target_xml).unwrap();
+        fs::write(
+            root.join("Data/Platforms.xml"),
+            br#"<LaunchBox>
+  <Platform><Name>Source</Name></Platform>
+  <Platform><Name>Target</Name></Platform>
+  <PlatformFolder><Platform>Source</Platform><MediaType>Box - Front</MediaType><FolderPath>Images\Source\Box - Front</FolderPath></PlatformFolder>
+  <PlatformFolder><Platform>Target</Platform><MediaType>Box - Front</MediaType><FolderPath>Images\Target\Box - Front</FolderPath></PlatformFolder>
+</LaunchBox>"#,
+        )
+        .unwrap();
+        let source_image = root.join("Images/Source/Box - Front/Collision Game.png");
+        let target_image = root.join("Images/Target/Box - Front/Collision Game.png");
+        fs::create_dir_all(source_image.parent().unwrap()).unwrap();
+        fs::create_dir_all(target_image.parent().unwrap()).unwrap();
+        fs::write(&source_image, b"source image").unwrap();
+        fs::write(&target_image, b"existing target").unwrap();
+
+        let error = match write_bulk_game_edit(
+            root.to_path_buf(),
+            vec![(source_path.clone(), "collision-game".into())],
+            BulkGameWriteRequest {
+                edit: BulkGameEdit {
+                    field: BulkGameField::Platform,
+                    operation: BulkGameEditOperation::Set,
+                    text: Some("Target".into()),
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+                migrate_media: true,
+            },
+            HostPathResolver::default(),
+        ) {
+            Ok(_) => panic!("existing media target must refuse the transfer"),
+            Err(GameWriteFailure::Other(message)) => message,
+            Err(_) => panic!("collision must be reported as a validation failure"),
+        };
+
+        assert!(error.contains("target already exists"), "{error}");
+        assert_eq!(fs::read(&source_path).unwrap(), source_xml);
+        assert_eq!(fs::read(&target_path).unwrap(), target_xml);
+        assert_eq!(fs::read(&source_image).unwrap(), b"source image");
+        assert_eq!(fs::read(&target_image).unwrap(), b"existing target");
+        assert!(pending_transaction_manifests(root).unwrap().is_empty());
+        assert!(!platform_directory
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().contains("backup")));
     }
 
     #[test]
