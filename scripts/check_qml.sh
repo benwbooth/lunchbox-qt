@@ -50,7 +50,8 @@ diagnostics=$(
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml \
     apps/lb-shell/qml/LaunchBoxSystemTray.qml \
-    apps/lb-shell/qml/GameAuditDialog.qml 2>&1
+    apps/lb-shell/qml/GameAuditDialog.qml \
+    apps/lb-shell/qml/BulkEditDialog.qml 2>&1
 ) || {
   printf '%s\n' "$diagnostics" >&2
   exit 1
@@ -2523,6 +2524,7 @@ echo "BigBox category/platform/playlist navigation and exact membership filterin
 edit_root=$(mktemp -d)
 library_filter_root=$(mktemp -d)
 game_audit_root=$(mktemp -d)
+bulk_edit_root=$(mktemp -d)
 launchbox_order_root=$(mktemp -d)
 bigbox_order_root=$(mktemp -d)
 launchbox_list_root=$(mktemp -d)
@@ -2566,7 +2568,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$game_audit_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$launchbox_desktop_tray_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$game_controller_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$desktop_command_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$game_audit_root" "$bulk_edit_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$launchbox_desktop_tray_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$game_controller_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$desktop_command_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 
 cp -a fixtures/launchbox/. "$library_filter_root/"
 library_filter_platform="$library_filter_root/Data/Platforms/Fixture Console.xml"
@@ -2646,6 +2648,63 @@ fi
 cmp "$game_audit_platform.before-audit-smoke" "$game_audit_platform"
 
 echo "LaunchBox 76-column game audit, platform-scoped duplicate detection, native sorting, selection, spreadsheet TSV export, rendered UI, and read-only library behavior validated."
+
+cp -a fixtures/launchbox/. "$bulk_edit_root/"
+bulk_edit_platform="$bulk_edit_root/Data/Platforms/Fixture Console.xml"
+bulk_edit_before="$bulk_edit_root/Fixture Console.before-bulk-edit.xml"
+bulk_edit_screenshot="$bulk_edit_root/bulk-edit-confirmation.png"
+cp "$bulk_edit_platform" "$bulk_edit_before"
+bulk_edit_output=$(
+  run_rendered_smoke "$binary_dir/launchbox" \
+    --library "$bulk_edit_root" \
+    --bulk-edit-smoke-test \
+    --bulk-edit-screenshot "$bulk_edit_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$bulk_edit_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'BULK_EDIT_SMOKE_COMPLETE games=2 field=publisher value="Bulk Smoke Publisher" transaction=1' \
+  <<< "$bulk_edit_output"; then
+  printf '%s\n' "$bulk_edit_output" >&2
+  echo "LaunchBox did not complete the native bulk-edit workflow." >&2
+  exit 1
+fi
+if [[ ! -s "$bulk_edit_screenshot" ]] \
+  || [[ $(wc -c < "$bulk_edit_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$bulk_edit_screenshot" \
+      | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$bulk_edit_output" >&2
+  echo "LaunchBox did not render a valid bulk-edit confirmation PNG." >&2
+  exit 1
+fi
+if [[ $(rg -c '<Publisher>Bulk Smoke Publisher</Publisher>' \
+      "$bulk_edit_platform") -ne 2 ]] \
+  || ! rg -q \
+    '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>' \
+    "$bulk_edit_platform" \
+  || ! rg -Fq \
+    '<ApplicationPath>Games\Fixture Adventure\adventure.rom</ApplicationPath>' \
+    "$bulk_edit_platform"; then
+  printf '%s\n' "$bulk_edit_output" >&2
+  echo "Bulk edit did not update exactly the selected games losslessly." >&2
+  exit 1
+fi
+mapfile -t bulk_edit_backups < <(
+  find "$bulk_edit_root/Data/Platforms" -maxdepth 1 -type f \
+    -name 'Fixture Console.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#bulk_edit_backups[@]} -ne 1 ]] \
+  || ! cmp -s "$bulk_edit_before" "${bulk_edit_backups[0]}" \
+  || find "$bulk_edit_root" -type f \
+    -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  printf '%s\n' "$bulk_edit_output" >&2
+  echo "Bulk edit did not leave one exact recovery copy and a clean transaction state." >&2
+  exit 1
+fi
+
+echo "LaunchBox native bulk edit validated stable selected IDs, typed Publisher mutation, confirmation rendering, one recoverable transaction, unknown XML/path preservation, and an exact backup."
 
 cp -a fixtures/launchbox/. "$launchbox_order_root/"
 cp -a fixtures/launchbox/. "$bigbox_order_root/"

@@ -4,6 +4,7 @@ use thiserror::Error;
 
 mod audit;
 mod box_size;
+mod bulk_edit;
 mod catalog;
 mod data_backup;
 mod desktop_tray;
@@ -13,6 +14,7 @@ mod model_settings;
 
 pub use audit::*;
 pub use box_size::*;
+pub use bulk_edit::*;
 pub use catalog::*;
 pub use data_backup::*;
 pub use desktop_tray::*;

@@ -53,6 +53,35 @@ To undo the local replacement, restore both `.wine-11.8` backups to their
 original names and remove the `uiautomationcore` DLL override. This does not
 touch LaunchBox data.
 
+After the host moved to Wine staging 11.8, this already disposable prefix also
+lacked its matching built-in `cryptbase.dll`; `advapi32!SystemFunction036`
+failed before CoreCLR could start. Restoring the exact Wine 11.8 x86-64 and
+i386 built-ins from the active Nix store repaired that prefix-local loader
+boundary:
+
+| Prefix location | SHA-256 |
+|---|---|
+| `drive_c/windows/system32/cryptbase.dll` | `91db69c1dce1a96cc7f7b037a5cd21dd17705324a6e270dcd0fc8fafb1913987` |
+| `drive_c/windows/syswow64/cryptbase.dll` | `bb5978a3c41cc47c8c6347e5aa2214cd7538ad8363e623222b0ca131f854d2f3` |
+
+This repair is specific to the ignored oracle prefix. It is not a product
+dependency.
+
+## Bulk-editor probe boundary
+
+A temporary .NET startup hook subsequently attached to the real 13.27
+self-contained runtime and reflected the bulk-edit view-model types. The
+five-page structure and typed controls agree with the static decompilation, but
+the protected field initializer requires LaunchBox's global data manager.
+Constructing the real data-manager path under Wine entered the known activation
+critical-section stall before the field collection initialized. The probe
+therefore produced no trustworthy complete ordered field list.
+
+Static class shapes, BAML controls, and embedded release notes are sufficient
+for the bounded first native vertical recorded in
+`game-bulk-edit-13.27.md`. The exact original field catalog remains an explicit
+Windows-oracle gate.
+
 ## Verified LaunchBox result
 
 `Core/LaunchBox.exe` now reaches and paints the complete desktop window in the

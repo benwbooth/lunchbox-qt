@@ -10,6 +10,7 @@ Dialog {
     property alias smokeCaptureTarget: auditSurface
 
     signal editRequested(string gameId)
+    signal bulkEditRequested()
 
     title: controller === null ? "AUDIT"
                                : "AUDIT — " + controller.audit_scope
@@ -178,6 +179,14 @@ Dialog {
                         enabled: root.controller !== null
                                  && root.controller.audit_selected_count > 0
                         onClicked: root.copySelected()
+                    }
+
+                    Button {
+                        objectName: "auditBulkEditButton"
+                        text: "Bulk Edit Selected"
+                        enabled: root.controller !== null
+                                 && root.controller.audit_selected_count > 0
+                        onClicked: root.bulkEditRequested()
                     }
 
                     Button {

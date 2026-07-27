@@ -175,6 +175,13 @@ ApplicationWindow {
     property bool gameAuditScreenshotRequested: false
     property string gameAuditScreenshotPath:
         argumentValue("--game-audit-screenshot")
+    property bool bulkEditSmokeTest:
+        Qt.application.arguments.indexOf("--bulk-edit-smoke-test") >= 0
+    property int bulkEditSmokePhase: 0
+    property bool bulkEditSmokeFinished: false
+    property bool bulkEditScreenshotRequested: false
+    property string bulkEditScreenshotPath:
+        argumentValue("--bulk-edit-screenshot")
     property bool gameDetailsSmokeTest:
         Qt.application.arguments.indexOf("--game-details-smoke-test") >= 0
     property int gameDetailsSmokePhase: 0
@@ -1882,6 +1889,96 @@ ApplicationWindow {
                     }
                     window.gameAuditSmokePhase = 2
                 })
+        }
+    }
+
+    Timer {
+        interval: 50
+        repeat: true
+        running: window.bulkEditSmokeTest
+                 && !window.bulkEditSmokeFinished
+
+        onTriggered: {
+            if (controller.loading || controller.game_count === 0)
+                return
+            if (window.bulkEditSmokePhase === 0) {
+                if (!gameAuditDialog.openForPlatform("")) {
+                    console.error("BULK_EDIT_SMOKE_AUDIT_OPEN_FAILED status="
+                                  + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                for (let row = 0;
+                     row < controller.audit_row_count; ++row) {
+                    const id = controller.audit_game_id_at(row)
+                    if (id === "fixture-adventure"
+                            || id === "fixture-racer")
+                        controller.toggle_audit_row_selected(row)
+                }
+                if (controller.audit_selected_count !== 2
+                        || !bulkEditDialog.openWizard()) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_SELECTION_FAILED selected="
+                        + controller.audit_selected_count + " status="
+                        + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                gameAuditDialog.closeAudit()
+                if (!bulkEditDialog.smokeSelectPublisher(
+                            "Bulk Smoke Publisher")) {
+                    console.error("BULK_EDIT_SMOKE_FIELD_FAILED")
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 1
+                return
+            }
+            if (window.bulkEditSmokePhase === 1) {
+                if (window.bulkEditScreenshotPath.length === 0) {
+                    window.bulkEditSmokePhase = 2
+                    return
+                }
+                if (window.bulkEditScreenshotRequested)
+                    return
+                window.bulkEditScreenshotRequested = true
+                bulkEditDialog.smokeCaptureTarget.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.bulkEditScreenshotPath)) {
+                            console.error(
+                                "BULK_EDIT_SCREENSHOT_SAVE_FAILED path="
+                                + window.bulkEditScreenshotPath)
+                            Qt.exit(489)
+                            return
+                        }
+                        window.bulkEditSmokePhase = 2
+                    })
+                return
+            }
+            if (window.bulkEditSmokePhase === 2) {
+                if (!bulkEditDialog.applyRequest()) {
+                    console.error("BULK_EDIT_SMOKE_APPLY_FAILED status="
+                                  + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 3
+                return
+            }
+            if (window.bulkEditSmokePhase !== 3 || controller.writing)
+                return
+            if (!controller.report_bulk_edit_smoke_success(
+                        2, "publisher", "Bulk Smoke Publisher")) {
+                console.error(
+                    "BULK_EDIT_SMOKE_RESULT_FAILED completed="
+                    + controller.bulk_edit_completed_count + " status="
+                    + controller.status_message)
+                Qt.exit(489)
+                return
+            }
+            window.bulkEditSmokeFinished = true
+            Qt.quit()
         }
     }
 
@@ -10742,6 +10839,16 @@ ApplicationWindow {
             if (!window.editGameById(gameId))
                 console.error("GAME_AUDIT_EDIT_FAILED id=" + gameId)
         }
+
+        onBulkEditRequested: {
+            if (bulkEditDialog.openWizard())
+                gameAuditDialog.closeAudit()
+        }
+    }
+
+    BulkEditDialog {
+        id: bulkEditDialog
+        controller: controller
     }
 
     Dialog {

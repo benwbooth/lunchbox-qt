@@ -243,11 +243,11 @@ completion metrics.
 
 ## Immediate next milestone
 
-The first `LIB-015` game-audit vertical is now implemented independently of
-LaunchBox's still-open bulk editor. The native Qt dialog freezes and renders
-all 76 structurally recovered 13.27 columns for the complete collection or one
-platform, detects repeated non-zero LaunchBox Games Database IDs, supports
-typed ordering and stable-ID selection, copies selected rows with complete TSV
+The first `LIB-015` game-audit vertical is implemented. The native Qt dialog
+freezes and renders all 76 structurally recovered 13.27 columns for the
+complete collection or one platform, detects repeated non-zero LaunchBox Games
+Database IDs, supports typed ordering and stable-ID selection, copies selected
+rows with complete TSV
 headings through Qt's clipboard, and hands Edit to the existing full game
 editor. Related applications, alternate names, and 16 image counts plus video
 come from existing bounded indexes; unavailable MAME/storefront derivations
@@ -255,8 +255,20 @@ remain blank rather than being invented. Pure contract tests and a rendered
 read-only dialog workflow cover database-ID duplicates across different
 titles, sorting, selection, export, and edit handoff. Exact protected grid
 behavior, authoritative MAME/storefront providers, native Windows/macOS
-interaction, and the separate bulk-edit wizard remain the next `LIB-015`
-work.
+interaction remain audit work.
+
+The first `LIB-015` bulk-edit vertical is also implemented. Its 25-field
+Rust-owned catalog drives native editor families and a Welcome, field,
+confirmation, and apply/result wizard. Stable audit-selected IDs are resolved
+to exact platform sources immediately before one optimistic recoverable
+transaction; every affected document commits together and receives an exact
+backup. Multi-value operations are bounded, ratings require half-star values,
+unknown XML remains lossless, and persisted paths remain lexical data.
+Platform/media migration, the complete original field/combination catalog,
+model/controller/Custom DOSBox bulk surfaces, additional-application emulator
+propagation, exact restart/cancel/progress behavior, and Windows/macOS oracle
+interaction are the next bulk-editor boundaries. See
+`analysis/game-bulk-edit-13.27.md`.
 
 The repository and a narrow library-browsing vertical slice now exist. Exact
 multi-document transactions, golden semantic-diff/failure coverage, and the

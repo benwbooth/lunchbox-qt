@@ -99,9 +99,37 @@ storefront values stay blank rather than becoming fabricated false results.
 Pure tests and a compiled rendered workflow require the ordered contract, two
 differently titled games sharing one database ID, two-row TSV output, the Edit
 transition, a valid screenshot, and byte-identical source XML. Exact protected
-column/context behavior, authoritative MAME/storefront sources, the separate
-bulk-edit wizard, and native Windows/macOS interaction remain open. The full
+column/context behavior, authoritative MAME/storefront sources, and native
+Windows/macOS interaction remain open. The full
 boundary is recorded in `analysis/game-audit-13.27.md`.
+
+## Game bulk-edit evidence
+
+Five distinct 13.27 view models establish Welcome, typed field selection,
+conditional Platform/media migration, confirmation, and apply/result pages.
+The field view model and BAML prove text, multiline, file, boolean/three-state,
+combo/editable-combo, date, half-star, model, controller-support,
+multi-value-add/remove, and custom-field editor families. Embedded release
+notes independently name star ratings, date confirmation, direct additional
+changes, Emulator clear, platform media migration, multi-select add/remove,
+Custom DOSBox Version, Broken, emulator propagation to matching additional
+applications, Video Path, Custom Fields, and Hide.
+
+A temporary runtime hook attached after the disposable Wine 11.8 prefix's
+missing matching `cryptbase.dll` files were restored. LaunchBox then entered
+its known activation/data-manager critical-section stall before its protected
+field initializer populated the collection, so the complete original ordered
+field list is not claimed.
+
+The first native subset freezes a 25-field typed Rust catalog and validates
+every field/operation/value combination. It copies stable audit-selected game
+IDs, groups them by exact source document, applies lossless DOM mutations, and
+stages all documents into one revision-checked recovery transaction. The
+compiled wizard renders confirmation and proves a two-game commit, exact
+backup, unknown XML and lexical path retention, and clean recovery state.
+Platform/media migration, remaining bulk surfaces, emulator propagation, and
+exact Windows-oracle behavior remain open. See
+`analysis/game-bulk-edit-13.27.md`.
 
 ## Older real installation schema
 

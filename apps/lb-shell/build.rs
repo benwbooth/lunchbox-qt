@@ -11,6 +11,7 @@ fn main() {
     println!("cargo:rerun-if-changed=qml/BoxModelViewer.qml");
     println!("cargo:rerun-if-changed=qml/ModelSettingsEditor.qml");
     println!("cargo:rerun-if-changed=qml/GameAuditDialog.qml");
+    println!("cargo:rerun-if-changed=qml/BulkEditDialog.qml");
     println!("cargo:rerun-if-changed=qml/GameMusicPlayer.qml");
     println!("cargo:rerun-if-changed=qml/BackgroundMusicPlayer.qml");
     println!("cargo:rerun-if-changed=qml/BigBoxStartupPresentation.qml");
@@ -47,6 +48,7 @@ fn main() {
                 "qml/BoxModelViewer.qml",
                 "qml/ModelSettingsEditor.qml",
                 "qml/GameAuditDialog.qml",
+                "qml/BulkEditDialog.qml",
                 "qml/GameMusicPlayer.qml",
                 "qml/BackgroundMusicPlayer.qml",
                 "qml/BigBoxStartupPresentation.qml",

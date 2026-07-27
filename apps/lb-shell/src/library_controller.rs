@@ -234,6 +234,11 @@ pub mod qobject {
         #[qproperty(i32, audit_revision)]
         #[qproperty(QString, audit_sort_key)]
         #[qproperty(bool, audit_sort_descending)]
+        #[qproperty(bool, bulk_edit_visible)]
+        #[qproperty(i32, bulk_edit_target_count)]
+        #[qproperty(i32, bulk_edit_completed_count)]
+        #[qproperty(i32, bulk_edit_revision)]
+        #[qproperty(QString, bulk_edit_result_message)]
         #[qproperty(QString, last_added_game_id)]
         #[qproperty(QString, last_added_emulator_id)]
         #[qproperty(QString, last_added_game_controller_id)]
@@ -1996,6 +2001,38 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn bulk_edit_field_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn bulk_edit_field_key_at(self: &LibraryController, field: i32) -> QString;
+
+        #[qinvokable]
+        fn bulk_edit_field_label_at(self: &LibraryController, field: i32) -> QString;
+
+        #[qinvokable]
+        fn bulk_edit_field_editor_at(self: &LibraryController, field: i32) -> QString;
+
+        #[qinvokable]
+        fn bulk_edit_field_clearable_at(self: &LibraryController, field: i32) -> bool;
+
+        #[qinvokable]
+        fn open_audit_bulk_edit(self: Pin<&mut LibraryController>) -> bool;
+
+        #[qinvokable]
+        fn close_bulk_edit(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn apply_bulk_edit(self: Pin<&mut LibraryController>, request_payload: QString) -> bool;
+
+        #[qinvokable]
+        fn report_bulk_edit_smoke_success(
+            self: &LibraryController,
+            expected_count: i32,
+            field: QString,
+            expected_value: QString,
+        ) -> bool;
+
+        #[qinvokable]
         fn row_for_game_id(self: &LibraryController, game_id: QString) -> i32;
 
         #[qinvokable]
@@ -2133,15 +2170,15 @@ use cxx_qt_lib::{
 use lb_domain::{
     audit_cell, audit_tsv, built_in_model_settings, duplicate_game_ids, resolve_model_settings,
     AdditionalApplication, AdditionalApplicationEdit, AlternateName, ApplicationDataBackupPolicy,
-    ArgbColor, AuditColumnKind, AuditMediaCounts, AuditSupplement, BoxSize, CustomField,
-    DesktopNotificationType, DesktopTrayPolicy, Emulator, EmulatorConfiguration, EmulatorPlatform,
-    FrontendSettings, Game, GameController, GameControllerSupport, GameControllerSupportLevel,
-    GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding,
-    ListViewColumnLayout, ModelSettings, ModelSettingsSource, ModelSize, ModelType, Mount,
-    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
-    PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
-    ResolvedModelSettings, GAME_CONTROLLER_CATEGORIES, LAUNCHBOX_AUDIT_COLUMNS,
-    UNASSIGNED_EMULATOR_ID,
+    ArgbColor, AuditColumnKind, AuditMediaCounts, AuditSupplement, BoxSize, BulkGameEdit,
+    BulkGameEditOperation, BulkGameField, CustomField, DesktopNotificationType, DesktopTrayPolicy,
+    Emulator, EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game, GameController,
+    GameControllerSupport, GameControllerSupportLevel, GameLaunchConfiguration, GameMetadata,
+    GameSave, GameSaveMetadataEdit, InputBinding, ListViewColumnLayout, ModelSettings,
+    ModelSettingsSource, ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship,
+    PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
+    PlaylistDocument, PlaylistFilter, PlaylistGame, ResolvedModelSettings, BULK_GAME_FIELDS,
+    GAME_CONTROLLER_CATEGORIES, LAUNCHBOX_AUDIT_COLUMNS, UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -2629,6 +2666,11 @@ pub struct LibraryControllerRust {
     audit_revision: i32,
     audit_sort_key: QString,
     audit_sort_descending: bool,
+    bulk_edit_visible: bool,
+    bulk_edit_target_count: i32,
+    bulk_edit_completed_count: i32,
+    bulk_edit_revision: i32,
+    bulk_edit_result_message: QString,
     last_added_game_id: QString,
     last_added_emulator_id: QString,
     last_added_game_controller_id: QString,
@@ -2700,6 +2742,7 @@ pub struct LibraryControllerRust {
     audit_indices: Vec<usize>,
     audit_duplicate_ids: BTreeSet<String>,
     audit_selected_ids: BTreeSet<String>,
+    bulk_edit_target_ids: BTreeSet<String>,
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
@@ -3786,6 +3829,11 @@ struct GameWriteSuccess {
     backup: PathBuf,
 }
 
+struct BulkGameWriteSuccess {
+    games: Vec<(PathBuf, Game)>,
+    backups: Vec<PathBuf>,
+}
+
 struct BigBoxGameStateWriteSuccess {
     game: Game,
     source: PathBuf,
@@ -4595,6 +4643,7 @@ enum GameControllerWriteFailure {
 }
 
 const GAME_EDIT_PAYLOAD_VERSION: u32 = 5;
+const BULK_GAME_EDIT_PAYLOAD_VERSION: u32 = 1;
 const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const GAME_CONTROLLER_EDIT_PAYLOAD_VERSION: u32 = 1;
@@ -4608,6 +4657,39 @@ const MAX_PCSX2_MACOS_TAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_BIGPEMU_LINUX_TAR_BYTES: u64 = 512 * 1024 * 1024;
 const CATEGORY_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLAYLIST_EDIT_PAYLOAD_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BulkGameEditPayload {
+    version: u32,
+    field: BulkGameField,
+    operation: BulkGameEditOperation,
+    text: Option<String>,
+    boolean: Option<bool>,
+    number: Option<f64>,
+    custom_field_name: Option<String>,
+}
+
+impl BulkGameEditPayload {
+    fn into_edit(self) -> Result<BulkGameEdit, String> {
+        if self.version != BULK_GAME_EDIT_PAYLOAD_VERSION {
+            return Err(format!(
+                "unsupported bulk editor payload version {}; expected {}",
+                self.version, BULK_GAME_EDIT_PAYLOAD_VERSION
+            ));
+        }
+        let edit = BulkGameEdit {
+            field: self.field,
+            operation: self.operation,
+            text: self.text,
+            boolean: self.boolean,
+            number: self.number,
+            custom_field_name: self.custom_field_name,
+        };
+        edit.validate().map_err(|error| error.to_string())?;
+        Ok(edit)
+    }
+}
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -7515,6 +7597,61 @@ fn write_big_box_playlist_membership(
         backup,
         present,
     })
+}
+
+fn write_bulk_game_edit(
+    root: PathBuf,
+    targets: Vec<(PathBuf, String)>,
+    edit: BulkGameEdit,
+) -> Result<BulkGameWriteSuccess, GameWriteFailure> {
+    if targets.is_empty() {
+        return Err(GameWriteFailure::Other(
+            "the bulk-edit target set is empty".into(),
+        ));
+    }
+    let mut by_source = BTreeMap::<PathBuf, Vec<String>>::new();
+    for (source, id) in targets {
+        by_source.entry(source).or_default().push(id);
+    }
+    let mut documents = Vec::with_capacity(by_source.len());
+    let mut games = Vec::new();
+    for (source, ids) in by_source {
+        let mut document = PlatformDocument::load(&source)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let mut seen = BTreeSet::new();
+        for id in ids {
+            if !seen.insert(id.clone()) {
+                return Err(GameWriteFailure::Other(format!(
+                    "game {id} appears more than once in the bulk-edit target set"
+                )));
+            }
+            let game = document
+                .apply_bulk_game_edit(&id, &edit)
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            games.push((source.clone(), game));
+        }
+        documents.push(document);
+    }
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    for document in &documents {
+        transaction
+            .stage_platform(document)
+            .map_err(classify_transaction_error)?;
+    }
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let backups = report
+        .writes
+        .into_iter()
+        .map(|write| write.backup)
+        .collect::<Vec<_>>();
+    if backups.len() != documents.len() {
+        return Err(GameWriteFailure::Other(format!(
+            "transaction reported {} backups for {} platform documents",
+            backups.len(),
+            documents.len()
+        )));
+    }
+    Ok(BulkGameWriteSuccess { games, backups })
 }
 
 fn write_game(
@@ -18802,6 +18939,204 @@ impl qobject::LibraryController {
                 .is_some_and(|game| game.id == game_id);
         if success {
             eprintln!("GAME_AUDIT_EDIT_SMOKE_COMPLETE id={game_id} row={row}");
+        }
+        success
+    }
+
+    pub fn bulk_edit_field_count(&self) -> i32 {
+        saturating_i32(BULK_GAME_FIELDS.len())
+    }
+
+    pub fn bulk_edit_field_key_at(&self, field: i32) -> QString {
+        usize::try_from(field)
+            .ok()
+            .and_then(|field| BULK_GAME_FIELDS.get(field))
+            .map(|definition| qstring(definition.field.key()))
+            .unwrap_or_default()
+    }
+
+    pub fn bulk_edit_field_label_at(&self, field: i32) -> QString {
+        usize::try_from(field)
+            .ok()
+            .and_then(|field| BULK_GAME_FIELDS.get(field))
+            .map(|definition| qstring(definition.label))
+            .unwrap_or_default()
+    }
+
+    pub fn bulk_edit_field_editor_at(&self, field: i32) -> QString {
+        usize::try_from(field)
+            .ok()
+            .and_then(|field| BULK_GAME_FIELDS.get(field))
+            .map(|definition| qstring(definition.editor.key()))
+            .unwrap_or_default()
+    }
+
+    pub fn bulk_edit_field_clearable_at(&self, field: i32) -> bool {
+        usize::try_from(field)
+            .ok()
+            .and_then(|field| BULK_GAME_FIELDS.get(field))
+            .is_some_and(|definition| definition.clearable)
+    }
+
+    pub fn open_audit_bulk_edit(mut self: Pin<&mut Self>) -> bool {
+        if self.as_ref().rust().audit_selected_ids.is_empty() {
+            self.as_mut().set_status_message(qstring(
+                "Select at least one audit row before starting bulk edit.",
+            ));
+            return false;
+        }
+        if self.as_ref().rust().library_root.is_none() {
+            self.as_mut().set_status_message(qstring(
+                "Load a writable library before starting bulk edit.",
+            ));
+            return false;
+        }
+        let targets = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            rust.games
+                .iter()
+                .zip(&rust.game_sources)
+                .filter(|(game, _)| rust.audit_selected_ids.contains(&game.id))
+                .map(|(game, _)| game.id.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        if targets.len() != self.as_ref().rust().audit_selected_ids.len() {
+            self.as_mut().set_status_message(qstring(
+                "One or more selected games no longer has a writable source; reload and try again.",
+            ));
+            return false;
+        }
+        let target_count = saturating_i32(targets.len());
+        self.as_mut().rust_mut().bulk_edit_target_ids = targets;
+        self.as_mut().set_bulk_edit_target_count(target_count);
+        self.as_mut().set_bulk_edit_completed_count(0);
+        self.as_mut()
+            .set_bulk_edit_result_message(QString::default());
+        self.as_mut().set_bulk_edit_visible(true);
+        let revision = self.as_ref().bulk_edit_revision().wrapping_add(1);
+        self.as_mut().set_bulk_edit_revision(revision);
+        self.as_mut().set_status_message(qstring(format!(
+            "Bulk editing {target_count} selected games."
+        )));
+        true
+    }
+
+    pub fn close_bulk_edit(mut self: Pin<&mut Self>) {
+        if *self.as_ref().writing() {
+            return;
+        }
+        self.as_mut().set_bulk_edit_visible(false);
+        self.as_mut().rust_mut().bulk_edit_target_ids.clear();
+        self.as_mut().set_bulk_edit_target_count(0);
+    }
+
+    pub fn apply_bulk_edit(mut self: Pin<&mut Self>, request_payload: QString) -> bool {
+        if !self.as_mut().begin_library_mutation() {
+            return false;
+        }
+        if !*self.as_ref().bulk_edit_visible()
+            || self.as_ref().rust().bulk_edit_target_ids.is_empty()
+        {
+            self.as_mut()
+                .set_status_message(qstring("Start bulk edit from selected audit rows."));
+            return false;
+        }
+        let payload =
+            match serde_json::from_str::<BulkGameEditPayload>(&request_payload.to_string())
+                .map_err(|error| format!("invalid bulk editor payload: {error}"))
+                .and_then(BulkGameEditPayload::into_edit)
+            {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.as_mut().set_status_message(qstring(format!(
+                        "Could not bulk edit games: {error}."
+                    )));
+                    return false;
+                }
+            };
+        let Some(root) = self.as_ref().rust().library_root.clone() else {
+            self.as_mut()
+                .set_status_message(qstring("No writable library is loaded."));
+            return false;
+        };
+        let targets = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            rust.games
+                .iter()
+                .zip(&rust.game_sources)
+                .filter(|(game, _)| rust.bulk_edit_target_ids.contains(&game.id))
+                .map(|(game, source)| (source.clone(), game.id.clone()))
+                .collect::<Vec<_>>()
+        };
+        if targets.len() != self.as_ref().rust().bulk_edit_target_ids.len() {
+            self.as_mut().set_status_message(qstring(
+                "One or more bulk-edit targets changed; reload and start over.",
+            ));
+            return false;
+        }
+        let target_count = targets.len();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_bulk_edit_completed_count(0);
+        self.as_mut()
+            .set_bulk_edit_result_message(qstring("Applying one recoverable transaction..."));
+        let revision = self.as_ref().bulk_edit_revision().wrapping_add(1);
+        self.as_mut().set_bulk_edit_revision(revision);
+        self.as_mut().set_status_message(qstring(format!(
+            "Applying bulk edit to {target_count} games in the background..."
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-bulk-game-write".to_string())
+            .spawn(move || {
+                let result = write_bulk_game_edit(root, targets, payload);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_bulk_game_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_bulk_edit_result_message(qstring(format!(
+                "Could not start bulk editor: {error}"
+            )));
+            self.as_mut()
+                .set_status_message(qstring(format!("Could not start bulk editor: {error}")));
+            return false;
+        }
+        true
+    }
+
+    pub fn report_bulk_edit_smoke_success(
+        &self,
+        expected_count: i32,
+        field: QString,
+        expected_value: QString,
+    ) -> bool {
+        let field = field.to_string();
+        let expected_value = expected_value.to_string();
+        let matching = self
+            .rust()
+            .games
+            .iter()
+            .filter(|game| self.rust().bulk_edit_target_ids.contains(&game.id))
+            .filter(|game| {
+                field == "publisher" && game.publisher.as_deref() == Some(expected_value.as_str())
+            })
+            .count();
+        let success = !*self.writing()
+            && *self.bulk_edit_completed_count() == expected_count
+            && saturating_i32(matching) == expected_count;
+        if success {
+            eprintln!(
+                "BULK_EDIT_SMOKE_COMPLETE games={expected_count} field={field} value=\"{expected_value}\" transaction=1"
+            );
         }
         success
     }
@@ -31585,6 +31920,96 @@ impl qobject::LibraryController {
         self.as_mut().set_writing(false);
     }
 
+    fn finish_bulk_game_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<BulkGameWriteSuccess, GameWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let BulkGameWriteSuccess { games, backups } = success;
+                let completed = saturating_i32(games.len());
+                for (source, game) in games {
+                    let actual_index = {
+                        let this = self.as_ref();
+                        this.rust()
+                            .games
+                            .iter()
+                            .zip(&this.rust().game_sources)
+                            .position(|(candidate, candidate_source)| {
+                                candidate.id == game.id && *candidate_source == source
+                            })
+                    };
+                    let Some(actual_index) = actual_index else {
+                        self.as_mut().set_bulk_edit_result_message(qstring(
+                            "The transaction committed, but a changed model requires reload.",
+                        ));
+                        self.as_mut().set_status_message(qstring(
+                            "Bulk edit committed; reload the library to refresh changed games.",
+                        ));
+                        return;
+                    };
+                    self.as_mut().rust_mut().games[actual_index] = game;
+                }
+                self.as_mut().refresh_big_box_screensaver_candidates();
+                self.as_mut().refresh_filtered_games();
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_bulk_edit_completed_count(completed);
+                let backup_summary = backups
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let result_message = format!(
+                    "Updated {completed} games across {} platform document(s). Exact backup(s): {backup_summary}",
+                    backups.len()
+                );
+                self.as_mut()
+                    .set_bulk_edit_result_message(qstring(result_message.clone()));
+                self.as_mut().set_status_message(qstring(result_message));
+                let revision = self.as_ref().audit_revision().wrapping_add(1);
+                self.as_mut().set_audit_revision(revision);
+            }
+            Err(GameWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                let message =
+                    format!("Bulk-edit write conflict: {message}. Reload before retrying.");
+                self.as_mut()
+                    .set_bulk_edit_result_message(qstring(message.clone()));
+                self.as_mut().set_status_message(qstring(message));
+            }
+            Err(GameWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                let message = format!("Interrupted transaction requires recovery: {message}");
+                self.as_mut()
+                    .set_bulk_edit_result_message(qstring(message.clone()));
+                self.as_mut().set_status_message(qstring(message));
+            }
+            Err(GameWriteFailure::Other(message)) => {
+                let message = format!("Could not bulk edit games: {message}");
+                self.as_mut()
+                    .set_bulk_edit_result_message(qstring(message.clone()));
+                self.as_mut().set_status_message(qstring(message));
+            }
+            Err(GameWriteFailure::Referenced(references)) => {
+                let message = format!(
+                    "Could not bulk edit games: {} dependent records were reported unexpectedly.",
+                    references.len()
+                );
+                self.as_mut()
+                    .set_bulk_edit_result_message(qstring(message.clone()));
+                self.as_mut().set_status_message(qstring(message));
+            }
+        }
+        let revision = self.as_ref().bulk_edit_revision().wrapping_add(1);
+        self.as_mut().set_bulk_edit_revision(revision);
+    }
+
     fn finish_game_write(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -35293,6 +35718,7 @@ impl qobject::LibraryController {
             rust.audit_indices.clear();
             rust.audit_duplicate_ids.clear();
             rust.audit_selected_ids.clear();
+            rust.bulk_edit_target_ids.clear();
             rust.platform_counts = platform_counts;
             rust.platform_names = platform_names;
             rust.platform_sources = platform_sources;
@@ -35402,6 +35828,11 @@ impl qobject::LibraryController {
         self.as_mut().set_audit_selected_count(0);
         self.as_mut().set_audit_sort_key(QString::default());
         self.as_mut().set_audit_sort_descending(false);
+        self.as_mut().set_bulk_edit_visible(false);
+        self.as_mut().set_bulk_edit_target_count(0);
+        self.as_mut().set_bulk_edit_completed_count(0);
+        self.as_mut()
+            .set_bulk_edit_result_message(QString::default());
         let audit_revision = self.as_ref().audit_revision().wrapping_add(1);
         self.as_mut().set_audit_revision(audit_revision);
         self.as_mut().set_front_image_count(front_image_count);
@@ -41598,6 +42029,52 @@ mod tests {
         ))
         .unwrap_err()
         .contains("unknown field"));
+    }
+
+    #[test]
+    fn bulk_game_edit_payload_is_versioned_and_rejects_cross_editor_values() {
+        let parsed = serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 1,
+                "field": "publisher",
+                "operation": "set",
+                "text": "Bulk Publisher"
+            }"#,
+        )
+        .expect("typed bulk payload")
+        .into_edit()
+        .expect("validated bulk payload");
+        assert_eq!(parsed.field, BulkGameField::Publisher);
+        assert_eq!(parsed.operation, BulkGameEditOperation::Set);
+        assert_eq!(parsed.text.as_deref(), Some("Bulk Publisher"));
+
+        let wrong_version = serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 2,
+                "field": "publisher",
+                "operation": "set",
+                "text": "Bulk Publisher"
+            }"#,
+        )
+        .expect("deserializable future payload")
+        .into_edit();
+        assert!(wrong_version
+            .expect_err("future payload must be rejected")
+            .contains("unsupported bulk editor payload version"));
+
+        let cross_editor = serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 1,
+                "field": "broken",
+                "operation": "set",
+                "text": "true"
+            }"#,
+        )
+        .expect("deserializable cross-editor payload")
+        .into_edit();
+        assert!(cross_editor
+            .expect_err("boolean field requires a boolean")
+            .contains("boolean value"));
     }
 
     #[test]

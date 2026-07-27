@@ -21,6 +21,7 @@ port behavior.
 - [LaunchBox 13.27 application-data backup contract](analysis/data-backup-13.27.md)
 - [LaunchBox 13.27 game-controller support contract](analysis/controller-support-13.27.md)
 - [LaunchBox 13.27 game-audit contract](analysis/game-audit-13.27.md)
+- [LaunchBox 13.27 game bulk-edit contract](analysis/game-bulk-edit-13.27.md)
 - [Static feature matrix](docs/FEATURE_MATRIX.md)
 - [Port architecture and execution plan](docs/PORT_PLAN.md)
 - [Current implementation and verification status](docs/IMPLEMENTATION_STATUS.md)
@@ -58,8 +59,19 @@ all-games and current-platform scopes, repeated non-zero Games Database ID
 duplicate highlighting, selection and header-complete TSV copy through Qt's
 clipboard, and stable-ID handoff to the existing game editor. The audit is
 read-only, leaves source XML byte-identical, and represents unavailable
-storefront or MAME-derived values as blank rather than false. The separate
-bulk-edit wizard remains open.
+storefront or MAME-derived values as blank rather than false.
+
+Selected audit rows now also open the first native **Bulk Edit** vertical. Its
+Rust-owned catalog exposes 25 typed metadata/state/launch fields, including
+Broken, Hide, half-star ratings, Video Path, and Custom Field. Set/Clear and
+the supported multi-value Add/Remove operations are versioned and validated;
+stable game IDs are re-resolved immediately before every affected platform XML
+commits in one recoverable transaction. Each document gets an exact backup,
+unknown XML is retained, and persisted paths remain uninterpreted lexical
+data. The conditional Platform/media-migration page, complete original field
+catalog, model/controller bulk surfaces, additional-application emulator
+propagation, and Windows/macOS oracle gates remain open; the exact boundary is
+recorded in `analysis/game-bulk-edit-13.27.md`.
 
 Read an existing installation without modifying it:
 

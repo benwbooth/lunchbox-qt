@@ -1,6 +1,7 @@
 use lb_domain::{
-    is_unassigned_emulator_id, AdditionalApplication, AdditionalApplicationEdit, AlternateName,
-    ArgbColor, CatalogValidationError, CustomField, Emulator, EmulatorConfiguration,
+    is_unassigned_emulator_id, mutate_multi_value_text, AdditionalApplication,
+    AdditionalApplicationEdit, AlternateName, ArgbColor, BulkGameEdit, BulkGameEditOperation,
+    BulkGameField, CatalogValidationError, CustomField, Emulator, EmulatorConfiguration,
     EmulatorPlatform, Game, GameController, GameControllerSupport, GameLaunchConfiguration,
     GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding, ModelSettings, ModelSettingsError,
     ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship, PlatformCatalog,
@@ -5803,6 +5804,272 @@ impl PlatformDocument {
         Ok(game.clone())
     }
 
+    /// Applies one validated bulk-edit field to one game without interpreting
+    /// persisted path strings or rewriting fields outside the selected
+    /// surface. Callers can apply this to several loaded platform documents
+    /// and stage all of them in one `LibraryTransaction`.
+    pub fn apply_bulk_game_edit(
+        &mut self,
+        id: &str,
+        edit: &BulkGameEdit,
+    ) -> Result<Game, StorageError> {
+        edit.validate()
+            .map_err(|error| StorageError::InvalidGameRecordEdit {
+                record: "Game",
+                game_id: id.to_string(),
+                reason: error.to_string(),
+            })?;
+        let original = self
+            .library
+            .games
+            .iter()
+            .find(|game| game.id == id)
+            .cloned()
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+
+        match edit.field {
+            BulkGameField::Broken
+            | BulkGameField::Completed
+            | BulkGameField::Favorite
+            | BulkGameField::Hidden => {
+                self.set_bulk_game_boolean(
+                    id,
+                    edit.field,
+                    edit.boolean.expect("validated boolean request"),
+                )?;
+            }
+            BulkGameField::StarRating => {
+                self.set_big_box_game_state(
+                    id,
+                    original.favorite,
+                    edit.number.expect("validated rating request"),
+                )?;
+            }
+            BulkGameField::Emulator => {
+                let value = bulk_optional_text(edit)?;
+                let game_index = self
+                    .library
+                    .games
+                    .iter()
+                    .position(|game| game.id == id)
+                    .expect("game was located before the bulk edit");
+                let element = find_record_element_mut(&mut self.root, "Game", "ID", id)
+                    .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+                if original.emulator_id != value {
+                    set_optional_child_text(element, "Emulator", value.as_deref());
+                    self.library.games[game_index].emulator_id = value;
+                }
+            }
+            BulkGameField::VideoPath => {
+                let value = bulk_optional_text(edit)?;
+                let game_index = self
+                    .library
+                    .games
+                    .iter()
+                    .position(|game| game.id == id)
+                    .expect("game was located before the bulk edit");
+                let element = find_record_element_mut(&mut self.root, "Game", "ID", id)
+                    .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+                if original.video_path != value {
+                    set_optional_child_text(element, "VideoPath", value.as_deref());
+                    self.library.games[game_index].video_path = value;
+                }
+            }
+            BulkGameField::CustomField => {
+                self.apply_bulk_custom_field_edit(id, edit)?;
+            }
+            field => {
+                let mut metadata = GameMetadata::from(&original);
+                let current = match field {
+                    BulkGameField::Developer => metadata.developer.as_deref(),
+                    BulkGameField::Genre => metadata.genre.as_deref(),
+                    BulkGameField::Notes => metadata.notes.as_deref(),
+                    BulkGameField::PlayMode => metadata.play_mode.as_deref(),
+                    BulkGameField::Progress => metadata.progress.as_deref(),
+                    BulkGameField::Publisher => metadata.publisher.as_deref(),
+                    BulkGameField::Rating => metadata.rating.as_deref(),
+                    BulkGameField::Region => metadata.region.as_deref(),
+                    BulkGameField::ReleaseDate => metadata.release_date.as_deref(),
+                    BulkGameField::ReleaseType => metadata.release_type.as_deref(),
+                    BulkGameField::Series => metadata.series.as_deref(),
+                    BulkGameField::SortTitle => metadata.sort_title.as_deref(),
+                    BulkGameField::Source => metadata.source.as_deref(),
+                    BulkGameField::Status => metadata.status.as_deref(),
+                    BulkGameField::Version => metadata.version.as_deref(),
+                    BulkGameField::WikipediaUrl => metadata.wikipedia_url.as_deref(),
+                    BulkGameField::MaxPlayers => None,
+                    _ => unreachable!("non-metadata field handled above"),
+                };
+                let value = if field == BulkGameField::MaxPlayers {
+                    None
+                } else if field.supports_multi_value_operations() {
+                    mutate_multi_value_text(current, edit.operation, edit.text.as_deref()).map_err(
+                        |error| StorageError::InvalidGameRecordEdit {
+                            record: "Game",
+                            game_id: id.to_string(),
+                            reason: error.to_string(),
+                        },
+                    )?
+                } else {
+                    bulk_optional_text(edit)?
+                };
+                match field {
+                    BulkGameField::Developer => metadata.developer = value,
+                    BulkGameField::Genre => metadata.genre = value,
+                    BulkGameField::MaxPlayers => {
+                        metadata.max_players = if edit.operation == BulkGameEditOperation::Clear {
+                            None
+                        } else {
+                            Some(
+                                edit.text
+                                    .as_deref()
+                                    .expect("validated max-players request")
+                                    .trim()
+                                    .parse::<u32>()
+                                    .map_err(|_| StorageError::InvalidGameRecordEdit {
+                                        record: "Game",
+                                        game_id: id.to_string(),
+                                        reason: "max players must be a positive whole number"
+                                            .into(),
+                                    })?,
+                            )
+                        };
+                    }
+                    BulkGameField::Notes => metadata.notes = value,
+                    BulkGameField::PlayMode => metadata.play_mode = value,
+                    BulkGameField::Progress => metadata.progress = value,
+                    BulkGameField::Publisher => metadata.publisher = value,
+                    BulkGameField::Rating => metadata.rating = value,
+                    BulkGameField::Region => metadata.region = value,
+                    BulkGameField::ReleaseDate => metadata.release_date = value,
+                    BulkGameField::ReleaseType => metadata.release_type = value,
+                    BulkGameField::Series => metadata.series = value,
+                    BulkGameField::SortTitle => metadata.sort_title = value,
+                    BulkGameField::Source => metadata.source = value,
+                    BulkGameField::Status => metadata.status = value,
+                    BulkGameField::Version => metadata.version = value,
+                    BulkGameField::WikipediaUrl => metadata.wikipedia_url = value,
+                    _ => unreachable!("non-metadata field handled above"),
+                }
+                self.set_game_metadata(id, metadata)?;
+            }
+        }
+
+        self.library
+            .games
+            .iter()
+            .find(|game| game.id == id)
+            .cloned()
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })
+    }
+
+    fn set_bulk_game_boolean(
+        &mut self,
+        id: &str,
+        field: BulkGameField,
+        value: bool,
+    ) -> Result<(), StorageError> {
+        let game_index = self
+            .library
+            .games
+            .iter()
+            .position(|game| game.id == id)
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+        let game = &mut self.library.games[game_index];
+        let element_name = match field {
+            BulkGameField::Broken => {
+                game.broken = value;
+                "Broken"
+            }
+            BulkGameField::Completed => {
+                game.completed = value;
+                "Completed"
+            }
+            BulkGameField::Favorite => {
+                game.favorite = value;
+                "Favorite"
+            }
+            BulkGameField::Hidden => {
+                game.hidden = value;
+                "Hide"
+            }
+            _ => unreachable!("validated boolean bulk field"),
+        };
+        game.validate()?;
+        let element = find_record_element_mut(&mut self.root, "Game", "ID", id)
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+        set_child_text(element, element_name, &value.to_string());
+        Ok(())
+    }
+
+    fn apply_bulk_custom_field_edit(
+        &mut self,
+        id: &str,
+        edit: &BulkGameEdit,
+    ) -> Result<(), StorageError> {
+        let name = edit
+            .custom_field_name
+            .as_deref()
+            .expect("validated custom-field request")
+            .trim();
+        let mut rows = self
+            .library
+            .custom_fields
+            .iter()
+            .filter(|field| field.game_id == id)
+            .cloned()
+            .enumerate()
+            .map(|(source_index, record)| IndexedPlatformRecordEdit {
+                source_index: Some(source_index),
+                record,
+            })
+            .collect::<Vec<_>>();
+        let matches = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| row.record.name.eq_ignore_ascii_case(name).then_some(index))
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err(StorageError::InvalidGameRecordEdit {
+                record: "CustomField",
+                game_id: id.to_string(),
+                reason: format!(
+                    "custom field {name} appears more than once; resolve duplicates before bulk editing"
+                ),
+            });
+        }
+        let original_value = matches
+            .first()
+            .and_then(|index| rows.get(*index))
+            .map(|row| row.record.value.as_str());
+        let value = mutate_multi_value_text(original_value, edit.operation, edit.text.as_deref())
+            .map_err(|error| StorageError::InvalidGameRecordEdit {
+            record: "CustomField",
+            game_id: id.to_string(),
+            reason: error.to_string(),
+        })?;
+        match (matches.first().copied(), value) {
+            (Some(index), Some(value)) => {
+                rows[index].record.name = name.to_string();
+                rows[index].record.value = value;
+            }
+            (Some(index), None) => {
+                rows.remove(index);
+            }
+            (None, Some(value)) => rows.push(IndexedPlatformRecordEdit {
+                source_index: None,
+                record: CustomField {
+                    game_id: id.to_string(),
+                    name: name.to_string(),
+                    value,
+                },
+            }),
+            (None, None) => {}
+        }
+        self.set_game_custom_fields(id, rows)?;
+        Ok(())
+    }
+
     /// Records the point at which a main game successfully starts. LaunchBox
     /// increments the count and persists the local-offset timestamp before it
     /// later knows how long the process will remain active.
@@ -8602,6 +8869,25 @@ fn set_optional_child_text(element: &mut Element, name: &str, value: Option<&str
                 .is_none_or(|child| child.name.as_str() != name)
         });
     }
+}
+
+fn bulk_optional_text(edit: &BulkGameEdit) -> Result<Option<String>, StorageError> {
+    if edit.operation == BulkGameEditOperation::Clear {
+        return Ok(None);
+    }
+    if edit.operation != BulkGameEditOperation::Set {
+        return Err(StorageError::InvalidGameRecordEdit {
+            record: "Game",
+            game_id: String::new(),
+            reason: "this field supports only set or clear".into(),
+        });
+    }
+    Ok(edit
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string))
 }
 
 fn model_settings_element(settings: &ModelSettings) -> Element {
@@ -13596,5 +13882,188 @@ mod tests {
         let cache_xml = String::from_utf8(cache.to_xml_bytes().unwrap()).unwrap();
         assert!(cache_xml.contains("keep-cache"));
         assert!(!cache_xml.contains("<FutureCache>drop</FutureCache>"));
+    }
+
+    #[test]
+    fn bulk_edit_updates_typed_fields_and_keeps_unknown_and_lexical_path_data() {
+        let mut document = PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes())
+            .expect("parse fixture");
+        let publisher = BulkGameEdit {
+            field: BulkGameField::Publisher,
+            operation: BulkGameEditOperation::Set,
+            text: Some("Bulk Publisher".into()),
+            boolean: None,
+            number: None,
+            custom_field_name: None,
+        };
+        document
+            .apply_bulk_game_edit("fixture-adventure", &publisher)
+            .expect("bulk publisher");
+        document
+            .apply_bulk_game_edit(
+                "fixture-racer",
+                &BulkGameEdit {
+                    field: BulkGameField::Broken,
+                    operation: BulkGameEditOperation::Set,
+                    text: None,
+                    boolean: Some(true),
+                    number: None,
+                    custom_field_name: None,
+                },
+            )
+            .expect("bulk broken");
+        document
+            .apply_bulk_game_edit(
+                "fixture-adventure",
+                &BulkGameEdit {
+                    field: BulkGameField::VideoPath,
+                    operation: BulkGameEditOperation::Set,
+                    text: Some(r"Videos\Portable\bulk-preview.mp4".into()),
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+            )
+            .expect("bulk lexical video path");
+        document
+            .apply_bulk_game_edit(
+                "fixture-adventure",
+                &BulkGameEdit {
+                    field: BulkGameField::CustomField,
+                    operation: BulkGameEditOperation::Add,
+                    text: Some("Deluxe".into()),
+                    boolean: None,
+                    number: None,
+                    custom_field_name: Some("Edition".into()),
+                },
+            )
+            .expect("bulk custom field");
+        document
+            .apply_bulk_game_edit(
+                "fixture-adventure",
+                &BulkGameEdit {
+                    field: BulkGameField::Emulator,
+                    operation: BulkGameEditOperation::Set,
+                    text: Some("bulk-emulator".into()),
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+            )
+            .expect("bulk emulator does not reinterpret conflicting legacy launch flags");
+
+        let xml = String::from_utf8(document.to_xml_bytes().expect("serialize")).expect("UTF-8");
+        assert!(xml.contains("<Publisher>Bulk Publisher</Publisher>"));
+        assert!(xml.contains("<Broken>true</Broken>"));
+        assert!(xml.contains("<Emulator>bulk-emulator</Emulator>"));
+        assert!(xml.contains("<UseDosBox>true</UseDosBox>"));
+        assert!(xml.contains("<UseScummVM>true</UseScummVM>"));
+        assert!(xml.contains(r"<VideoPath>Videos\Portable\bulk-preview.mp4</VideoPath>"));
+        assert!(xml.contains("<Name>Edition</Name>"));
+        assert!(xml.contains("<Value>Deluxe</Value>"));
+        assert!(
+            xml.contains("<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>")
+        );
+        assert!(xml.contains(
+            "<FutureCustomFieldElement>keep-custom-field-data</FutureCustomFieldElement>"
+        ));
+        assert!(xml
+            .contains(r"<ApplicationPath>Games\Fixture Adventure\adventure.rom</ApplicationPath>"));
+
+        document
+            .apply_bulk_game_edit(
+                "fixture-adventure",
+                &BulkGameEdit {
+                    field: BulkGameField::Emulator,
+                    operation: BulkGameEditOperation::Clear,
+                    text: None,
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+            )
+            .expect("clear bulk emulator");
+        let xml = String::from_utf8(document.to_xml_bytes().expect("serialize")).expect("UTF-8");
+        assert!(!xml.contains("<Emulator>bulk-emulator</Emulator>"));
+        assert!(xml.contains("<UseDosBox>true</UseDosBox>"));
+        assert!(xml.contains("<UseScummVM>true</UseScummVM>"));
+    }
+
+    #[test]
+    fn multi_platform_bulk_edit_commits_once_and_conflict_preflight_is_all_or_nothing() {
+        let root = tempfile::tempdir().expect("temp library");
+        let platforms = root.path().join("Data/Platforms");
+        fs::create_dir_all(&platforms).expect("platform directory");
+        let first_path = platforms.join("First.xml");
+        let second_path = platforms.join("Second.xml");
+        let first_xml = FIXTURE.replace("Fixture Console", "First");
+        let second_xml = FIXTURE
+            .replace("Fixture Console", "Second")
+            .replace("fixture-adventure", "second-adventure");
+        fs::write(&first_path, first_xml).expect("first fixture");
+        fs::write(&second_path, second_xml).expect("second fixture");
+
+        let edit = BulkGameEdit {
+            field: BulkGameField::Publisher,
+            operation: BulkGameEditOperation::Set,
+            text: Some("One Transaction".into()),
+            boolean: None,
+            number: None,
+            custom_field_name: None,
+        };
+        let mut first = PlatformDocument::load(&first_path).expect("load first");
+        let mut second = PlatformDocument::load(&second_path).expect("load second");
+        first
+            .apply_bulk_game_edit("fixture-adventure", &edit)
+            .expect("edit first");
+        second
+            .apply_bulk_game_edit("second-adventure", &edit)
+            .expect("edit second");
+        let mut transaction = LibraryTransaction::new(root.path()).expect("transaction");
+        transaction.stage_platform(&first).expect("stage first");
+        transaction.stage_platform(&second).expect("stage second");
+        let report = transaction.commit().expect("atomic commit");
+        assert_eq!(report.writes.len(), 2);
+        assert!(report.writes.iter().all(|write| write.backup.is_file()));
+        assert!(fs::read_to_string(&first_path)
+            .expect("read first")
+            .contains("<Publisher>One Transaction</Publisher>"));
+        assert!(fs::read_to_string(&second_path)
+            .expect("read second")
+            .contains("<Publisher>One Transaction</Publisher>"));
+
+        let mut first = PlatformDocument::load(&first_path).expect("reload first");
+        let mut second = PlatformDocument::load(&second_path).expect("reload second");
+        let clear = BulkGameEdit {
+            field: BulkGameField::Publisher,
+            operation: BulkGameEditOperation::Clear,
+            text: None,
+            boolean: None,
+            number: None,
+            custom_field_name: None,
+        };
+        first
+            .apply_bulk_game_edit("fixture-adventure", &clear)
+            .expect("clear first");
+        second
+            .apply_bulk_game_edit("second-adventure", &clear)
+            .expect("clear second");
+        let before_first = fs::read(&first_path).expect("first before conflict");
+        let mut transaction = LibraryTransaction::new(root.path()).expect("conflict transaction");
+        transaction.stage_platform(&first).expect("restage first");
+        transaction.stage_platform(&second).expect("restage second");
+        fs::write(
+            &second_path,
+            b"<LaunchBox><FutureConcurrentEdit /></LaunchBox>",
+        )
+        .expect("concurrent edit");
+        assert!(matches!(
+            transaction.commit(),
+            Err(TransactionError::Conflict { .. })
+        ));
+        assert_eq!(
+            fs::read(&first_path).expect("first after conflict"),
+            before_first
+        );
     }
 }
