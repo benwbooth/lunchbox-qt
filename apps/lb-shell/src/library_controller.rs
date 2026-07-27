@@ -19817,6 +19817,13 @@ impl qobject::LibraryController {
                                     && resolved.settings.effective_model_type().key()
                                         == expected_value
                             }))
+                    || (field == "startupScreenLoadDelay"
+                        && expected_value
+                            .parse::<u32>()
+                            .is_ok_and(|value| game.startup_load_delay == value))
+                    || (field == "pauseScreenPauseGameAutoHotkeyScript"
+                        && game.pause_auto_hotkey_script.as_deref()
+                            == Some(expected_value.as_str()))
             })
             .count();
         let success = !*self.writing()
@@ -42876,6 +42883,52 @@ mod tests {
         assert_eq!(parsed.edit.operation, BulkGameEditOperation::Set);
         assert_eq!(parsed.edit.text.as_deref(), Some("Bulk Publisher"));
         assert!(!parsed.migrate_media);
+
+        let startup_delay = serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 3,
+                "field": "startupScreenLoadDelay",
+                "operation": "set",
+                "number": 1250
+            }"#,
+        )
+        .expect("startup delay payload")
+        .into_edit()
+        .expect("validated startup delay");
+        assert_eq!(
+            startup_delay.edit.field,
+            BulkGameField::StartupScreenLoadDelay
+        );
+        assert_eq!(startup_delay.edit.number, Some(1_250.0));
+
+        let shutdown_enabled = serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 3,
+                "field": "startupScreenShutdownEnabled",
+                "operation": "set",
+                "boolean": false
+            }"#,
+        )
+        .expect("shutdown-enabled payload")
+        .into_edit()
+        .expect("validated shutdown-enabled payload");
+        assert_eq!(shutdown_enabled.edit.boolean, Some(false));
+
+        let pause_script = serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 3,
+                "field": "pauseScreenPauseGameAutoHotkeyScript",
+                "operation": "set",
+                "text": "\n  Send, {Escape}\n"
+            }"#,
+        )
+        .expect("pause-script payload")
+        .into_edit()
+        .expect("validated pause-script payload");
+        assert_eq!(
+            pause_script.edit.text.as_deref(),
+            Some("\n  Send, {Escape}\n")
+        );
 
         let wrong_version = serde_json::from_str::<BulkGameEditPayload>(
             r#"{

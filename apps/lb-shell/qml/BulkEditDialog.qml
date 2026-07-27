@@ -194,6 +194,8 @@ Dialog {
             request.boolean = booleanValue
         else if (editor === "rating")
             request.number = ratingValue
+        else if (editor === "unsignedInteger")
+            request.number = Number(textValue)
         else if (operation !== "clear")
             request.text = textValue
         if (editor === "customField")
@@ -212,6 +214,8 @@ Dialog {
             return booleanValue ? "set to Yes" : "set to No"
         if (editor === "rating")
             return "set to " + ratingValue.toFixed(1) + " stars"
+        if (editor === "unsignedInteger")
+            return "set to " + Number(textValue).toFixed(0)
         if (editor === "controllerSupport") {
             const descriptions = []
             if (controllerIdsToRemove.length > 0)
@@ -257,6 +261,9 @@ Dialog {
                    || customFieldName.trim().length > 0
         if (editor === "boolean" || editor === "rating")
             return true
+        if (editor === "unsignedInteger")
+            return /^(0|[1-9][0-9]*)$/.test(textValue.trim())
+                   && Number(textValue) <= 4294967295
         if (editor === "controllerSupport")
             return controllerIdsToAdd.length
                    + controllerIdsToRemove.length > 0
@@ -446,6 +453,42 @@ Dialog {
         return smokeSelectPublisher(value) && applyRequest()
     }
 
+    function smokeSelectStartupLoadDelay(value) {
+        for (let index = 0; index < fields.length; ++index) {
+            if (fields[index].key === "startupScreenLoadDelay") {
+                selectedFieldIndex = index
+                operation = "set"
+                textValue = String(value)
+                page = 1
+                return editor === "unsignedInteger" && editorIsValid()
+            }
+        }
+        return false
+    }
+
+    function smokeSelectPauseScript(value) {
+        for (let index = 0; index < fields.length; ++index) {
+            if (fields[index].key
+                    === "pauseScreenPauseGameAutoHotkeyScript") {
+                selectedFieldIndex = index
+                operation = "set"
+                textValue = value
+                page = 1
+                return editor === "multilineText" && editorIsValid()
+            }
+        }
+        return false
+    }
+
+    function smokeConfirmScalarField() {
+        if (!editorIsValid()
+                || (editor !== "unsignedInteger"
+                    && editor !== "multilineText"))
+            return false
+        page = 3
+        return true
+    }
+
     onClosed: {
         if (controller !== null && controller.bulk_edit_visible
                 && !controller.writing)
@@ -633,6 +676,8 @@ Dialog {
                                  && root.editor !== "modelSettings"
                         text: root.editor === "boolean" ? "Value"
                               : root.editor === "rating" ? "Rating"
+                              : root.editor === "unsignedInteger"
+                                ? "Milliseconds"
                               : root.editor === "lexicalPath"
                                 ? "Stored path"
                               : root.editor === "emulator"
@@ -701,7 +746,12 @@ Dialog {
                             root.editor === "lexicalPath"
                             ? "LaunchBox path spelling is preserved"
                             : root.editor === "date" ? "YYYY-MM-DD"
+                            : root.editor === "unsignedInteger"
+                              ? "Whole milliseconds (0–4294967295)"
                             : "Value"
+                        inputMethodHints:
+                            root.editor === "unsignedInteger"
+                            ? Qt.ImhDigitsOnly : Qt.ImhNone
                         text: root.textValue
                         onTextEdited: root.textValue = text
                     }

@@ -8,6 +8,7 @@ pub enum BulkGameEditorKind {
     Text,
     MultilineText,
     Boolean,
+    UnsignedInteger,
     Rating,
     Date,
     LexicalPath,
@@ -25,6 +26,7 @@ impl BulkGameEditorKind {
             Self::Text => "text",
             Self::MultilineText => "multilineText",
             Self::Boolean => "boolean",
+            Self::UnsignedInteger => "unsignedInteger",
             Self::Rating => "rating",
             Self::Date => "date",
             Self::LexicalPath => "lexicalPath",
@@ -61,6 +63,15 @@ pub enum BulkGameField {
     MaxPlayers,
     ModelSettings,
     Notes,
+    PauseScreenEnable,
+    PauseScreenForcefulActivation,
+    PauseScreenLoadStateAutoHotkeyScript,
+    PauseScreenOverrideDefaultSettings,
+    PauseScreenPauseGameAutoHotkeyScript,
+    PauseScreenResetGameAutoHotkeyScript,
+    PauseScreenResumeGameAutoHotkeyScript,
+    PauseScreenSaveStateAutoHotkeyScript,
+    PauseScreenSuspendGameProcessOnPause,
     PlayMode,
     Platform,
     Progress,
@@ -73,6 +84,13 @@ pub enum BulkGameField {
     SortTitle,
     Source,
     StarRating,
+    StartupScreenAggressiveStartupWindowHiding,
+    StartupScreenEnabled,
+    StartupScreenHideAllNonExclusiveModeWindows,
+    StartupScreenHideMouseCursorDuringGame,
+    StartupScreenLoadDelay,
+    StartupScreenOverrideDefaultSettings,
+    StartupScreenShutdownEnabled,
     Status,
     Version,
     VideoPath,
@@ -95,6 +113,15 @@ impl BulkGameField {
             Self::MaxPlayers => "maxPlayers",
             Self::ModelSettings => "modelSettings",
             Self::Notes => "notes",
+            Self::PauseScreenEnable => "pauseScreenEnable",
+            Self::PauseScreenForcefulActivation => "pauseScreenForcefulActivation",
+            Self::PauseScreenLoadStateAutoHotkeyScript => "pauseScreenLoadStateAutoHotkeyScript",
+            Self::PauseScreenOverrideDefaultSettings => "pauseScreenOverrideDefaultSettings",
+            Self::PauseScreenPauseGameAutoHotkeyScript => "pauseScreenPauseGameAutoHotkeyScript",
+            Self::PauseScreenResetGameAutoHotkeyScript => "pauseScreenResetGameAutoHotkeyScript",
+            Self::PauseScreenResumeGameAutoHotkeyScript => "pauseScreenResumeGameAutoHotkeyScript",
+            Self::PauseScreenSaveStateAutoHotkeyScript => "pauseScreenSaveStateAutoHotkeyScript",
+            Self::PauseScreenSuspendGameProcessOnPause => "pauseScreenSuspendGameProcessOnPause",
             Self::PlayMode => "playMode",
             Self::Platform => "platform",
             Self::Progress => "progress",
@@ -107,6 +134,19 @@ impl BulkGameField {
             Self::SortTitle => "sortTitle",
             Self::Source => "source",
             Self::StarRating => "starRating",
+            Self::StartupScreenAggressiveStartupWindowHiding => {
+                "startupScreenAggressiveStartupWindowHiding"
+            }
+            Self::StartupScreenEnabled => "startupScreenEnabled",
+            Self::StartupScreenHideAllNonExclusiveModeWindows => {
+                "startupScreenHideAllNonExclusiveModeWindows"
+            }
+            Self::StartupScreenHideMouseCursorDuringGame => {
+                "startupScreenHideMouseCursorDuringGame"
+            }
+            Self::StartupScreenLoadDelay => "startupScreenLoadDelay",
+            Self::StartupScreenOverrideDefaultSettings => "startupScreenOverrideDefaultSettings",
+            Self::StartupScreenShutdownEnabled => "startupScreenShutdownEnabled",
             Self::Status => "status",
             Self::Version => "version",
             Self::VideoPath => "videoPath",
@@ -124,15 +164,18 @@ impl BulkGameField {
 }
 
 pub const BULK_GAME_FIELDS: &[BulkGameFieldDefinition] = &[
+    // Preserve the recovered LaunchBox 13.27 order for every implemented
+    // entry. Port-owned compatibility additions that are absent from the
+    // value-free oracle follow the recovered entries.
     BulkGameFieldDefinition {
-        field: BulkGameField::Broken,
-        label: "Broken",
-        editor: BulkGameEditorKind::Boolean,
+        field: BulkGameField::ModelSettings,
+        label: "3D Model Settings",
+        editor: BulkGameEditorKind::ModelSettings,
         clearable: false,
     },
     BulkGameFieldDefinition {
-        field: BulkGameField::Completed,
-        label: "Completed",
+        field: BulkGameField::Broken,
+        label: "Broken",
         editor: BulkGameEditorKind::Boolean,
         clearable: false,
     },
@@ -185,28 +228,76 @@ pub const BULK_GAME_FIELDS: &[BulkGameFieldDefinition] = &[
         clearable: true,
     },
     BulkGameFieldDefinition {
-        field: BulkGameField::ModelSettings,
-        label: "3D Model Settings",
-        editor: BulkGameEditorKind::ModelSettings,
-        clearable: false,
-    },
-    BulkGameFieldDefinition {
         field: BulkGameField::Notes,
         label: "Notes",
         editor: BulkGameEditorKind::MultilineText,
         clearable: true,
     },
     BulkGameFieldDefinition {
-        field: BulkGameField::PlayMode,
-        label: "Play Mode",
-        editor: BulkGameEditorKind::MultiValue,
+        field: BulkGameField::PauseScreenEnable,
+        label: "Pause Screen - Enable",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::PauseScreenForcefulActivation,
+        label: "Pause Screen - Forceful Activation",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::PauseScreenLoadStateAutoHotkeyScript,
+        label: "Pause Screen - Load State AutoHotkey Script",
+        editor: BulkGameEditorKind::MultilineText,
         clearable: true,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::PauseScreenOverrideDefaultSettings,
+        label: "Pause Screen - Override Default Settings",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::PauseScreenPauseGameAutoHotkeyScript,
+        label: "Pause Screen - Pause Game AutoHotkey Script",
+        editor: BulkGameEditorKind::MultilineText,
+        clearable: true,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::PauseScreenResetGameAutoHotkeyScript,
+        label: "Pause Screen - Reset Game AutoHotkey Script",
+        editor: BulkGameEditorKind::MultilineText,
+        clearable: true,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::PauseScreenResumeGameAutoHotkeyScript,
+        label: "Pause Screen - Resume Game AutoHotkey Script",
+        editor: BulkGameEditorKind::MultilineText,
+        clearable: true,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::PauseScreenSaveStateAutoHotkeyScript,
+        label: "Pause Screen - Save State AutoHotkey Script",
+        editor: BulkGameEditorKind::MultilineText,
+        clearable: true,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::PauseScreenSuspendGameProcessOnPause,
+        label: "Pause Screen - Suspend Game Process On Pause",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
     },
     BulkGameFieldDefinition {
         field: BulkGameField::Platform,
         label: "Platform",
         editor: BulkGameEditorKind::Platform,
         clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::PlayMode,
+        label: "Play Mode",
+        editor: BulkGameEditorKind::MultiValue,
+        clearable: true,
     },
     BulkGameFieldDefinition {
         field: BulkGameField::Progress,
@@ -269,6 +360,48 @@ pub const BULK_GAME_FIELDS: &[BulkGameFieldDefinition] = &[
         clearable: false,
     },
     BulkGameFieldDefinition {
+        field: BulkGameField::StartupScreenAggressiveStartupWindowHiding,
+        label: "Startup Screen - Aggressive Startup Window Hiding",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::StartupScreenEnabled,
+        label: "Startup Screen - Enabled",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::StartupScreenHideAllNonExclusiveModeWindows,
+        label: "Startup Screen - Hide All Non-Exclusive Mode Windows",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::StartupScreenHideMouseCursorDuringGame,
+        label: "Startup Screen - Hide Mouse Cursor During Game",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::StartupScreenLoadDelay,
+        label: "Startup Screen - Load Delay",
+        editor: BulkGameEditorKind::UnsignedInteger,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::StartupScreenOverrideDefaultSettings,
+        label: "Startup Screen - Override Default Settings",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::StartupScreenShutdownEnabled,
+        label: "Startup Screen - Shutdown Enabled",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
         field: BulkGameField::Status,
         label: "Status",
         editor: BulkGameEditorKind::Text,
@@ -281,15 +414,21 @@ pub const BULK_GAME_FIELDS: &[BulkGameFieldDefinition] = &[
         clearable: true,
     },
     BulkGameFieldDefinition {
-        field: BulkGameField::VideoPath,
-        label: "Video Path",
-        editor: BulkGameEditorKind::LexicalPath,
-        clearable: true,
-    },
-    BulkGameFieldDefinition {
         field: BulkGameField::WikipediaUrl,
         label: "Wikipedia URL",
         editor: BulkGameEditorKind::Text,
+        clearable: true,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::Completed,
+        label: "Completed",
+        editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::VideoPath,
+        label: "Video Path",
+        editor: BulkGameEditorKind::LexicalPath,
         clearable: true,
     },
     BulkGameFieldDefinition {
@@ -332,6 +471,19 @@ impl BulkGameEdit {
                     return Err(BulkGameEditError::BooleanValueRequired);
                 }
                 self.require_unused(false, true, false, false)?;
+            }
+            BulkGameEditorKind::UnsignedInteger => {
+                if self.operation != BulkGameEditOperation::Set {
+                    return Err(BulkGameEditError::SetOperationRequired);
+                }
+                let number = self.number.ok_or(BulkGameEditError::NumberValueRequired)?;
+                if !number.is_finite()
+                    || number.fract() != 0.0
+                    || !(0.0..=f64::from(u32::MAX)).contains(&number)
+                {
+                    return Err(BulkGameEditError::InvalidUnsignedInteger);
+                }
+                self.require_unused(false, false, true, false)?;
             }
             BulkGameEditorKind::Rating => {
                 if self.operation != BulkGameEditOperation::Set {
@@ -552,6 +704,8 @@ pub enum BulkGameEditError {
     BooleanValueRequired,
     #[error("a numeric value is required")]
     NumberValueRequired,
+    #[error("the value must be a whole number from 0 through 4294967295")]
+    InvalidUnsignedInteger,
     #[error("star rating must be a half-star value from 0 to 5")]
     InvalidStarRating,
     #[error("max players must be a positive whole number")]
@@ -600,6 +754,39 @@ mod tests {
         assert!(keys.contains("videoPath"));
         assert!(keys.contains("customField"));
         assert!(keys.contains("platform"));
+        assert_eq!(BULK_GAME_FIELDS.len(), 45);
+        assert_eq!(
+            BULK_GAME_FIELDS[11..20]
+                .iter()
+                .map(|definition| definition.label)
+                .collect::<Vec<_>>(),
+            [
+                "Pause Screen - Enable",
+                "Pause Screen - Forceful Activation",
+                "Pause Screen - Load State AutoHotkey Script",
+                "Pause Screen - Override Default Settings",
+                "Pause Screen - Pause Game AutoHotkey Script",
+                "Pause Screen - Reset Game AutoHotkey Script",
+                "Pause Screen - Resume Game AutoHotkey Script",
+                "Pause Screen - Save State AutoHotkey Script",
+                "Pause Screen - Suspend Game Process On Pause",
+            ]
+        );
+        assert_eq!(
+            BULK_GAME_FIELDS[32..39]
+                .iter()
+                .map(|definition| definition.label)
+                .collect::<Vec<_>>(),
+            [
+                "Startup Screen - Aggressive Startup Window Hiding",
+                "Startup Screen - Enabled",
+                "Startup Screen - Hide All Non-Exclusive Mode Windows",
+                "Startup Screen - Hide Mouse Cursor During Game",
+                "Startup Screen - Load Delay",
+                "Startup Screen - Override Default Settings",
+                "Startup Screen - Shutdown Enabled",
+            ]
+        );
     }
 
     #[test]
@@ -630,6 +817,32 @@ mod tests {
             }
             .validate(),
             Err(BulkGameEditError::UnexpectedValue)
+        );
+
+        let delay = BulkGameEdit {
+            field: BulkGameField::StartupScreenLoadDelay,
+            operation: BulkGameEditOperation::Set,
+            text: None,
+            boolean: None,
+            number: Some(1250.0),
+            custom_field_name: None,
+        };
+        assert_eq!(delay.validate(), Ok(()));
+        assert_eq!(
+            BulkGameEdit {
+                number: Some(1250.5),
+                ..delay.clone()
+            }
+            .validate(),
+            Err(BulkGameEditError::InvalidUnsignedInteger)
+        );
+        assert_eq!(
+            BulkGameEdit {
+                number: Some(f64::from(u32::MAX) + 1.0),
+                ..delay
+            }
+            .validate(),
+            Err(BulkGameEditError::InvalidUnsignedInteger)
         );
     }
 

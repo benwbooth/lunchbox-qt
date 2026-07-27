@@ -115,14 +115,17 @@ changes, Emulator clear, platform media migration, multi-select add/remove,
 Custom DOSBox Version, Broken, emulator propagation to matching additional
 applications, Video Path, Custom Fields, and Hide.
 
-A temporary runtime hook attached after the disposable Wine 11.8 prefix's
-missing matching `cryptbase.dll` files were restored. LaunchBox then entered
-its known activation/data-manager critical-section stall before its protected
-field initializer populated the collection, so the complete original ordered
-field list is not claimed.
+A temporary runtime hook attached to a disposable 13.27 copy. The normal data
+manager still entered the known Wine activation stall, but a bounded
+uninitialized data object with empty typed catalogs let the real protected
+view-model populate its live 51-entry fixed field collection. Exact names and
+order, including nine Pause Screen and seven Startup Screen scalar entries,
+are frozen in `analysis/game-bulk-edit-13.27.md`.
 
-The current native subset freezes a 29-field typed Rust catalog and validates
-every field/operation/value combination. It copies stable audit-selected game
+The current native subset freezes a 45-field typed Rust catalog: 42 entries
+follow the recovered fixed order, with three retained compatibility editors.
+It validates every field/operation/value combination and copies stable
+audit-selected game
 IDs and stages all changes into revision-checked recovery transactions.
 Platform changes move complete game-owned XML and playlist references between
 existing platform documents; the conditional choice can move safely indexed
@@ -144,8 +147,13 @@ per-game groups. The BAML-proven 3D Model Settings surface provides the
 override choice, four exact model types, and the complete settings record;
 enabling it assigns a validated whole-record override to each selected game,
 while disabling it removes only those overrides and republishes the resolved
-platform/built-in inheritance. Remaining launch/startup/pause bulk surfaces,
-exact
+platform/built-in inheritance. All 16 recovered startup/pause fields use typed
+boolean, unsigned-millisecond, or whitespace-preserving multiline editors;
+the positive Shutdown Enabled field inverts the persisted negative flag and
+the unexposed swap-discs script remains untouched. The compiled workflow
+commits real two-game startup-delay and pause-script changes after the
+controller/model operations and validates the four-backup recovery chain.
+Nine recovered fixed fields, dynamic/value-dependent combos, exact
 cancellation/progress/collision behavior, and supported Windows/macOS oracle
 comparison remain open. See `analysis/game-bulk-edit-13.27.md`.
 

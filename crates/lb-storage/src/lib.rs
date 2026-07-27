@@ -6168,7 +6168,17 @@ impl PlatformDocument {
             BulkGameField::Broken
             | BulkGameField::Completed
             | BulkGameField::Favorite
-            | BulkGameField::Hidden => {
+            | BulkGameField::Hidden
+            | BulkGameField::PauseScreenEnable
+            | BulkGameField::PauseScreenForcefulActivation
+            | BulkGameField::PauseScreenOverrideDefaultSettings
+            | BulkGameField::PauseScreenSuspendGameProcessOnPause
+            | BulkGameField::StartupScreenAggressiveStartupWindowHiding
+            | BulkGameField::StartupScreenEnabled
+            | BulkGameField::StartupScreenHideAllNonExclusiveModeWindows
+            | BulkGameField::StartupScreenHideMouseCursorDuringGame
+            | BulkGameField::StartupScreenOverrideDefaultSettings
+            | BulkGameField::StartupScreenShutdownEnabled => {
                 self.set_bulk_game_boolean(
                     id,
                     edit.field,
@@ -6231,6 +6241,26 @@ impl PlatformDocument {
                     set_optional_child_text(element, "VideoPath", value.as_deref());
                     self.library.games[game_index].video_path = value;
                 }
+            }
+            BulkGameField::PauseScreenLoadStateAutoHotkeyScript
+            | BulkGameField::PauseScreenPauseGameAutoHotkeyScript
+            | BulkGameField::PauseScreenResetGameAutoHotkeyScript
+            | BulkGameField::PauseScreenResumeGameAutoHotkeyScript
+            | BulkGameField::PauseScreenSaveStateAutoHotkeyScript => {
+                self.set_bulk_game_pause_script(id, edit)?;
+            }
+            BulkGameField::StartupScreenLoadDelay => {
+                let value = edit.number.expect("validated unsigned-integer request") as u32;
+                let game_index = self
+                    .library
+                    .games
+                    .iter()
+                    .position(|game| game.id == id)
+                    .expect("game was located before the bulk edit");
+                let element = find_record_element_mut(&mut self.root, "Game", "ID", id)
+                    .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+                self.library.games[game_index].startup_load_delay = value;
+                set_child_text(element, "StartupLoadDelay", &value.to_string());
             }
             BulkGameField::CustomField => {
                 self.apply_bulk_custom_field_edit(id, edit)?;
@@ -6427,12 +6457,107 @@ impl PlatformDocument {
                 game.hidden = value;
                 "Hide"
             }
+            BulkGameField::PauseScreenEnable => {
+                game.use_pause_screen = value;
+                "UsePauseScreen"
+            }
+            BulkGameField::PauseScreenForcefulActivation => {
+                game.forceful_pause_screen_activation = value;
+                "ForcefulPauseScreenActivation"
+            }
+            BulkGameField::PauseScreenOverrideDefaultSettings => {
+                game.override_default_pause_screen_settings = value;
+                "OverrideDefaultPauseScreenSettings"
+            }
+            BulkGameField::PauseScreenSuspendGameProcessOnPause => {
+                game.suspend_process_on_pause = value;
+                "SuspendProcessOnPause"
+            }
+            BulkGameField::StartupScreenAggressiveStartupWindowHiding => {
+                game.aggressive_window_hiding = value;
+                "AggressiveWindowHiding"
+            }
+            BulkGameField::StartupScreenEnabled => {
+                game.use_startup_screen = value;
+                "UseStartupScreen"
+            }
+            BulkGameField::StartupScreenHideAllNonExclusiveModeWindows => {
+                game.hide_all_non_exclusive_fullscreen_windows = value;
+                "HideAllNonExclusiveFullscreenWindows"
+            }
+            BulkGameField::StartupScreenHideMouseCursorDuringGame => {
+                game.hide_mouse_cursor_in_game = value;
+                "HideMouseCursorInGame"
+            }
+            BulkGameField::StartupScreenOverrideDefaultSettings => {
+                game.override_default_startup_screen_settings = value;
+                "OverrideDefaultStartupScreenSettings"
+            }
+            BulkGameField::StartupScreenShutdownEnabled => {
+                game.disable_shutdown_screen = !value;
+                "DisableShutdownScreen"
+            }
             _ => unreachable!("validated boolean bulk field"),
         };
         game.validate()?;
         let element = find_record_element_mut(&mut self.root, "Game", "ID", id)
             .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
-        set_child_text(element, element_name, &value.to_string());
+        let persisted_value = if field == BulkGameField::StartupScreenShutdownEnabled {
+            !value
+        } else {
+            value
+        };
+        set_child_text(element, element_name, &persisted_value.to_string());
+        Ok(())
+    }
+
+    fn set_bulk_game_pause_script(
+        &mut self,
+        id: &str,
+        edit: &BulkGameEdit,
+    ) -> Result<(), StorageError> {
+        let value = if edit.operation == BulkGameEditOperation::Clear {
+            None
+        } else {
+            Some(
+                edit.text
+                    .clone()
+                    .expect("validated pause-screen script request"),
+            )
+        };
+        let game_index = self
+            .library
+            .games
+            .iter()
+            .position(|game| game.id == id)
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+        let game = &mut self.library.games[game_index];
+        let element_name = match edit.field {
+            BulkGameField::PauseScreenLoadStateAutoHotkeyScript => {
+                game.load_state_auto_hotkey_script = value.clone();
+                "LoadStateAutoHotkeyScript"
+            }
+            BulkGameField::PauseScreenPauseGameAutoHotkeyScript => {
+                game.pause_auto_hotkey_script = value.clone();
+                "PauseAutoHotkeyScript"
+            }
+            BulkGameField::PauseScreenResetGameAutoHotkeyScript => {
+                game.reset_auto_hotkey_script = value.clone();
+                "ResetAutoHotkeyScript"
+            }
+            BulkGameField::PauseScreenResumeGameAutoHotkeyScript => {
+                game.resume_auto_hotkey_script = value.clone();
+                "ResumeAutoHotkeyScript"
+            }
+            BulkGameField::PauseScreenSaveStateAutoHotkeyScript => {
+                game.save_state_auto_hotkey_script = value.clone();
+                "SaveStateAutoHotkeyScript"
+            }
+            _ => unreachable!("validated pause-screen script field"),
+        };
+        let element = find_record_element_mut(&mut self.root, "Game", "ID", id)
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+        set_optional_child_text(element, element_name, value.as_deref());
         Ok(())
     }
 
@@ -14584,6 +14709,136 @@ mod tests {
             .expect("clear bulk custom DOSBox path");
         let xml = String::from_utf8(document.to_xml_bytes().expect("serialize")).expect("UTF-8");
         assert!(!xml.contains("<CustomDosBoxVersionPath>"));
+    }
+
+    #[test]
+    fn bulk_startup_and_pause_fields_persist_exact_launchbox_semantics() {
+        let mut document = PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes())
+            .expect("parse fixture");
+        let boolean_edit = |field, value| BulkGameEdit {
+            field,
+            operation: BulkGameEditOperation::Set,
+            text: None,
+            boolean: Some(value),
+            number: None,
+            custom_field_name: None,
+        };
+        for (field, value) in [
+            (BulkGameField::PauseScreenEnable, false),
+            (BulkGameField::PauseScreenForcefulActivation, true),
+            (BulkGameField::PauseScreenOverrideDefaultSettings, false),
+            (BulkGameField::PauseScreenSuspendGameProcessOnPause, false),
+            (
+                BulkGameField::StartupScreenAggressiveStartupWindowHiding,
+                true,
+            ),
+            (BulkGameField::StartupScreenEnabled, false),
+            (
+                BulkGameField::StartupScreenHideAllNonExclusiveModeWindows,
+                false,
+            ),
+            (BulkGameField::StartupScreenHideMouseCursorDuringGame, false),
+            (BulkGameField::StartupScreenOverrideDefaultSettings, false),
+            (BulkGameField::StartupScreenShutdownEnabled, false),
+        ] {
+            document
+                .apply_bulk_game_edit("fixture-adventure", &boolean_edit(field, value))
+                .expect("bulk startup/pause boolean");
+        }
+
+        let script = "\n  Send, {Escape}\n  Sleep, 125\n";
+        for field in [
+            BulkGameField::PauseScreenLoadStateAutoHotkeyScript,
+            BulkGameField::PauseScreenPauseGameAutoHotkeyScript,
+            BulkGameField::PauseScreenResetGameAutoHotkeyScript,
+            BulkGameField::PauseScreenResumeGameAutoHotkeyScript,
+            BulkGameField::PauseScreenSaveStateAutoHotkeyScript,
+        ] {
+            document
+                .apply_bulk_game_edit(
+                    "fixture-adventure",
+                    &BulkGameEdit {
+                        field,
+                        operation: BulkGameEditOperation::Set,
+                        text: Some(script.into()),
+                        boolean: None,
+                        number: None,
+                        custom_field_name: None,
+                    },
+                )
+                .expect("bulk pause script");
+        }
+        document
+            .apply_bulk_game_edit(
+                "fixture-adventure",
+                &BulkGameEdit {
+                    field: BulkGameField::StartupScreenLoadDelay,
+                    operation: BulkGameEditOperation::Set,
+                    text: None,
+                    boolean: None,
+                    number: Some(1_250.0),
+                    custom_field_name: None,
+                },
+            )
+            .expect("bulk startup delay");
+
+        let bytes = document.to_xml_bytes().expect("serialize");
+        let reloaded = PlatformDocument::from_reader("Fixture Console.xml", bytes.as_slice())
+            .expect("reload bulk-edited fixture");
+        let game = reloaded
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "fixture-adventure")
+            .expect("edited game");
+        assert!(!game.use_pause_screen);
+        assert!(game.forceful_pause_screen_activation);
+        assert!(!game.override_default_pause_screen_settings);
+        assert!(!game.suspend_process_on_pause);
+        assert!(game.aggressive_window_hiding);
+        assert!(!game.use_startup_screen);
+        assert!(!game.hide_all_non_exclusive_fullscreen_windows);
+        assert!(!game.hide_mouse_cursor_in_game);
+        assert!(!game.override_default_startup_screen_settings);
+        assert!(
+            game.disable_shutdown_screen,
+            "positive Shutdown Enabled=false must persist DisableShutdownScreen=true"
+        );
+        assert_eq!(game.startup_load_delay, 1_250);
+        assert_eq!(game.load_state_auto_hotkey_script.as_deref(), Some(script));
+        assert_eq!(game.pause_auto_hotkey_script.as_deref(), Some(script));
+        assert_eq!(game.reset_auto_hotkey_script.as_deref(), Some(script));
+        assert_eq!(game.resume_auto_hotkey_script.as_deref(), Some(script));
+        assert_eq!(game.save_state_auto_hotkey_script.as_deref(), Some(script));
+        assert_eq!(
+            game.swap_discs_auto_hotkey_script.as_deref(),
+            Some("swap-discs-fixture"),
+            "the 13.27 bulk picker does not expose the swap-discs script"
+        );
+        let xml = String::from_utf8(bytes).expect("UTF-8");
+        assert!(xml.contains("<DisableShutdownScreen>true</DisableShutdownScreen>"));
+        assert!(xml.contains("<StartupLoadDelay>1250</StartupLoadDelay>"));
+        assert!(
+            xml.contains("<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>")
+        );
+
+        document
+            .apply_bulk_game_edit(
+                "fixture-adventure",
+                &BulkGameEdit {
+                    field: BulkGameField::PauseScreenPauseGameAutoHotkeyScript,
+                    operation: BulkGameEditOperation::Clear,
+                    text: None,
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+            )
+            .expect("clear pause script");
+        let cleared =
+            String::from_utf8(document.to_xml_bytes().expect("serialize clear")).expect("UTF-8");
+        assert!(!cleared.contains("<PauseAutoHotkeyScript>"));
+        assert!(cleared.contains("<SwapDiscsAutoHotkeyScript>swap-discs-fixture</"));
     }
 
     #[test]

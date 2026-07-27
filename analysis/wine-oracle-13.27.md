@@ -40,9 +40,13 @@ The original Wine 11.8 files remain beside it as reversible backups.
 | `drive_c/windows/syswow64/uiautomationcore.dll` | `0001df8d8319524a93ed523382a6cce8de9234211d5f3dc46bb4c530d9385150` | `uiautomationcore.dll.wine-11.8` |
 
 The 64-bit PE has timestamp `2007-10-09 14:56:51`, exports `UiaSetFocus`, and
-imports only the expected Windows system libraries. The prefix selects it with
-the user registry override
-`HKCU\Software\Wine\DllOverrides\uiautomationcore=native,builtin`.
+imports only the expected Windows system libraries. The current registry
+snapshot no longer contains its override after later prefix maintenance. The
+July 2026 crash report consequently loaded Wine's PE implementation. For the
+bounded probe, a process-local `uiautomationcore=native,builtin` override
+selected the older DLL; `/proc` module maps confirmed that exact prefix file
+was mapped. No product launcher or persistent host configuration depends on
+that override.
 
 A Windows 11 `UIAutomationCore.dll` was not compatible with Wine 11.8: it
 reached Wine's unimplemented `NtQueryWnfStateData`. Reusing a complete older
@@ -67,27 +71,43 @@ boundary:
 This repair is specific to the ignored oracle prefix. It is not a product
 dependency.
 
-## Bulk-editor probe boundary
+## Bulk-editor probe result
 
 A temporary .NET startup hook subsequently attached to the real 13.27
 self-contained runtime and reflected the bulk-edit view-model types. The
-five-page structure and typed controls agree with the static decompilation, but
-the protected field initializer requires LaunchBox's global data manager.
-Constructing the real data-manager path under Wine entered the known activation
-critical-section stall before the field collection initialized. The probe
-therefore produced no trustworthy complete ordered field list.
+five-page structure and typed controls agree with the static decompilation.
+The normal protected data-manager constructor still entered the Wine
+activation critical-section stall, so the disposable probe supplied an
+uninitialized data manager with empty typed dictionaries and the documented
+default progress list. It then constructed the real protected
+`BulkEditFieldSelectPageViewModel`, attached its real WPF view on an STA
+thread, and read the populated `Fields` metadata.
 
-Static class shapes, BAML controls, and embedded release notes are sufficient
-for the bounded first native vertical recorded in
-`game-bulk-edit-13.27.md`. The exact original field catalog remains an explicit
-Windows-oracle gate.
+The live collection contained 51 fixed entries. It included nine individual
+Pause Screen fields and seven individual Startup Screen fields; it did not use
+grouped startup/pause records and did not expose the game's swap-discs
+AutoHotkey script. Exact names and order are frozen in
+`game-bulk-edit-13.27.md`. Because the synthetic manager intentionally has no
+loaded value catalogs, this evidence does not claim dynamic custom-field rows
+or every environment-dependent combo value.
 
-## Verified LaunchBox result
+The normal constructor hang, recovery-child behavior, and reflected catalog
+were confined to a reflinked temporary installation. The dedicated prefix was
+stopped after the probe, and the owner's Windows installation and partition
+were not modified.
 
-`Core/LaunchBox.exe` now reaches and paints the complete desktop window in the
-canonical prefix without the diagnostic startup hook. Menus, toolbar, search,
-sidebar, content area, and window chrome were visible in a compositor
-screenshot.
+## Previously verified LaunchBox result
+
+In the earlier repaired-prefix run, `Core/LaunchBox.exe` reached and painted
+the complete desktop window without the diagnostic startup hook. Menus,
+toolbar, search, sidebar, content area, and window chrome were visible in a
+compositor screenshot.
+
+The July 2026 disposable fixture runs reproduced a protected bootstrap spin and
+spawned a `-recovery` child before `Root.DataManager` became available, even
+when the native UI Automation DLL was selected. That later behavior is why the
+catalog probe uses the bounded synthetic-data technique above; current normal
+desktop startup is not claimed from those runs.
 
 Startup still pauses for almost exactly 60 seconds in LaunchBox's activation
 handler. A debug run logged:

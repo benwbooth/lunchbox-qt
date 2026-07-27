@@ -35,10 +35,70 @@ starting another change without returning through the welcome page.
 
 Protected initialization and apply bodies prevent the static decompiler from
 emitting the original complete ordered field list. A temporary .NET startup
-hook attached to the real self-contained runtime after the disposable Wine
-prefix was repaired, but LaunchBox's activation/data-manager path deadlocked
-before the field collection could initialize. Therefore neither this note nor
-the port claims that the current native catalog is the complete original list.
+hook attached to the real self-contained runtime in a reflinked, disposable
+13.27 installation. The normal data-manager constructor stalls at the same
+Wine activation boundary, so the probe supplied uninitialized data objects,
+empty typed catalogs, and the documented default progress values. It then
+invoked the real protected bulk view-model on an STA thread and captured the
+live `Fields` collection. No proprietary binary, hook, log, license, or game
+value is checked in.
+
+The runtime registered these 51 fixed entries, in order:
+
+1. `3D Model Settings`
+2. `Broken`
+3. `Controller Support`
+4. `Custom DOSBox Version EXE Path`
+5. `Developer`
+6. `DOSBox Configuration File`
+7. `Emulator`
+8. `Favorite`
+9. `Game Manual Path`
+10. `Game Music Path`
+11. `Genre`
+12. `Hide`
+13. `Installed`
+14. `Last Played`
+15. `Max Players`
+16. `Notes`
+17. `Pause Screen - Enable`
+18. `Pause Screen - Forceful Activation`
+19. `Pause Screen - Load State AutoHotkey Script`
+20. `Pause Screen - Override Default Settings`
+21. `Pause Screen - Pause Game AutoHotkey Script`
+22. `Pause Screen - Reset Game AutoHotkey Script`
+23. `Pause Screen - Resume Game AutoHotkey Script`
+24. `Pause Screen - Save State AutoHotkey Script`
+25. `Pause Screen - Suspend Game Process On Pause`
+26. `Platform`
+27. `Play Mode`
+28. `Portable`
+29. `Progress`
+30. `Publisher`
+31. `Rating`
+32. `Region`
+33. `Release Date`
+34. `Release Type`
+35. `Series`
+36. `Sort Title`
+37. `Source`
+38. `Star Rating`
+39. `Startup Screen - Aggressive Startup Window Hiding`
+40. `Startup Screen - Enabled`
+41. `Startup Screen - Hide All Non-Exclusive Mode Windows`
+42. `Startup Screen - Hide Mouse Cursor During Game`
+43. `Startup Screen - Load Delay`
+44. `Startup Screen - Override Default Settings`
+45. `Startup Screen - Shutdown Enabled`
+46. `Status`
+47. `Use DOSBox`
+48. `Use ScummVM`
+49. `Version`
+50. `Video URL`
+51. `Wikipedia URL`
+
+The bare probe intentionally had no loaded custom-field value catalog, so
+dynamic custom-field additions are not included in that fixed list.
 
 ## Release-note behavior
 
@@ -64,14 +124,31 @@ behavior, not merely UI polish.
 
 ## Current native vertical
 
-The Rust catalog currently exposes 29 typed fields:
+The Rust catalog now exposes 45 typed fields. Forty-two follow the recovered
+fixed order above. The three retained compatibility surfaces are `Completed`,
+`Video Path`, and the generic `Custom Field` editor. The nine recovered fixed
+entries not yet exposed are `DOSBox Configuration File`, `Game Manual Path`,
+`Game Music Path`, `Installed`, `Last Played`, `Portable`, `Use DOSBox`,
+`Use ScummVM`, and `Video URL`.
 
-`Broken`, `Completed`, `Controller Support`, `Custom DOSBox Version EXE
-Path`, `Developer`, `Emulator`, `Favorite`, `Genre`, `Hide`, `Max Players`,
-`3D Model Settings`, `Notes`, `Play Mode`, `Platform`, `Progress`, `Publisher`,
-`Rating`, `Region`, `Release Date`, `Release Type`, `Series`, `Sort Title`,
-`Source`, `Star Rating`, `Status`, `Version`, `Video Path`, `Wikipedia URL`,
-and `Custom Field`.
+All nine recovered Pause Screen entries and all seven Startup Screen entries
+are implemented as individual scalar operations, matching the real field
+catalog rather than inventing a grouped record editor. Boolean settings use
+typed values. `Startup Screen - Load Delay` accepts only a whole millisecond
+value from zero through the persisted `u32` maximum. The five exposed
+AutoHotkey scripts use a multiline editor, preserve supplied whitespace in
+XML, and support explicit removal. LaunchBox does not expose the game
+`SwapDiscsAutoHotkeyScript` through this bulk catalog, so the port leaves that
+node untouched.
+
+The positive `Startup Screen - Shutdown Enabled` field deliberately maps to
+the inverse of LaunchBox's persisted `DisableShutdownScreen` value. The
+remaining labels map one-to-one to the existing 13.27 game XML fields:
+`UsePauseScreen`, `ForcefulPauseScreenActivation`,
+`OverrideDefaultPauseScreenSettings`, `SuspendProcessOnPause`, the five script
+nodes, `AggressiveWindowHiding`, `UseStartupScreen`,
+`HideAllNonExclusiveFullscreenWindows`, `HideMouseCursorInGame`,
+`StartupLoadDelay`, and `OverrideDefaultStartupScreenSettings`.
 
 The editor kind and clearability come from Rust. The versioned request denies
 unknown keys and rejects values from the wrong editor family. Ratings accept
@@ -180,11 +257,15 @@ selection, which matches the recovered 13.27 release-note behavior.
 
 ## Verification
 
-Pure tests freeze unique catalog keys, named 13.27 additions, editor/value
-validation, half-star bounds, and stable multi-value semantics. Storage tests
-apply booleans, metadata, custom fields, a Windows-separated Video Path, and
-the Custom DOSBox path while retaining unknown game/custom-field XML and
-unrelated lexical paths.
+Pure tests freeze unique catalog keys, the exact nine pause and seven startup
+labels and relative order, editor/value validation, unsigned delay bounds,
+half-star bounds, and stable multi-value semantics. Storage tests apply every
+startup/pause mapping, prove the positive-to-negative shutdown inversion,
+preserve multiline script whitespace, leave the swap-discs script untouched,
+and retain unknown game XML. Existing storage coverage also applies booleans,
+metadata, custom fields, a Windows-separated Video Path, and the Custom DOSBox
+path while retaining unknown game/custom-field XML and unrelated lexical
+paths.
 
 Dedicated emulator tests cover case-insensitive parent/app matching, Set and
 Clear, retained `UseEmulator`, owner scoping, direct and different-emulator
@@ -222,14 +303,17 @@ Support remove/add/level surface, then applies Required support to the real
 fixture controller. It next renders the complete 3D Model Settings surface and
 applies the exact Long Jewel Case override to both games. The scenario verifies
 one existing controller level update plus one new row, two complete
-model-settings records, retained unknown elements, an unchanged
-Windows-separated application path, the exact two-transaction recovery chain,
-live resolved model values, and clean recovery state.
+model-settings records, two typed 1,250-millisecond startup delays, two
+multiline pause scripts, retained unknown elements, an unchanged
+Windows-separated application path, the exact four-transaction recovery
+chain, live values, and clean recovery state.
 
 ## Open parity gates
 
-- recover the complete ordered original field catalog and every combo value;
-- the remaining launch/startup/pause fields;
+- implement the nine recovered fixed fields listed above and recover
+  value-dependent/dynamic custom-field ordering;
+- recover every value-dependent combo choice from a fully initialized
+  supported Windows runtime;
 - exact three-state meanings and date formatting/time-zone behavior;
 - exact original collision policy, apply-time cancellation, restart,
   progress/error wording, and batch size behavior;

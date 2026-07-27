@@ -257,9 +257,11 @@ titles, sorting, selection, export, and edit handoff. Exact protected grid
 behavior, authoritative MAME/storefront providers, native Windows/macOS
 interaction remain audit work.
 
-The current `LIB-015` bulk-edit vertical has a 29-field Rust-owned catalog and
+The current `LIB-015` bulk-edit vertical has a 45-field Rust-owned catalog and
 all five recovered wizard positions, including the conditional Platform media
-choice. Stable audit-selected IDs are resolved to exact platform sources
+choice. A disposable live-CLR probe recovered the exact 51-entry fixed 13.27
+catalog and order; 42 of the current entries follow that order, with three
+retained compatibility editors. Stable audit-selected IDs are resolved to exact platform sources
 immediately before one optimistic recoverable transaction. Ordinary fields
 edit every affected document together. Platform changes transfer complete
 game-owned XML and playlist references to an existing destination; optionally
@@ -278,9 +280,13 @@ canonicalizes the fresh controller catalog, preserves retained row XML, and
 refreshes the committed per-game support groups. The recovered 3D Model
 Settings surface applies the complete selected model record to every game or
 removes only each game override to resume platform/built-in inheritance,
-preserving unknown XML and refreshing the resolved live models. The complete
-original field/combination catalog and remaining launch/startup/pause bulk
-surfaces, exact original
+preserving unknown XML and refreshing the resolved live models. All nine Pause
+Screen and seven Startup Screen fields are individual typed scalar operations;
+multiline scripts preserve whitespace, delay is a bounded whole millisecond
+value, Shutdown Enabled correctly inverts `DisableShutdownScreen`, and the
+swap-discs script remains untouched. The compiled Qt workflow performs these
+real two-game changes in the same live/recoverable path. The nine remaining
+fixed fields, value-dependent/dynamic combos, exact original
 collision/cancellation/restart/progress behavior, and Windows/macOS oracle
 interaction are the next bulk-editor boundaries. See
 `analysis/game-bulk-edit-13.27.md`.

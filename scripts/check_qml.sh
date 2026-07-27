@@ -2673,6 +2673,12 @@ if ! rg -q \
   <<< "$bulk_edit_output" \
   || ! rg -q \
   'BULK_EDIT_SMOKE_COMPLETE games=2 field=modelSettings value="longJewelCase" transaction=1' \
+  <<< "$bulk_edit_output" \
+  || ! rg -q \
+  'BULK_EDIT_SMOKE_COMPLETE games=2 field=startupScreenLoadDelay value="1250" transaction=1' \
+  <<< "$bulk_edit_output" \
+  || ! rg -q \
+  'BULK_EDIT_SMOKE_COMPLETE games=2 field=pauseScreenPauseGameAutoHotkeyScript value="Send, \{Escape\}' \
   <<< "$bulk_edit_output"; then
   printf '%s\n' "$bulk_edit_output" >&2
   echo "LaunchBox did not complete the native bulk-edit workflow." >&2
@@ -2712,6 +2718,12 @@ if [[ $(rg -c '<ControllerId>fixture-controller</ControllerId>' \
       "$bulk_edit_platform") -ne 2 ]] \
   || [[ $(rg -c '<ModelSizeString>5;7;1</ModelSizeString>' \
       "$bulk_edit_platform") -ne 2 ]] \
+  || [[ $(rg -c '<StartupLoadDelay>1250</StartupLoadDelay>' \
+      "$bulk_edit_platform") -ne 2 ]] \
+  || [[ $(rg -c '<PauseAutoHotkeyScript>Send, \{Escape\}' \
+      "$bulk_edit_platform") -ne 2 ]] \
+  || [[ $(rg -c 'Sleep, 125</PauseAutoHotkeyScript>' \
+      "$bulk_edit_platform") -ne 2 ]] \
   || ! rg -q \
     '<FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>' \
     "$bulk_edit_platform" \
@@ -2729,13 +2741,15 @@ mapfile -t bulk_edit_backups < <(
   find "$bulk_edit_root/Data/Platforms" -maxdepth 1 -type f \
     -name 'Fixture Console.xml.lbport-transaction-backup-*' -print
 )
-if [[ ${#bulk_edit_backups[@]} -ne 2 ]]; then
+if [[ ${#bulk_edit_backups[@]} -ne 4 ]]; then
   printf '%s\n' "$bulk_edit_output" >&2
-  echo "Bulk edit did not retain exactly two transaction backups." >&2
+  echo "Bulk edit did not retain exactly four transaction backups." >&2
   exit 1
 fi
 bulk_edit_original_backups=0
 bulk_edit_controller_backups=0
+bulk_edit_model_backups=0
+bulk_edit_startup_backups=0
 for backup in "${bulk_edit_backups[@]}"; do
   if cmp -s "$bulk_edit_before" "$backup"; then
     ((bulk_edit_original_backups += 1))
@@ -2744,10 +2758,26 @@ for backup in "${bulk_edit_backups[@]}"; do
     && [[ $(rg -c '<SupportLevel>3</SupportLevel>' "$backup") -eq 2 ]] \
     && [[ $(rg -c '^  <ModelSettings>$' "$backup") -eq 1 ]]; then
     ((bulk_edit_controller_backups += 1))
+  elif [[ $(rg -c '<ControllerId>fixture-controller</ControllerId>' \
+            "$backup") -eq 2 ]] \
+    && [[ $(rg -c '^  <ModelSettings>$' "$backup") -eq 2 ]] \
+    && [[ $(rg -c '<StartupLoadDelay>1250</StartupLoadDelay>' \
+            "$backup") -eq 0 ]]; then
+    ((bulk_edit_model_backups += 1))
+  elif [[ $(rg -c '<ControllerId>fixture-controller</ControllerId>' \
+            "$backup") -eq 2 ]] \
+    && [[ $(rg -c '^  <ModelSettings>$' "$backup") -eq 2 ]] \
+    && [[ $(rg -c '<StartupLoadDelay>1250</StartupLoadDelay>' \
+            "$backup") -eq 2 ]] \
+    && [[ $(rg -c '<PauseAutoHotkeyScript>Send, \{Escape\}' \
+            "$backup") -eq 0 ]]; then
+    ((bulk_edit_startup_backups += 1))
   fi
 done
 if [[ $bulk_edit_original_backups -ne 1 \
-  || $bulk_edit_controller_backups -ne 1 ]] \
+  || $bulk_edit_controller_backups -ne 1 \
+  || $bulk_edit_model_backups -ne 1 \
+  || $bulk_edit_startup_backups -ne 1 ]] \
   || find "$bulk_edit_root" -type f \
     -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
   printf '%s\n' "$bulk_edit_output" >&2
@@ -2755,7 +2785,7 @@ if [[ $bulk_edit_original_backups -ne 1 \
   exit 1
 fi
 
-echo "LaunchBox native bulk edit validated stable selected IDs, the conditional platform media-migration page, the recovered Controller Support and complete 3D Model Settings surfaces, two recoverable transactions, live resolved inheritance state, unknown XML/path preservation, and exact backups."
+echo "LaunchBox native bulk edit validated stable selected IDs, the conditional platform media-migration page, the recovered Controller Support, complete 3D Model Settings, startup-delay, and pause-script surfaces, four recoverable transactions, live state, unknown XML/path preservation, and exact backups."
 
 cp -a fixtures/launchbox/. "$launchbox_order_root/"
 cp -a fixtures/launchbox/. "$bigbox_order_root/"

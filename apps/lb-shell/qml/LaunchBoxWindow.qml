@@ -2084,12 +2084,98 @@ ApplicationWindow {
                 window.bulkEditSmokePhase = 10
                 return
             }
-            if (window.bulkEditSmokePhase !== 10 || controller.writing)
+            if (window.bulkEditSmokePhase === 10) {
+                if (controller.writing)
+                    return
+                if (!controller.report_bulk_edit_smoke_success(
+                            2, "modelSettings", "longJewelCase")) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_MODEL_SETTINGS_RESULT_FAILED completed="
+                        + controller.bulk_edit_completed_count + " status="
+                        + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                if (!bulkEditDialog.smokeSelectStartupLoadDelay(1250)) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_STARTUP_DELAY_FIELD_FAILED")
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 11
+                return
+            }
+            if (window.bulkEditSmokePhase === 11) {
+                if (!bulkEditDialog.smokeConfirmScalarField()) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_STARTUP_DELAY_CONFIRM_FAILED")
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 12
+                return
+            }
+            if (window.bulkEditSmokePhase === 12) {
+                if (!bulkEditDialog.applyRequest()) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_STARTUP_DELAY_APPLY_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 13
+                return
+            }
+            if (window.bulkEditSmokePhase === 13) {
+                if (controller.writing)
+                    return
+                if (!controller.report_bulk_edit_smoke_success(
+                            2, "startupScreenLoadDelay", "1250")) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_STARTUP_DELAY_RESULT_FAILED completed="
+                        + controller.bulk_edit_completed_count + " status="
+                        + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                if (!bulkEditDialog.smokeSelectPauseScript(
+                            "Send, {Escape}\nSleep, 125")) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_PAUSE_SCRIPT_FIELD_FAILED")
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 14
+                return
+            }
+            if (window.bulkEditSmokePhase === 14) {
+                if (!bulkEditDialog.smokeConfirmScalarField()) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_PAUSE_SCRIPT_CONFIRM_FAILED")
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 15
+                return
+            }
+            if (window.bulkEditSmokePhase === 15) {
+                if (!bulkEditDialog.applyRequest()) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_PAUSE_SCRIPT_APPLY_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 16
+                return
+            }
+            if (window.bulkEditSmokePhase !== 16 || controller.writing)
                 return
             if (!controller.report_bulk_edit_smoke_success(
-                        2, "modelSettings", "longJewelCase")) {
+                        2, "pauseScreenPauseGameAutoHotkeyScript",
+                        "Send, {Escape}\nSleep, 125")) {
                 console.error(
-                    "BULK_EDIT_SMOKE_MODEL_SETTINGS_RESULT_FAILED completed="
+                    "BULK_EDIT_SMOKE_PAUSE_SCRIPT_RESULT_FAILED completed="
                     + controller.bulk_edit_completed_count + " status="
                     + controller.status_message)
                 Qt.exit(489)
