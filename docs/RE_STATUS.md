@@ -91,6 +91,17 @@ found 37 platform files, 35,869 games, 16,752 additional applications, 20,739
 alternate names, 54 playlists, zero custom-field records, and no XML parse
 errors.
 
+The same value-free census found 86 global `GameController` records and 7,061
+per-game `GameControllerSupport` rows. A temporary managed 13.27 reflection
+probe recovered the exact 11 category choices and four support levels; the real
+library corroborates optional level-zero encoding and contains the historical
+category spelling `Rythm`. The native `LIB-005` vertical now provides
+typed/lossless controller catalog CRUD, semicolon platform-name associations,
+per-game support editing, immutable generated IDs, cross-document
+reference-gated deletion, exact backups, and rendered Qt coverage. The complete
+evidence and remaining hardware/BigBox/native-host boundaries are recorded in
+`analysis/controller-support-13.27.md`.
+
 The census now includes a value-free additional-application shape audit. All
 16,752 records have parseable nonnegative priorities ranging from 0 through 26;
 12 have an empty application path. Five game-save rows reference additional

@@ -183,7 +183,7 @@ parity remain open.
 | LIB-002 | Rich game metadata, notes, sort titles, regions, versions, and status | DV metadata/notes/sort-title pages; PA game/additional-app fields |
 | LIB-003 | Alternate names and custom fields | DV alternate-name/custom-field pages; PA `IAlternateName`, `ICustomField` |
 | LIB-004 | Additional applications and documents per game | DV additional-app editor and Make Default command; PA `IAdditionalApplication`; BigBox selection actions; port subset has typed/lossless add/edit/delete, launch selection, and an evidence-derived transactional Make Default conversion that retains the selected row |
-| LIB-005 | Game controller support metadata | DV controller-support editor; PA controller APIs |
+| LIB-005 | Game controller support metadata | DV controller-support editor; PA controller APIs. The port implements the exact 11-category and four-level 13.27 contract, typed/lossless global controller CRUD with immutable generated IDs and platform-name associations, per-game support editing, optional-zero encoding, historical-category retention, fresh cross-document reference refusal, exact backups, and committed rereads. Rendered Qt coverage drives the manager and game editor through edit/create/blocked-delete/support-replacement/delete. Hardware mapping, controller database acquisition, automatic matching, BigBox presentation, and native Windows/macOS interaction remain open |
 | LIB-006 | Platforms and platform folders | DV platform management; PA `IPlatform`, `IPlatformFolder` |
 | LIB-007 | Nested platform categories | DV category editor; PA `IPlatformCategory`, `IParent` |
 | LIB-008 | Manual and auto-populated playlists | DV playlist editor; PA manual/automatic playlist and criteria contracts |

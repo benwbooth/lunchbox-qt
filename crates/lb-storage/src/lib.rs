@@ -1,11 +1,11 @@
 use lb_domain::{
     is_unassigned_emulator_id, AdditionalApplication, AdditionalApplicationEdit, AlternateName,
     ArgbColor, CatalogValidationError, CustomField, Emulator, EmulatorConfiguration,
-    EmulatorPlatform, Game, GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave,
-    GameSaveMetadataEdit, InputBinding, ModelSettings, ModelSettingsError, ModelSize, ModelType,
-    Mount, NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory,
-    PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument,
-    PlaylistFilter, PlaylistGame, ValidationError,
+    EmulatorPlatform, Game, GameController, GameControllerSupport, GameLaunchConfiguration,
+    GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding, ModelSettings, ModelSettingsError,
+    ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship, PlatformCatalog,
+    PlatformCategory, PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist,
+    PlaylistDocument, PlaylistFilter, PlaylistGame, ValidationError,
 };
 #[cfg(test)]
 use lb_domain::{
@@ -13,7 +13,7 @@ use lb_domain::{
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufReader, Read, Write};
@@ -964,6 +964,114 @@ impl AuxiliaryDocument {
             AuxiliaryDocumentKind::Emulators,
         )?;
         data_index::parse_emulators(&self.source_path, &self.root)
+    }
+
+    pub fn game_controllers(&self) -> Result<Vec<GameController>, StorageError> {
+        self.ensure_operation_kind(
+            "read game controllers",
+            AuxiliaryDocumentKind::GameControllers,
+        )?;
+        data_index::parse_game_controllers(&self.root)
+    }
+
+    /// Adds one controller without rebuilding the catalog or changing the
+    /// lexical platform-association string.
+    pub fn add_game_controller(&mut self, controller: GameController) -> Result<(), StorageError> {
+        self.ensure_operation_kind(
+            "add game controller",
+            AuxiliaryDocumentKind::GameControllers,
+        )?;
+        controller.validate()?;
+        let controllers = self.game_controllers()?;
+        if controllers
+            .iter()
+            .any(|existing| existing.id.eq_ignore_ascii_case(&controller.id))
+        {
+            return Err(StorageError::DuplicateGameControllerId {
+                id: controller.id.clone(),
+            });
+        }
+        self.mutate(move |root| {
+            let insertion = root
+                .children
+                .iter()
+                .rposition(|node| {
+                    node.as_element()
+                        .is_some_and(|element| element.name == "GameController")
+                })
+                .map_or(0, |index| index + 1);
+            root.children.insert(
+                insertion,
+                XMLNode::Element(game_controller_element(&controller)),
+            );
+            Ok(())
+        })
+    }
+
+    /// Updates all mutable controller fields while retaining unknown children
+    /// and the immutable source ID.
+    pub fn set_game_controller(
+        &mut self,
+        controller_id: &str,
+        controller: GameController,
+    ) -> Result<(), StorageError> {
+        self.ensure_operation_kind(
+            "edit game controller",
+            AuxiliaryDocumentKind::GameControllers,
+        )?;
+        controller.validate()?;
+        let controllers = self.game_controllers()?;
+        let original = controllers
+            .iter()
+            .find(|existing| existing.id.eq_ignore_ascii_case(controller_id))
+            .cloned()
+            .ok_or_else(|| StorageError::GameControllerNotFound {
+                id: controller_id.to_string(),
+            })?;
+        if controller.id != original.id {
+            return Err(StorageError::ImmutableGameControllerId {
+                expected: original.id,
+                actual: controller.id,
+            });
+        }
+        let exact_id = controller.id.clone();
+        self.mutate(move |root| {
+            let indices = record_indices(root, "GameController", Some(("Id", &exact_id)));
+            let index =
+                exactly_one_editable_record("GameController", Some(("Id", &exact_id)), &indices)?;
+            let element = root.children[index]
+                .as_mut_element()
+                .expect("game-controller index must identify an element");
+            update_game_controller_element(element, &controller);
+            Ok(())
+        })
+    }
+
+    pub fn remove_game_controller(
+        &mut self,
+        controller_id: &str,
+    ) -> Result<GameController, StorageError> {
+        self.ensure_operation_kind(
+            "remove game controller",
+            AuxiliaryDocumentKind::GameControllers,
+        )?;
+        let controllers = self.game_controllers()?;
+        let controller = controllers
+            .iter()
+            .find(|existing| existing.id.eq_ignore_ascii_case(controller_id))
+            .cloned()
+            .ok_or_else(|| StorageError::GameControllerNotFound {
+                id: controller_id.to_string(),
+            })?;
+        let exact_id = controller.id.clone();
+        self.mutate(|root| {
+            let indices = record_indices(root, "GameController", Some(("Id", &exact_id)));
+            let index =
+                exactly_one_editable_record("GameController", Some(("Id", &exact_id)), &indices)?;
+            root.children.remove(index);
+            Ok(())
+        })?;
+        Ok(controller)
     }
 
     /// Adds one complete emulator and its per-platform mappings without
@@ -3381,6 +3489,147 @@ impl PlatformDocument {
         }
     }
 
+    /// Replaces every controller-support row owned by one game.
+    ///
+    /// Controller IDs are the stable identity within a game. Retained rows are
+    /// updated in place so unknown future XML children survive; removed rows
+    /// are deleted and new rows are appended in the recovered platform-record
+    /// order. LaunchBox's index-zero "Not Supported" choice is canonicalized
+    /// to an omitted `<SupportLevel>` child.
+    pub fn set_game_controller_support(
+        &mut self,
+        game_id: &str,
+        mut support: Vec<GameControllerSupport>,
+    ) -> Result<Vec<GameControllerSupport>, StorageError> {
+        let game = self
+            .library
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(game_id))
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: game_id.to_string(),
+            })?;
+        let exact_game_id = game.id.clone();
+        let mut requested_ids = BTreeSet::new();
+        for record in &mut support {
+            if record.game_id != exact_game_id {
+                return Err(invalid_game_record_edit(
+                    "controller support",
+                    &exact_game_id,
+                    "record owner does not match the edited game",
+                ));
+            }
+            record.validate()?;
+            if record.support_level == Some(0) {
+                record.support_level = None;
+            }
+            if !requested_ids.insert(record.controller_id.to_lowercase()) {
+                return Err(invalid_game_record_edit(
+                    "controller support",
+                    &exact_game_id,
+                    &format!("controller {} appears more than once", record.controller_id),
+                ));
+            }
+        }
+
+        let originals = self
+            .library
+            .controller_support
+            .iter()
+            .filter(|record| record.game_id.eq_ignore_ascii_case(&exact_game_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut original_ids = BTreeSet::new();
+        for record in &originals {
+            if !original_ids.insert(record.controller_id.to_lowercase()) {
+                return Err(invalid_game_record_edit(
+                    "controller support",
+                    &exact_game_id,
+                    &format!(
+                        "source controller {} appears more than once",
+                        record.controller_id
+                    ),
+                ));
+            }
+        }
+        let xml_records = self
+            .root
+            .children
+            .iter()
+            .filter_map(XMLNode::as_element)
+            .filter(|element| {
+                element.name == "GameControllerSupport"
+                    && child_text(element, "GameId")
+                        .is_some_and(|id| id.eq_ignore_ascii_case(&exact_game_id))
+            })
+            .collect::<Vec<_>>();
+        let xml_ids = xml_records
+            .iter()
+            .map(|element| child_text(element, "ControllerId").unwrap_or_default())
+            .collect::<Vec<_>>();
+        if originals.len() != xml_ids.len()
+            || originals
+                .iter()
+                .zip(&xml_ids)
+                .any(|(typed, xml)| !typed.controller_id.eq_ignore_ascii_case(xml))
+        {
+            return Err(invalid_game_record_edit(
+                "controller support",
+                &exact_game_id,
+                "typed records do not align with source XML",
+            ));
+        }
+
+        let mut requested = support
+            .iter()
+            .cloned()
+            .map(|record| (record.controller_id.to_lowercase(), record))
+            .collect::<BTreeMap<_, _>>();
+        let mut candidate = self.root.clone();
+        candidate.children.retain_mut(|node| {
+            let Some(element) = node.as_mut_element() else {
+                return true;
+            };
+            if element.name != "GameControllerSupport"
+                || !child_text(element, "GameId")
+                    .is_some_and(|id| id.eq_ignore_ascii_case(&exact_game_id))
+            {
+                return true;
+            }
+            let key = child_text(element, "ControllerId")
+                .unwrap_or_default()
+                .to_lowercase();
+            let Some(record) = requested.remove(&key) else {
+                return false;
+            };
+            update_game_controller_support_element(element, &record);
+            true
+        });
+        for record in &support {
+            if requested
+                .remove(&record.controller_id.to_lowercase())
+                .is_none()
+            {
+                continue;
+            }
+            let insertion = platform_record_insertion_index(&candidate, "GameControllerSupport");
+            candidate.children.insert(
+                insertion,
+                XMLNode::Element(game_controller_support_element(record)),
+            );
+        }
+        debug_assert!(requested.is_empty());
+        self.replace_platform_root(candidate)?;
+
+        Ok(self
+            .library
+            .controller_support
+            .iter()
+            .filter(|record| record.game_id.eq_ignore_ascii_case(&exact_game_id))
+            .cloned()
+            .collect())
+    }
+
     pub fn add_game(&mut self, new_game: NewGame) -> Result<Game, StorageError> {
         if new_game.application_path.trim().is_empty() {
             return Err(StorageError::EmptyGameApplicationPath { id: new_game.id });
@@ -5510,6 +5759,42 @@ fn update_expanded_game_element(element: &mut Element, game: &Game) {
         "HasCloudSynced",
         &game.has_cloud_synced.to_string(),
     );
+}
+
+fn game_controller_element(controller: &GameController) -> Element {
+    let mut element = Element::new("GameController");
+    update_game_controller_element(&mut element, controller);
+    element
+}
+
+fn update_game_controller_element(element: &mut Element, controller: &GameController) {
+    set_child_text(element, "Id", &controller.id);
+    set_child_text(element, "Name", &controller.name);
+    set_child_text(element, "Category", &controller.category);
+    set_child_text(
+        element,
+        "AssociatedPlatforms",
+        controller
+            .associated_platforms
+            .as_deref()
+            .unwrap_or_default(),
+    );
+}
+
+fn game_controller_support_element(support: &GameControllerSupport) -> Element {
+    let mut element = Element::new("GameControllerSupport");
+    update_game_controller_support_element(&mut element, support);
+    element
+}
+
+fn update_game_controller_support_element(element: &mut Element, support: &GameControllerSupport) {
+    set_child_text(element, "ControllerId", &support.controller_id);
+    set_child_text(element, "GameId", &support.game_id);
+    let persisted = support
+        .support_level
+        .filter(|support_level| *support_level != 0)
+        .map(|support_level| support_level.to_string());
+    set_optional_child_text(element, "SupportLevel", persisted.as_deref());
 }
 
 fn emulator_element(emulator: &Emulator) -> Element {
@@ -8331,6 +8616,12 @@ pub enum StorageError {
     DuplicateEmulatorPlatformDefault { id: String, platform: String },
     #[error("invalid emulator platform edit for {id}: {reason}")]
     InvalidEmulatorPlatformEdit { id: String, reason: String },
+    #[error("game controller ID already exists: {id}")]
+    DuplicateGameControllerId { id: String },
+    #[error("game controller was not found: {id}")]
+    GameControllerNotFound { id: String },
+    #[error("game controller ID is immutable; expected {expected}, got {actual}")]
+    ImmutableGameControllerId { expected: String, actual: String },
     #[error("platform category name already exists: {name}")]
     DuplicatePlatformCategoryName { name: String },
     #[error("platform category was not found: {name}")]
@@ -8634,6 +8925,158 @@ mod tests {
                 "    <Title>Before the Final Puzzle</Title>",
                 "    <Title>Before the Final Puzzle</Title>\n    <ReportedFileSizeBytes>9223372036854770000</ReportedFileSizeBytes>\n    <ReportedLastModifiedUtc>2026-07-22T01:02:03.4567890Z</ReportedLastModifiedUtc>\n    <Md5>0123456789abcdef0123456789abcdef</Md5>\n    <FutureGameSaveField>keep-save-data</FutureGameSaveField>",
             )
+    }
+
+    #[test]
+    fn game_controller_catalog_crud_is_typed_lossless_and_keeps_paths_lexical() {
+        let fixture = r#"<LaunchBox>
+  <FutureCatalogElement>keep-root</FutureCatalogElement>
+  <GameController>
+    <Id>controller-1</Id>
+    <Name>Original Pad</Name>
+    <Category>Gamepad</Category>
+    <AssociatedPlatforms />
+    <FutureControllerElement>keep-controller</FutureControllerElement>
+  </GameController>
+</LaunchBox>"#;
+        let mut document = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::GameControllers,
+            "Data/GameControllers.xml",
+            fixture.as_bytes(),
+        )
+        .unwrap();
+
+        document
+            .set_game_controller(
+                "controller-1",
+                GameController {
+                    id: "controller-1".into(),
+                    name: "Arcade Stick".into(),
+                    category: "Joystick".into(),
+                    associated_platforms: Some("Fixture Console;Arcade".into()),
+                },
+            )
+            .unwrap();
+        let edited_xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(edited_xml.contains("<FutureCatalogElement>keep-root</FutureCatalogElement>"));
+        assert!(edited_xml
+            .contains("<FutureControllerElement>keep-controller</FutureControllerElement>"));
+        assert!(edited_xml
+            .contains("<AssociatedPlatforms>Fixture Console;Arcade</AssociatedPlatforms>"));
+
+        document
+            .add_game_controller(GameController {
+                id: "controller-2".into(),
+                name: "Light Gun".into(),
+                category: "Light Gun".into(),
+                associated_platforms: None,
+            })
+            .unwrap();
+        assert_eq!(document.game_controllers().unwrap().len(), 2);
+        assert!(matches!(
+            document
+                .add_game_controller(GameController {
+                    id: "CONTROLLER-2".into(),
+                    name: "Duplicate".into(),
+                    category: "Gamepad".into(),
+                    associated_platforms: None,
+                })
+                .unwrap_err(),
+            StorageError::DuplicateGameControllerId { .. }
+        ));
+        assert!(matches!(
+            document
+                .set_game_controller(
+                    "controller-2",
+                    GameController {
+                        id: "different-id".into(),
+                        name: "Light Gun".into(),
+                        category: "Light Gun".into(),
+                        associated_platforms: None,
+                    },
+                )
+                .unwrap_err(),
+            StorageError::ImmutableGameControllerId { .. }
+        ));
+
+        let removed = document.remove_game_controller("CONTROLLER-2").unwrap();
+        assert_eq!(removed.id, "controller-2");
+        assert_eq!(document.game_controllers().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn game_controller_support_replacement_is_lossless_and_canonical() {
+        let fixture = FIXTURE.replacen(
+            "    <SupportLevel>2</SupportLevel>",
+            "    <SupportLevel>2</SupportLevel>\n    <FutureControllerSupportElement>keep-support</FutureControllerSupportElement>",
+            1,
+        );
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", fixture.as_bytes()).unwrap();
+
+        let updated = document
+            .set_game_controller_support(
+                "fixture-racer",
+                vec![GameControllerSupport {
+                    controller_id: "fixture-controller".into(),
+                    game_id: "fixture-racer".into(),
+                    support_level: Some(3),
+                }],
+            )
+            .unwrap();
+        assert_eq!(updated[0].support_level, Some(3));
+        let updated_xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(updated_xml.contains(
+            "<FutureControllerSupportElement>keep-support</FutureControllerSupportElement>"
+        ));
+        assert!(updated_xml.contains("<SupportLevel>3</SupportLevel>"));
+
+        let before_invalid = document.to_xml_bytes().unwrap();
+        let duplicate = vec![
+            GameControllerSupport {
+                controller_id: "fixture-controller".into(),
+                game_id: "fixture-racer".into(),
+                support_level: Some(2),
+            },
+            GameControllerSupport {
+                controller_id: "FIXTURE-CONTROLLER".into(),
+                game_id: "fixture-racer".into(),
+                support_level: None,
+            },
+        ];
+        assert!(matches!(
+            document
+                .set_game_controller_support("fixture-racer", duplicate)
+                .unwrap_err(),
+            StorageError::InvalidGameRecordEdit {
+                record: "controller support",
+                ..
+            }
+        ));
+        assert_eq!(document.to_xml_bytes().unwrap(), before_invalid);
+
+        let replaced = document
+            .set_game_controller_support(
+                "fixture-racer",
+                vec![GameControllerSupport {
+                    controller_id: "controller-with-omitted-level".into(),
+                    game_id: "fixture-racer".into(),
+                    support_level: Some(0),
+                }],
+            )
+            .unwrap();
+        assert_eq!(replaced[0].support_level, None);
+        let final_xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(final_xml.contains("<ControllerId>controller-with-omitted-level</ControllerId>"));
+        let final_record = final_xml
+            .split("<GameControllerSupport>")
+            .nth(1)
+            .unwrap()
+            .split("</GameControllerSupport>")
+            .next()
+            .unwrap();
+        assert!(!final_record.contains("<SupportLevel>"));
+        assert!(!final_xml.contains("keep-support"));
     }
 
     fn grouped_game_save_fixture() -> String {

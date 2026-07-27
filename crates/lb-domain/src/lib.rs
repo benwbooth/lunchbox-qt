@@ -749,6 +749,85 @@ impl AlternateName {
     }
 }
 
+/// The exact controller-support choices exposed by LaunchBox 13.27.
+///
+/// `NotSupported` is index zero and is persisted by omitting the optional
+/// `<SupportLevel>` child from an otherwise present support record.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GameControllerSupportLevel {
+    #[default]
+    NotSupported,
+    PartialSupport,
+    FullSupport,
+    Required,
+}
+
+impl GameControllerSupportLevel {
+    pub const ALL: [Self; 4] = [
+        Self::NotSupported,
+        Self::PartialSupport,
+        Self::FullSupport,
+        Self::Required,
+    ];
+
+    pub const fn index(self) -> i32 {
+        match self {
+            Self::NotSupported => 0,
+            Self::PartialSupport => 1,
+            Self::FullSupport => 2,
+            Self::Required => 3,
+        }
+    }
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::NotSupported => "Not Supported",
+            Self::PartialSupport => "Partial Support",
+            Self::FullSupport => "Full Support",
+            Self::Required => "Required",
+        }
+    }
+
+    pub const fn from_index(index: i32) -> Option<Self> {
+        match index {
+            0 => Some(Self::NotSupported),
+            1 => Some(Self::PartialSupport),
+            2 => Some(Self::FullSupport),
+            3 => Some(Self::Required),
+            _ => None,
+        }
+    }
+
+    pub const fn from_persisted(value: Option<i32>) -> Option<Self> {
+        match value {
+            None | Some(0) => Some(Self::NotSupported),
+            Some(value) => Self::from_index(value),
+        }
+    }
+
+    pub const fn persisted_value(self) -> Option<i32> {
+        match self {
+            Self::NotSupported => None,
+            _ => Some(self.index()),
+        }
+    }
+}
+
+pub const GAME_CONTROLLER_CATEGORIES: &[&str] = &[
+    "Gamepad",
+    "Joystick",
+    "Keyboard",
+    "Light Gun",
+    "Motion",
+    "Mouse",
+    "Paddle",
+    "Rhythm",
+    "Trackball",
+    "VR",
+    "Wheel/Yoke",
+];
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GameControllerSupport {
     pub controller_id: String,
@@ -766,7 +845,18 @@ impl GameControllerSupport {
                 controller_id: self.controller_id.clone(),
             });
         }
+        if GameControllerSupportLevel::from_persisted(self.support_level).is_none() {
+            return Err(ValidationError::InvalidControllerSupportLevel {
+                controller_id: self.controller_id.clone(),
+                support_level: self.support_level,
+            });
+        }
         Ok(())
+    }
+
+    pub fn level(&self) -> GameControllerSupportLevel {
+        GameControllerSupportLevel::from_persisted(self.support_level)
+            .expect("validated controller-support level")
     }
 }
 
@@ -990,6 +1080,13 @@ pub enum ValidationError {
     MissingControllerId,
     #[error("controller {controller_id} support record has no game ID")]
     MissingControllerSupportGameId { controller_id: String },
+    #[error(
+        "controller {controller_id} has invalid support level {support_level:?}; expected absent or 1 through 3"
+    )]
+    InvalidControllerSupportLevel {
+        controller_id: String,
+        support_level: Option<i32>,
+    },
     #[error("game save has no game ID")]
     MissingGameSaveGameId,
     #[error("game save for game {game_id} has no file path")]
@@ -1038,6 +1135,61 @@ mod tests {
             "00000000-0000-0000-0000-000000000000"
         ));
         assert!(!is_unassigned_emulator_id("emulator-id"));
+    }
+
+    #[test]
+    fn controller_support_contract_matches_launchbox_1327() {
+        assert_eq!(
+            GAME_CONTROLLER_CATEGORIES,
+            &[
+                "Gamepad",
+                "Joystick",
+                "Keyboard",
+                "Light Gun",
+                "Motion",
+                "Mouse",
+                "Paddle",
+                "Rhythm",
+                "Trackball",
+                "VR",
+                "Wheel/Yoke",
+            ]
+        );
+        assert_eq!(
+            GameControllerSupportLevel::ALL.map(GameControllerSupportLevel::display_name),
+            [
+                "Not Supported",
+                "Partial Support",
+                "Full Support",
+                "Required"
+            ]
+        );
+        assert_eq!(
+            GameControllerSupportLevel::ALL.map(GameControllerSupportLevel::index),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(
+            GameControllerSupportLevel::ALL.map(GameControllerSupportLevel::persisted_value),
+            [None, Some(1), Some(2), Some(3)]
+        );
+        assert_eq!(
+            GameControllerSupportLevel::from_persisted(Some(0)),
+            Some(GameControllerSupportLevel::NotSupported)
+        );
+        assert_eq!(GameControllerSupportLevel::from_persisted(Some(4)), None);
+
+        let invalid = GameControllerSupport {
+            controller_id: "controller-1".into(),
+            game_id: "game-1".into(),
+            support_level: Some(4),
+        };
+        assert_eq!(
+            invalid.validate(),
+            Err(ValidationError::InvalidControllerSupportLevel {
+                controller_id: "controller-1".into(),
+                support_level: Some(4),
+            })
+        );
     }
 
     #[test]

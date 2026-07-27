@@ -205,6 +205,8 @@ pub mod qobject {
         #[qproperty(QString, emulator_managed_json)]
         #[qproperty(i32, additional_application_revision)]
         #[qproperty(i32, game_save_revision)]
+        #[qproperty(i32, game_controller_revision)]
+        #[qproperty(i32, game_controller_support_revision)]
         #[qproperty(i32, game_grouping_revision)]
         #[qproperty(QString, last_game_grouping_operation)]
         #[qproperty(QString, last_game_grouping_root_id)]
@@ -223,6 +225,7 @@ pub mod qobject {
         #[qproperty(QString, delete_blocker_summary)]
         #[qproperty(QString, last_added_game_id)]
         #[qproperty(QString, last_added_emulator_id)]
+        #[qproperty(QString, last_added_game_controller_id)]
         #[qproperty(QString, last_added_additional_application_id)]
         #[qproperty(QString, last_default_additional_application_id)]
         #[qproperty(QString, import_preview_json)]
@@ -863,6 +866,67 @@ pub mod qobject {
 
         #[qinvokable]
         fn path_mapping_host_root_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn game_controller_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn game_controller_id_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn game_controller_name_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn game_controller_category_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn game_controller_associated_platforms_at(self: &LibraryController, index: i32)
+            -> QString;
+
+        #[qinvokable]
+        fn game_controller_associated_game_count_at(self: &LibraryController, index: i32) -> i32;
+
+        #[qinvokable]
+        fn game_controller_category_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn game_controller_category_name_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn game_controller_support_level_count(self: &LibraryController) -> i32;
+
+        #[qinvokable]
+        fn game_controller_support_level_name_at(self: &LibraryController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn game_controller_support_count(self: &LibraryController, game_id: QString) -> i32;
+
+        #[qinvokable]
+        fn game_controller_support_controller_id_at(
+            self: &LibraryController,
+            game_id: QString,
+            index: i32,
+        ) -> QString;
+
+        #[qinvokable]
+        fn game_controller_support_level_at(
+            self: &LibraryController,
+            game_id: QString,
+            index: i32,
+        ) -> i32;
+
+        #[qinvokable]
+        fn add_game_controller(self: Pin<&mut LibraryController>, edit_payload: QString);
+
+        #[qinvokable]
+        fn save_game_controller(
+            self: Pin<&mut LibraryController>,
+            controller_id: QString,
+            edit_payload: QString,
+        );
+
+        #[qinvokable]
+        fn delete_game_controller(self: Pin<&mut LibraryController>, controller_id: QString);
 
         #[qinvokable]
         fn emulator_entry_count(self: &LibraryController) -> i32;
@@ -1716,6 +1780,15 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn report_game_controller_crud_smoke_success(
+            self: &LibraryController,
+            controller_id: QString,
+            blocked_references: i32,
+            initial_controller_revision: i32,
+            initial_support_revision: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn report_retroarch_core_editor_smoke_success(
             self: &LibraryController,
             emulator_id: QString,
@@ -1977,11 +2050,13 @@ use lb_domain::{
     built_in_model_settings, resolve_model_settings, AdditionalApplication,
     AdditionalApplicationEdit, AlternateName, ApplicationDataBackupPolicy, ArgbColor, BoxSize,
     CustomField, DesktopNotificationType, DesktopTrayPolicy, Emulator, EmulatorConfiguration,
-    EmulatorPlatform, FrontendSettings, Game, GameLaunchConfiguration, GameMetadata, GameSave,
+    EmulatorPlatform, FrontendSettings, Game, GameController, GameControllerSupport,
+    GameControllerSupportLevel, GameLaunchConfiguration, GameMetadata, GameSave,
     GameSaveMetadataEdit, InputBinding, ListViewColumnLayout, ModelSettings, ModelSettingsSource,
     ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship, PlatformCatalog,
     PlatformCategory, PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument,
-    PlaylistFilter, PlaylistGame, ResolvedModelSettings, UNASSIGNED_EMULATOR_ID,
+    PlaylistFilter, PlaylistGame, ResolvedModelSettings, GAME_CONTROLLER_CATEGORIES,
+    UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -2440,6 +2515,8 @@ pub struct LibraryControllerRust {
     emulator_managed_json: QString,
     additional_application_revision: i32,
     game_save_revision: i32,
+    game_controller_revision: i32,
+    game_controller_support_revision: i32,
     game_grouping_revision: i32,
     last_game_grouping_operation: QString,
     last_game_grouping_root_id: QString,
@@ -2458,6 +2535,7 @@ pub struct LibraryControllerRust {
     delete_blocker_summary: QString,
     last_added_game_id: QString,
     last_added_emulator_id: QString,
+    last_added_game_controller_id: QString,
     last_added_additional_application_id: QString,
     last_default_additional_application_id: QString,
     import_preview_json: QString,
@@ -2488,6 +2566,8 @@ pub struct LibraryControllerRust {
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
+    game_controllers: Vec<GameController>,
+    controller_support_by_game: BTreeMap<String, Vec<GameControllerSupport>>,
     resolved_model_settings_by_game: BTreeMap<String, ResolvedModelSettings>,
     front_image_paths: BTreeMap<String, PathBuf>,
     back_image_paths: BTreeMap<String, PathBuf>,
@@ -2596,6 +2676,7 @@ pub struct LibraryControllerRust {
     emulator_bios_scan_notifications: u64,
     emulator_install_notifications: u64,
     emulator_remove_notifications: u64,
+    game_controller_write_notifications: u64,
     additional_application_write_notifications: u64,
     game_save_write_notifications: u64,
     category_write_notifications: u64,
@@ -2679,6 +2760,8 @@ struct LoadedLibrary {
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
+    game_controllers: Vec<GameController>,
+    controller_support_by_game: BTreeMap<String, Vec<GameControllerSupport>>,
     resolved_model_settings_by_game: BTreeMap<String, ResolvedModelSettings>,
     front_image_paths: BTreeMap<String, PathBuf>,
     back_image_paths: BTreeMap<String, PathBuf>,
@@ -2737,6 +2820,8 @@ struct LibraryReplacement {
     alternate_names_by_game: BTreeMap<String, Vec<AlternateName>>,
     custom_fields_by_game: BTreeMap<String, Vec<CustomField>>,
     game_saves_by_game: BTreeMap<String, Vec<GameSave>>,
+    game_controllers: Vec<GameController>,
+    controller_support_by_game: BTreeMap<String, Vec<GameControllerSupport>>,
     resolved_model_settings_by_game: BTreeMap<String, ResolvedModelSettings>,
     front_image_paths: BTreeMap<String, PathBuf>,
     back_image_paths: BTreeMap<String, PathBuf>,
@@ -2809,6 +2894,7 @@ impl LoadedLibrary {
             let custom_fields_by_game = collect_custom_fields_by_game(&library);
             let game_saves_by_game = collect_game_saves_by_game(&library);
             let game_save_count = game_saves_by_game.values().map(Vec::len).sum::<usize>();
+            let controller_support_by_game = collect_controller_support_by_game(&library);
             let (platform_names, platform_sources) = platform_state_from_library(&library);
             let name = library
                 .platforms()
@@ -2839,6 +2925,8 @@ impl LoadedLibrary {
                 alternate_names_by_game,
                 custom_fields_by_game,
                 game_saves_by_game,
+                game_controllers: Vec::new(),
+                controller_support_by_game,
                 resolved_model_settings_by_game,
                 front_image_paths: BTreeMap::new(),
                 back_image_paths: BTreeMap::new(),
@@ -2946,6 +3034,8 @@ impl LoadedLibrary {
         let custom_fields_by_game = collect_custom_fields_by_game(data.platforms());
         let game_saves_by_game = collect_game_saves_by_game(data.platforms());
         let game_save_count = game_saves_by_game.values().map(Vec::len).sum::<usize>();
+        let game_controllers = data.game_controllers().to_vec();
+        let controller_support_by_game = collect_controller_support_by_game(data.platforms());
         let platform_folders = data
             .platform_catalog()
             .map(|catalog| catalog.folders.as_slice())
@@ -3077,6 +3167,8 @@ impl LoadedLibrary {
             alternate_names_by_game,
             custom_fields_by_game,
             game_saves_by_game,
+            game_controllers,
+            controller_support_by_game,
             resolved_model_settings_by_game,
             front_image_paths,
             back_image_paths,
@@ -3417,6 +3509,12 @@ fn collect_game_saves_by_game(library: &LibraryIndex) -> BTreeMap<String, Vec<Ga
     index_game_saves(library.game_saves())
 }
 
+fn collect_controller_support_by_game(
+    library: &LibraryIndex,
+) -> BTreeMap<String, Vec<GameControllerSupport>> {
+    index_controller_support(library.controller_support())
+}
+
 fn index_mounts<'a>(mounts: impl IntoIterator<Item = &'a Mount>) -> BTreeMap<String, Vec<Mount>> {
     let mut by_game = BTreeMap::<String, Vec<Mount>>::new();
     for mount in mounts {
@@ -3463,6 +3561,19 @@ fn index_game_saves<'a>(
             .entry(save.game_id.clone())
             .or_default()
             .push(save.clone());
+    }
+    by_game
+}
+
+fn index_controller_support<'a>(
+    records: impl IntoIterator<Item = &'a GameControllerSupport>,
+) -> BTreeMap<String, Vec<GameControllerSupport>> {
+    let mut by_game = BTreeMap::<String, Vec<GameControllerSupport>>::new();
+    for record in records {
+        by_game
+            .entry(record.game_id.clone())
+            .or_default()
+            .push(record.clone());
     }
     by_game
 }
@@ -3568,6 +3679,7 @@ struct GameWriteSuccess {
     game: Game,
     alternate_names: Vec<AlternateName>,
     custom_fields: Vec<CustomField>,
+    controller_support: Vec<GameControllerSupport>,
     resolved_model_settings: ResolvedModelSettings,
     source: PathBuf,
     backup: PathBuf,
@@ -4350,9 +4462,33 @@ enum EmulatorWriteFailure {
     Other(String),
 }
 
-const GAME_EDIT_PAYLOAD_VERSION: u32 = 4;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GameControllerWriteOperation {
+    Create,
+    Edit,
+    Delete,
+}
+
+struct GameControllerWriteSuccess {
+    operation: GameControllerWriteOperation,
+    controller: GameController,
+    controllers: Vec<GameController>,
+    source: PathBuf,
+    backup: PathBuf,
+}
+
+#[derive(Debug)]
+enum GameControllerWriteFailure {
+    Conflict(String),
+    PendingRecovery { count: usize, message: String },
+    Referenced { count: usize, summary: String },
+    Other(String),
+}
+
+const GAME_EDIT_PAYLOAD_VERSION: u32 = 5;
 const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
+const GAME_CONTROLLER_EDIT_PAYLOAD_VERSION: u32 = 1;
 const PLATFORM_EDIT_PAYLOAD_VERSION: u32 = 2;
 const EMULATOR_EDIT_PAYLOAD_VERSION: u32 = 1;
 const RETROARCH_CORE_PAYLOAD_VERSION: u32 = 1;
@@ -4378,6 +4514,22 @@ struct CustomFieldEditPayload {
     source_index: Option<usize>,
     name: String,
     value: String,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GameControllerEditPayload {
+    version: u32,
+    name: String,
+    category: String,
+    associated_platforms: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GameControllerSupportEditPayload {
+    controller_id: String,
+    support_level: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -4471,6 +4623,7 @@ struct GameEditPayload {
     launch_configuration: GameLaunchConfiguration,
     alternate_names: Vec<AlternateNameEditPayload>,
     custom_fields: Vec<CustomFieldEditPayload>,
+    controller_support: Vec<GameControllerSupportEditPayload>,
     favorite: bool,
     completed: bool,
     star_rating: u8,
@@ -5302,6 +5455,75 @@ fn canonicalize_additional_application_emulator(
     ))
 }
 
+fn parse_game_controller_edit_payload(
+    original: Option<&GameController>,
+    payload: &str,
+    controllers: &[GameController],
+) -> Result<GameController, String> {
+    let mut payload: GameControllerEditPayload = serde_json::from_str(payload)
+        .map_err(|error| format!("invalid controller editor payload: {error}"))?;
+    if payload.version != GAME_CONTROLLER_EDIT_PAYLOAD_VERSION {
+        return Err(format!(
+            "unsupported controller editor payload version {}; expected {}",
+            payload.version, GAME_CONTROLLER_EDIT_PAYLOAD_VERSION
+        ));
+    }
+    payload.name = payload.name.trim().to_string();
+    payload.category = payload.category.trim().to_string();
+    if payload.name.is_empty() {
+        return Err("a controller name cannot be empty".into());
+    }
+    if payload.category.is_empty() {
+        return Err("a controller category cannot be empty".into());
+    }
+
+    let name_changed =
+        original.is_none_or(|original| !original.name.eq_ignore_ascii_case(&payload.name));
+    if name_changed
+        && controllers.iter().any(|candidate| {
+            original.is_none_or(|original| !candidate.id.eq_ignore_ascii_case(&original.id))
+                && candidate.name.eq_ignore_ascii_case(&payload.name)
+        })
+    {
+        return Err(format!(
+            "a controller named {} already exists",
+            payload.name
+        ));
+    }
+
+    let mut platform_keys = BTreeSet::new();
+    let mut associated_platforms = Vec::new();
+    for platform in payload.associated_platforms {
+        let platform = platform.trim();
+        if platform.is_empty() {
+            return Err("associated platform names cannot be empty".into());
+        }
+        if platform.contains(';') {
+            return Err(format!(
+                "associated platform {platform} contains the reserved semicolon separator"
+            ));
+        }
+        if !platform_keys.insert(platform.to_lowercase()) {
+            return Err(format!(
+                "associated platform {platform} appears more than once"
+            ));
+        }
+        associated_platforms.push(platform.to_string());
+    }
+
+    let controller = GameController {
+        id: original
+            .map(|original| original.id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        name: payload.name,
+        category: payload.category,
+        associated_platforms: (!associated_platforms.is_empty())
+            .then(|| associated_platforms.join(";")),
+    };
+    controller.validate().map_err(|error| error.to_string())?;
+    Ok(controller)
+}
+
 fn parse_game_edit_payload(payload: &str) -> Result<GameEditPayload, String> {
     let mut payload: GameEditPayload = serde_json::from_str(payload)
         .map_err(|error| format!("invalid game editor payload: {error}"))?;
@@ -5356,6 +5578,27 @@ fn parse_game_edit_payload(payload: &str) -> Result<GameEditPayload, String> {
         if custom_field.name.trim().is_empty() {
             return Err("a custom field name cannot be empty".into());
         }
+    }
+    let mut controller_ids = BTreeSet::new();
+    for support in &mut payload.controller_support {
+        support.controller_id = support.controller_id.trim().to_string();
+        if support.controller_id.is_empty() {
+            return Err("a controller-support row requires a controller".into());
+        }
+        if !controller_ids.insert(support.controller_id.to_lowercase()) {
+            return Err(format!(
+                "controller {} appears more than once in controller support",
+                support.controller_id
+            ));
+        }
+        let level =
+            GameControllerSupportLevel::from_persisted(support.support_level).ok_or_else(|| {
+                format!(
+                    "controller {} has an invalid support level {:?}",
+                    support.controller_id, support.support_level
+                )
+            })?;
+        support.support_level = level.persisted_value();
     }
     if let Some(settings) = &payload.model_settings {
         settings
@@ -7177,12 +7420,15 @@ fn write_game(
         launch_configuration,
         alternate_names,
         custom_fields,
+        controller_support,
         favorite,
         completed,
         star_rating,
         model_settings,
     } = edit;
     let mut document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let data = LaunchBoxDataIndex::load(&root)
         .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
     document
         .set_game_metadata(&game_id, metadata)
@@ -7232,6 +7478,29 @@ fn write_game(
     document
         .set_game_model_settings(&game_id, model_settings)
         .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let controller_support = controller_support
+        .into_iter()
+        .map(|support| {
+            let controller = data
+                .game_controllers()
+                .iter()
+                .find(|controller| controller.id.eq_ignore_ascii_case(&support.controller_id))
+                .ok_or_else(|| {
+                    GameWriteFailure::Other(format!(
+                        "controller {} is not present in GameControllers.xml",
+                        support.controller_id
+                    ))
+                })?;
+            Ok(GameControllerSupport {
+                controller_id: controller.id.clone(),
+                game_id: game_id.clone(),
+                support_level: support.support_level,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let controller_support = document
+        .set_game_controller_support(&game_id, controller_support)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
     let game = document
         .library()
         .games
@@ -7241,8 +7510,6 @@ fn write_game(
         .ok_or_else(|| {
             GameWriteFailure::Other(format!("game {game_id} disappeared during edit"))
         })?;
-    let data = LaunchBoxDataIndex::load(&root)
-        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
     let catalog = data.platform_catalog();
     let scrape_as = catalog
         .and_then(|catalog| {
@@ -7277,6 +7544,7 @@ fn write_game(
         game,
         alternate_names,
         custom_fields,
+        controller_support,
         resolved_model_settings,
         source,
         backup,
@@ -10676,6 +10944,155 @@ fn write_game_save_restore(
         }
     }
     Ok(result)
+}
+
+fn game_controller_document_path(root: &Path) -> Result<PathBuf, GameControllerWriteFailure> {
+    [
+        root.join("Data/GameControllers.xml"),
+        root.join("GameControllers.xml"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+    .ok_or_else(|| {
+        GameControllerWriteFailure::Other(format!(
+            "could not find a writable GameControllers.xml under {}",
+            root.display()
+        ))
+    })
+}
+
+fn commit_game_controller_document(
+    root: &Path,
+    source: PathBuf,
+    document: AuxiliaryDocument,
+    operation: GameControllerWriteOperation,
+    controller: GameController,
+) -> Result<GameControllerWriteSuccess, GameControllerWriteFailure> {
+    let mut transaction =
+        LibraryTransaction::new(root).map_err(classify_game_controller_transaction_error)?;
+    transaction
+        .stage_auxiliary(&document)
+        .map_err(classify_game_controller_transaction_error)?;
+    let report = transaction
+        .commit()
+        .map_err(classify_game_controller_transaction_error)?;
+    let backup = report
+        .writes
+        .into_iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup)
+        .ok_or_else(|| {
+            GameControllerWriteFailure::Other(
+                "controller transaction reported no GameControllers.xml write".into(),
+            )
+        })?;
+    let controllers = AuxiliaryDocument::load(&source)
+        .map_err(|error| GameControllerWriteFailure::Other(error.to_string()))?
+        .game_controllers()
+        .map_err(|error| GameControllerWriteFailure::Other(error.to_string()))?;
+    let committed = controllers
+        .iter()
+        .find(|candidate| candidate.id.eq_ignore_ascii_case(&controller.id));
+    let present = committed.is_some();
+    let expected_present = operation != GameControllerWriteOperation::Delete;
+    if present != expected_present {
+        return Err(GameControllerWriteFailure::Other(format!(
+            "committed controller catalog did not match the requested {:?} operation for {}",
+            operation, controller.id
+        )));
+    }
+    if expected_present && committed != Some(&controller) {
+        return Err(GameControllerWriteFailure::Other(format!(
+            "committed controller {} does not exactly match the requested fields",
+            controller.id
+        )));
+    }
+    Ok(GameControllerWriteSuccess {
+        operation,
+        controller,
+        controllers,
+        source,
+        backup,
+    })
+}
+
+fn create_game_controller_in_library(
+    root: PathBuf,
+    controller: GameController,
+) -> Result<GameControllerWriteSuccess, GameControllerWriteFailure> {
+    let source = game_controller_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| GameControllerWriteFailure::Other(error.to_string()))?;
+    document
+        .add_game_controller(controller.clone())
+        .map_err(|error| GameControllerWriteFailure::Other(error.to_string()))?;
+    commit_game_controller_document(
+        &root,
+        source,
+        document,
+        GameControllerWriteOperation::Create,
+        controller,
+    )
+}
+
+fn write_game_controller_in_library(
+    root: PathBuf,
+    controller_id: String,
+    controller: GameController,
+) -> Result<GameControllerWriteSuccess, GameControllerWriteFailure> {
+    let source = game_controller_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| GameControllerWriteFailure::Other(error.to_string()))?;
+    document
+        .set_game_controller(&controller_id, controller.clone())
+        .map_err(|error| GameControllerWriteFailure::Other(error.to_string()))?;
+    commit_game_controller_document(
+        &root,
+        source,
+        document,
+        GameControllerWriteOperation::Edit,
+        controller,
+    )
+}
+
+fn delete_game_controller_from_library(
+    root: PathBuf,
+    controller_id: String,
+) -> Result<GameControllerWriteSuccess, GameControllerWriteFailure> {
+    let data = LaunchBoxDataIndex::load(&root)
+        .map_err(|error| GameControllerWriteFailure::Other(error.to_string()))?;
+    let references = data
+        .platforms()
+        .controller_support()
+        .filter(|support| support.controller_id.eq_ignore_ascii_case(&controller_id))
+        .collect::<Vec<_>>();
+    if !references.is_empty() {
+        let game_ids = references
+            .iter()
+            .map(|support| support.game_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(GameControllerWriteFailure::Referenced {
+            count: references.len(),
+            summary: format!("controller support for games {game_ids}"),
+        });
+    }
+    let source = game_controller_document_path(&root)?;
+    let mut document = AuxiliaryDocument::load(&source)
+        .map_err(|error| GameControllerWriteFailure::Other(error.to_string()))?;
+    let controller = document
+        .remove_game_controller(&controller_id)
+        .map_err(|error| GameControllerWriteFailure::Other(error.to_string()))?;
+    commit_game_controller_document(
+        &root,
+        source,
+        document,
+        GameControllerWriteOperation::Delete,
+        controller,
+    )
 }
 
 fn emulator_document_path(root: &Path) -> Result<PathBuf, EmulatorWriteFailure> {
@@ -17470,6 +17887,29 @@ fn classify_emulator_transaction_error(error: TransactionError) -> EmulatorWrite
     }
 }
 
+fn classify_game_controller_transaction_error(
+    error: TransactionError,
+) -> GameControllerWriteFailure {
+    let message = error.to_string();
+    match error {
+        TransactionError::Conflict { .. }
+        | TransactionError::SourceConflict { .. }
+        | TransactionError::Storage(StorageError::WriteConflict { .. }) => {
+            GameControllerWriteFailure::Conflict(message)
+        }
+        TransactionError::PendingRecovery { manifests, .. } => {
+            GameControllerWriteFailure::PendingRecovery {
+                count: manifests.len(),
+                message,
+            }
+        }
+        TransactionError::RecoveryRequired { .. } => {
+            GameControllerWriteFailure::PendingRecovery { count: 1, message }
+        }
+        _ => GameControllerWriteFailure::Other(message),
+    }
+}
+
 fn path_resolver_from_command_line(
     mut resolver: HostPathResolver,
 ) -> Result<HostPathResolver, String> {
@@ -18229,6 +18669,8 @@ impl qobject::LibraryController {
                 let custom_fields_by_game =
                     index_custom_fields(document.library().custom_fields.iter());
                 let game_saves_by_game = index_game_saves(document.library().game_saves.iter());
+                let controller_support_by_game =
+                    index_controller_support(document.library().controller_support.iter());
                 let resolved_model_settings_by_game = games
                     .iter()
                     .map(|game| {
@@ -18252,6 +18694,8 @@ impl qobject::LibraryController {
                     alternate_names_by_game,
                     custom_fields_by_game,
                     game_saves_by_game,
+                    game_controllers: Vec::new(),
+                    controller_support_by_game,
                     resolved_model_settings_by_game,
                     front_image_paths: BTreeMap::new(),
                     back_image_paths: BTreeMap::new(),
@@ -25218,6 +25662,59 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn report_game_controller_crud_smoke_success(
+        &self,
+        controller_id: QString,
+        blocked_references: i32,
+        initial_controller_revision: i32,
+        initial_support_revision: i32,
+    ) -> bool {
+        let controller_id = controller_id.to_string();
+        let rust = self.rust();
+        let retained = rust
+            .game_controllers
+            .iter()
+            .find(|controller| controller.id == controller_id);
+        let support = rust
+            .controller_support_by_game
+            .get("fixture-racer")
+            .and_then(|support| support.as_slice().first());
+        let success = rust.game_controllers.len() == 1
+            && retained.is_some_and(|controller| {
+                controller.name == "Qt Smoke Wheel"
+                    && controller.category == "Wheel/Yoke"
+                    && controller.associated_platforms.as_deref() == Some("Fixture Console")
+            })
+            && !rust
+                .game_controllers
+                .iter()
+                .any(|controller| controller.id == "fixture-controller")
+            && rust
+                .controller_support_by_game
+                .get("fixture-racer")
+                .is_some_and(|support| support.len() == 1)
+            && support.is_some_and(|support| {
+                support.controller_id == controller_id && support.support_level == Some(3)
+            })
+            && rust.game_controller_write_notifications == 3
+            && *self.game_controller_revision() == initial_controller_revision.saturating_add(3)
+            && *self.game_controller_support_revision()
+                == initial_support_revision.saturating_add(1)
+            && blocked_references == 1
+            && !*self.writing()
+            && !*self.write_conflict()
+            && *self.pending_recovery_count() == 0;
+        if success {
+            eprintln!(
+                "GAME_CONTROLLER_CRUD_SMOKE_COMPLETE controller={controller_id} blocked={blocked_references} writes={} controller_revision={} support_revision={}",
+                rust.game_controller_write_notifications,
+                self.game_controller_revision(),
+                self.game_controller_support_revision()
+            );
+        }
+        success
+    }
+
     pub fn report_retroarch_core_editor_smoke_success(
         &self,
         emulator_id: QString,
@@ -26744,6 +27241,119 @@ impl qobject::LibraryController {
         self.big_box_navigation_entry_at(index)
             .map(|entry| saturating_i32(entry.game_count))
             .unwrap_or_default()
+    }
+
+    pub fn game_controller_count(&self) -> i32 {
+        saturating_i32(self.rust().game_controllers.len())
+    }
+
+    pub fn game_controller_id_at(&self, index: i32) -> QString {
+        self.game_controller_at(index)
+            .map(|controller| qstring(&controller.id))
+            .unwrap_or_default()
+    }
+
+    pub fn game_controller_name_at(&self, index: i32) -> QString {
+        self.game_controller_at(index)
+            .map(|controller| qstring(&controller.name))
+            .unwrap_or_default()
+    }
+
+    pub fn game_controller_category_at(&self, index: i32) -> QString {
+        self.game_controller_at(index)
+            .map(|controller| qstring(&controller.category))
+            .unwrap_or_default()
+    }
+
+    pub fn game_controller_associated_platforms_at(&self, index: i32) -> QString {
+        self.game_controller_at(index)
+            .and_then(|controller| controller.associated_platforms.as_deref())
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn game_controller_associated_game_count_at(&self, index: i32) -> i32 {
+        let Some(controller) = self.game_controller_at(index) else {
+            return 0;
+        };
+        saturating_i32(
+            self.rust()
+                .controller_support_by_game
+                .values()
+                .flatten()
+                .filter(|support| support.controller_id.eq_ignore_ascii_case(&controller.id))
+                .count(),
+        )
+    }
+
+    pub fn game_controller_category_count(&self) -> i32 {
+        saturating_i32(GAME_CONTROLLER_CATEGORIES.len())
+    }
+
+    pub fn game_controller_category_name_at(&self, index: i32) -> QString {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| GAME_CONTROLLER_CATEGORIES.get(index))
+            .map(|category| qstring(*category))
+            .unwrap_or_default()
+    }
+
+    pub fn game_controller_support_level_count(&self) -> i32 {
+        saturating_i32(GameControllerSupportLevel::ALL.len())
+    }
+
+    pub fn game_controller_support_level_name_at(&self, index: i32) -> QString {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| GameControllerSupportLevel::ALL.get(index))
+            .map(|level| qstring(level.display_name()))
+            .unwrap_or_default()
+    }
+
+    pub fn game_controller_support_count(&self, game_id: QString) -> i32 {
+        saturating_i32(
+            self.rust()
+                .controller_support_by_game
+                .get(&game_id.to_string())
+                .map(Vec::len)
+                .unwrap_or_default(),
+        )
+    }
+
+    pub fn game_controller_support_controller_id_at(
+        &self,
+        game_id: QString,
+        index: i32,
+    ) -> QString {
+        self.game_controller_support_at(&game_id.to_string(), index)
+            .map(|support| qstring(&support.controller_id))
+            .unwrap_or_default()
+    }
+
+    pub fn game_controller_support_level_at(&self, game_id: QString, index: i32) -> i32 {
+        self.game_controller_support_at(&game_id.to_string(), index)
+            .and_then(|support| GameControllerSupportLevel::from_persisted(support.support_level))
+            .map(GameControllerSupportLevel::index)
+            .unwrap_or_default()
+    }
+
+    fn game_controller_at(&self, index: i32) -> Option<&GameController> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().game_controllers.get(index))
+    }
+
+    fn game_controller_support_at(
+        &self,
+        game_id: &str,
+        index: i32,
+    ) -> Option<&GameControllerSupport> {
+        usize::try_from(index).ok().and_then(|index| {
+            self.rust()
+                .controller_support_by_game
+                .get(game_id)
+                .and_then(|records| records.get(index))
+        })
     }
 
     pub fn emulator_entry_count(&self) -> i32 {
@@ -28316,6 +28926,157 @@ impl qobject::LibraryController {
         }
     }
 
+    pub fn add_game_controller(mut self: Pin<&mut Self>, edit_payload: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let controller = match parse_game_controller_edit_payload(
+            None,
+            &edit_payload.to_string(),
+            &self.as_ref().rust().game_controllers,
+        ) {
+            Ok(controller) => controller,
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not add controller: {error}.")));
+                return;
+            }
+        };
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Controller creation requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let name = controller.name.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Creating controller {name}...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-controller-create".to_string())
+            .spawn(move || {
+                let result = create_game_controller_in_library(root, controller);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_game_controller_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start controller creation: {error}"
+            )));
+        }
+    }
+
+    pub fn save_game_controller(
+        mut self: Pin<&mut Self>,
+        controller_id: QString,
+        edit_payload: QString,
+    ) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let controller_id = controller_id.to_string().trim().to_string();
+        let Some(original) = self
+            .as_ref()
+            .rust()
+            .game_controllers
+            .iter()
+            .find(|controller| controller.id.eq_ignore_ascii_case(&controller_id))
+            .cloned()
+        else {
+            self.as_mut()
+                .set_status_message(qstring("The selected controller is no longer available."));
+            return;
+        };
+        let controller = match parse_game_controller_edit_payload(
+            Some(&original),
+            &edit_payload.to_string(),
+            &self.as_ref().rust().game_controllers,
+        ) {
+            Ok(controller) => controller,
+            Err(error) => {
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not save controller: {error}.")));
+                return;
+            }
+        };
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Controller editing requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let name = controller.name.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring(format!("Saving controller {name}...")));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-controller-edit".to_string())
+            .spawn(move || {
+                let result = write_game_controller_in_library(root, controller_id, controller);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_game_controller_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start controller writer: {error}"
+            )));
+        }
+    }
+
+    pub fn delete_game_controller(mut self: Pin<&mut Self>, controller_id: QString) {
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let controller_id = controller_id.to_string().trim().to_string();
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Controller deletion requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_delete_blocker_count(0);
+        self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut().set_writing(true);
+        self.as_mut()
+            .set_status_message(qstring("Checking controller references before deletion..."));
+        let qt_thread = self.as_ref().qt_thread();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-controller-delete".to_string())
+            .spawn(move || {
+                let result = delete_game_controller_from_library(root, controller_id);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller
+                            .as_mut()
+                            .finish_game_controller_write(generation, result);
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start controller deletion: {error}"
+            )));
+        }
+    }
+
     pub fn add_emulator(mut self: Pin<&mut Self>, edit_payload: QString) {
         if !self.as_mut().begin_library_mutation() {
             return;
@@ -28787,6 +29548,8 @@ impl qobject::LibraryController {
                     alternate_names_by_game: loaded.alternate_names_by_game,
                     custom_fields_by_game: loaded.custom_fields_by_game,
                     game_saves_by_game: loaded.game_saves_by_game,
+                    game_controllers: loaded.game_controllers,
+                    controller_support_by_game: loaded.controller_support_by_game,
                     resolved_model_settings_by_game: loaded.resolved_model_settings_by_game,
                     front_image_paths: loaded.front_image_paths,
                     back_image_paths: loaded.back_image_paths,
@@ -29881,6 +30644,7 @@ impl qobject::LibraryController {
                     game,
                     alternate_names,
                     custom_fields,
+                    controller_support,
                     resolved_model_settings,
                     source: _,
                     backup,
@@ -29918,12 +30682,24 @@ impl qobject::LibraryController {
                         rust.custom_fields_by_game
                             .insert(game_id.clone(), custom_fields);
                     }
+                    if controller_support.is_empty() {
+                        rust.controller_support_by_game.remove(&game_id);
+                    } else {
+                        rust.controller_support_by_game
+                            .insert(game_id.clone(), controller_support);
+                    }
                     rust.resolved_model_settings_by_game
                         .insert(game_id, resolved_model_settings);
                 }
                 self.as_mut().refresh_big_box_screensaver_candidates();
                 let model_revision = self.as_ref().model_settings_revision().saturating_add(1);
                 self.as_mut().set_model_settings_revision(model_revision);
+                let support_revision = self
+                    .as_ref()
+                    .game_controller_support_revision()
+                    .wrapping_add(1);
+                self.as_mut()
+                    .set_game_controller_support_revision(support_revision);
                 self.as_mut().set_write_conflict(false);
                 self.as_mut().set_status_message(qstring(format!(
                     "Saved game. Exact backup: {}",
@@ -32328,6 +33104,84 @@ impl qobject::LibraryController {
         }
     }
 
+    fn finish_game_controller_write(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        result: Result<GameControllerWriteSuccess, GameControllerWriteFailure>,
+    ) {
+        self.as_mut().set_writing(false);
+        if self.as_ref().rust().request_generation != generation {
+            return;
+        }
+        match result {
+            Ok(success) => {
+                let operation = success.operation;
+                let operation_label = match operation {
+                    GameControllerWriteOperation::Create => "Created",
+                    GameControllerWriteOperation::Edit => "Saved",
+                    GameControllerWriteOperation::Delete => "Deleted",
+                };
+                self.as_mut().rust_mut().game_controllers = success.controllers;
+                if operation == GameControllerWriteOperation::Create {
+                    self.as_mut()
+                        .set_last_added_game_controller_id(qstring(&success.controller.id));
+                } else if operation == GameControllerWriteOperation::Delete
+                    && self
+                        .as_ref()
+                        .last_added_game_controller_id()
+                        .to_string()
+                        .eq_ignore_ascii_case(&success.controller.id)
+                {
+                    self.as_mut()
+                        .set_last_added_game_controller_id(QString::default());
+                }
+                let write_notifications = self
+                    .as_ref()
+                    .rust()
+                    .game_controller_write_notifications
+                    .saturating_add(1);
+                self.as_mut().rust_mut().game_controller_write_notifications = write_notifications;
+                let revision = self.as_ref().game_controller_revision().wrapping_add(1);
+                self.as_mut().set_game_controller_revision(revision);
+                self.as_mut().set_write_conflict(false);
+                self.as_mut().set_delete_blocker_count(0);
+                self.as_mut().set_delete_blocker_summary(QString::default());
+                self.as_mut().set_status_message(qstring(format!(
+                    "{operation_label} controller {} in {}. Exact backup: {}",
+                    success.controller.name,
+                    success.source.display(),
+                    success.backup.display()
+                )));
+            }
+            Err(GameControllerWriteFailure::Referenced { count, summary }) => {
+                self.as_mut()
+                    .set_delete_blocker_count(saturating_i32(count));
+                self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Controller delete blocked by {count} dependent record(s): {summary}"
+                )));
+            }
+            Err(GameControllerWriteFailure::Conflict(message)) => {
+                self.as_mut().set_write_conflict(true);
+                self.as_mut().set_status_message(qstring(format!(
+                    "Write conflict while changing the controller catalog: {message}. Reload before retrying."
+                )));
+            }
+            Err(GameControllerWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut()
+                    .set_pending_recovery_count(saturating_i32(count));
+                self.as_mut().set_status_message(qstring(format!(
+                    "Interrupted transaction requires recovery: {message}"
+                )));
+            }
+            Err(GameControllerWriteFailure::Other(message)) => {
+                self.as_mut().set_status_message(qstring(format!(
+                    "Could not change controller catalog: {message}"
+                )));
+            }
+        }
+    }
+
     fn finish_emulator_write(
         mut self: Pin<&mut Self>,
         generation: u64,
@@ -33189,6 +34043,8 @@ impl qobject::LibraryController {
             alternate_names_by_game,
             custom_fields_by_game,
             game_saves_by_game,
+            game_controllers,
+            controller_support_by_game,
             resolved_model_settings_by_game,
             front_image_paths,
             back_image_paths,
@@ -33341,6 +34197,8 @@ impl qobject::LibraryController {
             rust.alternate_names_by_game = alternate_names_by_game;
             rust.custom_fields_by_game = custom_fields_by_game;
             rust.game_saves_by_game = game_saves_by_game;
+            rust.game_controllers = game_controllers;
+            rust.controller_support_by_game = controller_support_by_game;
             rust.resolved_model_settings_by_game = resolved_model_settings_by_game;
             rust.front_image_paths = front_image_paths;
             rust.back_image_paths = back_image_paths;
@@ -33733,6 +34591,15 @@ impl qobject::LibraryController {
         self.as_mut().set_platform_revision(revision);
         let emulator_revision = self.as_ref().rust().emulator_revision.wrapping_add(1);
         self.as_mut().set_emulator_revision(emulator_revision);
+        let game_controller_revision = self.as_ref().game_controller_revision().wrapping_add(1);
+        self.as_mut()
+            .set_game_controller_revision(game_controller_revision);
+        let game_controller_support_revision = self
+            .as_ref()
+            .game_controller_support_revision()
+            .wrapping_add(1);
+        self.as_mut()
+            .set_game_controller_support_revision(game_controller_support_revision);
         let emulator_discovery_revision = self
             .as_ref()
             .rust()
@@ -33756,6 +34623,8 @@ impl qobject::LibraryController {
         self.as_mut().set_delete_blocker_summary(QString::default());
         self.as_mut().set_last_added_game_id(QString::default());
         self.as_mut().set_last_added_emulator_id(QString::default());
+        self.as_mut()
+            .set_last_added_game_controller_id(QString::default());
         self.as_mut()
             .set_last_added_additional_application_id(QString::default());
         self.as_mut()
@@ -39472,7 +40341,7 @@ mod tests {
     #[test]
     fn game_edit_payload_is_versioned_typed_and_canonicalized() {
         let valid = r#"{
-            "version": 4,
+            "version": 5,
             "metadata": {
                 "title": "Fixture",
                 "sort_title": "   ",
@@ -39501,6 +40370,12 @@ mod tests {
                     "value": ""
                 }
             ],
+            "controller_support": [
+                {
+                    "controllerId": "fixture-controller",
+                    "supportLevel": 0
+                }
+            ],
             "model_settings": null,
             "favorite": true,
             "completed": false,
@@ -39515,9 +40390,10 @@ mod tests {
         assert_eq!(parsed.alternate_names[0].source_index, Some(0));
         assert_eq!(parsed.alternate_names[0].region, None);
         assert_eq!(parsed.custom_fields[0].value, "");
+        assert_eq!(parsed.controller_support[0].support_level, None);
 
         assert!(
-            parse_game_edit_payload(&valid.replace("\"version\": 4", "\"version\": 5"))
+            parse_game_edit_payload(&valid.replace("\"version\": 5", "\"version\": 6"))
                 .unwrap_err()
                 .contains("unsupported game editor payload version")
         );
@@ -39532,6 +40408,173 @@ mod tests {
         ))
         .unwrap_err()
         .contains("unknown field"));
+    }
+
+    #[test]
+    fn game_controller_payload_and_workers_are_transactional_and_reference_safe() {
+        let existing = GameController {
+            id: "historical-controller".into(),
+            name: "Historical Name".into(),
+            category: "Rythm".into(),
+            associated_platforms: None,
+        };
+        let controllers = vec![
+            existing.clone(),
+            GameController {
+                id: "historical-duplicate".into(),
+                name: "Historical Name".into(),
+                category: "Rythm".into(),
+                associated_platforms: None,
+            },
+        ];
+        let unchanged_historical = parse_game_controller_edit_payload(
+            Some(&existing),
+            r#"{"version":1,"name":"Historical Name","category":"Rythm","associatedPlatforms":[]}"#,
+            &controllers,
+        )
+        .expect("unchanged historical duplicate remains editable");
+        assert_eq!(unchanged_historical.category, "Rythm");
+        assert!(parse_game_controller_edit_payload(
+            Some(&existing),
+            r#"{"version":1,"name":"Historical Name 2","category":"Rythm","associatedPlatforms":["Fixture Console","fixture console"]}"#,
+            &controllers,
+        )
+        .unwrap_err()
+        .contains("more than once"));
+
+        let directory = tempfile::tempdir().expect("temporary library");
+        let data_directory = directory.path().join("Data");
+        let platform_directory = data_directory.join("Platforms");
+        fs::create_dir_all(&platform_directory).expect("create platform directory");
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        for entry in fs::read_dir(&fixture_root).expect("read fixture data directory") {
+            let entry = entry.expect("fixture entry");
+            if entry.file_type().expect("fixture entry type").is_file() {
+                fs::copy(entry.path(), data_directory.join(entry.file_name()))
+                    .expect("copy fixture auxiliary file");
+            }
+        }
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        fs::copy(
+            fixture_root.join("Platforms/Fixture Console.xml"),
+            &platform_path,
+        )
+        .expect("copy platform fixture");
+        let catalog_path = data_directory.join("GameControllers.xml");
+        let original_catalog = fs::read_to_string(&catalog_path)
+            .unwrap()
+            .replace(
+                "<GameController>",
+                "<FutureControllerCatalogElement>keep-root</FutureControllerCatalogElement>\n  <GameController>",
+            )
+            .replace(
+                "    <AssociatedPlatforms />",
+                "    <AssociatedPlatforms />\n    <FutureControllerElement>keep-controller</FutureControllerElement>",
+            );
+        fs::write(&catalog_path, &original_catalog).unwrap();
+
+        let current = AuxiliaryDocument::load(&catalog_path)
+            .unwrap()
+            .game_controllers()
+            .unwrap();
+        let created_controller = parse_game_controller_edit_payload(
+            None,
+            r#"{"version":1,"name":"Qt Arcade Stick","category":"Joystick","associatedPlatforms":["Fixture Console"]}"#,
+            &current,
+        )
+        .unwrap();
+        let created =
+            create_game_controller_in_library(directory.path().to_path_buf(), created_controller)
+                .unwrap();
+        assert_eq!(created.operation, GameControllerWriteOperation::Create);
+        assert_eq!(
+            fs::read(&created.backup).unwrap(),
+            original_catalog.as_bytes()
+        );
+        assert_eq!(
+            created.controller.associated_platforms.as_deref(),
+            Some("Fixture Console")
+        );
+        let created_bytes = fs::read(&catalog_path).unwrap();
+        assert!(String::from_utf8_lossy(&created_bytes).contains(
+            "<FutureControllerCatalogElement>keep-root</FutureControllerCatalogElement>"
+        ));
+
+        let mut edited_controller = created.controller.clone();
+        edited_controller.name = "Qt Flight Stick".into();
+        edited_controller.category = "Wheel/Yoke".into();
+        let edited = write_game_controller_in_library(
+            directory.path().to_path_buf(),
+            edited_controller.id.clone(),
+            edited_controller.clone(),
+        )
+        .unwrap();
+        assert_eq!(edited.operation, GameControllerWriteOperation::Edit);
+        assert_eq!(fs::read(&edited.backup).unwrap(), created_bytes);
+        assert!(edited.controllers.contains(&edited_controller));
+
+        let blocked = delete_game_controller_from_library(
+            directory.path().to_path_buf(),
+            "fixture-controller".into(),
+        );
+        assert!(matches!(
+            blocked,
+            Err(GameControllerWriteFailure::Referenced { count: 1, .. })
+        ));
+        let racer = PlatformDocument::load(&platform_path)
+            .unwrap()
+            .library()
+            .games
+            .iter()
+            .find(|game| game.id == "fixture-racer")
+            .cloned()
+            .unwrap();
+        let game_write = write_game(
+            directory.path().to_path_buf(),
+            platform_path.clone(),
+            racer.id.clone(),
+            GameEditPayload {
+                version: GAME_EDIT_PAYLOAD_VERSION,
+                metadata: GameMetadata::from(&racer),
+                launch_configuration: GameLaunchConfiguration::from(&racer),
+                alternate_names: Vec::new(),
+                custom_fields: Vec::new(),
+                controller_support: vec![GameControllerSupportEditPayload {
+                    controller_id: edited_controller.id.clone(),
+                    support_level: Some(3),
+                }],
+                favorite: racer.favorite,
+                completed: racer.completed,
+                star_rating: racer.star_rating,
+                model_settings: None,
+            },
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        assert_eq!(game_write.controller_support.len(), 1);
+        assert_eq!(
+            game_write.controller_support[0].controller_id,
+            edited_controller.id
+        );
+        assert_eq!(game_write.controller_support[0].support_level, Some(3));
+
+        let deleted = delete_game_controller_from_library(
+            directory.path().to_path_buf(),
+            "fixture-controller".into(),
+        )
+        .unwrap();
+        assert_eq!(deleted.operation, GameControllerWriteOperation::Delete);
+        assert!(deleted
+            .controllers
+            .iter()
+            .all(|controller| controller.id != "fixture-controller"));
+        assert!(deleted.controllers.contains(&edited_controller));
+        let final_xml = fs::read_to_string(&catalog_path).unwrap();
+        assert!(final_xml.contains("keep-root"));
+        assert!(!final_xml.contains("keep-controller"));
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

@@ -423,7 +423,17 @@ pub struct GameController {
 impl GameController {
     pub fn validate(&self) -> Result<(), CatalogValidationError> {
         require_field("GameController", "Id", &self.id)?;
-        require_field("GameController", "Name", &self.name)
+        require_field("GameController", "Name", &self.name)?;
+        require_field("GameController", "Category", &self.category)
+    }
+
+    pub fn associated_platform_names(&self) -> impl Iterator<Item = &str> {
+        self.associated_platforms
+            .as_deref()
+            .unwrap_or_default()
+            .split(';')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
     }
 }
 

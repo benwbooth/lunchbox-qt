@@ -2545,6 +2545,7 @@ import_root=$(mktemp -d)
 import_source_root=$(mktemp -d)
 platform_crud_root=$(mktemp -d)
 emulator_crud_root=$(mktemp -d)
+game_controller_crud_root=$(mktemp -d)
 retroarch_core_editor_root=$(mktemp -d)
 emulator_discovery_root=$(mktemp -d)
 emulator_bios_root=$(mktemp -d)
@@ -2563,7 +2564,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$launchbox_desktop_tray_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$desktop_command_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$launchbox_desktop_tray_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$game_controller_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$desktop_command_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 
 cp -a fixtures/launchbox/. "$library_filter_root/"
 library_filter_platform="$library_filter_root/Data/Platforms/Fixture Console.xml"
@@ -4910,6 +4911,135 @@ if find "$emulator_crud_root" -maxdepth 1 -type f \
 fi
 
 echo "LaunchBox dialog-driven full emulator and platform-mapping editing, generated immutable IDs, default handoff, reference gating, lexical Windows paths, unknown XML, exact backups, and binary-directory isolation validated."
+
+cp -R fixtures/launchbox/Data "$game_controller_crud_root/Data"
+game_controller_crud_catalog="$game_controller_crud_root/Data/GameControllers.xml"
+game_controller_crud_platform="$game_controller_crud_root/Data/Platforms/Fixture Console.xml"
+sed -i \
+  -e 's#<Category>Gamepad</Category>#<Category>Rythm</Category>#' \
+  -e '/<AssociatedPlatforms \/>/a\    <FutureControllerField>keep-controller-data</FutureControllerField>' \
+  -e '/<\/LaunchBox>/i\  <FutureControllerCatalogElement>keep-catalog-data</FutureControllerCatalogElement>' \
+  "$game_controller_crud_catalog"
+game_controller_crud_original_catalog="$game_controller_crud_root/original-game-controllers.xml"
+game_controller_crud_original_platform="$game_controller_crud_root/original-controller-support.xml"
+cp "$game_controller_crud_catalog" "$game_controller_crud_original_catalog"
+cp "$game_controller_crud_platform" "$game_controller_crud_original_platform"
+
+game_controller_crud_output=$(
+  run_rendered_smoke "$binary_dir/launchbox" \
+    --library "$game_controller_crud_root" \
+    --game-controller-crud-smoke-test \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_controller_crud_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_CONTROLLER_CRUD_SMOKE_COMPLETE controller=.* blocked=1 writes=3 controller_revision=[0-9]+ support_revision=[0-9]+' \
+  <<< "$game_controller_crud_output"; then
+  printf '%s\n' "$game_controller_crud_output" >&2
+  echo "LaunchBox did not validate rendered controller catalog and per-game support editing." >&2
+  exit 1
+fi
+
+game_controller_crud_id=$(
+  sed -n 's#.*<Id>\(.*\)</Id>.*#\1#p' "$game_controller_crud_catalog"
+)
+if [[ -z "$game_controller_crud_id" ]] \
+  || [[ $(wc -l <<< "$game_controller_crud_id") -ne 1 ]]; then
+  echo "Controller CRUD did not retain exactly one generated controller ID." >&2
+  exit 1
+fi
+for expected in \
+  '<Name>Qt Smoke Wheel</Name>' \
+  '<Category>Wheel/Yoke</Category>' \
+  '<AssociatedPlatforms>Fixture Console</AssociatedPlatforms>' \
+  '<FutureControllerCatalogElement>keep-catalog-data</FutureControllerCatalogElement>'; do
+  if ! rg -q -F "$expected" "$game_controller_crud_catalog"; then
+    echo "Controller CRUD catalog is missing: $expected" >&2
+    exit 1
+  fi
+done
+if rg -q -F 'fixture-controller' "$game_controller_crud_catalog" \
+  || rg -q -F 'Edited Fixture Controller' "$game_controller_crud_catalog" \
+  || [[ $(rg -c '^  <GameController>$' "$game_controller_crud_catalog") -ne 1 ]]; then
+  echo "Controller CRUD retained the safely deleted fixture controller." >&2
+  exit 1
+fi
+for expected in \
+  "<ControllerId>$game_controller_crud_id</ControllerId>" \
+  '<GameId>fixture-racer</GameId>' \
+  '<SupportLevel>3</SupportLevel>' \
+  '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>'; do
+  if ! rg -q -F "$expected" "$game_controller_crud_platform"; then
+    echo "Controller-support edit is missing: $expected" >&2
+    exit 1
+  fi
+done
+if rg -q -F '<ControllerId>fixture-controller</ControllerId>' \
+  "$game_controller_crud_platform" \
+  || [[ $(rg -c '^  <GameControllerSupport>$' \
+           "$game_controller_crud_platform") -ne 1 ]]; then
+  echo "Controller-support edit retained the replaced fixture reference." >&2
+  exit 1
+fi
+
+mapfile -t game_controller_catalog_backups < <(
+  find "$game_controller_crud_root/Data" -maxdepth 1 -type f \
+    -name 'GameControllers.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#game_controller_catalog_backups[@]} -ne 3 ]]; then
+  echo "Controller edit/create/delete did not retain exactly three catalog backups." >&2
+  exit 1
+fi
+game_controller_original_backups=0
+game_controller_edited_backups=0
+game_controller_created_backups=0
+for backup in "${game_controller_catalog_backups[@]}"; do
+  if cmp -s "$backup" "$game_controller_crud_original_catalog"; then
+    ((game_controller_original_backups += 1))
+  elif rg -q -F '<Name>Edited Fixture Controller</Name>' "$backup" \
+    && rg -q -F '<Category>Rythm</Category>' "$backup" \
+    && rg -q -F \
+      '<AssociatedPlatforms>Fixture Console</AssociatedPlatforms>' "$backup" \
+    && ! rg -q -F '<Name>Qt Smoke Wheel</Name>' "$backup"; then
+    ((game_controller_edited_backups += 1))
+  elif rg -q -F '<Name>Edited Fixture Controller</Name>' "$backup" \
+    && rg -q -F '<Name>Qt Smoke Wheel</Name>' "$backup" \
+    && rg -q -F '<Category>Wheel/Yoke</Category>' "$backup"; then
+    ((game_controller_created_backups += 1))
+  fi
+  if ! rg -q -F \
+    '<FutureControllerCatalogElement>keep-catalog-data</FutureControllerCatalogElement>' \
+    "$backup"; then
+    echo "A controller catalog backup lost unknown root XML." >&2
+    exit 1
+  fi
+done
+if [[ $game_controller_original_backups -ne 1 \
+  || $game_controller_edited_backups -ne 1 \
+  || $game_controller_created_backups -ne 1 ]]; then
+  echo "Controller backups do not prove the expected edit/create/delete chain." >&2
+  exit 1
+fi
+
+mapfile -t game_controller_support_backups < <(
+  find "$game_controller_crud_root/Data/Platforms" -maxdepth 1 -type f \
+    -name 'Fixture Console.xml.lbport-transaction-backup-*' -print
+)
+if [[ ${#game_controller_support_backups[@]} -ne 1 ]] \
+  || ! cmp -s "${game_controller_support_backups[0]}" \
+    "$game_controller_crud_original_platform"; then
+  echo "Controller-support edit did not retain one exact original platform backup." >&2
+  exit 1
+fi
+if find "$game_controller_crud_root" -maxdepth 1 -type f \
+  -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
+  echo "Successful controller CRUD smoke left a recovery manifest behind." >&2
+  exit 1
+fi
+
+echo "LaunchBox rendered controller catalog management, historical category preservation, generated immutable IDs, platform associations, exact four-level per-game support editing, reference gating, unknown XML, and exact backups validated."
 
 cp -R fixtures/launchbox/Data "$retroarch_core_editor_root/Data"
 retroarch_core_editor_document="$retroarch_core_editor_root/Data/Emulators.xml"

@@ -19,6 +19,7 @@ port behavior.
 - [Reverse-engineering status](docs/RE_STATUS.md)
 - [LaunchBox 13.27 Wine oracle boundary](analysis/wine-oracle-13.27.md)
 - [LaunchBox 13.27 application-data backup contract](analysis/data-backup-13.27.md)
+- [LaunchBox 13.27 game-controller support contract](analysis/controller-support-13.27.md)
 - [Static feature matrix](docs/FEATURE_MATRIX.md)
 - [Port architecture and execution plan](docs/PORT_PLAN.md)
 - [Current implementation and verification status](docs/IMPLEMENTATION_STATUS.md)

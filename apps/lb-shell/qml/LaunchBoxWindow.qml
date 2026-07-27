@@ -295,6 +295,9 @@ ApplicationWindow {
         Qt.application.arguments.indexOf("--platform-crud-smoke-test") >= 0
     property bool emulatorCrudSmokeTest:
         Qt.application.arguments.indexOf("--emulator-crud-smoke-test") >= 0
+    property bool gameControllerCrudSmokeTest:
+        Qt.application.arguments.indexOf(
+            "--game-controller-crud-smoke-test") >= 0
     property bool categoryCrudSmokeTest:
         Qt.application.arguments.indexOf("--category-crud-smoke-test") >= 0
     property bool playlistCrudSmokeTest:
@@ -401,6 +404,12 @@ ApplicationWindow {
     property string emulatorCrudAddedId: ""
     property int emulatorCrudInitialRevision: -1
     property bool emulatorCrudSmokeFinished: false
+    property int gameControllerCrudSmokePhase: 0
+    property int gameControllerCrudBlockedReferences: 0
+    property string gameControllerCrudAddedId: ""
+    property int gameControllerCrudInitialRevision: -1
+    property int gameControllerSupportInitialRevision: -1
+    property bool gameControllerCrudSmokeFinished: false
     property bool retroarchCoreEditorSmokeTest:
         Qt.application.arguments.indexOf(
             "--retroarch-core-editor-smoke-test") >= 0
@@ -4635,6 +4644,155 @@ ApplicationWindow {
     Timer {
         interval: 25
         repeat: true
+        running: window.gameControllerCrudSmokeTest
+                 && !window.gameControllerCrudSmokeFinished
+        onTriggered: {
+            const fixtureId = "fixture-controller"
+            const gameId = "fixture-racer"
+            if (window.gameControllerCrudSmokePhase === 0
+                    && !controller.loading && !controller.writing
+                    && controller.library_path.length > 0
+                    && controller.game_count === 3
+                    && controller.game_controller_count() === 1
+                    && controller.game_controller_support_count(gameId) === 1
+                    && controller.game_controller_support_controller_id_at(
+                        gameId, 0) === fixtureId
+                    && controller.game_controller_support_level_at(
+                        gameId, 0) === 2) {
+                window.gameControllerCrudInitialRevision =
+                    controller.game_controller_revision
+                window.gameControllerSupportInitialRevision =
+                    controller.game_controller_support_revision
+                window.gameControllerCrudSmokePhase = 1
+                gameControllerManager.openManager()
+                gameControllerEditor.smokeEdit(0)
+            } else if (window.gameControllerCrudSmokePhase === 1
+                       && !controller.writing
+                       && controller.game_controller_revision
+                          === window.gameControllerCrudInitialRevision + 1) {
+                if (controller.game_controller_name_at(0)
+                        !== "Edited Fixture Controller"
+                        || controller.game_controller_category_at(0)
+                           !== "Rythm"
+                        || controller.game_controller_associated_platforms_at(0)
+                           !== "Fixture Console") {
+                    console.error(
+                        "GAME_CONTROLLER_CRUD_SMOKE_EDIT_NOT_PERSISTED")
+                    Qt.exit(36)
+                    return
+                }
+                window.gameControllerCrudSmokePhase = 2
+                gameControllerEditor.smokeCreate()
+            } else if (window.gameControllerCrudSmokePhase === 2
+                       && !controller.writing
+                       && controller.game_controller_revision
+                          === window.gameControllerCrudInitialRevision + 2
+                       && controller.last_added_game_controller_id.length > 0) {
+                window.gameControllerCrudAddedId =
+                    controller.last_added_game_controller_id
+                if (controller.game_controller_count() !== 2
+                        || controller.game_controller_name_at(1)
+                           !== "Qt Smoke Wheel"
+                        || controller.game_controller_category_at(1)
+                           !== "Wheel/Yoke"
+                        || controller
+                           .game_controller_associated_platforms_at(1)
+                           !== "Fixture Console") {
+                    console.error(
+                        "GAME_CONTROLLER_CRUD_SMOKE_CREATE_NOT_PERSISTED")
+                    Qt.exit(36)
+                    return
+                }
+                window.gameControllerCrudSmokePhase = 3
+                deleteGameControllerConfirmation.smokeDelete(
+                    fixtureId, "Edited Fixture Controller")
+            } else if (window.gameControllerCrudSmokePhase === 3
+                       && !controller.writing
+                       && controller.delete_blocker_count > 0) {
+                window.gameControllerCrudBlockedReferences =
+                    controller.delete_blocker_count
+                const row = controller.row_for_game_id(gameId)
+                if (row < 0) {
+                    console.error(
+                        "GAME_CONTROLLER_CRUD_SMOKE_GAME_MISSING")
+                    Qt.exit(36)
+                    return
+                }
+                gameControllerManager.close()
+                gameGrid.currentIndex = row
+                gameGrid.positionViewAtIndex(
+                    row, GridView.Contain)
+                window.gameControllerCrudSmokePhase = 4
+            } else if (window.gameControllerCrudSmokePhase === 4
+                       && !controller.writing
+                       && window.selectedGameItem !== null
+                       && window.selectedGameId === gameId) {
+                if (!window.openSelectedGameEditor()) {
+                    console.error(
+                        "GAME_CONTROLLER_CRUD_SMOKE_EDITOR_UNAVAILABLE")
+                    Qt.exit(36)
+                    return
+                }
+                window.gameControllerCrudSmokePhase = 5
+                Qt.callLater(function() {
+                    gameEditor.smokeReplaceControllerSupport(
+                        window.gameControllerCrudAddedId, 3)
+                })
+            } else if (window.gameControllerCrudSmokePhase === 5
+                       && !controller.writing
+                       && controller.game_controller_support_revision
+                          === window.gameControllerSupportInitialRevision + 1
+                       && controller.game_controller_support_count(gameId)
+                          === 1
+                       && controller.game_controller_support_controller_id_at(
+                           gameId, 0)
+                          === window.gameControllerCrudAddedId
+                       && controller.game_controller_support_level_at(
+                           gameId, 0) === 3) {
+                window.gameControllerCrudSmokePhase = 6
+                deleteGameControllerConfirmation.smokeDelete(
+                    fixtureId, "Edited Fixture Controller")
+            } else if (window.gameControllerCrudSmokePhase === 6
+                       && !controller.writing
+                       && controller.game_controller_revision
+                          === window.gameControllerCrudInitialRevision + 3
+                       && controller.game_controller_count() === 1) {
+                if (!controller.report_game_controller_crud_smoke_success(
+                        window.gameControllerCrudAddedId,
+                        window.gameControllerCrudBlockedReferences,
+                        window.gameControllerCrudInitialRevision,
+                        window.gameControllerSupportInitialRevision)) {
+                    console.error(
+                        "GAME_CONTROLLER_CRUD_SMOKE_MODEL_CONTRACT_FAILED")
+                    Qt.exit(36)
+                    return
+                }
+                window.gameControllerCrudSmokeFinished = true
+                Qt.quit()
+            }
+        }
+    }
+
+    Timer {
+        interval: 20000
+        running: window.gameControllerCrudSmokeTest
+                 && !window.gameControllerCrudSmokeFinished
+        onTriggered: {
+            console.error(
+                "GAME_CONTROLLER_CRUD_SMOKE_TIMEOUT phase="
+                + window.gameControllerCrudSmokePhase
+                + " controller_revision="
+                + controller.game_controller_revision
+                + " support_revision="
+                + controller.game_controller_support_revision
+                + " status=" + controller.status_message)
+            Qt.exit(36)
+        }
+    }
+
+    Timer {
+        interval: 25
+        repeat: true
         running: window.retroarchCoreEditorSmokeTest
                  && !window.retroarchCoreEditorSmokeFinished
         onTriggered: {
@@ -7701,6 +7859,15 @@ ApplicationWindow {
                         onClicked: emulatorManager.openManager()
                     }
                     Button {
+                        text: "Controllers…"
+                        enabled: controller.library_path.length > 0
+                                 && !controller.loading && !controller.writing
+                                 && !controller.launching
+                                 && !controller.write_conflict
+                                 && controller.pending_recovery_count === 0
+                        onClicked: gameControllerManager.openManager()
+                    }
+                    Button {
                         text: "Import ROMs"
                         enabled: controller.library_path.length > 0
                                  && controller.platform_entry_count > 0
@@ -10303,6 +10470,7 @@ ApplicationWindow {
 
         ListModel { id: alternateNameEditorModel }
         ListModel { id: customFieldEditorModel }
+        ListModel { id: controllerSupportEditorModel }
 
         function loadRepeatedMetadata(row, id) {
             alternateNameEditorModel.clear()
@@ -10323,6 +10491,56 @@ ApplicationWindow {
                     fieldValue: controller.custom_field_value_at(row, id, index)
                 })
             }
+            controllerSupportEditorModel.clear()
+            const supportCount =
+                controller.game_controller_support_count(id)
+            for (let index = 0; index < supportCount; ++index) {
+                controllerSupportEditorModel.append({
+                    controllerId:
+                        controller.game_controller_support_controller_id_at(
+                            id, index),
+                    supportLevel:
+                        controller.game_controller_support_level_at(id, index)
+                })
+            }
+        }
+
+        function smokeReplaceControllerSupport(controllerId, supportLevel) {
+            controllerSupportEditorModel.clear()
+            controllerSupportEditorModel.append({
+                controllerId: controllerId,
+                supportLevel: supportLevel
+            })
+            Qt.callLater(function() { gameEditor.accept() })
+        }
+
+        function controllerIndexForId(controllerId) {
+            for (let index = 0;
+                 index < controller.game_controller_count(); ++index) {
+                if (controller.game_controller_id_at(index) === controllerId)
+                    return index
+            }
+            return -1
+        }
+
+        function controllerAlreadySelected(controllerId) {
+            for (let index = 0;
+                 index < controllerSupportEditorModel.count; ++index) {
+                if (controllerSupportEditorModel.get(index).controllerId
+                        === controllerId)
+                    return true
+            }
+            return false
+        }
+
+        function firstUnusedControllerIndex() {
+            for (let index = 0;
+                 index < controller.game_controller_count(); ++index) {
+                if (!controllerAlreadySelected(
+                            controller.game_controller_id_at(index)))
+                    return index
+            }
+            return -1
         }
 
         function selectEmulatorId(emulatorId) {
@@ -10497,8 +10715,18 @@ ApplicationWindow {
                     })
                 }
             }
+            const controllerSupport = []
+            for (let index = 0;
+                 index < controllerSupportEditorModel.count; ++index) {
+                const support = controllerSupportEditorModel.get(index)
+                controllerSupport.push({
+                    controllerId: support.controllerId,
+                    supportLevel: support.supportLevel > 0
+                                  ? support.supportLevel : null
+                })
+            }
             return JSON.stringify({
-                version: 4,
+                version: 5,
                 metadata: {
                     title: titleField.text,
                     sort_title: optionalText(sortTitleField.text),
@@ -10537,6 +10765,7 @@ ApplicationWindow {
                 },
                 alternate_names: alternateNames,
                 custom_fields: customFields,
+                controller_support: controllerSupport,
                 favorite: favoriteCheck.checked,
                 completed: completedCheck.checked,
                 star_rating: starRating.value,
@@ -10751,6 +10980,110 @@ ApplicationWindow {
                         fieldName: "",
                         fieldValue: ""
                     })
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: "#30363d"
+                }
+                Label {
+                    text: "Controller support"
+                    font.pixelSize: 18
+                    font.bold: true
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: "Choose every compatible or required controller. “Not Supported” is LaunchBox's index-zero value and is stored without a SupportLevel element."
+                    wrapMode: Text.Wrap
+                    color: "#7d8590"
+                }
+                Repeater {
+                    model: controllerSupportEditorModel
+                    delegate: RowLayout {
+                        required property int index
+                        required property string controllerId
+                        required property int supportLevel
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: {
+                                const revision =
+                                    controller.game_controller_revision
+                                return controller.game_controller_count()
+                            }
+                            currentIndex:
+                                gameEditor.controllerIndexForId(controllerId)
+                            displayText: currentIndex >= 0
+                                ? controller.game_controller_name_at(
+                                      currentIndex)
+                                : "Unavailable controller (" + controllerId + ")"
+                            delegate: ItemDelegate {
+                                required property int index
+                                width: ListView.view
+                                       ? ListView.view.width : implicitWidth
+                                text: controller.game_controller_name_at(index)
+                                      + " — "
+                                      + controller
+                                        .game_controller_category_at(index)
+                            }
+                            onActivated: function(controllerIndex) {
+                                const selected =
+                                    controller.game_controller_id_at(
+                                        controllerIndex)
+                                if (!gameEditor.controllerAlreadySelected(
+                                            selected)
+                                        || selected === controllerId) {
+                                    controllerSupportEditorModel.setProperty(
+                                        index, "controllerId", selected)
+                                }
+                            }
+                        }
+                        ComboBox {
+                            Layout.preferredWidth: 170
+                            model:
+                                controller.game_controller_support_level_count()
+                            currentIndex: supportLevel
+                            delegate: ItemDelegate {
+                                required property int index
+                                width: ListView.view
+                                       ? ListView.view.width : implicitWidth
+                                text:
+                                    controller
+                                    .game_controller_support_level_name_at(index)
+                            }
+                            displayText:
+                                controller.game_controller_support_level_name_at(
+                                    currentIndex)
+                            onActivated: function(levelIndex) {
+                                controllerSupportEditorModel.setProperty(
+                                    index, "supportLevel", levelIndex)
+                            }
+                        }
+                        Button {
+                            text: "Remove"
+                            onClicked:
+                                controllerSupportEditorModel.remove(index)
+                        }
+                    }
+                }
+                Button {
+                    text: "Add Controller"
+                    enabled: controllerSupportEditorModel.count
+                             < controller.game_controller_count()
+                    onClicked: {
+                        const controllerIndex =
+                            gameEditor.firstUnusedControllerIndex()
+                        if (controllerIndex >= 0) {
+                            controllerSupportEditorModel.append({
+                                controllerId:
+                                    controller.game_controller_id_at(
+                                        controllerIndex),
+                                supportLevel: 0
+                            })
+                        }
+                    }
                 }
                 Rectangle {
                     Layout.fillWidth: true
@@ -11069,6 +11402,360 @@ ApplicationWindow {
         contentItem: Label {
             width: 620
             text: "Each launchable version becomes a standalone game. The default-version representative is consumed without duplicating the retained game; documents and automatic helper applications stay attached. Exact XML backup is created, and no ROM or media files are moved or deleted."
+            wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: gameControllerManager
+        anchors.centerIn: parent
+        modal: true
+        title: "Manage Game Controllers"
+        standardButtons: Dialog.Close
+        property int selectedIndex: -1
+
+        function selectedId() {
+            return selectedIndex >= 0
+                   ? controller.game_controller_id_at(selectedIndex) : ""
+        }
+
+        function selectedName() {
+            return selectedIndex >= 0
+                   ? controller.game_controller_name_at(selectedIndex) : ""
+        }
+
+        function openManager() {
+            selectedIndex = controller.game_controller_count() > 0 ? 0 : -1
+            open()
+        }
+
+        Connections {
+            target: controller
+            function onGameControllerRevisionChanged() {
+                const count = controller.game_controller_count()
+                if (count === 0)
+                    gameControllerManager.selectedIndex = -1
+                else if (gameControllerManager.selectedIndex < 0)
+                    gameControllerManager.selectedIndex = 0
+                else if (gameControllerManager.selectedIndex >= count)
+                    gameControllerManager.selectedIndex = count - 1
+            }
+        }
+
+        contentItem: ColumnLayout {
+            implicitWidth: 720
+            implicitHeight: 480
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: "Controller definitions are stored in Data/GameControllers.xml. Associations use LaunchBox platform names, not operating-system paths. Existing historical category spellings remain editable without being rewritten."
+                wrapMode: Text.Wrap
+                color: "#7fbfff"
+            }
+            ListView {
+                id: gameControllerList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: {
+                    const revision = controller.game_controller_revision
+                    return controller.game_controller_count()
+                }
+                delegate: ItemDelegate {
+                    id: gameControllerDelegate
+                    required property int index
+                    width: gameControllerList.width
+                    property string controllerId:
+                        controller.game_controller_id_at(index)
+                    highlighted:
+                        gameControllerManager.selectedIndex === index
+                    contentItem: RowLayout {
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Label {
+                                Layout.fillWidth: true
+                                text:
+                                    controller.game_controller_name_at(index)
+                                color: "white"
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: controllerId
+                                color: "#7d8590"
+                                font.pixelSize: 11
+                                elide: Text.ElideMiddle
+                            }
+                        }
+                        Label {
+                            text:
+                                controller.game_controller_category_at(index)
+                            color: "#aeb8c5"
+                        }
+                        Label {
+                            text:
+                                controller
+                                .game_controller_associated_game_count_at(index)
+                                + " game(s)"
+                            color: "#7d8590"
+                        }
+                    }
+                    onClicked:
+                        gameControllerManager.selectedIndex = index
+                    onDoubleClicked:
+                        gameControllerEditor.prepareEdit(index)
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    text: "Add"
+                    enabled: !controller.writing
+                             && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: gameControllerEditor.prepareCreate()
+                }
+                Button {
+                    text: "Edit"
+                    enabled: gameControllerManager.selectedIndex >= 0
+                             && !controller.writing
+                             && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked: gameControllerEditor.prepareEdit(
+                                   gameControllerManager.selectedIndex)
+                }
+                Button {
+                    text: "Delete"
+                    enabled: gameControllerManager.selectedIndex >= 0
+                             && !controller.writing
+                             && !controller.write_conflict
+                             && controller.pending_recovery_count === 0
+                    onClicked:
+                        deleteGameControllerConfirmation.prepare(
+                            gameControllerManager.selectedId(),
+                            gameControllerManager.selectedName())
+                }
+                Item { Layout.fillWidth: true }
+                Label {
+                    text: controller.game_controller_count() + " configured"
+                    color: "#7d8590"
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: gameControllerEditor
+        anchors.centerIn: parent
+        modal: true
+        title: creating ? "Add Game Controller"
+                        : "Edit Game Controller"
+        standardButtons: Dialog.Save | Dialog.Cancel
+        property bool creating: true
+        property string originalId: ""
+
+        ListModel { id: gameControllerCategoryEditorModel }
+        ListModel { id: gameControllerPlatformEditorModel }
+
+        function loadCategories(selectedCategory) {
+            gameControllerCategoryEditorModel.clear()
+            let selectedIndex = -1
+            for (let index = 0;
+                 index < controller.game_controller_category_count(); ++index) {
+                const category =
+                    controller.game_controller_category_name_at(index)
+                gameControllerCategoryEditorModel.append({
+                    categoryName: category
+                })
+                if (category === selectedCategory)
+                    selectedIndex = index
+            }
+            if (selectedCategory.length > 0 && selectedIndex < 0) {
+                selectedIndex = gameControllerCategoryEditorModel.count
+                gameControllerCategoryEditorModel.append({
+                    categoryName: selectedCategory
+                })
+            }
+            controllerCategoryChoice.currentIndex =
+                selectedIndex >= 0 ? selectedIndex : 0
+        }
+
+        function loadPlatforms(serializedPlatforms) {
+            gameControllerPlatformEditorModel.clear()
+            const selected = serializedPlatforms.length > 0
+                           ? serializedPlatforms.split(";") : []
+            const known = ({})
+            for (let index = 0;
+                 index < controller.platform_entry_count; ++index) {
+                const platform = controller.platform_name_at(index)
+                known[platform.toLowerCase()] = true
+                gameControllerPlatformEditorModel.append({
+                    platformName: platform,
+                    selectedPlatform: selected.some(
+                        function(value) {
+                            return value.trim().toLowerCase()
+                                   === platform.toLowerCase()
+                        })
+                })
+            }
+            for (let index = 0; index < selected.length; ++index) {
+                const historical = selected[index].trim()
+                if (historical.length > 0
+                        && !known[historical.toLowerCase()]) {
+                    gameControllerPlatformEditorModel.append({
+                        platformName: historical,
+                        selectedPlatform: true
+                    })
+                }
+            }
+        }
+
+        function prepareCreate() {
+            creating = true
+            originalId = ""
+            controllerNameField.text = ""
+            loadCategories("Gamepad")
+            loadPlatforms("")
+            open()
+        }
+
+        function prepareEdit(index) {
+            creating = false
+            originalId = controller.game_controller_id_at(index)
+            controllerNameField.text =
+                controller.game_controller_name_at(index)
+            loadCategories(controller.game_controller_category_at(index))
+            loadPlatforms(
+                controller.game_controller_associated_platforms_at(index))
+            open()
+        }
+
+        function smokeEdit(index) {
+            prepareEdit(index)
+            controllerNameField.text = "Edited Fixture Controller"
+            loadPlatforms("Fixture Console")
+            Qt.callLater(function() { gameControllerEditor.accept() })
+        }
+
+        function smokeCreate() {
+            prepareCreate()
+            controllerNameField.text = "Qt Smoke Wheel"
+            loadCategories("Wheel/Yoke")
+            loadPlatforms("Fixture Console")
+            Qt.callLater(function() { gameControllerEditor.accept() })
+        }
+
+        function editPayload() {
+            const platforms = []
+            for (let index = 0;
+                 index < gameControllerPlatformEditorModel.count; ++index) {
+                const platform =
+                    gameControllerPlatformEditorModel.get(index)
+                if (platform.selectedPlatform)
+                    platforms.push(platform.platformName)
+            }
+            return JSON.stringify({
+                version: 1,
+                name: controllerNameField.text,
+                category:
+                    gameControllerCategoryEditorModel.count > 0
+                    && controllerCategoryChoice.currentIndex >= 0
+                    ? gameControllerCategoryEditorModel.get(
+                          controllerCategoryChoice.currentIndex).categoryName
+                    : "",
+                associatedPlatforms: platforms
+            })
+        }
+
+        onAccepted: {
+            if (creating)
+                controller.add_game_controller(editPayload())
+            else
+                controller.save_game_controller(originalId, editPayload())
+        }
+
+        contentItem: ColumnLayout {
+            implicitWidth: 560
+            spacing: 10
+
+            Label { text: "Name" }
+            TextField {
+                id: controllerNameField
+                Layout.fillWidth: true
+                placeholderText: "Controller name"
+            }
+            Label { text: "Category" }
+            ComboBox {
+                id: controllerCategoryChoice
+                Layout.fillWidth: true
+                model: gameControllerCategoryEditorModel
+                textRole: "categoryName"
+            }
+            Label {
+                text: "Associated platforms"
+                font.bold: true
+            }
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 210
+                clip: true
+                ColumnLayout {
+                    width: parent.width
+                    Repeater {
+                        model: gameControllerPlatformEditorModel
+                        delegate: CheckBox {
+                            required property int index
+                            required property string platformName
+                            required property bool selectedPlatform
+                            Layout.fillWidth: true
+                            text: platformName
+                            checked: selectedPlatform
+                            onToggled:
+                                gameControllerPlatformEditorModel.setProperty(
+                                    index, "selectedPlatform", checked)
+                        }
+                    }
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                text: "Save creates an exact sibling backup and refuses external file changes. Deletion is blocked until all per-game controller-support rows are removed."
+                wrapMode: Text.Wrap
+                color: "#7d8590"
+            }
+        }
+    }
+
+    Dialog {
+        id: deleteGameControllerConfirmation
+        anchors.centerIn: parent
+        modal: true
+        title: "Delete " + controllerName + "?"
+        standardButtons: Dialog.Yes | Dialog.No
+        property string controllerId: ""
+        property string controllerName: ""
+
+        function prepare(id, name) {
+            controllerId = id
+            controllerName = name
+            open()
+        }
+
+        function smokeDelete(id, name) {
+            prepare(id, name)
+            Qt.callLater(function() {
+                deleteGameControllerConfirmation.accept()
+            })
+        }
+
+        onAccepted:
+            controller.delete_game_controller(controllerId)
+
+        contentItem: Label {
+            width: 560
+            text: "Only the controller definition will be deleted. LaunchBox controller-support rows are never cascaded; any reference blocks this operation and identifies the dependent games."
             wrapMode: Text.Wrap
         }
     }

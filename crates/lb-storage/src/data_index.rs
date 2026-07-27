@@ -531,7 +531,7 @@ fn load_game_controllers(path: &Path) -> Result<Vec<GameController>, StorageErro
     parse_game_controllers(&root)
 }
 
-fn parse_game_controllers(root: &Element) -> Result<Vec<GameController>, StorageError> {
+pub(crate) fn parse_game_controllers(root: &Element) -> Result<Vec<GameController>, StorageError> {
     elements_named(root, "GameController")
         .map(|element| {
             let controller = GameController {
