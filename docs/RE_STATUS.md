@@ -77,6 +77,32 @@ and strict newest-25 retention preserve manual/unrecognized archives. The
 evidence, portable scheduling decision, port-owned limits, and compiled
 scenarios are recorded in `analysis/data-backup-13.27.md`.
 
+## Game-audit evidence
+
+The structurally recovered 13.27 `AuditViewModel.AuditEntry` exposes one
+internal game reference, four date-sort helpers, and exactly 76 visible audit
+values. The enclosing model exposes selection, edit, image/video/URL commands,
+and distinct selected/duplicate row brushes; the view identifies a themed
+`DataGrid`. Its platform-optional menu action establishes all-games and
+current-platform scope.
+
+Embedded 13.27 release notes add behavior that protected bodies do not expose:
+the audit can span the complete collection, repeated LaunchBox Games Database
+IDs identify duplicate rows, copied spreadsheet data includes headers, and a
+platform change removes the game from a platform-scoped audit. Those facts are
+now frozen in the first native `LIB-015` audit subset. It projects the complete
+76-column surface, highlights repeated non-zero database IDs, sorts and
+selects rows, exports bounded header-bearing TSV through Qt's clipboard, and
+opens the existing full game editor by stable ID. MAME-derived and unavailable
+storefront values stay blank rather than becoming fabricated false results.
+
+Pure tests and a compiled rendered workflow require the ordered contract, two
+differently titled games sharing one database ID, two-row TSV output, the Edit
+transition, a valid screenshot, and byte-identical source XML. Exact protected
+column/context behavior, authoritative MAME/storefront sources, the separate
+bulk-edit wizard, and native Windows/macOS interaction remain open. The full
+boundary is recorded in `analysis/game-audit-13.27.md`.
+
 ## Older real installation schema
 
 A complete LaunchBox 13.24 installation was located on the owner's read-only

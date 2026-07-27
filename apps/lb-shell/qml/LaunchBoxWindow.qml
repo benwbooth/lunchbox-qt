@@ -168,6 +168,13 @@ ApplicationWindow {
     property bool supplementalMediaScreenshotRequested: false
     property string supplementalMediaScreenshotPath:
         argumentValue("--supplemental-media-screenshot")
+    property bool gameAuditSmokeTest:
+        Qt.application.arguments.indexOf("--game-audit-smoke-test") >= 0
+    property int gameAuditSmokePhase: 0
+    property bool gameAuditSmokeFinished: false
+    property bool gameAuditScreenshotRequested: false
+    property string gameAuditScreenshotPath:
+        argumentValue("--game-audit-screenshot")
     property bool gameDetailsSmokeTest:
         Qt.application.arguments.indexOf("--game-details-smoke-test") >= 0
     property int gameDetailsSmokePhase: 0
@@ -623,6 +630,66 @@ ApplicationWindow {
     function currentGameId() {
         return gameGrid.currentIndex >= 0
                ? controller.game_id_at(gameGrid.currentIndex) : ""
+    }
+
+    function gameRecordText(value) {
+        return value === null || value === undefined ? "" : String(value)
+    }
+
+    function editGameById(gameId) {
+        const serialized = controller.game_record_json_for_id(gameId)
+        if (serialized.length === 0)
+            return false
+        const game = JSON.parse(serialized)
+        selectedNavigationKind = "all"
+        selectedNavigationKey = ""
+        selectedNavigationName = "All Games"
+        selectedPlatform = ""
+        searchField.text = ""
+        controller.apply_filters("", "")
+        setAttributeFilters("any", "none",
+                            game.hidden === true, game.broken === true)
+        const row = controller.row_for_game_id(game.id)
+        if (row < 0)
+            return false
+        gameGrid.currentIndex = row
+        gameList.currentIndex = row
+        selectedGameId = game.id
+        positionCurrentGame(row, true)
+        gameEditor.edit(
+            row, game.id, game.title,
+            gameRecordText(game.sort_title),
+            gameRecordText(game.notes),
+            gameRecordText(game.developer),
+            gameRecordText(game.genre),
+            game.max_players === null ? 0 : Number(game.max_players),
+            gameRecordText(game.play_mode),
+            gameRecordText(game.progress),
+            gameRecordText(game.publisher),
+            gameRecordText(game.rating),
+            gameRecordText(game.region),
+            gameRecordText(game.release_date),
+            gameRecordText(game.release_type),
+            gameRecordText(game.series),
+            gameRecordText(game.source),
+            gameRecordText(game.status),
+            gameRecordText(game.version),
+            gameRecordText(game.wikipedia_url),
+            game.favorite === true,
+            game.completed === true,
+            Number(game.star_rating),
+            game.application_path,
+            gameRecordText(game.command_line),
+            gameRecordText(game.emulator_id),
+            game.use_dos_box === true,
+            gameRecordText(game.custom_dos_box_version_path),
+            gameRecordText(game.dos_box_configuration_path),
+            game.use_scumm_vm === true,
+            game.scumm_vm_aspect_correction === true,
+            game.scumm_vm_fullscreen === true,
+            gameRecordText(game.scumm_vm_game_data_folder_path),
+            gameRecordText(game.scumm_vm_game_type))
+        return true
     }
 
     function restoreGameSelection(preferredId) {
@@ -1690,6 +1757,132 @@ ApplicationWindow {
         onTriggered: window.persistGameDetailsLayout(
                          controller.show_game_details,
                          controller.game_details_popped_out)
+    }
+
+    Timer {
+        interval: 50
+        repeat: true
+        running: window.gameAuditSmokeTest
+                 && !window.gameAuditSmokeFinished
+
+        onTriggered: {
+            if (controller.loading || controller.game_count === 0)
+                return
+            if (window.gameAuditSmokePhase === 0) {
+                if (!gameAuditDialog.openForPlatform("")) {
+                    console.error(
+                        "GAME_AUDIT_SMOKE_OPEN_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(488)
+                    return
+                }
+                window.gameAuditSmokePhase = 1
+                return
+            }
+            if (window.gameAuditSmokePhase === 2) {
+                if (!gameAuditDialog.editCurrent()) {
+                    console.error("GAME_AUDIT_SMOKE_EDIT_OPEN_FAILED")
+                    Qt.exit(488)
+                    return
+                }
+                window.gameAuditSmokePhase = 3
+                return
+            }
+            if (window.gameAuditSmokePhase === 3) {
+                if (!gameEditor.visible)
+                    return
+                if (gameEditor.modelRow < 0
+                        || gameEditor.gameId.length === 0
+                        || !controller
+                           .report_game_audit_edit_smoke_success(
+                               gameEditor.gameId,
+                               gameEditor.modelRow)) {
+                    console.error(
+                        "GAME_AUDIT_SMOKE_EDITOR_STATE_FAILED row="
+                        + gameEditor.modelRow + " id="
+                        + gameEditor.gameId)
+                    Qt.exit(488)
+                    return
+                }
+                gameEditor.close()
+                window.gameAuditSmokeFinished = true
+                Qt.quit()
+                return
+            }
+            if (window.gameAuditSmokePhase !== 1)
+                return
+            if (controller.audit_row_count !== 3
+                    || controller.audit_column_count !== 76) {
+                console.error(
+                    "GAME_AUDIT_SMOKE_CONTRACT_FAILED rows="
+                    + controller.audit_row_count + " columns="
+                    + controller.audit_column_count)
+                Qt.exit(488)
+                return
+            }
+            let duplicateColumn = -1
+            for (let column = 0;
+                 column < controller.audit_column_count; ++column) {
+                if (controller.audit_column_key_at(column)
+                        === "Duplicate") {
+                    duplicateColumn = column
+                    break
+                }
+            }
+            if (duplicateColumn < 0
+                    || !controller.sort_game_audit(duplicateColumn)
+                    || !controller.sort_game_audit(duplicateColumn)) {
+                console.error("GAME_AUDIT_SMOKE_SORT_FAILED")
+                Qt.exit(488)
+                return
+            }
+            let duplicateRows = 0
+            for (let row = 0; row < controller.audit_row_count; ++row) {
+                if (controller.audit_row_is_duplicate(row)) {
+                    ++duplicateRows
+                    controller.toggle_audit_row_selected(row)
+                }
+            }
+            const copied = controller.selected_game_audit_tsv()
+            const lines = copied.split("\n")
+            const header = lines.length > 0
+                         ? lines[0].split("\t")[0] : ""
+            if (duplicateRows !== 2
+                    || controller.audit_selected_count !== 2
+                    || lines.length !== 3
+                    || copied.indexOf("Fixture Adventure") < 0
+                    || !controller.report_game_audit_smoke_success(
+                        3, duplicateRows,
+                        controller.audit_selected_count, header)) {
+                console.error(
+                    "GAME_AUDIT_SMOKE_DATA_FAILED duplicates="
+                    + duplicateRows + " selected="
+                    + controller.audit_selected_count + " lines="
+                    + lines.length + " header=" + header)
+                Qt.exit(488)
+                return
+            }
+            if (window.gameAuditScreenshotPath.length === 0) {
+                window.gameAuditSmokePhase = 2
+                return
+            }
+            if (window.gameAuditScreenshotRequested)
+                return
+            window.gameAuditScreenshotRequested = true
+            window.gameAuditSmokePhase = 4
+            gameAuditDialog.smokeCaptureTarget.grabToImage(
+                function(result) {
+                    if (!result.saveToFile(
+                            window.gameAuditScreenshotPath)) {
+                        console.error(
+                            "GAME_AUDIT_SCREENSHOT_SAVE_FAILED path="
+                            + window.gameAuditScreenshotPath)
+                        Qt.exit(488)
+                        return
+                    }
+                    window.gameAuditSmokePhase = 2
+                })
+        }
     }
 
     Timer {
@@ -7920,6 +8113,37 @@ ApplicationWindow {
                         onClicked: gameControllerManager.openManager()
                     }
                     Button {
+                        id: gameAuditButton
+                        text: "Audit…"
+                        Accessible.name: "Audit games"
+                        enabled: controller.library_path.length > 0
+                                 && controller.game_count > 0
+                                 && !controller.loading && !controller.writing
+                                 && !controller.launching
+
+                        onClicked: gameAuditMenu.open()
+
+                        Menu {
+                            id: gameAuditMenu
+                            y: parent.height
+
+                            MenuItem {
+                                text: "Audit All Games"
+                                onTriggered:
+                                    gameAuditDialog.openForPlatform("")
+                            }
+                            MenuItem {
+                                text: "Audit Current Platform"
+                                enabled:
+                                    window.selectedNavigationKind
+                                    === "platform"
+                                onTriggered:
+                                    gameAuditDialog.openForPlatform(
+                                        window.selectedNavigationKey)
+                            }
+                        }
+                    }
+                    Button {
                         text: "Import ROMs"
                         enabled: controller.library_path.length > 0
                                  && controller.platform_entry_count > 0
@@ -10507,6 +10731,16 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    GameAuditDialog {
+        id: gameAuditDialog
+        controller: controller
+
+        onEditRequested: function(gameId) {
+            if (!window.editGameById(gameId))
+                console.error("GAME_AUDIT_EDIT_FAILED id=" + gameId)
         }
     }
 

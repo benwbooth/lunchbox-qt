@@ -20,6 +20,7 @@ port behavior.
 - [LaunchBox 13.27 Wine oracle boundary](analysis/wine-oracle-13.27.md)
 - [LaunchBox 13.27 application-data backup contract](analysis/data-backup-13.27.md)
 - [LaunchBox 13.27 game-controller support contract](analysis/controller-support-13.27.md)
+- [LaunchBox 13.27 game-audit contract](analysis/game-audit-13.27.md)
 - [Static feature matrix](docs/FEATURE_MATRIX.md)
 - [Port architecture and execution plan](docs/PORT_PLAN.md)
 - [Current implementation and verification status](docs/IMPLEMENTATION_STATUS.md)
@@ -50,6 +51,15 @@ The flake exposes packages and development shells for both Darwin
 architectures. Because nixpkgs unstable no longer evaluates Intel macOS, that
 one system uses the last supported `nixpkgs-26.05-darwin` branch; Apple Silicon
 and both Linux architectures continue to follow unstable.
+
+LaunchBox now includes a native **Audit…** dialog for the first `LIB-015`
+vertical. It exposes the recovered 76-column LaunchBox 13.27 game contract,
+all-games and current-platform scopes, repeated non-zero Games Database ID
+duplicate highlighting, selection and header-complete TSV copy through Qt's
+clipboard, and stable-ID handoff to the existing game editor. The audit is
+read-only, leaves source XML byte-identical, and represents unavailable
+storefront or MAME-derived values as blank rather than false. The separate
+bulk-edit wizard remains open.
 
 Read an existing installation without modifying it:
 

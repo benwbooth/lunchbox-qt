@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 
+mod audit;
 mod box_size;
 mod catalog;
 mod data_backup;
@@ -10,6 +11,7 @@ mod discovery;
 mod list_view;
 mod model_settings;
 
+pub use audit::*;
 pub use box_size::*;
 pub use catalog::*;
 pub use data_backup::*;

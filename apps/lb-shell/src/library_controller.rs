@@ -226,6 +226,14 @@ pub mod qobject {
         #[qproperty(QString, game_delete_review_id)]
         #[qproperty(QString, game_delete_review_title)]
         #[qproperty(QString, platform_delete_review_name)]
+        #[qproperty(bool, audit_visible)]
+        #[qproperty(QString, audit_scope)]
+        #[qproperty(i32, audit_row_count)]
+        #[qproperty(i32, audit_column_count)]
+        #[qproperty(i32, audit_selected_count)]
+        #[qproperty(i32, audit_revision)]
+        #[qproperty(QString, audit_sort_key)]
+        #[qproperty(bool, audit_sort_descending)]
         #[qproperty(QString, last_added_game_id)]
         #[qproperty(QString, last_added_emulator_id)]
         #[qproperty(QString, last_added_game_controller_id)]
@@ -1930,6 +1938,64 @@ pub mod qobject {
         ) -> bool;
 
         #[qinvokable]
+        fn open_game_audit(self: Pin<&mut LibraryController>, platform: QString) -> bool;
+
+        #[qinvokable]
+        fn close_game_audit(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn audit_column_key_at(self: &LibraryController, column: i32) -> QString;
+
+        #[qinvokable]
+        fn audit_column_label_at(self: &LibraryController, column: i32) -> QString;
+
+        #[qinvokable]
+        fn audit_column_width_at(self: &LibraryController, column: i32) -> i32;
+
+        #[qinvokable]
+        fn audit_game_id_at(self: &LibraryController, row: i32) -> QString;
+
+        #[qinvokable]
+        fn audit_cell_at(self: &LibraryController, row: i32, column: i32) -> QString;
+
+        #[qinvokable]
+        fn audit_row_is_duplicate(self: &LibraryController, row: i32) -> bool;
+
+        #[qinvokable]
+        fn audit_row_is_selected(self: &LibraryController, row: i32) -> bool;
+
+        #[qinvokable]
+        fn toggle_audit_row_selected(self: Pin<&mut LibraryController>, row: i32) -> bool;
+
+        #[qinvokable]
+        fn select_all_audit_rows(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn clear_audit_selection(self: Pin<&mut LibraryController>);
+
+        #[qinvokable]
+        fn sort_game_audit(self: Pin<&mut LibraryController>, column: i32) -> bool;
+
+        #[qinvokable]
+        fn selected_game_audit_tsv(self: Pin<&mut LibraryController>) -> QString;
+
+        #[qinvokable]
+        fn report_game_audit_smoke_success(
+            self: &LibraryController,
+            expected_rows: i32,
+            duplicate_rows: i32,
+            selected_rows: i32,
+            copied_header: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn report_game_audit_edit_smoke_success(
+            self: &LibraryController,
+            game_id: QString,
+            row: i32,
+        ) -> bool;
+
+        #[qinvokable]
         fn row_for_game_id(self: &LibraryController, game_id: QString) -> i32;
 
         #[qinvokable]
@@ -1946,6 +2012,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn game_id_at(self: &LibraryController, row: i32) -> QString;
+
+        #[qinvokable]
+        fn game_record_json_for_id(self: &LibraryController, game_id: QString) -> QString;
 
         #[qinvokable]
         fn platform_name_at(self: &LibraryController, index: i32) -> QString;
@@ -2062,15 +2131,16 @@ use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QUrl, QVariant,
 };
 use lb_domain::{
-    built_in_model_settings, resolve_model_settings, AdditionalApplication,
-    AdditionalApplicationEdit, AlternateName, ApplicationDataBackupPolicy, ArgbColor, BoxSize,
-    CustomField, DesktopNotificationType, DesktopTrayPolicy, Emulator, EmulatorConfiguration,
-    EmulatorPlatform, FrontendSettings, Game, GameController, GameControllerSupport,
-    GameControllerSupportLevel, GameLaunchConfiguration, GameMetadata, GameSave,
-    GameSaveMetadataEdit, InputBinding, ListViewColumnLayout, ModelSettings, ModelSettingsSource,
-    ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship, PlatformCatalog,
-    PlatformCategory, PlatformDefinition, PlatformFolder, Playlist, PlaylistDocument,
-    PlaylistFilter, PlaylistGame, ResolvedModelSettings, GAME_CONTROLLER_CATEGORIES,
+    audit_cell, audit_tsv, built_in_model_settings, duplicate_game_ids, resolve_model_settings,
+    AdditionalApplication, AdditionalApplicationEdit, AlternateName, ApplicationDataBackupPolicy,
+    ArgbColor, AuditColumnKind, AuditMediaCounts, AuditSupplement, BoxSize, CustomField,
+    DesktopNotificationType, DesktopTrayPolicy, Emulator, EmulatorConfiguration, EmulatorPlatform,
+    FrontendSettings, Game, GameController, GameControllerSupport, GameControllerSupportLevel,
+    GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding,
+    ListViewColumnLayout, ModelSettings, ModelSettingsSource, ModelSize, ModelType, Mount,
+    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
+    PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
+    ResolvedModelSettings, GAME_CONTROLLER_CATEGORIES, LAUNCHBOX_AUDIT_COLUMNS,
     UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
@@ -2551,6 +2621,14 @@ pub struct LibraryControllerRust {
     game_delete_review_id: QString,
     game_delete_review_title: QString,
     platform_delete_review_name: QString,
+    audit_visible: bool,
+    audit_scope: QString,
+    audit_row_count: i32,
+    audit_column_count: i32,
+    audit_selected_count: i32,
+    audit_revision: i32,
+    audit_sort_key: QString,
+    audit_sort_descending: bool,
     last_added_game_id: QString,
     last_added_emulator_id: QString,
     last_added_game_controller_id: QString,
@@ -2619,6 +2697,9 @@ pub struct LibraryControllerRust {
     discovery_provider_cache: Option<Result<DiscoveryCatalog, String>>,
     big_box_screensaver_candidates: Vec<BigBoxScreensaverCandidate>,
     filtered_indices: Vec<usize>,
+    audit_indices: Vec<usize>,
+    audit_duplicate_ids: BTreeSet<String>,
+    audit_selected_ids: BTreeSet<String>,
     platform_counts: Vec<PlatformCount>,
     platform_names: Vec<String>,
     platform_sources: BTreeMap<String, PathBuf>,
@@ -18346,7 +18427,385 @@ fn path_mapping_key(mappings: &HostPathMappings, index: i32) -> Option<PathMappi
         })
 }
 
+impl LibraryControllerRust {
+    fn audit_game_at_row(&self, row: i32) -> Option<&Game> {
+        let row = usize::try_from(row).ok()?;
+        let game_index = *self.audit_indices.get(row)?;
+        self.games.get(game_index)
+    }
+
+    fn audit_supplement(&self, game_id: &str) -> AuditSupplement {
+        let mut media = AuditMediaCounts::default();
+        if let Some(items) = self.game_media_by_game_id.get(game_id) {
+            for item in items {
+                if item.kind == GameMediaKind::Video {
+                    media.video += 1;
+                    continue;
+                }
+                let media_type = item.media_type.trim().to_ascii_lowercase();
+                match media_type.as_str() {
+                    "arcade - cabinet" => media.arcade_cabinet += 1,
+                    "arcade - circuit board" => media.arcade_circuit_board += 1,
+                    "arcade - control panel" => media.arcade_control_panel += 1,
+                    "arcade - controls information" => media.arcade_controls_information += 1,
+                    "banner" => media.banner += 1,
+                    "box - 3d" => media.box_3d += 1,
+                    "box - back" | "box - back - reconstructed" => media.box_back += 1,
+                    "box - front" | "box - front - reconstructed" => media.box_front += 1,
+                    "box - spine" => media.box_spine += 1,
+                    "cart - 3d" => media.cart_3d += 1,
+                    "cart - back" => media.cart_back += 1,
+                    "cart - front" => media.cart_front += 1,
+                    "clear logo" => media.clear_logo += 1,
+                    "arcade - marquee" | "marquee" => media.marquee += 1,
+                    value if value.contains("background") => media.background += 1,
+                    value if value.starts_with("screenshot") => media.screenshot += 1,
+                    _ => {}
+                }
+            }
+        }
+        AuditSupplement {
+            additional_application_count: self
+                .additional_applications_by_game
+                .get(game_id)
+                .map(Vec::len)
+                .unwrap_or_default(),
+            alternate_names: self
+                .alternate_names_by_game
+                .get(game_id)
+                .map(|names| names.iter().map(|name| name.name.clone()).collect())
+                .unwrap_or_default(),
+            media,
+        }
+    }
+}
+
 impl qobject::LibraryController {
+    pub fn open_game_audit(mut self: Pin<&mut Self>, platform: QString) -> bool {
+        if self.as_ref().rust().games.is_empty() {
+            self.as_mut()
+                .set_status_message(qstring("Load a library before auditing games."));
+            return false;
+        }
+        let platform = platform.to_string();
+        let platform = platform.trim();
+        let indices = self
+            .as_ref()
+            .rust()
+            .games
+            .iter()
+            .enumerate()
+            .filter_map(|(index, game)| {
+                (platform.is_empty() || game.platform.eq_ignore_ascii_case(platform))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if indices.is_empty() {
+            self.as_mut().set_status_message(qstring(format!(
+                "No games are available to audit for {platform}."
+            )));
+            return false;
+        }
+        let row_count = saturating_i32(indices.len());
+        let scoped_games = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            indices
+                .iter()
+                .filter_map(|index| rust.games.get(*index).cloned())
+                .collect::<Vec<_>>()
+        };
+        let duplicate_ids = duplicate_game_ids(&scoped_games);
+        let scope = if platform.is_empty() {
+            "All Games".to_string()
+        } else {
+            platform.to_string()
+        };
+        {
+            let mut this = self.as_mut();
+            let mut rust = this.as_mut().rust_mut();
+            rust.audit_indices = indices;
+            rust.audit_duplicate_ids = duplicate_ids;
+            rust.audit_selected_ids.clear();
+        }
+        self.as_mut().set_audit_scope(qstring(scope.clone()));
+        self.as_mut().set_audit_row_count(row_count);
+        self.as_mut()
+            .set_audit_column_count(saturating_i32(LAUNCHBOX_AUDIT_COLUMNS.len()));
+        self.as_mut().set_audit_selected_count(0);
+        self.as_mut().set_audit_sort_key(QString::default());
+        self.as_mut().set_audit_sort_descending(false);
+        self.as_mut().set_audit_visible(true);
+        let revision = self.as_ref().audit_revision().wrapping_add(1);
+        self.as_mut().set_audit_revision(revision);
+        let title_column = LAUNCHBOX_AUDIT_COLUMNS
+            .iter()
+            .position(|column| column.key == "Title")
+            .map(saturating_i32)
+            .unwrap_or_default();
+        self.as_mut().sort_game_audit(title_column);
+        self.as_mut()
+            .set_status_message(qstring(format!("Auditing {row_count} games in {scope}.")));
+        true
+    }
+
+    pub fn close_game_audit(mut self: Pin<&mut Self>) {
+        self.as_mut().set_audit_visible(false);
+        self.as_mut().rust_mut().audit_selected_ids.clear();
+        self.as_mut().set_audit_selected_count(0);
+    }
+
+    pub fn audit_column_key_at(&self, column: i32) -> QString {
+        usize::try_from(column)
+            .ok()
+            .and_then(|column| LAUNCHBOX_AUDIT_COLUMNS.get(column))
+            .map(|column| qstring(column.key))
+            .unwrap_or_default()
+    }
+
+    pub fn audit_column_label_at(&self, column: i32) -> QString {
+        usize::try_from(column)
+            .ok()
+            .and_then(|column| LAUNCHBOX_AUDIT_COLUMNS.get(column))
+            .map(|column| qstring(column.label))
+            .unwrap_or_default()
+    }
+
+    pub fn audit_column_width_at(&self, column: i32) -> i32 {
+        usize::try_from(column)
+            .ok()
+            .and_then(|column| LAUNCHBOX_AUDIT_COLUMNS.get(column))
+            .map(|column| i32::from(column.width))
+            .unwrap_or_default()
+    }
+
+    pub fn audit_game_id_at(&self, row: i32) -> QString {
+        self.rust()
+            .audit_game_at_row(row)
+            .map(|game| qstring(&game.id))
+            .unwrap_or_default()
+    }
+
+    pub fn audit_cell_at(&self, row: i32, column: i32) -> QString {
+        let Some(game) = self.rust().audit_game_at_row(row) else {
+            return QString::default();
+        };
+        let Some(column) = usize::try_from(column)
+            .ok()
+            .and_then(|column| LAUNCHBOX_AUDIT_COLUMNS.get(column))
+        else {
+            return QString::default();
+        };
+        let supplement = self.rust().audit_supplement(&game.id);
+        qstring(audit_cell(
+            game,
+            &supplement,
+            self.rust().audit_duplicate_ids.contains(&game.id),
+            column.key,
+        ))
+    }
+
+    pub fn audit_row_is_duplicate(&self, row: i32) -> bool {
+        self.rust()
+            .audit_game_at_row(row)
+            .is_some_and(|game| self.rust().audit_duplicate_ids.contains(&game.id))
+    }
+
+    pub fn audit_row_is_selected(&self, row: i32) -> bool {
+        self.rust()
+            .audit_game_at_row(row)
+            .is_some_and(|game| self.rust().audit_selected_ids.contains(&game.id))
+    }
+
+    pub fn toggle_audit_row_selected(mut self: Pin<&mut Self>, row: i32) -> bool {
+        let Some(game_id) = self
+            .as_ref()
+            .rust()
+            .audit_game_at_row(row)
+            .map(|game| game.id.clone())
+        else {
+            return false;
+        };
+        let selected = {
+            let selected_ids = &mut self.as_mut().rust_mut().audit_selected_ids;
+            if selected_ids.remove(&game_id) {
+                false
+            } else {
+                selected_ids.insert(game_id);
+                true
+            }
+        };
+        let selected_count = {
+            let this = self.as_ref();
+            saturating_i32(this.rust().audit_selected_ids.len())
+        };
+        self.as_mut().set_audit_selected_count(selected_count);
+        let revision = self.as_ref().audit_revision().wrapping_add(1);
+        self.as_mut().set_audit_revision(revision);
+        selected
+    }
+
+    pub fn select_all_audit_rows(mut self: Pin<&mut Self>) {
+        let ids = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            rust.audit_indices
+                .iter()
+                .filter_map(|index| rust.games.get(*index))
+                .map(|game| game.id.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        let selected_count = saturating_i32(ids.len());
+        self.as_mut().rust_mut().audit_selected_ids = ids;
+        self.as_mut().set_audit_selected_count(selected_count);
+        let revision = self.as_ref().audit_revision().wrapping_add(1);
+        self.as_mut().set_audit_revision(revision);
+    }
+
+    pub fn clear_audit_selection(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().audit_selected_ids.clear();
+        self.as_mut().set_audit_selected_count(0);
+        let revision = self.as_ref().audit_revision().wrapping_add(1);
+        self.as_mut().set_audit_revision(revision);
+    }
+
+    pub fn sort_game_audit(mut self: Pin<&mut Self>, column: i32) -> bool {
+        let Some(column) = usize::try_from(column)
+            .ok()
+            .and_then(|column| LAUNCHBOX_AUDIT_COLUMNS.get(column))
+            .copied()
+        else {
+            return false;
+        };
+        let descending = self.as_ref().audit_sort_key().to_string() == column.key
+            && !*self.as_ref().audit_sort_descending();
+        let mut keyed = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            rust.audit_indices
+                .iter()
+                .filter_map(|index| {
+                    let game = rust.games.get(*index)?;
+                    let supplement = rust.audit_supplement(&game.id);
+                    Some((
+                        *index,
+                        audit_cell(
+                            game,
+                            &supplement,
+                            rust.audit_duplicate_ids.contains(&game.id),
+                            column.key,
+                        ),
+                        game.id.clone(),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        keyed.sort_by(|left, right| {
+            let order = match column.kind {
+                AuditColumnKind::Number => left
+                    .1
+                    .parse::<u64>()
+                    .unwrap_or_default()
+                    .cmp(&right.1.parse::<u64>().unwrap_or_default()),
+                AuditColumnKind::Text | AuditColumnKind::Boolean | AuditColumnKind::DateTime => {
+                    left.1.to_lowercase().cmp(&right.1.to_lowercase())
+                }
+            }
+            .then_with(|| left.2.cmp(&right.2));
+            if descending {
+                order.reverse()
+            } else {
+                order
+            }
+        });
+        self.as_mut().rust_mut().audit_indices =
+            keyed.into_iter().map(|(index, _, _)| index).collect();
+        self.as_mut().set_audit_sort_key(qstring(column.key));
+        self.as_mut().set_audit_sort_descending(descending);
+        let revision = self.as_ref().audit_revision().wrapping_add(1);
+        self.as_mut().set_audit_revision(revision);
+        true
+    }
+
+    pub fn selected_game_audit_tsv(mut self: Pin<&mut Self>) -> QString {
+        if self.as_ref().rust().audit_selected_ids.is_empty() {
+            self.as_mut()
+                .set_status_message(qstring("Select at least one audit row before copying."));
+            return QString::default();
+        }
+        let (games, supplements, selected_ids) = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            let games = rust
+                .audit_indices
+                .iter()
+                .filter_map(|index| rust.games.get(*index).cloned())
+                .collect::<Vec<_>>();
+            let supplements = games
+                .iter()
+                .map(|game| (game.id.clone(), rust.audit_supplement(&game.id)))
+                .collect::<BTreeMap<_, _>>();
+            (games, supplements, rust.audit_selected_ids.clone())
+        };
+        let output = audit_tsv(&games, &supplements, Some(&selected_ids));
+        const MAX_AUDIT_CLIPBOARD_BYTES: usize = 64 * 1024 * 1024;
+        if output.len() > MAX_AUDIT_CLIPBOARD_BYTES {
+            self.as_mut().set_status_message(qstring(format!(
+                "The selected audit data is {:.1} MiB; reduce the selection below 64 MiB before copying.",
+                output.len() as f64 / (1024.0 * 1024.0)
+            )));
+            return QString::default();
+        }
+        self.as_mut().set_status_message(qstring(format!(
+            "Prepared {} selected audit rows for spreadsheet copy.",
+            selected_ids.len()
+        )));
+        qstring(output)
+    }
+
+    pub fn report_game_audit_smoke_success(
+        &self,
+        expected_rows: i32,
+        duplicate_rows: i32,
+        selected_rows: i32,
+        copied_header: QString,
+    ) -> bool {
+        let copied_header = copied_header.to_string();
+        let success = expected_rows == *self.audit_row_count()
+            && *self.audit_column_count() == saturating_i32(LAUNCHBOX_AUDIT_COLUMNS.len())
+            && duplicate_rows
+                == saturating_i32(
+                    self.rust()
+                        .audit_indices
+                        .iter()
+                        .filter_map(|index| self.rust().games.get(*index))
+                        .filter(|game| self.rust().audit_duplicate_ids.contains(&game.id))
+                        .count(),
+                )
+            && selected_rows == *self.audit_selected_count()
+            && copied_header == LAUNCHBOX_AUDIT_COLUMNS[0].label;
+        if success {
+            eprintln!(
+                "GAME_AUDIT_SMOKE_COMPLETE rows={} columns={} duplicates={duplicate_rows} selected={selected_rows} header=\"{copied_header}\"",
+                self.audit_row_count(),
+                self.audit_column_count(),
+            );
+        }
+        success
+    }
+
+    pub fn report_game_audit_edit_smoke_success(&self, game_id: QString, row: i32) -> bool {
+        let game_id = game_id.to_string();
+        let success = !*self.audit_visible()
+            && self
+                .filtered_game(row)
+                .is_some_and(|game| game.id == game_id);
+        if success {
+            eprintln!("GAME_AUDIT_EDIT_SMOKE_COMPLETE id={game_id} row={row}");
+        }
+        success
+    }
+
     pub fn configure_frontend(mut self: Pin<&mut Self>, big_box: bool) {
         self.as_mut().set_frontend_is_big_box(big_box);
         if !self.as_ref().rust().model_viewer_state_initialized {
@@ -27478,6 +27937,17 @@ impl qobject::LibraryController {
             .unwrap_or_default()
     }
 
+    pub fn game_record_json_for_id(&self, game_id: QString) -> QString {
+        let game_id = game_id.to_string();
+        self.rust()
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(&game_id))
+            .and_then(|game| serde_json::to_string(game).ok())
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
     pub fn row_count(&self, parent: &QModelIndex) -> i32 {
         if parent.is_valid() {
             0
@@ -34820,6 +35290,9 @@ impl qobject::LibraryController {
             rust.big_box_screensaver_candidates = big_box_screensaver_candidates;
             rust.list_view_column_layout = list_view_column_layout;
             rust.filtered_indices = filtered_indices;
+            rust.audit_indices.clear();
+            rust.audit_duplicate_ids.clear();
+            rust.audit_selected_ids.clear();
             rust.platform_counts = platform_counts;
             rust.platform_names = platform_names;
             rust.platform_sources = platform_sources;
@@ -34921,6 +35394,16 @@ impl qobject::LibraryController {
         self.as_mut().set_emulator_release_json(QString::default());
         self.as_mut().set_emulator_managed_json(QString::default());
         self.as_mut().set_game_count(game_count);
+        self.as_mut().set_audit_visible(false);
+        self.as_mut().set_audit_scope(QString::default());
+        self.as_mut().set_audit_row_count(0);
+        self.as_mut()
+            .set_audit_column_count(saturating_i32(LAUNCHBOX_AUDIT_COLUMNS.len()));
+        self.as_mut().set_audit_selected_count(0);
+        self.as_mut().set_audit_sort_key(QString::default());
+        self.as_mut().set_audit_sort_descending(false);
+        let audit_revision = self.as_ref().audit_revision().wrapping_add(1);
+        self.as_mut().set_audit_revision(audit_revision);
         self.as_mut().set_front_image_count(front_image_count);
         self.as_mut().set_indexed_media_count(indexed_media_count);
         self.as_mut().set_indexed_manual_count(indexed_manual_count);

@@ -243,6 +243,21 @@ completion metrics.
 
 ## Immediate next milestone
 
+The first `LIB-015` game-audit vertical is now implemented independently of
+LaunchBox's still-open bulk editor. The native Qt dialog freezes and renders
+all 76 structurally recovered 13.27 columns for the complete collection or one
+platform, detects repeated non-zero LaunchBox Games Database IDs, supports
+typed ordering and stable-ID selection, copies selected rows with complete TSV
+headings through Qt's clipboard, and hands Edit to the existing full game
+editor. Related applications, alternate names, and 16 image counts plus video
+come from existing bounded indexes; unavailable MAME/storefront derivations
+remain blank rather than being invented. Pure contract tests and a rendered
+read-only dialog workflow cover database-ID duplicates across different
+titles, sorting, selection, export, and edit handoff. Exact protected grid
+behavior, authoritative MAME/storefront providers, native Windows/macOS
+interaction, and the separate bulk-edit wizard remain the next `LIB-015`
+work.
+
 The repository and a narrow library-browsing vertical slice now exist. Exact
 multi-document transactions, golden semantic-diff/failure coverage, and the
 51-role `QAbstractListModel` now pass. Pending recovery, write-conflict UX,

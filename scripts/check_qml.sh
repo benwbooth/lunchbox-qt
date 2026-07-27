@@ -49,7 +49,8 @@ diagnostics=$(
     apps/lb-shell/qml/LaunchStartupOverlay.qml \
     apps/lb-shell/qml/LaunchShutdownOverlay.qml \
     apps/lb-shell/qml/LaunchPauseOverlay.qml \
-    apps/lb-shell/qml/LaunchBoxSystemTray.qml 2>&1
+    apps/lb-shell/qml/LaunchBoxSystemTray.qml \
+    apps/lb-shell/qml/GameAuditDialog.qml 2>&1
 ) || {
   printf '%s\n' "$diagnostics" >&2
   exit 1
@@ -2521,6 +2522,7 @@ echo "BigBox category/platform/playlist navigation and exact membership filterin
 
 edit_root=$(mktemp -d)
 library_filter_root=$(mktemp -d)
+game_audit_root=$(mktemp -d)
 launchbox_order_root=$(mktemp -d)
 bigbox_order_root=$(mktemp -d)
 launchbox_list_root=$(mktemp -d)
@@ -2564,7 +2566,7 @@ archive_launch_root=$(mktemp -d)
 m3u_launch_root=$(mktemp -d)
 dosbox_launch_root=$(mktemp -d)
 scummvm_launch_root=$(mktemp -d)
-trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$launchbox_desktop_tray_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$game_controller_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$desktop_command_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
+trap 'rm -rf "$test_config_root" "$media_root" "$edit_root" "$library_filter_root" "$game_audit_root" "$launchbox_order_root" "$bigbox_order_root" "$launchbox_list_root" "$launchbox_box_size_root" "$launchbox_desktop_tray_root" "$crud_root" "$additional_application_crud_root" "$additional_application_default_root" "$game_save_metadata_root" "$retroarch_save_scan_root" "$dolphin_save_scan_root" "$pcsx2_save_scan_root" "$game_save_backup_root" "$pcsx2_save_backup_root" "$pcsx2_save_lifecycle_root" "$dolphin_wii_save_lifecycle_root" "$game_save_delete_root" "$game_save_active_delete_root" "$game_save_restore_root" "$game_save_saturn_restore_root" "$import_root" "$import_source_root" "$platform_crud_root" "$emulator_crud_root" "$game_controller_crud_root" "$retroarch_core_editor_root" "$emulator_discovery_root" "$emulator_bios_root" "$emulator_install_root" "$emulator_release_fixture_root" "$category_crud_root" "$playlist_crud_root" "$game_grouping_root" "$emulator_launch_root" "$disabled_lifecycle_root" "$short_lifecycle_root" "$direct_launch_root" "$desktop_command_root" "$sequence_launch_root" "$archive_launch_root" "$m3u_launch_root" "$dosbox_launch_root" "$scummvm_launch_root"' EXIT
 
 cp -a fixtures/launchbox/. "$library_filter_root/"
 library_filter_platform="$library_filter_root/Data/Platforms/Fixture Console.xml"
@@ -2605,6 +2607,45 @@ for shell in launchbox bigbox; do
 done
 
 echo "LaunchBox and BigBox combined state, visibility, and all missing-media filter controls validated without library writes."
+
+cp -a fixtures/launchbox/. "$game_audit_root/"
+game_audit_platform="$game_audit_root/Data/Platforms/Fixture Console.xml"
+game_audit_screenshot="$game_audit_root/game-audit.png"
+sed -i \
+  '/<ID>fixture-racer<\/ID>/a\    <DatabaseID>1234</DatabaseID>' \
+  "$game_audit_platform"
+cp "$game_audit_platform" "$game_audit_platform.before-audit-smoke"
+game_audit_output=$(
+  run_rendered_smoke "$binary_dir/launchbox" \
+    --library "$game_audit_root" \
+    --game-audit-smoke-test \
+    --game-audit-screenshot "$game_audit_screenshot" \
+    --path-mappings-file "$empty_path_mappings" 2>&1
+) || {
+  printf '%s\n' "$game_audit_output" >&2
+  exit 1
+}
+if ! rg -q \
+  'GAME_AUDIT_SMOKE_COMPLETE rows=3 columns=76 duplicates=2 selected=2 header="Additional Applications"' \
+  <<< "$game_audit_output" \
+  || ! rg -q \
+    'GAME_AUDIT_EDIT_SMOKE_COMPLETE id=fixture-(adventure|racer) row=[0-9]+' \
+    <<< "$game_audit_output"; then
+  printf '%s\n' "$game_audit_output" >&2
+  echo "LaunchBox did not validate its recovered game-audit contract." >&2
+  exit 1
+fi
+if [[ ! -s "$game_audit_screenshot" ]] \
+  || [[ $(wc -c < "$game_audit_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$game_audit_screenshot" \
+      | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$game_audit_output" >&2
+  echo "LaunchBox did not render a valid game-audit PNG." >&2
+  exit 1
+fi
+cmp "$game_audit_platform.before-audit-smoke" "$game_audit_platform"
+
+echo "LaunchBox 76-column game audit, platform-scoped duplicate detection, native sorting, selection, spreadsheet TSV export, rendered UI, and read-only library behavior validated."
 
 cp -a fixtures/launchbox/. "$launchbox_order_root/"
 cp -a fixtures/launchbox/. "$bigbox_order_root/"
