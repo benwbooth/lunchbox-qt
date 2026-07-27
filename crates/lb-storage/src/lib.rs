@@ -1,12 +1,12 @@
 use lb_domain::{
     is_unassigned_emulator_id, mutate_multi_value_text, AdditionalApplication,
-    AdditionalApplicationEdit, AlternateName, ArgbColor, BulkGameEdit, BulkGameEditOperation,
-    BulkGameField, CatalogValidationError, CustomField, Emulator, EmulatorConfiguration,
-    EmulatorPlatform, Game, GameController, GameControllerSupport, GameLaunchConfiguration,
-    GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding, ModelSettings, ModelSettingsError,
-    ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship, PlatformCatalog,
-    PlatformCategory, PlatformDefinition, PlatformFolder, PlatformLibrary, Playlist,
-    PlaylistDocument, PlaylistFilter, PlaylistGame, ValidationError,
+    AdditionalApplicationEdit, AlternateName, ArgbColor, BulkControllerSupportEdit, BulkGameEdit,
+    BulkGameEditOperation, BulkGameField, CatalogValidationError, CustomField, Emulator,
+    EmulatorConfiguration, EmulatorPlatform, Game, GameController, GameControllerSupport,
+    GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding,
+    ModelSettings, ModelSettingsError, ModelSize, ModelType, Mount, NavigationMetadata,
+    ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder,
+    PlatformLibrary, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame, ValidationError,
 };
 #[cfg(test)]
 use lb_domain::{
@@ -4414,6 +4414,79 @@ impl PlatformDocument {
             .collect())
     }
 
+    /// Applies the recovered bulk Controller Support operation to one game.
+    ///
+    /// Removals are evaluated first. Additions then insert missing rows or set
+    /// an existing row to the chosen level. Retained rows flow through
+    /// `set_game_controller_support`, which preserves their unknown XML
+    /// children and canonicalizes level zero to an omitted element.
+    pub fn apply_bulk_game_controller_support_edit(
+        &mut self,
+        game_id: &str,
+        edit: &BulkControllerSupportEdit,
+    ) -> Result<Vec<GameControllerSupport>, StorageError> {
+        edit.validate()
+            .map_err(|error| StorageError::InvalidGameRecordEdit {
+                record: "controller support",
+                game_id: game_id.to_string(),
+                reason: error.to_string(),
+            })?;
+        let exact_game_id = self
+            .library
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(game_id))
+            .map(|game| game.id.clone())
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: game_id.to_string(),
+            })?;
+        let remove = edit
+            .remove_controller_ids
+            .iter()
+            .map(|id| id.to_lowercase())
+            .collect::<BTreeSet<_>>();
+        let additions = edit
+            .add_controller_ids
+            .iter()
+            .map(|id| (id.to_lowercase(), id.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let support_level = edit
+            .support_level
+            .map(|level| level.persisted_value())
+            .unwrap_or_default();
+        let mut handled_additions = BTreeSet::new();
+        let mut replacement = Vec::new();
+        for original in self
+            .library
+            .controller_support
+            .iter()
+            .filter(|record| record.game_id.eq_ignore_ascii_case(&exact_game_id))
+        {
+            let key = original.controller_id.to_lowercase();
+            if remove.contains(&key) {
+                continue;
+            }
+            let mut record = original.clone();
+            if let Some(canonical_id) = additions.get(&key) {
+                record.controller_id = canonical_id.clone();
+                record.support_level = support_level;
+                handled_additions.insert(key);
+            }
+            replacement.push(record);
+        }
+        for controller_id in &edit.add_controller_ids {
+            let key = controller_id.to_lowercase();
+            if handled_additions.insert(key) {
+                replacement.push(GameControllerSupport {
+                    controller_id: controller_id.clone(),
+                    game_id: exact_game_id.clone(),
+                    support_level,
+                });
+            }
+        }
+        self.set_game_controller_support(&exact_game_id, replacement)
+    }
+
     pub fn add_game(&mut self, new_game: NewGame) -> Result<Game, StorageError> {
         if new_game.application_path.trim().is_empty() {
             return Err(StorageError::EmptyGameApplicationPath { id: new_game.id });
@@ -6133,6 +6206,15 @@ impl PlatformDocument {
                     record: "Game",
                     game_id: id.to_string(),
                     reason: "platform changes require a cross-document library transaction".into(),
+                });
+            }
+            BulkGameField::ControllerSupport => {
+                return Err(StorageError::InvalidGameRecordEdit {
+                    record: "Game",
+                    game_id: id.to_string(),
+                    reason:
+                        "controller support changes require the typed related-record bulk operation"
+                            .into(),
                 });
             }
             field => {
@@ -10521,6 +10603,70 @@ mod tests {
             .unwrap();
         assert!(!final_record.contains("<SupportLevel>"));
         assert!(!final_xml.contains("keep-support"));
+    }
+
+    #[test]
+    fn bulk_controller_support_adds_updates_and_removes_losslessly() {
+        let fixture = FIXTURE
+            .replacen(
+                "    <SupportLevel>2</SupportLevel>",
+                "    <SupportLevel>2</SupportLevel>\n    <FutureControllerSupportElement>keep-support</FutureControllerSupportElement>",
+                1,
+            )
+            .replace(
+                "  <GameSave>",
+                r#"  <GameControllerSupport>
+    <ControllerId>legacy-controller</ControllerId>
+    <GameId>fixture-racer</GameId>
+    <SupportLevel>1</SupportLevel>
+    <FutureRemovedSupportElement>remove-with-row</FutureRemovedSupportElement>
+  </GameControllerSupport>
+  <GameSave>"#,
+            );
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", fixture.as_bytes()).unwrap();
+        let edit = BulkControllerSupportEdit {
+            add_controller_ids: vec!["FIXTURE-CONTROLLER".into(), "new-controller".into()],
+            remove_controller_ids: vec!["LEGACY-CONTROLLER".into()],
+            support_level: Some(lb_domain::GameControllerSupportLevel::Required),
+        };
+        let racer = document
+            .apply_bulk_game_controller_support_edit("fixture-racer", &edit)
+            .expect("bulk controller support");
+        assert_eq!(racer.len(), 2);
+        assert!(racer.iter().all(|record| record.support_level == Some(3)));
+        assert!(racer
+            .iter()
+            .any(|record| record.controller_id == "FIXTURE-CONTROLLER"));
+        assert!(racer
+            .iter()
+            .any(|record| record.controller_id == "new-controller"));
+
+        let adventure = document
+            .apply_bulk_game_controller_support_edit(
+                "fixture-adventure",
+                &BulkControllerSupportEdit {
+                    add_controller_ids: vec!["new-controller".into()],
+                    remove_controller_ids: Vec::new(),
+                    support_level: Some(lb_domain::GameControllerSupportLevel::NotSupported),
+                },
+            )
+            .expect("bulk add omitted support level");
+        assert_eq!(adventure.len(), 1);
+        assert_eq!(adventure[0].support_level, None);
+
+        let xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(xml.contains(
+            "<FutureControllerSupportElement>keep-support</FutureControllerSupportElement>"
+        ));
+        assert!(!xml.contains("legacy-controller"));
+        assert!(!xml.contains("remove-with-row"));
+        let adventure_row = xml
+            .split("<GameControllerSupport>")
+            .find(|row| row.contains("<GameId>fixture-adventure</GameId>"))
+            .expect("adventure support row");
+        assert!(!adventure_row.contains("<SupportLevel>"));
+        assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
     }
 
     fn grouped_game_save_fixture() -> String {

@@ -2667,7 +2667,7 @@ bulk_edit_output=$(
   exit 1
 }
 if ! rg -q \
-  'BULK_EDIT_SMOKE_COMPLETE games=2 field=customDosBoxVersion value="ThirdParty\\DOSBox\\bulk-smoke\\DOSBox.exe" transaction=1' \
+  'BULK_EDIT_SMOKE_COMPLETE games=2 field=controllerSupport value="fixture-controller" transaction=1' \
   <<< "$bulk_edit_output"; then
   printf '%s\n' "$bulk_edit_output" >&2
   echo "LaunchBox did not complete the native bulk-edit workflow." >&2
@@ -2678,7 +2678,7 @@ if [[ ! -s "$bulk_edit_screenshot" ]] \
   || [[ $(od -An -tx1 -N8 "$bulk_edit_screenshot" \
       | tr -d ' \n') != 89504e470d0a1a0a ]]; then
   printf '%s\n' "$bulk_edit_output" >&2
-  echo "LaunchBox did not render a valid bulk-edit confirmation PNG." >&2
+  echo "LaunchBox did not render a valid bulk controller-support editor PNG." >&2
   exit 1
 fi
 if [[ ! -s "$bulk_edit_platform_screenshot" ]] \
@@ -2689,8 +2689,11 @@ if [[ ! -s "$bulk_edit_platform_screenshot" ]] \
   echo "LaunchBox did not render the platform media-migration page." >&2
   exit 1
 fi
-if [[ $(rg -c '<CustomDosBoxVersionPath>ThirdParty\\DOSBox\\bulk-smoke\\DOSBox.exe</CustomDosBoxVersionPath>' \
+if [[ $(rg -c '<ControllerId>fixture-controller</ControllerId>' \
       "$bulk_edit_platform") -ne 2 ]] \
+  || [[ $(rg -c '<SupportLevel>3</SupportLevel>' \
+      "$bulk_edit_platform") -ne 2 ]] \
+  || rg -q '<SupportLevel>2</SupportLevel>' "$bulk_edit_platform" \
   || ! rg -q \
     '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>' \
     "$bulk_edit_platform" \
@@ -2714,7 +2717,7 @@ if [[ ${#bulk_edit_backups[@]} -ne 1 ]] \
   exit 1
 fi
 
-echo "LaunchBox native bulk edit validated stable selected IDs, the conditional platform media-migration page, the recovered Custom DOSBox Version lexical-path field, confirmation rendering, one recoverable transaction, unknown XML/path preservation, and an exact backup."
+echo "LaunchBox native bulk edit validated stable selected IDs, the conditional platform media-migration page, the recovered Controller Support add/update surface and exact Required level, one recoverable transaction, unknown XML/path preservation, and an exact backup."
 
 cp -a fixtures/launchbox/. "$launchbox_order_root/"
 cp -a fixtures/launchbox/. "$bigbox_order_root/"

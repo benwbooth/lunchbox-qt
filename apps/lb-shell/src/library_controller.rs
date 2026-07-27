@@ -2016,6 +2016,12 @@ pub mod qobject {
         fn bulk_edit_field_clearable_at(self: &LibraryController, field: i32) -> bool;
 
         #[qinvokable]
+        fn bulk_edit_controller_current_game_count(
+            self: &LibraryController,
+            controller_id: QString,
+        ) -> i32;
+
+        #[qinvokable]
         fn open_audit_bulk_edit(self: Pin<&mut LibraryController>) -> bool;
 
         #[qinvokable]
@@ -2170,15 +2176,16 @@ use cxx_qt_lib::{
 use lb_domain::{
     audit_cell, audit_tsv, built_in_model_settings, duplicate_game_ids, resolve_model_settings,
     AdditionalApplication, AdditionalApplicationEdit, AlternateName, ApplicationDataBackupPolicy,
-    ArgbColor, AuditColumnKind, AuditMediaCounts, AuditSupplement, BoxSize, BulkGameEdit,
-    BulkGameEditOperation, BulkGameField, CustomField, DesktopNotificationType, DesktopTrayPolicy,
-    Emulator, EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game, GameController,
-    GameControllerSupport, GameControllerSupportLevel, GameLaunchConfiguration, GameMetadata,
-    GameSave, GameSaveMetadataEdit, InputBinding, ListViewColumnLayout, ModelSettings,
-    ModelSettingsSource, ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship,
-    PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
-    PlaylistDocument, PlaylistFilter, PlaylistGame, ResolvedModelSettings, BULK_GAME_FIELDS,
-    GAME_CONTROLLER_CATEGORIES, LAUNCHBOX_AUDIT_COLUMNS, UNASSIGNED_EMULATOR_ID,
+    ArgbColor, AuditColumnKind, AuditMediaCounts, AuditSupplement, BoxSize,
+    BulkControllerSupportEdit, BulkGameEdit, BulkGameEditOperation, BulkGameField, CustomField,
+    DesktopNotificationType, DesktopTrayPolicy, Emulator, EmulatorConfiguration, EmulatorPlatform,
+    FrontendSettings, Game, GameController, GameControllerSupport, GameControllerSupportLevel,
+    GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding,
+    ListViewColumnLayout, ModelSettings, ModelSettingsSource, ModelSize, ModelType, Mount,
+    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
+    PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
+    ResolvedModelSettings, BULK_GAME_FIELDS, GAME_CONTROLLER_CATEGORIES, LAUNCHBOX_AUDIT_COLUMNS,
+    UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -3837,6 +3844,8 @@ struct BulkGameWriteSuccess {
     media_refresh: Option<GameMediaIndex>,
     additional_applications: Vec<(String, Vec<AdditionalApplication>)>,
     propagated_additional_application_count: usize,
+    controller_support: Vec<(String, Vec<GameControllerSupport>)>,
+    controller_support_change_count: usize,
 }
 
 struct BigBoxGameStateWriteSuccess {
@@ -4649,7 +4658,7 @@ enum GameControllerWriteFailure {
 }
 
 const GAME_EDIT_PAYLOAD_VERSION: u32 = 5;
-const BULK_GAME_EDIT_PAYLOAD_VERSION: u32 = 1;
+const BULK_GAME_EDIT_PAYLOAD_VERSION: u32 = 2;
 const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const GAME_CONTROLLER_EDIT_PAYLOAD_VERSION: u32 = 1;
@@ -4675,6 +4684,9 @@ struct BulkGameEditPayload {
     number: Option<f64>,
     custom_field_name: Option<String>,
     migrate_media: Option<bool>,
+    add_controller_ids: Option<Vec<String>>,
+    remove_controller_ids: Option<Vec<String>>,
+    support_level: Option<i32>,
 }
 
 impl BulkGameEditPayload {
@@ -4685,6 +4697,35 @@ impl BulkGameEditPayload {
                 self.version, BULK_GAME_EDIT_PAYLOAD_VERSION
             ));
         }
+        let controller_support = if self.field == BulkGameField::ControllerSupport {
+            let support_level = self
+                .support_level
+                .map(|level| {
+                    GameControllerSupportLevel::from_index(level)
+                        .ok_or_else(|| format!("invalid controller support level: {level}"))
+                })
+                .transpose()?;
+            let controller_support = BulkControllerSupportEdit {
+                add_controller_ids: self.add_controller_ids.unwrap_or_default(),
+                remove_controller_ids: self.remove_controller_ids.unwrap_or_default(),
+                support_level,
+            };
+            controller_support
+                .validate()
+                .map_err(|error| error.to_string())?;
+            Some(controller_support)
+        } else {
+            if self.add_controller_ids.is_some()
+                || self.remove_controller_ids.is_some()
+                || self.support_level.is_some()
+            {
+                return Err(
+                    "controller additions, removals, and support level are only valid for Controller Support"
+                        .into(),
+                );
+            }
+            None
+        };
         let edit = BulkGameEdit {
             field: self.field,
             operation: self.operation,
@@ -4704,6 +4745,7 @@ impl BulkGameEditPayload {
         Ok(BulkGameWriteRequest {
             edit,
             migrate_media: self.migrate_media.unwrap_or(false),
+            controller_support,
         })
     }
 }
@@ -4712,6 +4754,7 @@ impl BulkGameEditPayload {
 struct BulkGameWriteRequest {
     edit: BulkGameEdit,
     migrate_media: bool,
+    controller_support: Option<BulkControllerSupportEdit>,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -7633,6 +7676,13 @@ fn write_bulk_game_edit(
             "the bulk-edit target set is empty".into(),
         ));
     }
+    if (request.edit.field == BulkGameField::ControllerSupport)
+        != request.controller_support.is_some()
+    {
+        return Err(GameWriteFailure::Other(
+            "the Controller Support field requires its typed add/remove operation".into(),
+        ));
+    }
     if request.edit.field == BulkGameField::Platform {
         return write_platform_bulk_game_edit(root, targets, request, path_resolver);
     }
@@ -7662,6 +7712,30 @@ fn write_bulk_game_edit(
             })?;
         request.edit.text = Some(emulator.id.clone());
     }
+    if let Some(controller_support) = &mut request.controller_support {
+        let data = LaunchBoxDataIndex::load(&root)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        for requested_id in controller_support
+            .add_controller_ids
+            .iter_mut()
+            .chain(&mut controller_support.remove_controller_ids)
+        {
+            let requested = requested_id.trim();
+            let controller = data
+                .game_controllers()
+                .iter()
+                .find(|controller| controller.id.eq_ignore_ascii_case(requested))
+                .ok_or_else(|| {
+                    GameWriteFailure::Other(format!(
+                        "bulk-edit controller is not present in the current catalog: {requested}"
+                    ))
+                })?;
+            *requested_id = controller.id.clone();
+        }
+        controller_support
+            .validate()
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    }
     let mut by_source = BTreeMap::<PathBuf, Vec<String>>::new();
     for (source, id) in targets {
         by_source.entry(source).or_default().push(id);
@@ -7670,6 +7744,8 @@ fn write_bulk_game_edit(
     let mut games = Vec::new();
     let mut additional_applications = Vec::new();
     let mut propagated_additional_application_count = 0usize;
+    let mut controller_support = Vec::new();
+    let mut controller_support_change_count = 0usize;
     for (source, ids) in by_source {
         let mut document = PlatformDocument::load(&source)
             .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
@@ -7695,9 +7771,66 @@ fn write_bulk_game_edit(
                         })
                         .collect::<BTreeMap<_, _>>()
                 });
-            let game = document
-                .apply_bulk_game_edit(&id, &request.edit)
-                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            let original_controller_support = request.controller_support.as_ref().map(|_| {
+                document
+                    .library()
+                    .controller_support
+                    .iter()
+                    .filter(|record| record.game_id.eq_ignore_ascii_case(&id))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+            let game = if let Some(edit) = &request.controller_support {
+                let records = document
+                    .apply_bulk_game_controller_support_edit(&id, edit)
+                    .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+                let original = original_controller_support
+                    .as_ref()
+                    .expect("controller support original was captured");
+                let original_by_id = original
+                    .iter()
+                    .map(|record| {
+                        (
+                            record.controller_id.to_lowercase(),
+                            (record.controller_id.clone(), record.support_level),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let committed_by_id = records
+                    .iter()
+                    .map(|record| {
+                        (
+                            record.controller_id.to_lowercase(),
+                            (record.controller_id.clone(), record.support_level),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let changed_ids = original_by_id
+                    .keys()
+                    .chain(committed_by_id.keys())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .filter(|key| original_by_id.get(*key) != committed_by_id.get(*key))
+                    .count();
+                controller_support_change_count =
+                    controller_support_change_count.saturating_add(changed_ids);
+                controller_support.push((id.clone(), records));
+                document
+                    .library()
+                    .games
+                    .iter()
+                    .find(|game| game.id.eq_ignore_ascii_case(&id))
+                    .cloned()
+                    .ok_or_else(|| {
+                        GameWriteFailure::Other(format!(
+                            "game {id} disappeared during controller-support bulk edit"
+                        ))
+                    })?
+            } else {
+                document
+                    .apply_bulk_game_edit(&id, &request.edit)
+                    .map_err(|error| GameWriteFailure::Other(error.to_string()))?
+            };
             if let Some(original_application_emulators) = original_application_emulators {
                 let mut applications = document
                     .library()
@@ -7753,6 +7886,8 @@ fn write_bulk_game_edit(
         media_refresh: None,
         additional_applications,
         propagated_additional_application_count,
+        controller_support,
+        controller_support_change_count,
     })
 }
 
@@ -8030,6 +8165,8 @@ fn write_platform_bulk_game_edit(
         media_refresh,
         additional_applications: Vec::new(),
         propagated_additional_application_count: 0,
+        controller_support: Vec::new(),
+        controller_support_change_count: 0,
     })
 }
 
@@ -19357,6 +19494,26 @@ impl qobject::LibraryController {
             .is_some_and(|definition| definition.clearable)
     }
 
+    pub fn bulk_edit_controller_current_game_count(&self, controller_id: QString) -> i32 {
+        let controller_id = controller_id.to_string();
+        saturating_i32(
+            self.rust()
+                .bulk_edit_target_ids
+                .iter()
+                .filter(|game_id| {
+                    self.rust()
+                        .controller_support_by_game
+                        .get(*game_id)
+                        .is_some_and(|records| {
+                            records.iter().any(|record| {
+                                record.controller_id.eq_ignore_ascii_case(&controller_id)
+                            })
+                        })
+                })
+                .count(),
+        )
+    }
+
     pub fn open_audit_bulk_edit(mut self: Pin<&mut Self>) -> bool {
         if self.as_ref().rust().audit_selected_ids.is_empty() {
             self.as_mut().set_status_message(qstring(
@@ -19511,6 +19668,17 @@ impl qobject::LibraryController {
                     || (field == "customDosBoxVersion"
                         && game.custom_dos_box_version_path.as_deref()
                             == Some(expected_value.as_str()))
+                    || (field == "controllerSupport"
+                        && self
+                            .rust()
+                            .controller_support_by_game
+                            .get(&game.id)
+                            .is_some_and(|records| {
+                                records.iter().any(|record| {
+                                    record.controller_id.eq_ignore_ascii_case(&expected_value)
+                                        && record.level() == GameControllerSupportLevel::Required
+                                })
+                            }))
             })
             .count();
         let success = !*self.writing()
@@ -32321,6 +32489,8 @@ impl qobject::LibraryController {
                     media_refresh,
                     additional_applications,
                     propagated_additional_application_count,
+                    controller_support,
+                    controller_support_change_count,
                 } = success;
                 let completed = saturating_i32(games.len());
                 let moved_platforms = games
@@ -32376,6 +32546,26 @@ impl qobject::LibraryController {
                         .additional_application_revision()
                         .wrapping_add(1);
                     self.as_mut().set_additional_application_revision(revision);
+                }
+                if !controller_support.is_empty() {
+                    for (game_id, records) in controller_support {
+                        if records.is_empty() {
+                            self.as_mut()
+                                .rust_mut()
+                                .controller_support_by_game
+                                .remove(&game_id);
+                        } else {
+                            self.as_mut()
+                                .rust_mut()
+                                .controller_support_by_game
+                                .insert(game_id, records);
+                        }
+                    }
+                    let revision = self
+                        .as_ref()
+                        .game_controller_support_revision()
+                        .wrapping_add(1);
+                    self.as_mut().set_game_controller_support_revision(revision);
                 }
                 if !moved_game_ids.is_empty() {
                     let media_refresh = media_refresh.unwrap_or_default();
@@ -32440,7 +32630,7 @@ impl qobject::LibraryController {
                         .join(", ")
                 };
                 let result_message = format!(
-                    "Updated {completed} games, propagated {propagated_additional_application_count} matching additional-application emulator setting(s), and moved {media_move_count} media file(s) in one recoverable transaction with {} exact backup(s): {backup_summary}",
+                    "Updated {completed} games, changed {controller_support_change_count} controller-support row(s), propagated {propagated_additional_application_count} matching additional-application emulator setting(s), and moved {media_move_count} media file(s) in one recoverable transaction with {} exact backup(s): {backup_summary}",
                     backups.len(),
                 );
                 self.as_mut()
@@ -42510,7 +42700,7 @@ mod tests {
     fn bulk_game_edit_payload_is_versioned_and_rejects_cross_editor_values() {
         let parsed = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 1,
+                "version": 2,
                 "field": "publisher",
                 "operation": "set",
                 "text": "Bulk Publisher"
@@ -42526,7 +42716,7 @@ mod tests {
 
         let wrong_version = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 2,
+                "version": 3,
                 "field": "publisher",
                 "operation": "set",
                 "text": "Bulk Publisher"
@@ -42540,7 +42730,7 @@ mod tests {
 
         let cross_editor = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 1,
+                "version": 2,
                 "field": "broken",
                 "operation": "set",
                 "text": "true"
@@ -42554,7 +42744,7 @@ mod tests {
 
         let platform = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 1,
+                "version": 2,
                 "field": "platform",
                 "operation": "set",
                 "text": "Target Console",
@@ -42568,7 +42758,7 @@ mod tests {
         assert!(platform.migrate_media);
         assert!(serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 1,
+                "version": 2,
                 "field": "platform",
                 "operation": "set",
                 "text": "Target Console"
@@ -42578,6 +42768,41 @@ mod tests {
         .into_edit()
         .unwrap_err()
         .contains("explicit media-migration choice"));
+
+        let controller_support = serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 2,
+                "field": "controllerSupport",
+                "operation": "set",
+                "addControllerIds": ["fixture-controller"],
+                "removeControllerIds": ["legacy-controller"],
+                "supportLevel": 3
+            }"#,
+        )
+        .expect("controller support payload")
+        .into_edit()
+        .expect("validated controller support request");
+        assert_eq!(
+            controller_support.controller_support,
+            Some(BulkControllerSupportEdit {
+                add_controller_ids: vec!["fixture-controller".into()],
+                remove_controller_ids: vec!["legacy-controller".into()],
+                support_level: Some(GameControllerSupportLevel::Required),
+            })
+        );
+        assert!(serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 2,
+                "field": "publisher",
+                "operation": "set",
+                "text": "Publisher",
+                "addControllerIds": []
+            }"#,
+        )
+        .unwrap()
+        .into_edit()
+        .unwrap_err()
+        .contains("only valid for Controller Support"));
     }
 
     #[test]
@@ -42653,6 +42878,7 @@ mod tests {
                     custom_field_name: None,
                 },
                 migrate_media: false,
+                controller_support: None,
             },
             HostPathResolver::default(),
         )
@@ -42698,6 +42924,7 @@ mod tests {
                     custom_field_name: None,
                 },
                 migrate_media: false,
+                controller_support: None,
             },
             HostPathResolver::default(),
         );
@@ -42724,6 +42951,7 @@ mod tests {
                     custom_field_name: None,
                 },
                 migrate_media: false,
+                controller_support: None,
             },
             HostPathResolver::default(),
         )
@@ -42737,6 +42965,116 @@ mod tests {
             .expect("cleared matching app refresh");
         assert!(matching.use_emulator);
         assert!(matching.emulator_id.is_none());
+        assert!(pending_transaction_manifests(root)
+            .expect("transaction manifests")
+            .is_empty());
+    }
+
+    #[test]
+    fn controller_support_bulk_worker_canonicalizes_catalog_and_refreshes_every_target() {
+        let directory = tempfile::tempdir().expect("temporary bulk-controller library");
+        let root = directory.path();
+        let data_directory = root.join("Data");
+        let platform_directory = data_directory.join("Platforms");
+        fs::create_dir_all(&platform_directory).expect("platform directory");
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        for entry in fs::read_dir(&fixture_root).expect("fixture data directory") {
+            let entry = entry.expect("fixture data entry");
+            if entry.file_type().expect("fixture data type").is_file() {
+                fs::copy(entry.path(), data_directory.join(entry.file_name()))
+                    .expect("copy auxiliary fixture");
+            }
+        }
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_fixture =
+            fs::read_to_string(fixture_root.join("Platforms/Fixture Console.xml"))
+                .expect("platform fixture")
+                .replacen(
+                    "    <SupportLevel>2</SupportLevel>",
+                    "    <SupportLevel>2</SupportLevel>\n    <FutureBulkControllerSupport>keep-support</FutureBulkControllerSupport>",
+                    1,
+                );
+        fs::write(&platform_path, platform_fixture).expect("write platform fixture");
+
+        let result = write_bulk_game_edit(
+            root.to_path_buf(),
+            vec![
+                (platform_path.clone(), "fixture-adventure".into()),
+                (platform_path.clone(), "fixture-racer".into()),
+            ],
+            BulkGameWriteRequest {
+                edit: BulkGameEdit {
+                    field: BulkGameField::ControllerSupport,
+                    operation: BulkGameEditOperation::Set,
+                    text: None,
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+                migrate_media: false,
+                controller_support: Some(BulkControllerSupportEdit {
+                    add_controller_ids: vec!["FIXTURE-CONTROLLER".into()],
+                    remove_controller_ids: Vec::new(),
+                    support_level: Some(GameControllerSupportLevel::Required),
+                }),
+            },
+            HostPathResolver::default(),
+        )
+        .expect("transactional controller-support bulk edit");
+        assert_eq!(result.games.len(), 2);
+        assert_eq!(result.controller_support.len(), 2);
+        assert_eq!(result.controller_support_change_count, 2);
+        assert!(result.controller_support.iter().all(|(_, records)| {
+            records.iter().any(|record| {
+                record.controller_id == "fixture-controller" && record.support_level == Some(3)
+            })
+        }));
+        let committed = fs::read_to_string(&platform_path).expect("committed platform XML");
+        assert_eq!(
+            committed
+                .matches("<ControllerId>fixture-controller</ControllerId>")
+                .count(),
+            2
+        );
+        assert_eq!(
+            committed.matches("<SupportLevel>3</SupportLevel>").count(),
+            2
+        );
+        assert!(committed
+            .contains("<FutureBulkControllerSupport>keep-support</FutureBulkControllerSupport>"));
+
+        let before_unknown = fs::read(&platform_path).expect("before unknown controller");
+        let unknown = write_bulk_game_edit(
+            root.to_path_buf(),
+            vec![(platform_path.clone(), "fixture-adventure".into())],
+            BulkGameWriteRequest {
+                edit: BulkGameEdit {
+                    field: BulkGameField::ControllerSupport,
+                    operation: BulkGameEditOperation::Set,
+                    text: None,
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+                migrate_media: false,
+                controller_support: Some(BulkControllerSupportEdit {
+                    add_controller_ids: vec!["missing-controller".into()],
+                    remove_controller_ids: Vec::new(),
+                    support_level: Some(GameControllerSupportLevel::FullSupport),
+                }),
+            },
+            HostPathResolver::default(),
+        );
+        assert!(matches!(
+            unknown,
+            Err(GameWriteFailure::Other(message))
+                if message.contains("not present in the current catalog")
+        ));
+        assert_eq!(
+            fs::read(&platform_path).expect("after unknown controller"),
+            before_unknown
+        );
         assert!(pending_transaction_manifests(root)
             .expect("transaction manifests")
             .is_empty());
@@ -42807,6 +43145,7 @@ mod tests {
                     custom_field_name: None,
                 },
                 migrate_media: true,
+                controller_support: None,
             },
             HostPathResolver::default(),
         )
@@ -42908,6 +43247,7 @@ mod tests {
                     custom_field_name: None,
                 },
                 migrate_media: false,
+                controller_support: None,
             },
             HostPathResolver::default(),
         )
@@ -42970,6 +43310,7 @@ mod tests {
                     custom_field_name: None,
                 },
                 migrate_media: true,
+                controller_support: None,
             },
             HostPathResolver::default(),
         ) {

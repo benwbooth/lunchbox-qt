@@ -64,13 +64,14 @@ behavior, not merely UI polish.
 
 ## Current native vertical
 
-The Rust catalog currently exposes 27 typed fields:
+The Rust catalog currently exposes 28 typed fields:
 
-`Broken`, `Completed`, `Custom DOSBox Version EXE Path`, `Developer`,
-`Emulator`, `Favorite`, `Genre`, `Hide`, `Max Players`, `Notes`, `Platform`,
-`Play Mode`, `Progress`, `Publisher`, `Rating`, `Region`, `Release Date`,
-`Release Type`, `Series`, `Sort Title`, `Source`, `Star Rating`, `Status`,
-`Version`, `Video Path`, `Wikipedia URL`, and `Custom Field`.
+`Broken`, `Completed`, `Controller Support`, `Custom DOSBox Version EXE
+Path`, `Developer`, `Emulator`, `Favorite`, `Genre`, `Hide`, `Max Players`,
+`Notes`, `Platform`, `Play Mode`, `Progress`, `Publisher`, `Rating`, `Region`,
+`Release Date`, `Release Type`, `Series`, `Sort Title`, `Source`, `Star
+Rating`, `Status`, `Version`, `Video Path`, `Wikipedia URL`, and `Custom
+Field`.
 
 The editor kind and clearability come from Rust. The versioned request denies
 unknown keys and rejects values from the wrong editor family. Ratings accept
@@ -129,6 +130,26 @@ persisted platform-default state. The transaction result republishes the
 committed application groups and a Qt revision so the running editor and
 launcher cannot retain the old emulator.
 
+`Controller Support` follows the distinct related-record surface recovered
+from the 13.27 view model and BAML. The original type exposes
+`GetCurrentControllerValues`, `GetPossibleControllerValues`,
+`AllSupportLevels`, and `SupportLevelValue`; its view contains separate
+multi-value remove/add controls and the exact resource instruction “Which
+support level would you like to set the added controllers at?” One typed
+version-2 request therefore carries disjoint controller-ID removal and addition
+sets plus one of the exact four recovered levels for additions.
+
+Immediately before any platform document is loaded, the background worker
+reloads `GameControllers.xml`, resolves every requested ID case-insensitively,
+retains the catalog's canonical spelling, and rejects missing/stale IDs. For
+each selected game, removals delete matching support rows; additions insert a
+missing row or update an existing row to the chosen level. Retained rows keep
+unknown XML children, level zero remains canonically omitted, all affected
+platform documents commit together, and the committed per-game support groups
+plus revision replace the running Qt state. The native selector shows the
+catalog name, category, stable ID, and how many selected games currently carry
+each removable row.
+
 The product invokes no command interpreter and contains no Windows-, Linux-,
 or macOS-specific bulk-editor UI branch.
 
@@ -151,6 +172,12 @@ isolation, unknown application XML, live refresh rows, catalog-ID
 canonicalization, stale-ID rejection before a write, exact recovery, and clean
 transaction state.
 
+Dedicated controller-support tests cover simultaneous add/remove validation,
+case-insensitive catalog canonicalization, all four typed levels, insertion,
+existing-row level replacement, optional-zero encoding, retained unknown row
+XML, removal isolation, two-game live refresh, stale-ID refusal before a
+write, exact recovery, and clean transaction state.
+
 A two-document transaction test proves successful paired commit with exact
 backups, then creates a revision conflict in the second document and proves
 that the first document remains byte-identical. Platform-transfer storage
@@ -165,16 +192,17 @@ recovery copies and a clean manifest, and prove the post-commit media index for
 both migration choices; a collision test byte-compares both XML documents and
 both media files unchanged. The compiled Qt scenario selects two stable IDs in
 the real audit dialog, resolves the real fixture emulator through the typed
-combo catalog, renders the conditional Platform media page and Custom DOSBox
-confirmation page, applies one Custom DOSBox transaction, and verifies exactly
-two lexical path changes, a retained unknown element, an unchanged
+combo catalog, renders the conditional Platform media page and the Controller
+Support remove/add/level surface, then applies Required support to the real
+fixture controller. It verifies one existing level update plus one new row
+across the two games, a retained unknown element, an unchanged
 Windows-separated application path, one byte-exact backup, and clean recovery
 state.
 
 ## Open parity gates
 
 - recover the complete ordered original field catalog and every combo value;
-- model-settings and controller-support bulk surfaces;
+- model-settings bulk surfaces;
 - the remaining launch/startup/pause fields;
 - exact three-state meanings and date formatting/time-zone behavior;
 - exact original collision policy, apply-time cancellation, restart,

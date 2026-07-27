@@ -73,10 +73,13 @@ recoverable transaction, while truncated indexes, shared media, unsafe
 directories, and portable target collisions fail closed. Unknown XML remains
 intact and persisted path rules stay in the shared cross-platform resolver.
 The recovered Custom DOSBox path and matching additional-application Emulator
-propagation now commit losslessly with live Qt refresh. The complete original
-field catalog, model/controller and remaining launch/startup/pause bulk
-surfaces, exact original cancellation behavior, and Windows/macOS oracle gates
-remain open; the exact boundary is recorded in
+propagation now commit losslessly with live Qt refresh. Controller Support
+bulk editing also exposes the recovered independent remove/add lists and exact
+four levels, validates current catalog IDs, commits related rows atomically,
+and refreshes their live Qt revision. The complete original field catalog,
+model-settings and remaining launch/startup/pause bulk surfaces, exact
+original cancellation behavior, and Windows/macOS oracle gates remain open;
+the exact boundary is recorded in
 `analysis/game-bulk-edit-13.27.md`.
 
 Read an existing installation without modifying it:

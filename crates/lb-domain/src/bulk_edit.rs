@@ -1,4 +1,6 @@
+use crate::GameControllerSupportLevel;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -11,6 +13,7 @@ pub enum BulkGameEditorKind {
     LexicalPath,
     Emulator,
     Platform,
+    ControllerSupport,
     MultiValue,
     CustomField,
 }
@@ -26,6 +29,7 @@ impl BulkGameEditorKind {
             Self::LexicalPath => "lexicalPath",
             Self::Emulator => "emulator",
             Self::Platform => "platform",
+            Self::ControllerSupport => "controllerSupport",
             Self::MultiValue => "multiValue",
             Self::CustomField => "customField",
         }
@@ -45,6 +49,7 @@ pub struct BulkGameFieldDefinition {
 pub enum BulkGameField {
     Broken,
     Completed,
+    ControllerSupport,
     CustomDosBoxVersion,
     Developer,
     Emulator,
@@ -77,6 +82,7 @@ impl BulkGameField {
         match self {
             Self::Broken => "broken",
             Self::Completed => "completed",
+            Self::ControllerSupport => "controllerSupport",
             Self::CustomDosBoxVersion => "customDosBoxVersion",
             Self::Developer => "developer",
             Self::Emulator => "emulator",
@@ -124,6 +130,12 @@ pub const BULK_GAME_FIELDS: &[BulkGameFieldDefinition] = &[
         field: BulkGameField::Completed,
         label: "Completed",
         editor: BulkGameEditorKind::Boolean,
+        clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::ControllerSupport,
+        label: "Controller Support",
+        editor: BulkGameEditorKind::ControllerSupport,
         clearable: false,
     },
     BulkGameFieldDefinition {
@@ -325,6 +337,12 @@ impl BulkGameEdit {
                 }
                 self.require_unused(false, false, true, false)?;
             }
+            BulkGameEditorKind::ControllerSupport => {
+                if self.operation != BulkGameEditOperation::Set {
+                    return Err(BulkGameEditError::SetOperationRequired);
+                }
+                self.require_unused(false, false, false, false)?;
+            }
             _ => {
                 if matches!(
                     self.operation,
@@ -391,6 +409,54 @@ impl BulkGameEdit {
     }
 }
 
+/// One LaunchBox bulk Controller Support change.
+///
+/// The recovered 13.27 surface presents independent remove and add
+/// multi-selectors. One support level applies to every added controller. A
+/// controller cannot be selected on both sides of the same operation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BulkControllerSupportEdit {
+    pub add_controller_ids: Vec<String>,
+    pub remove_controller_ids: Vec<String>,
+    pub support_level: Option<GameControllerSupportLevel>,
+}
+
+impl BulkControllerSupportEdit {
+    pub fn validate(&self) -> Result<(), BulkGameEditError> {
+        if self.add_controller_ids.is_empty() && self.remove_controller_ids.is_empty() {
+            return Err(BulkGameEditError::ControllerSupportChangeRequired);
+        }
+        if !self.add_controller_ids.is_empty() && self.support_level.is_none() {
+            return Err(BulkGameEditError::ControllerSupportLevelRequired);
+        }
+        if self.add_controller_ids.is_empty() && self.support_level.is_some() {
+            return Err(BulkGameEditError::UnexpectedControllerSupportLevel);
+        }
+
+        let add = validate_controller_ids(&self.add_controller_ids)?;
+        let remove = validate_controller_ids(&self.remove_controller_ids)?;
+        if let Some(id) = add.intersection(&remove).next() {
+            return Err(BulkGameEditError::ConflictingControllerSupportId { id: id.clone() });
+        }
+        Ok(())
+    }
+}
+
+fn validate_controller_ids(ids: &[String]) -> Result<BTreeSet<String>, BulkGameEditError> {
+    let mut keys = BTreeSet::new();
+    for id in ids {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(BulkGameEditError::EmptyControllerSupportId);
+        }
+        if !keys.insert(id.to_lowercase()) {
+            return Err(BulkGameEditError::DuplicateControllerSupportId { id: id.to_string() });
+        }
+    }
+    Ok(keys)
+}
+
 pub fn mutate_multi_value_text(
     original: Option<&str>,
     operation: BulkGameEditOperation,
@@ -449,6 +515,18 @@ pub enum BulkGameEditError {
     InvalidMaxPlayers,
     #[error("a custom-field name is required")]
     CustomFieldNameRequired,
+    #[error("select at least one controller to add or remove")]
+    ControllerSupportChangeRequired,
+    #[error("a support level is required when adding controllers")]
+    ControllerSupportLevelRequired,
+    #[error("a support level is only valid when adding controllers")]
+    UnexpectedControllerSupportLevel,
+    #[error("controller-support IDs cannot be empty")]
+    EmptyControllerSupportId,
+    #[error("controller {id} appears more than once in the bulk controller-support change")]
+    DuplicateControllerSupportId { id: String },
+    #[error("controller {id} cannot be added and removed in the same bulk change")]
+    ConflictingControllerSupportId { id: String },
     #[error("the request supplied a value that is not used by this field")]
     UnexpectedValue,
 }
@@ -465,6 +543,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(keys.len(), BULK_GAME_FIELDS.len());
         assert!(keys.contains("broken"));
+        assert!(keys.contains("controllerSupport"));
         assert!(keys.contains("customDosBoxVersion"));
         assert!(keys.contains("hidden"));
         assert!(keys.contains("starRating"));
@@ -529,6 +608,45 @@ mod tests {
                 Some("Action")
             ),
             Ok(None)
+        );
+    }
+
+    #[test]
+    fn controller_support_bulk_edit_requires_a_typed_non_conflicting_change() {
+        let valid = BulkControllerSupportEdit {
+            add_controller_ids: vec!["fixture-controller".into()],
+            remove_controller_ids: vec!["legacy-controller".into()],
+            support_level: Some(GameControllerSupportLevel::Required),
+        };
+        assert_eq!(valid.validate(), Ok(()));
+        assert_eq!(
+            BulkControllerSupportEdit {
+                add_controller_ids: vec!["FIXTURE-CONTROLLER".into()],
+                remove_controller_ids: vec!["fixture-controller".into()],
+                support_level: Some(GameControllerSupportLevel::FullSupport),
+            }
+            .validate(),
+            Err(BulkGameEditError::ConflictingControllerSupportId {
+                id: "fixture-controller".into()
+            })
+        );
+        assert_eq!(
+            BulkControllerSupportEdit {
+                add_controller_ids: vec!["fixture-controller".into()],
+                remove_controller_ids: Vec::new(),
+                support_level: None,
+            }
+            .validate(),
+            Err(BulkGameEditError::ControllerSupportLevelRequired)
+        );
+        assert_eq!(
+            BulkControllerSupportEdit {
+                add_controller_ids: Vec::new(),
+                remove_controller_ids: Vec::new(),
+                support_level: None,
+            }
+            .validate(),
+            Err(BulkGameEditError::ControllerSupportChangeRequired)
         );
     }
 }

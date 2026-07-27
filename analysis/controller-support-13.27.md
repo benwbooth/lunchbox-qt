@@ -80,6 +80,10 @@ The port:
 - refuses unknown controller IDs and duplicate support rows;
 - replaces only the selected game's support rows, retaining unknown children
   on rows that remain;
+- bulk-edits selected games through the recovered independent remove/add
+  selectors and applies one exact support level to every addition;
+- reloads the controller catalog before a bulk write, canonicalizes stable IDs,
+  rejects stale IDs, and commits every affected platform in one transaction;
 - blocks catalog deletion while any platform document still references the
   controller and never cascades support deletion;
 - uses the shared revision-checked transaction and committed typed reread for
@@ -101,6 +105,12 @@ A controller test creates and edits definitions, proves exact backups and
 committed rereads, blocks a referenced deletion, replaces the game's support
 row with `Required`, and then deletes the unreferenced definition.
 
+Bulk-specific domain, storage, and controller tests prove disjoint
+simultaneous add/remove selection, retained unknown XML on level updates,
+optional-zero insertion, removal isolation, fresh catalog canonicalization,
+stale-ID refusal before platform loading, two-game committed-row refresh, one
+exact backup, and clean recovery state.
+
 The compiled rendered Qt scenario drives the real manager, controller editor,
 game metadata editor, and delete confirmation. It preserves the historical
 `Rythm` category during edit, creates a `Wheel/Yoke` controller with a platform
@@ -108,6 +118,12 @@ association, observes one blocked reference, changes `fixture-racer` from Full
 Support to Required on the new stable ID, and deletes the old definition. The
 runner independently validates the final XML, three exact catalog backups, one
 exact platform backup, unknown XML, and clean recovery state.
+
+The bulk-editor scenario selects two games, renders the recovered current and
+possible controller lists plus all four support levels, then applies
+`Required` to one existing and one missing fixture row in a single recoverable
+transaction. The running controller-support map is refreshed before write
+completion.
 
 Native Qt interaction on real Windows and macOS hosts remains a release gate;
 the portable core is compiled for both targets.

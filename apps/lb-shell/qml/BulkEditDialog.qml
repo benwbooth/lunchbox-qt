@@ -17,6 +17,12 @@ Dialog {
     property bool migrateMedia: true
     property var platforms: []
     property var emulators: []
+    property var controllers: []
+    property var currentControllers: []
+    property var controllerSupportLevels: []
+    property var controllerIdsToAdd: []
+    property var controllerIdsToRemove: []
+    property int controllerSupportLevel: 0
     property alias smokeCaptureTarget: surface
 
     readonly property var selectedField:
@@ -45,6 +51,9 @@ Dialog {
         const result = []
         const platformResult = []
         const emulatorResult = []
+        const controllerResult = []
+        const currentControllerResult = []
+        const supportLevelResult = []
         if (controller !== null) {
             for (let index = 0;
                  index < controller.bulk_edit_field_count(); ++index) {
@@ -69,10 +78,38 @@ Dialog {
                     label: title + " (" + id + ")"
                 })
             }
+            for (let index = 0;
+                 index < controller.game_controller_count(); ++index) {
+                const id = controller.game_controller_id_at(index)
+                const name = controller.game_controller_name_at(index)
+                const category = controller.game_controller_category_at(index)
+                const currentCount =
+                    controller.bulk_edit_controller_current_game_count(id)
+                const entry = {
+                    id: id,
+                    name: name,
+                    category: category,
+                    currentCount: currentCount,
+                    label: name + " — " + category
+                           + " (" + id + ")"
+                }
+                controllerResult.push(entry)
+                if (currentCount > 0)
+                    currentControllerResult.push(entry)
+            }
+            for (let index = 0;
+                 index < controller.game_controller_support_level_count();
+                 ++index) {
+                supportLevelResult.push(
+                    controller.game_controller_support_level_name_at(index))
+            }
         }
         fields = result
         platforms = platformResult
         emulators = emulatorResult
+        controllers = controllerResult
+        currentControllers = currentControllerResult
+        controllerSupportLevels = supportLevelResult
     }
 
     function resetEditor() {
@@ -85,6 +122,9 @@ Dialog {
         ratingValue = 0
         customFieldName = ""
         migrateMedia = true
+        controllerIdsToAdd = []
+        controllerIdsToRemove = []
+        controllerSupportLevel = 0
     }
 
     function openWizard() {
@@ -106,6 +146,8 @@ Dialog {
     function operationModel() {
         if (selectedField === null)
             return ["Set"]
+        if (editor === "controllerSupport")
+            return ["Set"]
         if (editor === "multiValue" || editor === "customField")
             return selectedField.clearable
                     ? ["Set", "Add", "Remove", "Clear"]
@@ -123,11 +165,16 @@ Dialog {
 
     function requestObject() {
         const request = {
-            version: 1,
+            version: 2,
             field: selectedField.key,
             operation: operation
         }
-        if (editor === "boolean")
+        if (editor === "controllerSupport") {
+            request.addControllerIds = controllerIdsToAdd
+            request.removeControllerIds = controllerIdsToRemove
+            if (controllerIdsToAdd.length > 0)
+                request.supportLevel = controllerSupportLevel
+        } else if (editor === "boolean")
             request.boolean = booleanValue
         else if (editor === "rating")
             request.number = ratingValue
@@ -149,6 +196,25 @@ Dialog {
             return booleanValue ? "set to Yes" : "set to No"
         if (editor === "rating")
             return "set to " + ratingValue.toFixed(1) + " stars"
+        if (editor === "controllerSupport") {
+            const descriptions = []
+            if (controllerIdsToRemove.length > 0)
+                descriptions.push("remove "
+                                  + controllerIdsToRemove.length
+                                  + " controller"
+                                  + (controllerIdsToRemove.length === 1
+                                     ? "" : "s"))
+            if (controllerIdsToAdd.length > 0)
+                descriptions.push("add or update "
+                                  + controllerIdsToAdd.length
+                                  + " controller"
+                                  + (controllerIdsToAdd.length === 1
+                                     ? "" : "s")
+                                  + " at "
+                                  + controllerSupportLevels[
+                                      controllerSupportLevel])
+            return descriptions.join(" and ")
+        }
         if (editor === "platform")
             return "move to \"" + textValue + "\""
         const prefix = operation === "add" ? "add "
@@ -168,6 +234,13 @@ Dialog {
                    || customFieldName.trim().length > 0
         if (editor === "boolean" || editor === "rating")
             return true
+        if (editor === "controllerSupport")
+            return controllerIdsToAdd.length
+                   + controllerIdsToRemove.length > 0
+                   && (controllerIdsToAdd.length === 0
+                       || (controllerSupportLevel >= 0
+                           && controllerSupportLevel
+                              < controllerSupportLevels.length))
         if (editor === "platform")
             return platforms.length > 0 && textValue.trim().length > 0
         if (editor === "customField"
@@ -176,6 +249,40 @@ Dialog {
         if (selectedField.key === "maxPlayers")
             return /^[1-9][0-9]*$/.test(textValue.trim())
         return textValue.trim().length > 0
+    }
+
+    function setControllerAdd(controllerId, selected) {
+        let additions = controllerIdsToAdd.slice()
+        let removals = controllerIdsToRemove.slice()
+        const addIndex = additions.indexOf(controllerId)
+        if (selected && addIndex < 0)
+            additions.push(controllerId)
+        else if (!selected && addIndex >= 0)
+            additions.splice(addIndex, 1)
+        if (selected) {
+            const removeIndex = removals.indexOf(controllerId)
+            if (removeIndex >= 0)
+                removals.splice(removeIndex, 1)
+        }
+        controllerIdsToAdd = additions
+        controllerIdsToRemove = removals
+    }
+
+    function setControllerRemove(controllerId, selected) {
+        let additions = controllerIdsToAdd.slice()
+        let removals = controllerIdsToRemove.slice()
+        const removeIndex = removals.indexOf(controllerId)
+        if (selected && removeIndex < 0)
+            removals.push(controllerId)
+        else if (!selected && removeIndex >= 0)
+            removals.splice(removeIndex, 1)
+        if (selected) {
+            const addIndex = additions.indexOf(controllerId)
+            if (addIndex >= 0)
+                additions.splice(addIndex, 1)
+        }
+        controllerIdsToAdd = additions
+        controllerIdsToRemove = removals
     }
 
     function applyRequest() {
@@ -235,6 +342,40 @@ Dialog {
             }
         }
         return false
+    }
+
+    function smokeSelectControllerSupport(controllerId, supportLevel) {
+        let controllerIndex = -1
+        for (let index = 0; index < controllers.length; ++index) {
+            if (controllers[index].id === controllerId) {
+                controllerIndex = index
+                break
+            }
+        }
+        if (controllerIndex < 0
+                || controllers[controllerIndex].currentCount !== 1
+                || supportLevel < 0
+                || supportLevel >= controllerSupportLevels.length)
+            return false
+        for (let index = 0; index < fields.length; ++index) {
+            if (fields[index].key === "controllerSupport") {
+                selectedFieldIndex = index
+                operation = "set"
+                controllerIdsToAdd = [controllerId]
+                controllerIdsToRemove = []
+                controllerSupportLevel = supportLevel
+                page = 1
+                return true
+            }
+        }
+        return false
+    }
+
+    function smokeConfirmControllerSupport() {
+        if (editor !== "controllerSupport" || !editorIsValid())
+            return false
+        page = 3
+        return true
     }
 
     function smokeSelectPlatform(value, migrate) {
@@ -381,6 +522,9 @@ Dialog {
                             root.operation = "set"
                             root.textValue = ""
                             root.customFieldName = ""
+                            root.controllerIdsToAdd = []
+                            root.controllerIdsToRemove = []
+                            root.controllerSupportLevel = 0
                             if (root.editor === "platform"
                                     && root.platforms.length > 0) {
                                 platformSelector.currentIndex = 0
@@ -411,6 +555,7 @@ Dialog {
                     Label {
                         visible: root.editor !== "boolean"
                                  && root.editor !== "rating"
+                                 && root.editor !== "controllerSupport"
                                  && root.editor !== "platform"
                         text: "Operation"
                         color: "#c7d2dc"
@@ -421,6 +566,7 @@ Dialog {
                         objectName: "bulkEditOperationSelector"
                         visible: root.editor !== "boolean"
                                  && root.editor !== "rating"
+                                 && root.editor !== "controllerSupport"
                                  && root.editor !== "platform"
                         Layout.fillWidth: true
                         model: root.operationModel()
@@ -431,6 +577,7 @@ Dialog {
 
                     Label {
                         visible: root.operation !== "clear"
+                                 && root.editor !== "controllerSupport"
                         text: root.editor === "boolean" ? "Value"
                               : root.editor === "rating" ? "Rating"
                               : root.editor === "lexicalPath"
@@ -493,6 +640,7 @@ Dialog {
                                  && root.editor !== "rating"
                                  && root.editor !== "multilineText"
                                  && root.editor !== "emulator"
+                                 && root.editor !== "controllerSupport"
                                  && root.editor !== "platform"
                         Layout.fillWidth: true
                         placeholderText:
@@ -525,6 +673,106 @@ Dialog {
                         model: root.platforms
                         onActivated: function(index) {
                             root.textValue = root.platforms[index]
+                        }
+                    }
+
+                    GridLayout {
+                        visible: root.editor === "controllerSupport"
+                        Layout.fillWidth: true
+                        columns: 2
+                        columnSpacing: 12
+                        rowSpacing: 6
+
+                        Label {
+                            text: "Remove current controllers"
+                            color: "#c7d2dc"
+                            Layout.fillWidth: true
+                        }
+
+                        Label {
+                            text: "Add or update controllers"
+                            color: "#c7d2dc"
+                            Layout.fillWidth: true
+                        }
+
+                        Frame {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 120
+
+                            ListView {
+                                objectName: "bulkEditControllerRemoveList"
+                                anchors.fill: parent
+                                clip: true
+                                model: root.currentControllers
+                                delegate: CheckBox {
+                                    required property var modelData
+                                    width: ListView.view.width
+                                    text: modelData.label + " — on "
+                                          + modelData.currentCount + " of "
+                                          + root.controller.bulk_edit_target_count
+                                    checked:
+                                        root.controllerIdsToRemove.indexOf(
+                                            modelData.id) >= 0
+                                    onClicked:
+                                        root.setControllerRemove(modelData.id,
+                                                                 checked)
+                                }
+                            }
+                        }
+
+                        Frame {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 120
+
+                            ListView {
+                                objectName: "bulkEditControllerAddList"
+                                anchors.fill: parent
+                                clip: true
+                                model: root.controllers
+                                delegate: CheckBox {
+                                    required property var modelData
+                                    width: ListView.view.width
+                                    text: modelData.label
+                                    checked:
+                                        root.controllerIdsToAdd.indexOf(
+                                            modelData.id) >= 0
+                                    onClicked:
+                                        root.setControllerAdd(modelData.id,
+                                                              checked)
+                                }
+                            }
+                        }
+
+                        Label {
+                            visible: root.currentControllers.length === 0
+                            text: "None of the selected games currently has "
+                                  + "controller-support rows."
+                            color: "#91a4b5"
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                            Layout.columnSpan: 2
+                        }
+
+                        Label {
+                            visible: root.controllerIdsToAdd.length > 0
+                            text: "Which support level would you like to set "
+                                  + "the added controllers at?"
+                            color: "#c7d2dc"
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                            Layout.columnSpan: 2
+                        }
+
+                        ComboBox {
+                            objectName: "bulkEditControllerSupportLevel"
+                            visible: root.controllerIdsToAdd.length > 0
+                            Layout.fillWidth: true
+                            Layout.columnSpan: 2
+                            model: root.controllerSupportLevels
+                            currentIndex: root.controllerSupportLevel
+                            onActivated: function(index) {
+                                root.controllerSupportLevel = index
+                            }
                         }
                     }
 

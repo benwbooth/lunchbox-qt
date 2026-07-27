@@ -1966,8 +1966,8 @@ ApplicationWindow {
                     Qt.exit(489)
                     return
                 }
-                if (!bulkEditDialog.smokeSelectCustomDosBoxVersion(
-                            "ThirdParty\\DOSBox\\bulk-smoke\\DOSBox.exe")) {
+                if (!bulkEditDialog.smokeSelectControllerSupport(
+                            "fixture-controller", 3)) {
                     console.error("BULK_EDIT_SMOKE_FIELD_FAILED")
                     Qt.exit(489)
                     return
@@ -1998,20 +1998,29 @@ ApplicationWindow {
                 return
             }
             if (window.bulkEditSmokePhase === 4) {
-                if (!bulkEditDialog.applyRequest()) {
-                    console.error("BULK_EDIT_SMOKE_APPLY_FAILED status="
-                                  + controller.status_message)
+                if (!bulkEditDialog.smokeConfirmControllerSupport()) {
+                    console.error("BULK_EDIT_SMOKE_CONFIRM_FAILED")
                     Qt.exit(489)
                     return
                 }
                 window.bulkEditSmokePhase = 5
                 return
             }
-            if (window.bulkEditSmokePhase !== 5 || controller.writing)
+            if (window.bulkEditSmokePhase === 5) {
+                if (!bulkEditDialog.applyRequest()) {
+                    console.error("BULK_EDIT_SMOKE_APPLY_FAILED status="
+                                  + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 6
+                return
+            }
+            if (window.bulkEditSmokePhase !== 6 || controller.writing)
                 return
             if (!controller.report_bulk_edit_smoke_success(
-                        2, "customDosBoxVersion",
-                        "ThirdParty\\DOSBox\\bulk-smoke\\DOSBox.exe")) {
+                        2, "controllerSupport",
+                        "fixture-controller")) {
                 console.error(
                     "BULK_EDIT_SMOKE_RESULT_FAILED completed="
                     + controller.bulk_edit_completed_count + " status="
