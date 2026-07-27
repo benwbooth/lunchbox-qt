@@ -319,6 +319,26 @@ impl LibraryTransaction {
         self.stage_delete(document.source_path(), expected)
     }
 
+    /// Stages explicit removal of a platform document together with every
+    /// associated collection record it owns. The caller must first remediate
+    /// cross-document references and present a separate destructive review to
+    /// the user. This boundary validates exact platform/game ownership before
+    /// permitting a non-empty document deletion.
+    pub fn stage_delete_platform_with_records(
+        &mut self,
+        document: &PlatformDocument,
+        platform_name: &str,
+    ) -> Result<super::PlatformRemovalInventory, TransactionError> {
+        let inventory = document.platform_removal_inventory(platform_name)?;
+        let expected = document.source_revision().cloned().ok_or_else(|| {
+            TransactionError::UnversionedDocument {
+                path: document.source_path().to_path_buf(),
+            }
+        })?;
+        self.stage_delete(document.source_path(), expected)?;
+        Ok(inventory)
+    }
+
     /// Stages a streamed copy of one regular file into a new path under the
     /// library root. The source may live outside the library. Its bytes are
     /// copied into the transaction's durable staging file during commit, so

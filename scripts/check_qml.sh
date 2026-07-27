@@ -4712,6 +4712,36 @@ echo "LaunchBox dialog-driven multi-disc and metadata-resolved matching-title RO
 cp -R fixtures/launchbox/Data "$platform_crud_root/Data"
 platform_crud_catalog="$platform_crud_root/Data/Platforms.xml"
 platform_crud_document="$platform_crud_root/Data/Platforms/Dragon 32_64.xml"
+platform_crud_emulators="$platform_crud_root/Data/Emulators.xml"
+platform_crud_parents="$platform_crud_root/Data/Parents.xml"
+platform_crud_playlist="$platform_crud_root/Data/Playlists/Fixture Playlist.xml"
+platform_crud_controllers="$platform_crud_root/Data/GameControllers.xml"
+platform_crud_settings="$platform_crud_root/Data/Settings.xml"
+platform_crud_bigbox_settings="$platform_crud_root/Data/BigBoxSettings.xml"
+sed -i \
+  '/<Title>Fixture Emulator<\/Title>/a\    <DefaultPlatform>Dragon 32/64</DefaultPlatform>' \
+  "$platform_crud_emulators"
+sed -i \
+  '/<\/LaunchBox>/i\  <EmulatorPlatform><Emulator>fixture-emulator</Emulator><Platform>Dragon 32/64</Platform><CommandLine>--dragon</CommandLine><Default>false</Default><M3uDiscLoadEnabled>false</M3uDiscLoadEnabled></EmulatorPlatform>' \
+  "$platform_crud_emulators"
+sed -i \
+  '/<\/LaunchBox>/i\  <Parent><PlatformName>Dragon 32/64</PlatformName></Parent>\n  <Parent><ParentPlatformName>Dragon 32/64</ParentPlatformName><PlaylistId>fixture-playlist</PlaylistId><FutureDetachedChild>keep-parent</FutureDetachedChild></Parent>' \
+  "$platform_crud_parents"
+sed -i \
+  '/<SortBy>Title<\/SortBy>/a\    <LastSelectedChild>Dragon 32/64</LastSelectedChild>' \
+  "$platform_crud_playlist"
+sed -i \
+  '/<\/LaunchBox>/i\  <PlaylistFilter><FieldKey>Platform</FieldKey><ComparisonTypeKey>IsEqualTo</ComparisonTypeKey><Value>Dragon 32/64</Value></PlaylistFilter>\n  <PlaylistGame><GameId>stale-dragon-game</GameId><GameTitle>Stale Dragon</GameTitle><GamePlatform>Dragon 32/64</GamePlatform><GameFileName>stale.vdk</GameFileName><ManualOrder>2</ManualOrder></PlaylistGame>' \
+  "$platform_crud_playlist"
+sed -i \
+  's#<AssociatedPlatforms />#<AssociatedPlatforms>Fixture Console;Dragon 32/64</AssociatedPlatforms><FutureControllerField>keep-controller</FutureControllerField>#' \
+  "$platform_crud_controllers"
+sed -i \
+  '/<\/Settings>/i\    <SelectedPlatform>Dragon 32/64</SelectedPlatform><FuturePlatformSmoke>keep-desktop</FuturePlatformSmoke>' \
+  "$platform_crud_settings"
+sed -i \
+  '/<\/BigBoxSettings>/i\    <SelectedPlatform>Dragon 32/64</SelectedPlatform><FuturePlatformSmoke>keep-bigbox</FuturePlatformSmoke>' \
+  "$platform_crud_bigbox_settings"
 platform_crud_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
     --library "$platform_crud_root" --platform-crud-smoke-test \
@@ -4720,7 +4750,7 @@ platform_crud_output=$(
   printf '%s\n' "$platform_crud_output" >&2
   exit 1
 }
-if ! rg -q 'PLATFORM_CRUD_SMOKE_COMPLETE platform="Dragon 32/64" blocked=1 inserts=1 removes=1 games=3 platforms=1' \
+if ! rg -q 'PLATFORM_CRUD_SMOKE_COMPLETE platform="Dragon 32/64" blocked=11 resets=1 inserts=0 removes=0 games=3 platforms=1' \
   <<< "$platform_crud_output"; then
   printf '%s\n' "$platform_crud_output" >&2
   echo "LaunchBox did not validate dialog-driven platform creation and deletion." >&2
@@ -4737,6 +4767,51 @@ fi
 for media_directory in Images Videos Manuals Music; do
   if [[ -e "$platform_crud_root/$media_directory" ]]; then
     echo "Platform CRUD unexpectedly created the $media_directory media directory." >&2
+    exit 1
+  fi
+done
+for remediated_document in \
+  "$platform_crud_emulators" \
+  "$platform_crud_parents" \
+  "$platform_crud_playlist" \
+  "$platform_crud_controllers" \
+  "$platform_crud_settings" \
+  "$platform_crud_bigbox_settings"; do
+  if rg -q -F 'Dragon 32/64' "$remediated_document"; then
+    echo "Platform dependency remediation retained a Dragon 32/64 reference in $remediated_document." >&2
+    exit 1
+  fi
+done
+for retained_record in \
+  "$platform_crud_emulators:<Platform>Fixture Console</Platform>" \
+  "$platform_crud_parents:<FutureDetachedChild>keep-parent</FutureDetachedChild>" \
+  "$platform_crud_playlist:<GameId>fixture-adventure</GameId>" \
+  "$platform_crud_playlist:<FieldKey>Favorite</FieldKey>" \
+  "$platform_crud_controllers:<AssociatedPlatforms>Fixture Console</AssociatedPlatforms>" \
+  "$platform_crud_controllers:<FutureControllerField>keep-controller</FutureControllerField>" \
+  "$platform_crud_settings:<FuturePlatformSmoke>keep-desktop</FuturePlatformSmoke>" \
+  "$platform_crud_bigbox_settings:<FuturePlatformSmoke>keep-bigbox</FuturePlatformSmoke>"; do
+  retained_path=${retained_record%%:*}
+  retained_xml=${retained_record#*:}
+  if ! rg -q -F "$retained_xml" "$retained_path"; then
+    echo "Platform dependency remediation lost retained XML $retained_xml from $retained_path." >&2
+    exit 1
+  fi
+done
+for remediated_document in \
+  "$platform_crud_emulators" \
+  "$platform_crud_parents" \
+  "$platform_crud_playlist" \
+  "$platform_crud_controllers" \
+  "$platform_crud_settings" \
+  "$platform_crud_bigbox_settings"; do
+  mapfile -t remediated_backups < <(
+    find "$(dirname "$remediated_document")" -maxdepth 1 -type f \
+      -name "$(basename "$remediated_document").lbport-transaction-backup-*" -print
+  )
+  if [[ ${#remediated_backups[@]} -ne 1 ]] \
+    || ! rg -q -F 'Dragon 32/64' "${remediated_backups[0]}"; then
+    echo "Platform dependency remediation did not retain one exact pre-write backup for $remediated_document." >&2
     exit 1
   fi
 done
@@ -4785,8 +4860,8 @@ mapfile -t platform_document_backups < <(
   find "$platform_crud_root/Data/Platforms" -maxdepth 1 -type f \
     -name 'Dragon 32_64.xml.lbport-transaction-backup-*' -print
 )
-if [[ ${#platform_document_backups[@]} -ne 3 ]]; then
-  echo "Platform add-game/remove-game/delete did not retain exactly three document backups." >&2
+if [[ ${#platform_document_backups[@]} -ne 2 ]]; then
+  echo "Platform add-game/cascade-delete did not retain exactly two document backups." >&2
   exit 1
 fi
 platform_game_backups=0
@@ -4800,8 +4875,8 @@ for backup in "${platform_document_backups[@]}"; do
     ((platform_empty_backups += 1))
   fi
 done
-if [[ $platform_game_backups -ne 1 || $platform_empty_backups -ne 2 ]]; then
-  echo "Platform document backups do not prove empty/add/remove/delete transitions." >&2
+if [[ $platform_game_backups -ne 1 || $platform_empty_backups -ne 1 ]]; then
+  echo "Platform document backups do not prove empty/add/cascade-delete transitions." >&2
   exit 1
 fi
 if find "$platform_crud_root" -maxdepth 1 -type f \
@@ -4810,7 +4885,7 @@ if find "$platform_crud_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox dialog-driven platform lifecycle and metadata/folder editing, portable filenames, lexical Windows paths, reference gating, exact backups, and media isolation validated."
+echo "LaunchBox dialog-driven platform lifecycle and metadata/folder editing, portable filenames, lexical Windows paths, reference review, associated-game record removal, exact backups, and ROM/media/save isolation validated."
 
 cp -R fixtures/launchbox/Data "$emulator_crud_root/Data"
 emulator_crud_document="$emulator_crud_root/Data/Emulators.xml"

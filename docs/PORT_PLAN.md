@@ -624,12 +624,20 @@ editing has expanded into 18 descriptive fields through a versioned typed
 payload; it recomputes sort/search membership, removes explicitly cleared
 optional elements, and is checked through the real dialog in a two-backup
 runtime scenario. Existing-platform UUID additions and conservative
-reference-gated removals now use targeted Qt row signals and have their own
-backup-chain runtime scenario. Catalog-backed platform creation/deletion now
-uses recoverable two-document create/delete transactions, portable host
-filenames, 51 lexical LaunchBox folder mappings, a ten-family dependency scan,
-and real-dialog runtime coverage that proves empty-platform game insertion,
-blocked deletion, exact backups, and media isolation. Existing-platform editing
+reference-gated game removals now use targeted Qt row signals and have their
+own backup-chain runtime scenario. Catalog-backed platform creation/deletion
+now uses recoverable multi-document transactions, portable host filenames, 51
+lexical LaunchBox folder mappings, and a fresh ten-family dependency scan.
+Ordinary deletion blocks for review; a separate exact-target confirmation can
+remove associated game-owned XML records and remediate emulator defaults and
+mappings, parent placements/child links, playlist rows/filters/navigation,
+controller associations, selected-platform settings, import-blacklist rows,
+clone links, and retained external game-owned records in the same transaction.
+Real-dialog runtime coverage proves all modeled dependency families, exact
+backups, committed model reload, and ROM/media/manual/music/video/save
+isolation. This record-only policy is bounded by the recovered 13.27 removal
+prompts; optional filesystem deletion and the protected exact cascade algorithm
+remain open. Existing-platform editing
 now covers the recovered metadata surface and source-indexed folder rows in the
 real dialog; retained records keep unknown XML, and the create/edit/delete
 backup chain is verified without creating media directories. Identity remains
@@ -872,8 +880,10 @@ Phase 0/1 evidence and product-safety gates:
    additional-application, platform, nested-category, playlist, save-group
    metadata, and manual
    combine/expand workflows into the remaining filesystem-safe save
-   backup/restore/delete adapters and reviewed cascade/remediation choices for
-   dependencies. Category and playlist deletion now follow
+   backup/restore/delete adapters and the remaining optional filesystem and
+   unmodeled dependency choices. Reviewed platform removal now transactionally
+   clears all modeled XML dependencies and associated game-owned records while
+   retaining ROM/media/manual/music/video/save content. Category and playlist deletion now follow
    the recovered detach-to-root behavior without deleting child records or
    media. Alternate names and custom fields now pass typed storage and real-dialog runtime gates. The
    launch-configuration subset now edits direct/emulator/DOSBox/ScummVM fields

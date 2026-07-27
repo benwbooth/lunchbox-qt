@@ -4521,21 +4521,20 @@ ApplicationWindow {
             } else if (window.platformCrudSmokePhase === 4 && !controller.writing
                        && controller.delete_blocker_count > 0) {
                 window.platformCrudBlockedReferences = controller.delete_blocker_count
-                const row = controller.row_for_game_id(window.platformCrudAddedGameId)
-                if (row < 0) {
+                if (controller.platform_delete_review_name !== platformName
+                        || controller.row_for_game_id(
+                            window.platformCrudAddedGameId) < 0) {
                     console.error("PLATFORM_CRUD_SMOKE_ADDED_GAME_MISSING")
                     Qt.exit(9)
                     return
                 }
                 window.platformCrudSmokePhase = 5
-                deleteConfirmation.smokeDelete(
-                    row, window.platformCrudAddedGameId, "Dragon Test")
-            } else if (window.platformCrudSmokePhase === 5 && !controller.writing
+                platformDependencyRemovalConfirmation.smokeRemove(
+                    platformName, controller.delete_blocker_summary)
+            } else if (window.platformCrudSmokePhase === 5 && !controller.loading
+                       && !controller.writing
+                       && controller.platform_entry_count === 1
                        && controller.game_count === 3) {
-                window.platformCrudSmokePhase = 6
-                deletePlatformConfirmation.smokeDelete(platformName)
-            } else if (window.platformCrudSmokePhase === 6 && !controller.writing
-                       && controller.platform_entry_count === 1) {
                 if (!controller.report_platform_crud_smoke_success(
                         platformName, window.platformCrudBlockedReferences)) {
                     console.error("PLATFORM_CRUD_SMOKE_MODEL_CONTRACT_FAILED")
@@ -13999,8 +13998,60 @@ ApplicationWindow {
 
         contentItem: Label {
             width: 440
-            text: "Deletion is refused while any game, emulator, playlist, navigation, controller, or frontend setting refers to this platform. Only its catalog records and empty platform XML are removed; media files and directories are never deleted."
+            text: "LaunchBox first checks every modeled game, emulator, playlist, navigation, controller, and frontend-setting reference. If dependencies exist, a separate review can remove the platform and its associated games from the collection. ROMs, media, manuals, music, videos, saves, and directories are never deleted."
             wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: platformDependencyRemovalConfirmation
+        anchors.centerIn: parent
+        modal: true
+        title: "Remove " + platformName + " and associated games?"
+        standardButtons: Dialog.Yes | Dialog.No
+        property string platformName: ""
+        property string blockerSummary: ""
+
+        function prepare(name, summary) {
+            platformName = name
+            blockerSummary = summary
+            open()
+        }
+
+        function smokeRemove(name, summary) {
+            prepare(name, summary)
+            Qt.callLater(function() {
+                platformDependencyRemovalConfirmation.accept()
+            })
+        }
+
+        onAccepted:
+            controller.delete_platform_with_dependencies(platformName)
+
+        contentItem: ColumnLayout {
+            width: 560
+            spacing: 12
+            Label {
+                Layout.fillWidth: true
+                text: "This removes every game in " + platformName
+                      + " from the collection and repairs the reviewed dependent records in one recoverable transaction."
+                wrapMode: Text.Wrap
+                font.bold: true
+            }
+            Label {
+                Layout.fillWidth: true
+                text: blockerSummary.length > 0
+                      ? "Current dependencies: " + blockerSummary
+                      : "The dependency inventory will be scanned again before the write."
+                wrapMode: Text.Wrap
+                color: "#d29922"
+            }
+            Label {
+                Layout.fillWidth: true
+                text: "All ROMs, media, manuals, music, videos, save files, and directories are retained. Exact XML recovery copies are kept. Files can be reviewed and removed separately later."
+                wrapMode: Text.Wrap
+                color: "#7d8590"
+            }
         }
     }
 
@@ -15852,6 +15903,14 @@ ApplicationWindow {
                     color: "white"
                     font.bold: true
                     elide: Text.ElideRight
+                }
+                Button {
+                    text: "Review Platform Removal"
+                    visible: controller.platform_delete_review_name.length > 0
+                    onClicked:
+                        platformDependencyRemovalConfirmation.prepare(
+                            controller.platform_delete_review_name,
+                            controller.delete_blocker_summary)
                 }
                 Button {
                     text: "Dismiss"

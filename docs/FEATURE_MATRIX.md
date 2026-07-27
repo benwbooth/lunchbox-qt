@@ -46,9 +46,10 @@ transactional editor also implements the
 three-field alternate-name and name/value custom-field subset of `LIB-003`.
 The dialog-driven portable platform create/edit/delete, recovered platform
 metadata, and source-indexed folder subset of `LIB-006` is also implemented
-with unknown-XML retention, conservative dependency refusal, and media
-isolation. Platform rename remains gated on runtime evidence because the
-installed 13.27 `IPlatform.Name` contract is getter-only.
+with unknown-XML retention, fresh dependency review, a recoverable record-only
+removal transaction, and ROM/media/manual/music/video/save isolation. Platform
+rename remains gated on runtime evidence because the installed 13.27
+`IPlatform.Name` contract is getter-only.
 The nested category/sidebar subset of `LIB-007` and `DESK-003` is implemented:
 categories can be created, edited, multiply placed, recursively counted and
 filtered, and deleted through one paired `Platforms.xml`/`Parents.xml`
@@ -184,7 +185,7 @@ parity remain open.
 | LIB-003 | Alternate names and custom fields | DV alternate-name/custom-field pages; PA `IAlternateName`, `ICustomField` |
 | LIB-004 | Additional applications and documents per game | DV additional-app editor and Make Default command; PA `IAdditionalApplication`; BigBox selection actions; port subset has typed/lossless add/edit/delete, launch selection, and an evidence-derived transactional Make Default conversion that retains the selected row |
 | LIB-005 | Game controller support metadata | DV controller-support editor; PA controller APIs. The port implements the exact 11-category and four-level 13.27 contract, typed/lossless global controller CRUD with immutable generated IDs and platform-name associations, per-game support editing, optional-zero encoding, historical-category retention, fresh cross-document reference refusal, exact backups, and committed rereads. Rendered Qt coverage drives the manager and game editor through edit/create/blocked-delete/support-replacement/delete. Hardware mapping, controller database acquisition, automatic matching, BigBox presentation, and native Windows/macOS interaction remain open |
-| LIB-006 | Platforms and platform folders | DV platform management; PA `IPlatform`, `IPlatformFolder` |
+| LIB-006 | Platforms and platform folders | DV platform management; PA `IPlatform`, `IPlatformFolder`. The port creates portable platform documents with the 51 observed lexical folder mappings, edits recovered metadata and source-indexed folder rows losslessly, and keeps identity read-only. Ordinary deletion performs a fresh ten-family reference scan. A separate named-platform review can atomically remove the platform document and its associated game-owned XML records; clean emulator mappings/defaults, parent placements and retained-child links, playlist rows/filters/navigation, controller associations, frontend selected-platform settings, import-blacklist rows, clone links, and retained external game-owned records; retain exact backups; and reload committed models. It never resolves or removes ROM, media, manual, music, video, emulator, or save paths/directories. The 13.27 strings prove removal of associated games, removal of placements, and detachment of nested categories/playlists to root, but protected bodies do not expose the exact mutation algorithm; the port's bounded remediation is documented clean-room policy. Platform rename, optional user-directed file deletion, remaining unmodeled references, and native Windows/macOS interaction remain open |
 | LIB-007 | Nested platform categories | DV category editor; PA `IPlatformCategory`, `IParent` |
 | LIB-008 | Manual and auto-populated playlists | DV playlist editor; PA manual/automatic playlist and criteria contracts |
 | LIB-009 | Child-playlist generation and arcade playlist creation | DV generator; DM generate child/create arcade playlists |

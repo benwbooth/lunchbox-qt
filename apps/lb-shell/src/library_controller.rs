@@ -223,6 +223,7 @@ pub mod qobject {
         #[qproperty(bool, application_shutdown_backup_ready)]
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
+        #[qproperty(QString, platform_delete_review_name)]
         #[qproperty(QString, last_added_game_id)]
         #[qproperty(QString, last_added_emulator_id)]
         #[qproperty(QString, last_added_game_controller_id)]
@@ -1183,6 +1184,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn delete_platform(self: Pin<&mut LibraryController>, name: QString);
+
+        #[qinvokable]
+        fn delete_platform_with_dependencies(self: Pin<&mut LibraryController>, name: QString);
 
         #[qinvokable]
         fn new_category_edit_payload(self: &LibraryController) -> QString;
@@ -2162,8 +2166,8 @@ use lb_storage::{
     replace_regular_file_from_source_if_revisions, AuxiliaryDocument, DirectoryRevision,
     EmulatorReference, FileRevision, GameReference, IndexedGameSaveMetadataEdit,
     IndexedPlatformRecordEdit, LaunchBoxDataIndex, LibraryIndex, LibraryTransaction,
-    LibraryWriteGuard, NewGame, NewGameMetadata, PlatformDocument, PlatformReference, StorageError,
-    TransactionError,
+    LibraryWriteGuard, NewGame, NewGameMetadata, PlatformDocument, PlatformReference,
+    PlatformRemovalRemediation, StorageError, TransactionError,
 };
 use md5::{Digest as _, Md5};
 use serde::{Deserialize, Serialize};
@@ -2533,6 +2537,7 @@ pub struct LibraryControllerRust {
     application_shutdown_backup_ready: bool,
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
+    platform_delete_review_name: QString,
     last_added_game_id: QString,
     last_added_emulator_id: QString,
     last_added_game_controller_id: QString,
@@ -4233,6 +4238,10 @@ struct PlatformDeleteSuccess {
     catalog_backup: PathBuf,
     platform_backup: PathBuf,
     folder_count: usize,
+    associated_game_count: usize,
+    associated_record_count: usize,
+    remediated_reference_count: usize,
+    modified_document_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17468,6 +17477,160 @@ fn delete_platform_from_library(
         catalog_backup,
         platform_backup,
         folder_count,
+        associated_game_count: 0,
+        associated_record_count: 0,
+        remediated_reference_count: 0,
+        modified_document_count: 2,
+    })
+}
+
+fn delete_platform_with_dependencies_from_library(
+    root: PathBuf,
+    source: PathBuf,
+    name: String,
+) -> Result<PlatformDeleteSuccess, PlatformWriteFailure> {
+    let data = LaunchBoxDataIndex::load(&root)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let catalog_path = data.data_root().join("Platforms.xml");
+    let mut catalog = AuxiliaryDocument::load(&catalog_path)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let removed = catalog
+        .remove_platform_definition(&name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let exact_name = removed.platform.metadata.name;
+    let folder_count = removed.folders.len();
+    let platform = PlatformDocument::load_for_platform(&source, &exact_name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let inventory = platform
+        .platform_removal_inventory(&exact_name)
+        .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+    let game_ids = platform
+        .library()
+        .games
+        .iter()
+        .map(|game| game.id.clone())
+        .collect::<Vec<_>>();
+
+    let mut remediation = PlatformRemovalRemediation::default();
+    remediation.merge(
+        &catalog
+            .remediate_platform_removal(&exact_name, &game_ids)
+            .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?,
+    );
+
+    let mut auxiliary_documents = Vec::new();
+    for file_name in [
+        "Emulators.xml",
+        "Parents.xml",
+        "GameControllers.xml",
+        "ImportBlacklist.xml",
+        "Settings.xml",
+        "BigBoxSettings.xml",
+    ] {
+        let path = data.data_root().join(file_name);
+        if !path.is_file() {
+            continue;
+        }
+        let mut document = AuxiliaryDocument::load(&path)
+            .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+        let document_report = document
+            .remediate_platform_removal(&exact_name, &game_ids)
+            .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+        if document_report.total() > 0 {
+            remediation.merge(&document_report);
+            auxiliary_documents.push(document);
+        }
+    }
+    for playlist in data.playlists() {
+        let mut document = AuxiliaryDocument::load(&playlist.source_path)
+            .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+        let document_report = document
+            .remediate_platform_removal(&exact_name, &game_ids)
+            .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+        if document_report.total() > 0 {
+            remediation.merge(&document_report);
+            auxiliary_documents.push(document);
+        }
+    }
+
+    let mut retained_platform_documents = Vec::new();
+    for retained in data.platforms().platforms() {
+        if retained.source_path == source {
+            continue;
+        }
+        let mut document =
+            PlatformDocument::load_for_platform(&retained.source_path, &retained.name)
+                .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+        let document_report = document
+            .remediate_deleted_game_references(&game_ids)
+            .map_err(|error| PlatformWriteFailure::Other(error.to_string()))?;
+        if document_report.total() > 0 {
+            remediation.merge(&document_report);
+            retained_platform_documents.push(document);
+        }
+    }
+
+    let mut transaction =
+        LibraryTransaction::new(&root).map_err(classify_platform_transaction_error)?;
+    transaction
+        .stage_auxiliary(&catalog)
+        .map_err(classify_platform_transaction_error)?;
+    for document in &auxiliary_documents {
+        transaction
+            .stage_auxiliary(document)
+            .map_err(classify_platform_transaction_error)?;
+    }
+    for document in &retained_platform_documents {
+        transaction
+            .stage_platform(document)
+            .map_err(classify_platform_transaction_error)?;
+    }
+    let staged_inventory = transaction
+        .stage_delete_platform_with_records(&platform, &exact_name)
+        .map_err(classify_platform_transaction_error)?;
+    if staged_inventory != inventory {
+        return Err(PlatformWriteFailure::Other(
+            "platform record inventory changed while preparing deletion".into(),
+        ));
+    }
+    let report = transaction
+        .commit()
+        .map_err(classify_platform_transaction_error)?;
+    let modified_document_count = report
+        .writes
+        .len()
+        .saturating_add(report.deleted_targets.len());
+    let catalog_backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == catalog_path)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(
+                "platform dependency-remediation transaction reported no catalog write".into(),
+            )
+        })?;
+    let platform_backup = report
+        .deleted_targets
+        .iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            PlatformWriteFailure::Other(
+                "platform dependency-remediation transaction reported no platform deletion".into(),
+            )
+        })?;
+
+    Ok(PlatformDeleteSuccess {
+        name: exact_name,
+        source,
+        catalog_backup,
+        platform_backup,
+        folder_count,
+        associated_game_count: inventory.games,
+        associated_record_count: inventory.total(),
+        remediated_reference_count: remediation.total(),
+        modified_document_count,
     })
 }
 
@@ -21930,6 +22093,8 @@ impl qobject::LibraryController {
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
         self.as_mut().set_writing(true);
         self.as_mut()
             .set_status_message(qstring(format!("Adding game {id} in the background...")));
@@ -21972,6 +22137,8 @@ impl qobject::LibraryController {
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
         self.as_mut().set_writing(true);
         self.as_mut()
             .set_status_message(qstring(format!("Creating platform {name}...")));
@@ -22081,21 +22248,26 @@ impl qobject::LibraryController {
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
         self.as_mut().set_writing(true);
         self.as_mut().set_status_message(qstring(format!(
             "Checking references before deleting platform {name}..."
         )));
 
         let qt_thread = self.as_ref().qt_thread();
+        let requested_name = name.clone();
         let spawn_result = std::thread::Builder::new()
             .name("launchbox-platform-delete".to_string())
             .spawn(move || {
                 let result = delete_platform_from_library(root, source, name);
                 qt_thread
                     .queue(move |mut controller| {
-                        controller
-                            .as_mut()
-                            .finish_platform_delete(generation, result);
+                        controller.as_mut().finish_platform_delete(
+                            generation,
+                            requested_name,
+                            result,
+                        );
                     })
                     .ok();
             });
@@ -22103,6 +22275,71 @@ impl qobject::LibraryController {
             self.as_mut().set_writing(false);
             self.as_mut().set_status_message(qstring(format!(
                 "Could not start platform deletion: {error}"
+            )));
+        }
+    }
+
+    pub fn delete_platform_with_dependencies(mut self: Pin<&mut Self>, name: QString) {
+        let name = name.to_string().trim().to_string();
+        if *self.as_ref().delete_blocker_count() <= 0
+            || !self
+                .as_ref()
+                .platform_delete_review_name()
+                .to_string()
+                .eq_ignore_ascii_case(&name)
+        {
+            self.as_mut().set_status_message(qstring(
+                "Review a current blocked platform deletion before removing associated records.",
+            ));
+            return;
+        }
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Platform deletion requires a loaded LaunchBox directory, not a standalone XML file.",
+            ));
+            return;
+        };
+        let Some(source) = self
+            .as_ref()
+            .rust()
+            .platform_sources
+            .get(&platform_key(&name))
+            .cloned()
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The selected platform has no loaded writable platform document.",
+            ));
+            return;
+        };
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Removing {name} and associated collection records while retaining all files..."
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let requested_name = name.clone();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-platform-dependency-remediation".to_string())
+            .spawn(move || {
+                let result = delete_platform_with_dependencies_from_library(root, source, name);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_platform_delete(
+                            generation,
+                            requested_name,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start platform dependency remediation: {error}"
             )));
         }
     }
@@ -22746,6 +22983,8 @@ impl qobject::LibraryController {
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
         self.as_mut().set_writing(true);
         self.as_mut().set_status_message(qstring(format!(
             "Checking references before deleting {game_id}..."
@@ -23386,6 +23625,8 @@ impl qobject::LibraryController {
     pub fn dismiss_delete_blocker(mut self: Pin<&mut Self>) {
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
     }
 
     pub fn recover_pending_changes(mut self: Pin<&mut Self>) {
@@ -25590,22 +25831,22 @@ impl qobject::LibraryController {
             && rust.games.len() == 3
             && rust.platform_names.len() == 1
             && rust.model_reset_notifications == 1
-            && rust.row_insert_notifications == 1
-            && rust.row_remove_notifications == 1
-            && blocked_references == 1
+            && rust.row_insert_notifications == 0
+            && rust.row_remove_notifications == 0
+            && blocked_references > 0
             && *self.platform_entry_count() == 1
             && !*self.writing()
             && !*self.write_conflict()
             && *self.pending_recovery_count() == 0;
-        if success {
-            eprintln!(
-                "PLATFORM_CRUD_SMOKE_COMPLETE platform=\"{platform_name}\" blocked={blocked_references} inserts={} removes={} games={} platforms={}",
-                rust.row_insert_notifications,
-                rust.row_remove_notifications,
-                rust.games.len(),
-                rust.platform_names.len()
-            );
-        }
+        eprintln!(
+            "PLATFORM_CRUD_SMOKE_{} platform=\"{platform_name}\" blocked={blocked_references} resets={} inserts={} removes={} games={} platforms={}",
+            if success { "COMPLETE" } else { "FAILED" },
+            rust.model_reset_notifications,
+            rust.row_insert_notifications,
+            rust.row_remove_notifications,
+            rust.games.len(),
+            rust.platform_names.len()
+        );
         success
     }
 
@@ -29053,6 +29294,8 @@ impl qobject::LibraryController {
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
         self.as_mut().set_writing(true);
         self.as_mut()
             .set_status_message(qstring("Checking controller references before deletion..."));
@@ -29103,6 +29346,8 @@ impl qobject::LibraryController {
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
         self.as_mut().set_writing(true);
         self.as_mut()
             .set_status_message(qstring(format!("Creating emulator {title}...")));
@@ -29189,6 +29434,8 @@ impl qobject::LibraryController {
         let generation = self.as_ref().rust().request_generation;
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
         self.as_mut().set_writing(true);
         self.as_mut()
             .set_status_message(qstring("Checking emulator references before deletion..."));
@@ -33146,6 +33393,8 @@ impl qobject::LibraryController {
                 self.as_mut().set_write_conflict(false);
                 self.as_mut().set_delete_blocker_count(0);
                 self.as_mut().set_delete_blocker_summary(QString::default());
+                self.as_mut()
+                    .set_platform_delete_review_name(QString::default());
                 self.as_mut().set_status_message(qstring(format!(
                     "{operation_label} controller {} in {}. Exact backup: {}",
                     success.controller.name,
@@ -33336,6 +33585,7 @@ impl qobject::LibraryController {
     fn finish_platform_delete(
         mut self: Pin<&mut Self>,
         generation: u64,
+        requested_name: String,
         result: Result<PlatformDeleteSuccess, PlatformWriteFailure>,
     ) {
         self.as_mut().set_writing(false);
@@ -33344,6 +33594,27 @@ impl qobject::LibraryController {
         }
         match result {
             Ok(deleted) => {
+                if deleted.associated_game_count > 0 || deleted.remediated_reference_count > 0 {
+                    let message = format!(
+                        "Removed {} and {} associated game(s) from the collection, deleted {} owned collection record(s), and remediated {} dependent record(s) across {} document(s). Exact catalog backup: {}. Exact platform backup: {}. All ROMs, media, manuals, music, videos, save files, and directories were retained (former document: {}).",
+                        deleted.name,
+                        deleted.associated_game_count,
+                        deleted.associated_record_count,
+                        deleted.remediated_reference_count,
+                        deleted.modified_document_count,
+                        deleted.catalog_backup.display(),
+                        deleted.platform_backup.display(),
+                        deleted.source.display()
+                    );
+                    self.as_mut().set_delete_blocker_count(0);
+                    self.as_mut().set_delete_blocker_summary(QString::default());
+                    self.as_mut()
+                        .set_platform_delete_review_name(QString::default());
+                    self.as_mut().set_write_conflict(false);
+                    self.as_mut().rust_mut().pending_post_reload_message = Some(message);
+                    self.as_mut().reload_library();
+                    return;
+                }
                 {
                     let mut rust = self.as_mut().rust_mut();
                     rust.platform_names
@@ -33369,6 +33640,10 @@ impl qobject::LibraryController {
                 self.as_mut().set_library_name(qstring(format!(
                     "LaunchBox Library ({platform_count} platforms)"
                 )));
+                self.as_mut().set_delete_blocker_count(0);
+                self.as_mut().set_delete_blocker_summary(QString::default());
+                self.as_mut()
+                    .set_platform_delete_review_name(QString::default());
                 self.as_mut().set_write_conflict(false);
                 self.as_mut().set_status_message(qstring(format!(
                     "Deleted {} and {} owned media-folder records. Exact catalog backup: {}. Exact platform backup: {}. No media files or directories were deleted (former document: {}).",
@@ -33384,12 +33659,16 @@ impl qobject::LibraryController {
                 self.as_mut()
                     .set_delete_blocker_count(saturating_i32(references.len()));
                 self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut()
+                    .set_platform_delete_review_name(qstring(requested_name));
                 self.as_mut().set_status_message(qstring(format!(
                     "Platform delete blocked by {} dependent record(s): {summary}",
                     references.len()
                 )));
             }
             Err(PlatformWriteFailure::Conflict(message)) => {
+                self.as_mut()
+                    .set_platform_delete_review_name(QString::default());
                 self.as_mut().set_write_conflict(true);
                 self.as_mut().set_status_message(qstring(format!(
                     "Write conflict while deleting platform: {message}. Reload before retrying."
@@ -33397,14 +33676,19 @@ impl qobject::LibraryController {
             }
             Err(PlatformWriteFailure::PendingRecovery { count, message }) => {
                 self.as_mut()
+                    .set_platform_delete_review_name(QString::default());
+                self.as_mut()
                     .set_pending_recovery_count(saturating_i32(count));
                 self.as_mut().set_status_message(qstring(format!(
                     "Interrupted transaction requires recovery: {message}"
                 )));
             }
-            Err(PlatformWriteFailure::Other(message)) => self
-                .as_mut()
-                .set_status_message(qstring(format!("Could not delete platform: {message}"))),
+            Err(PlatformWriteFailure::Other(message)) => {
+                self.as_mut()
+                    .set_platform_delete_review_name(QString::default());
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not delete platform: {message}")))
+            }
         }
     }
 
@@ -34621,6 +34905,8 @@ impl qobject::LibraryController {
             .set_pending_recovery_count(saturating_i32(pending_recovery_count));
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
         self.as_mut().set_last_added_game_id(QString::default());
         self.as_mut().set_last_added_emulator_id(QString::default());
         self.as_mut()
@@ -39998,27 +40284,22 @@ mod tests {
                 if references.iter().any(|reference| reference.kind == lb_storage::PlatformReferenceKind::Game)
         ));
 
-        delete_game_from_platform(
-            directory.path().to_path_buf(),
-            directory.path().to_path_buf(),
-            created.source.clone(),
-            added.game.id,
-        )
-        .unwrap_or_else(|error| {
-            panic!(
-                "delete temporary game failed: {}",
-                describe_game_write_failure(&error)
-            )
-        });
-        let deleted = match delete_platform_from_library(
+        let deleted = match delete_platform_with_dependencies_from_library(
             directory.path().to_path_buf(),
             created.source.clone(),
             "Dragon 32/64".into(),
         ) {
             Ok(deleted) => deleted,
-            Err(_) => panic!("platform deletion failed"),
+            Err(error) => panic!(
+                "platform dependency remediation failed: {}",
+                describe_platform_write_failure(&error)
+            ),
         };
         assert_eq!(deleted.folder_count, 51);
+        assert_eq!(deleted.associated_game_count, 1);
+        assert_eq!(deleted.associated_record_count, 1);
+        assert_eq!(deleted.remediated_reference_count, 0);
+        assert_eq!(deleted.modified_document_count, 2);
         assert!(!created.source.exists());
         assert_eq!(
             fs::read(&deleted.catalog_backup).expect("read pre-delete catalog backup"),
@@ -40027,7 +40308,15 @@ mod tests {
         let deleted_document =
             PlatformDocument::load_for_platform(&deleted.platform_backup, "Dragon 32/64")
                 .expect("load deleted platform backup");
-        assert!(deleted_document.library().games.is_empty());
+        assert_eq!(
+            deleted_document
+                .library()
+                .games
+                .iter()
+                .map(|game| game.id.as_str())
+                .collect::<Vec<_>>(),
+            [added.game.id.as_str()]
+        );
 
         let final_catalog_bytes = fs::read(&catalog_path).expect("read final catalog");
         assert!(String::from_utf8_lossy(&final_catalog_bytes).contains("FutureCatalogRecord"));

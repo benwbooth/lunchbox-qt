@@ -102,6 +102,19 @@ reference-gated deletion, exact backups, and rendered Qt coverage. The complete
 evidence and remaining hardware/BigBox/native-host boundaries are recorded in
 `analysis/controller-support-13.27.md`.
 
+The 13.27 resource strings independently establish that deleting a platform
+removes its associated games and placements and moves nested categories and
+playlists to root. Separate prompts cover game-folder and media deletion, so
+those filesystem choices are not implied by platform-record removal. Protected
+method bodies remain unavailable. The native `LIB-006` subset therefore exposes
+an explicit second review and implements a documented bounded record-only
+policy: one recoverable transaction removes the platform and its game-owned XML
+records, remediates all modeled emulator, parent, playlist, navigation,
+controller, settings, blacklist, clone, and retained-platform references,
+retains exact backups, reloads committed models, and never resolves or deletes
+ROM, media, manual, music, video, emulator, or save paths. Evidence and
+clean-room boundaries are recorded in `analysis/platform-removal-13.27.md`.
+
 The census now includes a value-free additional-application shape audit. All
 16,752 records have parseable nonnegative priorities ranging from 0 through 26;
 12 have an empty application path. Five game-save rows reference additional

@@ -440,6 +440,127 @@ pub struct PlatformReference {
     pub detail: String,
 }
 
+/// Exact modeled records changed while removing a platform and all of its
+/// games from the LaunchBox collection. Files referenced by those records are
+/// deliberately outside this report because this remediation never touches
+/// game, media, manual, music, video, or save files.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PlatformRemovalRemediation {
+    pub emulator_mappings_removed: usize,
+    pub emulator_defaults_cleared: usize,
+    pub parent_placements_removed: usize,
+    pub parent_children_detached: usize,
+    pub playlist_games_removed: usize,
+    pub playlist_filters_removed: usize,
+    pub navigation_platforms_cleared: usize,
+    pub controller_associations_removed: usize,
+    pub frontend_settings_removed: usize,
+    pub clone_relationships_cleared: usize,
+    pub external_game_records_removed: usize,
+    pub game_model_settings_removed: usize,
+    pub navigation_games_cleared: usize,
+    pub import_blacklist_entries_removed: usize,
+}
+
+impl PlatformRemovalRemediation {
+    pub fn platform_reference_count(&self) -> usize {
+        self.emulator_mappings_removed
+            .saturating_add(self.emulator_defaults_cleared)
+            .saturating_add(self.parent_placements_removed)
+            .saturating_add(self.parent_children_detached)
+            .saturating_add(self.playlist_games_removed)
+            .saturating_add(self.playlist_filters_removed)
+            .saturating_add(self.navigation_platforms_cleared)
+            .saturating_add(self.controller_associations_removed)
+            .saturating_add(self.frontend_settings_removed)
+    }
+
+    pub fn game_reference_count(&self) -> usize {
+        self.clone_relationships_cleared
+            .saturating_add(self.external_game_records_removed)
+            .saturating_add(self.game_model_settings_removed)
+            .saturating_add(self.navigation_games_cleared)
+            .saturating_add(self.import_blacklist_entries_removed)
+    }
+
+    pub fn total(&self) -> usize {
+        self.platform_reference_count()
+            .saturating_add(self.game_reference_count())
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        self.emulator_mappings_removed = self
+            .emulator_mappings_removed
+            .saturating_add(other.emulator_mappings_removed);
+        self.emulator_defaults_cleared = self
+            .emulator_defaults_cleared
+            .saturating_add(other.emulator_defaults_cleared);
+        self.parent_placements_removed = self
+            .parent_placements_removed
+            .saturating_add(other.parent_placements_removed);
+        self.parent_children_detached = self
+            .parent_children_detached
+            .saturating_add(other.parent_children_detached);
+        self.playlist_games_removed = self
+            .playlist_games_removed
+            .saturating_add(other.playlist_games_removed);
+        self.playlist_filters_removed = self
+            .playlist_filters_removed
+            .saturating_add(other.playlist_filters_removed);
+        self.navigation_platforms_cleared = self
+            .navigation_platforms_cleared
+            .saturating_add(other.navigation_platforms_cleared);
+        self.controller_associations_removed = self
+            .controller_associations_removed
+            .saturating_add(other.controller_associations_removed);
+        self.frontend_settings_removed = self
+            .frontend_settings_removed
+            .saturating_add(other.frontend_settings_removed);
+        self.clone_relationships_cleared = self
+            .clone_relationships_cleared
+            .saturating_add(other.clone_relationships_cleared);
+        self.external_game_records_removed = self
+            .external_game_records_removed
+            .saturating_add(other.external_game_records_removed);
+        self.game_model_settings_removed = self
+            .game_model_settings_removed
+            .saturating_add(other.game_model_settings_removed);
+        self.navigation_games_cleared = self
+            .navigation_games_cleared
+            .saturating_add(other.navigation_games_cleared);
+        self.import_blacklist_entries_removed = self
+            .import_blacklist_entries_removed
+            .saturating_add(other.import_blacklist_entries_removed);
+    }
+}
+
+/// Typed inventory authorized for an explicit "remove platform and associated
+/// games from the collection" transaction.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PlatformRemovalInventory {
+    pub games: usize,
+    pub additional_applications: usize,
+    pub mounts: usize,
+    pub alternate_names: usize,
+    pub custom_fields: usize,
+    pub controller_support: usize,
+    pub game_saves: usize,
+    pub model_settings: usize,
+}
+
+impl PlatformRemovalInventory {
+    pub fn total(&self) -> usize {
+        self.games
+            .saturating_add(self.additional_applications)
+            .saturating_add(self.mounts)
+            .saturating_add(self.alternate_names)
+            .saturating_add(self.custom_fields)
+            .saturating_add(self.controller_support)
+            .saturating_add(self.game_saves)
+            .saturating_add(self.model_settings)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum EmulatorReferenceKind {
     Game,
@@ -972,6 +1093,258 @@ impl AuxiliaryDocument {
             AuxiliaryDocumentKind::GameControllers,
         )?;
         data_index::parse_game_controllers(&self.root)
+    }
+
+    /// Removes or clears every modeled auxiliary-document reference that
+    /// would otherwise point at a platform or one of its deleted game IDs.
+    ///
+    /// This is intentionally a record-only operation. Stored path strings are
+    /// never interpreted and no referenced filesystem object is opened.
+    pub fn remediate_platform_removal(
+        &mut self,
+        platform_name: &str,
+        deleted_game_ids: &[String],
+    ) -> Result<PlatformRemovalRemediation, StorageError> {
+        let platform_name = platform_name.to_string();
+        let deleted_game_ids = deleted_game_ids
+            .iter()
+            .map(|id| id.to_lowercase())
+            .collect::<BTreeSet<_>>();
+        let kind = self.kind;
+        let source_path = self.source_path.clone();
+        let mut report = PlatformRemovalRemediation::default();
+        self.mutate(|root| {
+            match kind {
+                AuxiliaryDocumentKind::Emulators => {
+                    root.children.retain_mut(|node| {
+                        let Some(element) = node.as_mut_element() else {
+                            return true;
+                        };
+                        if element.name == "EmulatorPlatform"
+                            && optional_child(element, "Platform")
+                                .is_some_and(|name| platform_names_equal(&name, &platform_name))
+                        {
+                            report.emulator_mappings_removed =
+                                report.emulator_mappings_removed.saturating_add(1);
+                            return false;
+                        }
+                        if element.name == "Emulator"
+                            && optional_child(element, "DefaultPlatform")
+                                .is_some_and(|name| platform_names_equal(&name, &platform_name))
+                        {
+                            set_optional_child_text(element, "DefaultPlatform", None);
+                            report.emulator_defaults_cleared =
+                                report.emulator_defaults_cleared.saturating_add(1);
+                        }
+                        true
+                    });
+                }
+                AuxiliaryDocumentKind::Parents => {
+                    root.children.retain_mut(|node| {
+                        let Some(element) = node.as_mut_element() else {
+                            return true;
+                        };
+                        if element.name != "Parent" {
+                            return true;
+                        }
+                        let owns_deleted_platform = optional_child(element, "PlatformName")
+                            .is_some_and(|name| platform_names_equal(&name, &platform_name));
+                        let is_child_of_deleted_platform =
+                            optional_child(element, "ParentPlatformName")
+                                .is_some_and(|name| platform_names_equal(&name, &platform_name));
+                        if owns_deleted_platform {
+                            report.parent_placements_removed =
+                                report.parent_placements_removed.saturating_add(1);
+                            if is_child_of_deleted_platform {
+                                // Both modeled references disappear with this
+                                // one owned placement.
+                                report.parent_children_detached =
+                                    report.parent_children_detached.saturating_add(1);
+                            }
+                            return false;
+                        }
+                        if is_child_of_deleted_platform {
+                            set_optional_child_text(element, "ParentPlatformName", None);
+                            report.parent_children_detached =
+                                report.parent_children_detached.saturating_add(1);
+                        }
+                        true
+                    });
+                }
+                AuxiliaryDocumentKind::Playlist => {
+                    root.children.retain_mut(|node| {
+                        let Some(element) = node.as_mut_element() else {
+                            return true;
+                        };
+                        if element.name == "Playlist" {
+                            if optional_child(element, "LastSelectedChild")
+                                .is_some_and(|name| platform_names_equal(&name, &platform_name))
+                            {
+                                set_optional_child_text(element, "LastSelectedChild", None);
+                                report.navigation_platforms_cleared =
+                                    report.navigation_platforms_cleared.saturating_add(1);
+                            }
+                            if optional_child(element, "LastGameId")
+                                .is_some_and(|id| deleted_game_ids.contains(&id.to_lowercase()))
+                            {
+                                set_optional_child_text(element, "LastGameId", None);
+                                report.navigation_games_cleared =
+                                    report.navigation_games_cleared.saturating_add(1);
+                            }
+                            return true;
+                        }
+                        if element.name == "PlaylistGame" {
+                            let platform_matches = optional_child(element, "GamePlatform")
+                                .is_some_and(|name| platform_names_equal(&name, &platform_name));
+                            let game_matches = optional_child(element, "GameId")
+                                .is_some_and(|id| deleted_game_ids.contains(&id.to_lowercase()));
+                            if platform_matches || game_matches {
+                                report.playlist_games_removed =
+                                    report.playlist_games_removed.saturating_add(1);
+                                return false;
+                            }
+                        }
+                        if element.name == "PlaylistFilter"
+                            && optional_child(element, "FieldKey")
+                                .is_some_and(|field| field.eq_ignore_ascii_case("Platform"))
+                            && optional_child(element, "Value")
+                                .is_some_and(|name| platform_names_equal(&name, &platform_name))
+                        {
+                            report.playlist_filters_removed =
+                                report.playlist_filters_removed.saturating_add(1);
+                            return false;
+                        }
+                        true
+                    });
+                }
+                AuxiliaryDocumentKind::Platforms => {
+                    for element in root
+                        .children
+                        .iter_mut()
+                        .filter_map(XMLNode::as_mut_element)
+                        .filter(|element| {
+                            matches!(element.name.as_str(), "Platform" | "PlatformCategory")
+                        })
+                    {
+                        if optional_child(element, "LastSelectedChild")
+                            .is_some_and(|name| platform_names_equal(&name, &platform_name))
+                        {
+                            set_optional_child_text(element, "LastSelectedChild", None);
+                            report.navigation_platforms_cleared =
+                                report.navigation_platforms_cleared.saturating_add(1);
+                        }
+                        if optional_child(element, "LastGameId")
+                            .is_some_and(|id| deleted_game_ids.contains(&id.to_lowercase()))
+                        {
+                            set_optional_child_text(element, "LastGameId", None);
+                            report.navigation_games_cleared =
+                                report.navigation_games_cleared.saturating_add(1);
+                        }
+                    }
+                }
+                AuxiliaryDocumentKind::GameControllers => {
+                    for element in root
+                        .children
+                        .iter_mut()
+                        .filter_map(XMLNode::as_mut_element)
+                        .filter(|element| element.name == "GameController")
+                    {
+                        let Some(associations) = optional_child(element, "AssociatedPlatforms")
+                        else {
+                            continue;
+                        };
+                        let original = associations
+                            .split(';')
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .collect::<Vec<_>>();
+                        if !original
+                            .iter()
+                            .any(|name| platform_names_equal(name, &platform_name))
+                        {
+                            continue;
+                        }
+                        let retained = original
+                            .into_iter()
+                            .filter(|name| !platform_names_equal(name, &platform_name))
+                            .collect::<Vec<_>>()
+                            .join(";");
+                        set_optional_child_text(
+                            element,
+                            "AssociatedPlatforms",
+                            (!retained.is_empty()).then_some(retained.as_str()),
+                        );
+                        report.controller_associations_removed =
+                            report.controller_associations_removed.saturating_add(1);
+                    }
+                }
+                AuxiliaryDocumentKind::ImportBlacklist => {
+                    root.children.retain(|node| {
+                        let matches = node.as_element().is_some_and(|element| {
+                            element.name == "IgnoredGameId"
+                                && optional_child(element, "GameId")
+                                    .is_some_and(|id| deleted_game_ids.contains(&id.to_lowercase()))
+                        });
+                        if matches {
+                            report.import_blacklist_entries_removed =
+                                report.import_blacklist_entries_removed.saturating_add(1);
+                        }
+                        !matches
+                    });
+                }
+                AuxiliaryDocumentKind::Settings | AuxiliaryDocumentKind::BigBoxSettings => {
+                    let record_name = if kind == AuxiliaryDocumentKind::Settings {
+                        "Settings"
+                    } else {
+                        "BigBoxSettings"
+                    };
+                    let record_indices = root
+                        .children
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, node)| {
+                            node.as_element()
+                                .is_some_and(|element| element.name == record_name)
+                                .then_some(index)
+                        })
+                        .collect::<Vec<_>>();
+                    let record_index = match record_indices.as_slice() {
+                        [index] => *index,
+                        [] => {
+                            return Err(StorageError::MissingDocumentRecord {
+                                path: source_path.clone(),
+                                record: record_name,
+                            })
+                        }
+                        _ => {
+                            return Err(StorageError::DuplicateDocumentRecord {
+                                path: source_path.clone(),
+                                record: record_name,
+                            })
+                        }
+                    };
+                    let record = root.children[record_index]
+                        .as_mut_element()
+                        .expect("settings index identifies an element");
+                    record.children.retain(|node| {
+                        let matches = node.as_element().is_some_and(|field| {
+                            field.name.to_ascii_lowercase().contains("platform")
+                                && field.get_text().is_some_and(|value| {
+                                    platform_names_equal(value.as_ref(), &platform_name)
+                                })
+                        });
+                        if matches {
+                            report.frontend_settings_removed =
+                                report.frontend_settings_removed.saturating_add(1);
+                        }
+                        !matches
+                    });
+                }
+                AuxiliaryDocumentKind::InputBindings | AuxiliaryDocumentKind::ListCache => {}
+            }
+            Ok(())
+        })?;
+        Ok(report)
     }
 
     /// Adds one controller without rebuilding the catalog or changing the
@@ -3399,6 +3772,154 @@ impl PlatformDocument {
 
     pub fn source_revision(&self) -> Option<&FileRevision> {
         self.source_revision.as_ref()
+    }
+
+    /// Validates and inventories the complete platform document that an
+    /// explicit cascade-removal transaction will delete.
+    ///
+    /// Every game must belong to the selected platform and every owned record
+    /// must point at one of those games. This prevents a malformed platform
+    /// file from silently deleting records owned by another document.
+    pub fn platform_removal_inventory(
+        &self,
+        platform_name: &str,
+    ) -> Result<PlatformRemovalInventory, StorageError> {
+        let game_ids = self
+            .library
+            .games
+            .iter()
+            .map(|game| game.id.to_lowercase())
+            .collect::<BTreeSet<_>>();
+        for game in &self.library.games {
+            if !platform_names_equal(&game.platform, platform_name) {
+                return Err(StorageError::GamePlatformMismatch {
+                    expected: platform_name.to_string(),
+                    actual: game.platform.clone(),
+                });
+            }
+        }
+
+        let ensure_owner = |record: &'static str, game_id: &str| {
+            if game_ids.contains(&game_id.to_lowercase()) {
+                Ok(())
+            } else {
+                Err(StorageError::InvalidGameRecordEdit {
+                    record,
+                    game_id: game_id.to_string(),
+                    reason: "record is not owned by a game in the deleted platform document".into(),
+                })
+            }
+        };
+        for application in &self.library.additional_applications {
+            ensure_owner("additional application", &application.game_id)?;
+        }
+        for mount in &self.library.mounts {
+            ensure_owner("DOSBox mount", &mount.game_id)?;
+        }
+        for alternate in &self.library.alternate_names {
+            ensure_owner("alternate name", &alternate.game_id)?;
+        }
+        for field in &self.library.custom_fields {
+            ensure_owner("custom field", &field.game_id)?;
+        }
+        for support in &self.library.controller_support {
+            ensure_owner("controller support", &support.game_id)?;
+        }
+        for save in &self.library.game_saves {
+            ensure_owner("game save", &save.game_id)?;
+        }
+        for settings in &self.library.model_settings {
+            if let Some(game_id) = settings.game_id.as_deref() {
+                ensure_owner("model settings", game_id)?;
+            }
+            if let Some(owner) = settings.platform_name.as_deref() {
+                if !platform_names_equal(owner, platform_name) {
+                    return Err(StorageError::InvalidModelSettingsTarget {
+                        scope: "platform removal",
+                        expected: platform_name.to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(PlatformRemovalInventory {
+            games: self.library.games.len(),
+            additional_applications: self.library.additional_applications.len(),
+            mounts: self.library.mounts.len(),
+            alternate_names: self.library.alternate_names.len(),
+            custom_fields: self.library.custom_fields.len(),
+            controller_support: self.library.controller_support.len(),
+            game_saves: self.library.game_saves.len(),
+            model_settings: self.library.model_settings.len(),
+        })
+    }
+
+    /// Clears modeled references to games deleted with another platform
+    /// document. This method never removes a retained game and never touches
+    /// any path named by a record.
+    pub fn remediate_deleted_game_references(
+        &mut self,
+        deleted_game_ids: &[String],
+    ) -> Result<PlatformRemovalRemediation, StorageError> {
+        let deleted = deleted_game_ids
+            .iter()
+            .map(|id| id.to_lowercase())
+            .collect::<BTreeSet<_>>();
+        if let Some(duplicate) = self
+            .library
+            .games
+            .iter()
+            .find(|game| deleted.contains(&game.id.to_lowercase()))
+        {
+            return Err(StorageError::DuplicateGameId {
+                id: duplicate.id.clone(),
+            });
+        }
+        let mut candidate = self.root.clone();
+        let mut report = PlatformRemovalRemediation::default();
+        candidate.children.retain_mut(|node| {
+            let Some(element) = node.as_mut_element() else {
+                return true;
+            };
+            if element.name == "Game" {
+                if optional_child(element, "CloneOf")
+                    .is_some_and(|id| deleted.contains(&id.to_lowercase()))
+                {
+                    set_optional_child_text(element, "CloneOf", None);
+                    report.clone_relationships_cleared =
+                        report.clone_relationships_cleared.saturating_add(1);
+                }
+                return true;
+            }
+            if element.name == "ModelSettings"
+                && optional_child(element, "GameId")
+                    .is_some_and(|id| deleted.contains(&id.to_lowercase()))
+            {
+                report.game_model_settings_removed =
+                    report.game_model_settings_removed.saturating_add(1);
+                return false;
+            }
+            let owner_field = match element.name.as_str() {
+                "AdditionalApplication" | "Mount" | "AlternateName" | "CustomField" => {
+                    Some("GameID")
+                }
+                "GameControllerSupport" | "GameSave" => Some("GameId"),
+                _ => None,
+            };
+            if owner_field.is_some_and(|field| {
+                optional_child(element, field)
+                    .is_some_and(|id| deleted.contains(&id.to_lowercase()))
+            }) {
+                report.external_game_records_removed =
+                    report.external_game_records_removed.saturating_add(1);
+                return false;
+            }
+            true
+        });
+        if report.total() > 0 {
+            self.replace_platform_root(candidate)?;
+        }
+        Ok(report)
     }
 
     /// Creates, losslessly updates, or removes the complete model override for
@@ -10346,6 +10867,189 @@ mod tests {
         assert!(find_platform_references(directory.path(), "No References")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn platform_removal_remediation_is_typed_lossless_and_record_only() {
+        let source = PlatformDocument::from_reader_for_platform(
+            "Fixture Console.xml",
+            FIXTURE.as_bytes(),
+            "Fixture Console",
+        )
+        .unwrap();
+        let inventory = source
+            .platform_removal_inventory("fixture console")
+            .unwrap();
+        assert_eq!(inventory.games, 3);
+        assert_eq!(inventory.additional_applications, 1);
+        assert_eq!(inventory.alternate_names, 1);
+        assert_eq!(inventory.custom_fields, 1);
+        assert_eq!(inventory.controller_support, 1);
+        assert_eq!(inventory.game_saves, 1);
+        assert!(inventory.total() > inventory.games);
+
+        let mut emulators = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Emulators,
+            "Emulators.xml",
+            include_str!("../../../fixtures/launchbox/Data/Emulators.xml")
+                .replace(
+                    "<Title>Fixture Emulator</Title>",
+                    "<Title>Fixture Emulator</Title><DefaultPlatform>Fixture Console</DefaultPlatform><FutureKeep>yes</FutureKeep>",
+                )
+                .as_bytes(),
+        )
+        .unwrap();
+        let emulator_report = emulators
+            .remediate_platform_removal("fixture console", &["fixture-adventure".into()])
+            .unwrap();
+        assert_eq!(emulator_report.emulator_mappings_removed, 1);
+        assert_eq!(emulator_report.emulator_defaults_cleared, 1);
+        let emulator_xml = String::from_utf8(emulators.to_xml_bytes().unwrap()).unwrap();
+        assert!(!emulator_xml.contains("<EmulatorPlatform>"));
+        assert!(!emulator_xml.contains("<DefaultPlatform>"));
+        assert!(emulator_xml.contains("<FutureKeep>yes</FutureKeep>"));
+
+        let mut parents = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Parents,
+            "Parents.xml",
+            include_str!("../../../fixtures/launchbox/Data/Parents.xml")
+                .replace(
+                    "</LaunchBox>",
+                    "<Parent><ParentPlatformName>Fixture Console</ParentPlatformName><PlaylistId>fixture-playlist</PlaylistId><FutureParent>keep</FutureParent></Parent></LaunchBox>",
+                )
+                .as_bytes(),
+        )
+        .unwrap();
+        let parent_report = parents
+            .remediate_platform_removal("Fixture Console", &[])
+            .unwrap();
+        assert_eq!(parent_report.parent_placements_removed, 1);
+        assert_eq!(parent_report.parent_children_detached, 1);
+        let parent_xml = String::from_utf8(parents.to_xml_bytes().unwrap()).unwrap();
+        assert!(!parent_xml.contains("<PlatformName>Fixture Console</PlatformName>"));
+        assert!(!parent_xml.contains("<ParentPlatformName>Fixture Console</ParentPlatformName>"));
+        assert!(parent_xml.contains("<FutureParent>keep</FutureParent>"));
+
+        let playlist_fixture =
+            include_str!("../../../fixtures/launchbox/Data/Playlists/Fixture Playlist.xml")
+                .replace(
+                    "<SortBy>Title</SortBy>",
+                    "<SortBy>Title</SortBy><LastSelectedChild>Fixture Console</LastSelectedChild><LastGameId>fixture-adventure</LastGameId><FuturePlaylist>keep</FuturePlaylist>",
+                )
+                .replace(
+                    "<FieldKey>Favorite</FieldKey>",
+                    "<FieldKey>Platform</FieldKey>",
+                )
+                .replace("<Value>true</Value>", "<Value>Fixture Console</Value>");
+        let mut playlist = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Playlist,
+            "Playlists/Fixture Playlist.xml",
+            playlist_fixture.as_bytes(),
+        )
+        .unwrap();
+        let playlist_report = playlist
+            .remediate_platform_removal("Fixture Console", &["fixture-adventure".into()])
+            .unwrap();
+        assert_eq!(playlist_report.playlist_games_removed, 1);
+        assert_eq!(playlist_report.playlist_filters_removed, 1);
+        assert_eq!(playlist_report.navigation_platforms_cleared, 1);
+        assert_eq!(playlist_report.navigation_games_cleared, 1);
+        let playlist_xml = String::from_utf8(playlist.to_xml_bytes().unwrap()).unwrap();
+        assert!(!playlist_xml.contains("<PlaylistGame>"));
+        assert!(!playlist_xml.contains("<PlaylistFilter>"));
+        assert!(!playlist_xml.contains("<LastSelectedChild>"));
+        assert!(!playlist_xml.contains("<LastGameId>"));
+        assert!(playlist_xml.contains("<FuturePlaylist>keep</FuturePlaylist>"));
+
+        let catalog_fixture = include_str!("../../../fixtures/launchbox/Data/Platforms.xml")
+            .replace(
+                "</PlatformCategory>",
+                "<LastSelectedChild>Fixture Console</LastSelectedChild><LastGameId>fixture-adventure</LastGameId><FutureCategory>keep</FutureCategory></PlatformCategory>",
+            );
+        let mut catalog = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Platforms,
+            "Platforms.xml",
+            catalog_fixture.as_bytes(),
+        )
+        .unwrap();
+        catalog
+            .remove_platform_definition("Fixture Console")
+            .unwrap();
+        let catalog_report = catalog
+            .remediate_platform_removal("Fixture Console", &["fixture-adventure".into()])
+            .unwrap();
+        assert_eq!(catalog_report.navigation_platforms_cleared, 1);
+        assert_eq!(catalog_report.navigation_games_cleared, 1);
+        let catalog_xml = String::from_utf8(catalog.to_xml_bytes().unwrap()).unwrap();
+        assert!(!catalog_xml.contains("<Name>Fixture Console</Name>"));
+        assert!(catalog_xml.contains("<FutureCategory>keep</FutureCategory>"));
+
+        let controller_fixture =
+            include_str!("../../../fixtures/launchbox/Data/GameControllers.xml").replace(
+                "<AssociatedPlatforms />",
+                "<AssociatedPlatforms>Other; Fixture Console</AssociatedPlatforms><FutureController>keep</FutureController>",
+            );
+        let mut controllers = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::GameControllers,
+            "GameControllers.xml",
+            controller_fixture.as_bytes(),
+        )
+        .unwrap();
+        let controller_report = controllers
+            .remediate_platform_removal("fixture console", &[])
+            .unwrap();
+        assert_eq!(controller_report.controller_associations_removed, 1);
+        let controller_xml = String::from_utf8(controllers.to_xml_bytes().unwrap()).unwrap();
+        assert!(controller_xml.contains("<AssociatedPlatforms>Other</AssociatedPlatforms>"));
+        assert!(controller_xml.contains("<FutureController>keep</FutureController>"));
+
+        let settings_fixture = include_str!("../../../fixtures/launchbox/Data/Settings.xml")
+            .replace(
+                "</Settings>",
+                "<SelectedPlatform>Fixture Console</SelectedPlatform><FutureSetting>keep</FutureSetting></Settings>",
+            );
+        let mut settings = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Settings,
+            "Settings.xml",
+            settings_fixture.as_bytes(),
+        )
+        .unwrap();
+        let settings_report = settings
+            .remediate_platform_removal("Fixture Console", &[])
+            .unwrap();
+        assert_eq!(settings_report.frontend_settings_removed, 1);
+        let settings_xml = String::from_utf8(settings.to_xml_bytes().unwrap()).unwrap();
+        assert!(!settings_xml.contains("<SelectedPlatform>"));
+        assert!(settings_xml.contains("<FutureSetting>keep</FutureSetting>"));
+
+        let blacklist_fixture =
+            include_str!("../../../fixtures/launchbox/Data/ImportBlacklist.xml").replace(
+                "</LaunchBox>",
+                "<IgnoredGameId><GameId>fixture-adventure</GameId></IgnoredGameId></LaunchBox>",
+            );
+        let mut blacklist = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::ImportBlacklist,
+            "ImportBlacklist.xml",
+            blacklist_fixture.as_bytes(),
+        )
+        .unwrap();
+        let blacklist_report = blacklist
+            .remediate_platform_removal("Fixture Console", &["fixture-adventure".into()])
+            .unwrap();
+        assert_eq!(blacklist_report.import_blacklist_entries_removed, 1);
+        assert!(!String::from_utf8(blacklist.to_xml_bytes().unwrap())
+            .unwrap()
+            .contains("fixture-adventure"));
+
+        let mut retained =
+            PlatformDocument::from_reader("Retained Console.xml", FIXTURE.as_bytes()).unwrap();
+        let retained_report = retained
+            .remediate_deleted_game_references(&["fixture-prototype".into()])
+            .unwrap();
+        assert_eq!(retained_report.clone_relationships_cleared, 1);
+        let retained_xml = String::from_utf8(retained.to_xml_bytes().unwrap()).unwrap();
+        assert!(!retained_xml.contains("<CloneOf>fixture-prototype</CloneOf>"));
+        assert!(retained_xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
     }
 
     #[test]
