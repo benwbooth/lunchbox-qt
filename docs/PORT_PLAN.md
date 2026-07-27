@@ -623,9 +623,16 @@ Transactional title
 editing has expanded into 18 descriptive fields through a versioned typed
 payload; it recomputes sort/search membership, removes explicitly cleared
 optional elements, and is checked through the real dialog in a two-backup
-runtime scenario. Existing-platform UUID additions and conservative
-reference-gated game removals now use targeted Qt row signals and have their
-own backup-chain runtime scenario. Catalog-backed platform creation/deletion
+runtime scenario. Existing-platform UUID additions and ordinary safe game
+removals use targeted Qt row signals. A dependency-blocked game now exposes a
+separate exact-ID review that removes only its collection record and owned XML,
+repairs modeled clone, playlist/navigation, blacklist, and list-cache
+references across a single recoverable transaction, reloads the committed
+model, and retains all ROM/additional-app/media/manual/music/video/save files.
+The runtime scenario proves fresh review binding, stale-review invalidation,
+targeted signals before reload, a five-document commit, seven exact recovery
+copies, unknown unrelated XML, and byte-exact file retention. Catalog-backed
+platform creation/deletion
 now uses recoverable multi-document transactions, portable host filenames, 51
 lexical LaunchBox folder mappings, and a fresh ten-family dependency scan.
 Ordinary deletion blocks for review; a separate exact-target confirmation can
@@ -881,9 +888,10 @@ Phase 0/1 evidence and product-safety gates:
    metadata, and manual
    combine/expand workflows into the remaining filesystem-safe save
    backup/restore/delete adapters and the remaining optional filesystem and
-   unmodeled dependency choices. Reviewed platform removal now transactionally
-   clears all modeled XML dependencies and associated game-owned records while
-   retaining ROM/media/manual/music/video/save content. Category and playlist deletion now follow
+   unmodeled dependency choices. Reviewed game and platform removal now
+   transactionally clears the bounded modeled XML dependencies and owned
+   records while retaining ROM/additional-app/media/manual/music/video/save
+   content. Category and playlist deletion now follow
    the recovered detach-to-root behavior without deleting child records or
    media. Alternate names and custom fields now pass typed storage and real-dialog runtime gates. The
    launch-configuration subset now edits direct/emulator/DOSBox/ScummVM fields

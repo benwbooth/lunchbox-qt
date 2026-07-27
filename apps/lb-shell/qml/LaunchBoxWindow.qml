@@ -3482,6 +3482,16 @@ ApplicationWindow {
                 controller.delete_game(row, "fixture-adventure")
             } else if (window.crudSmokePhase === 1 && !controller.writing
                        && controller.delete_blocker_count > 0) {
+                if (controller.game_delete_review_id !== "fixture-adventure"
+                        || controller.game_delete_review_title
+                           !== "Fixture Adventure") {
+                    console.error("CRUD_SMOKE_REVIEW_TARGET_MISMATCH id="
+                                  + controller.game_delete_review_id
+                                  + " title="
+                                  + controller.game_delete_review_title)
+                    Qt.exit(6)
+                    return
+                }
                 window.crudBlockedReferences = controller.delete_blocker_count
                 window.crudSmokePhase = 2
                 controller.add_game("Added Fixture", "Games\\Added\\added.rom",
@@ -3500,6 +3510,49 @@ ApplicationWindow {
                 controller.delete_game(addedRow, window.crudAddedGameId)
             } else if (window.crudSmokePhase === 3 && !controller.writing
                        && controller.game_count === 3) {
+                if (!controller.verify_crud_targeted_row_signals(
+                        window.crudAddedGameId)) {
+                    console.error("CRUD_SMOKE_TARGETED_ROW_CONTRACT_FAILED")
+                    Qt.exit(6)
+                    return
+                }
+                const row = controller.row_for_game_id("fixture-adventure")
+                if (row < 0) {
+                    console.error("CRUD_SMOKE_REVIEWED_GAME_MISSING")
+                    Qt.exit(6)
+                    return
+                }
+                window.crudSmokePhase = 4
+                controller.delete_game(row, "fixture-adventure")
+            } else if (window.crudSmokePhase === 4 && !controller.writing
+                       && controller.delete_blocker_count > 0) {
+                if (controller.game_delete_review_id !== "fixture-adventure"
+                        || controller.game_delete_review_title
+                           !== "Fixture Adventure") {
+                    console.error("CRUD_SMOKE_FRESH_REVIEW_TARGET_MISMATCH id="
+                                  + controller.game_delete_review_id
+                                  + " title="
+                                  + controller.game_delete_review_title)
+                    Qt.exit(6)
+                    return
+                }
+                if (controller.delete_blocker_count
+                        !== window.crudBlockedReferences) {
+                    console.error("CRUD_SMOKE_FRESH_REVIEW_COUNT_MISMATCH first="
+                                  + window.crudBlockedReferences
+                                  + " second="
+                                  + controller.delete_blocker_count)
+                    Qt.exit(6)
+                    return
+                }
+                window.crudSmokePhase = 5
+                gameDependencyRemovalConfirmation.smokeRemove(
+                    controller.game_delete_review_id,
+                    controller.game_delete_review_title,
+                    controller.delete_blocker_summary)
+            } else if (window.crudSmokePhase === 5 && !controller.loading
+                       && !controller.writing
+                       && controller.game_count === 2) {
                 if (!controller.report_crud_smoke_success(
                         window.crudAddedGameId, window.crudBlockedReferences)) {
                     console.error("CRUD_SMOKE_MODEL_CONTRACT_FAILED")
@@ -15678,8 +15731,61 @@ ApplicationWindow {
 
         contentItem: Label {
             width: 420
-            text: "Deletion is refused if any modeled platform, playlist, navigation, clone, save, controller, or blacklist record still references this game. Media files are not deleted."
+            text: "LaunchBox first scans every modeled owned and dependent collection record. If references exist, a separate review can remove the game and repair them in one recoverable transaction. ROMs, additional-application ROMs, media, manuals, music, videos, saves, and directories are never deleted."
             wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: gameDependencyRemovalConfirmation
+        anchors.centerIn: parent
+        modal: true
+        title: "Remove " + gameTitle + " from the collection?"
+        standardButtons: Dialog.Yes | Dialog.No
+        property string gameId: ""
+        property string gameTitle: ""
+        property string blockerSummary: ""
+
+        function prepare(id, title, summary) {
+            gameId = id
+            gameTitle = title
+            blockerSummary = summary
+            open()
+        }
+
+        function smokeRemove(id, title, summary) {
+            prepare(id, title, summary)
+            Qt.callLater(function() {
+                gameDependencyRemovalConfirmation.accept()
+            })
+        }
+
+        onAccepted: controller.delete_game_with_dependencies(gameId)
+
+        contentItem: ColumnLayout {
+            width: 560
+            spacing: 12
+            Label {
+                Layout.fillWidth: true
+                text: "This removes " + gameTitle
+                      + " and its owned collection records, then repairs the reviewed dependent records in one recoverable transaction."
+                wrapMode: Text.Wrap
+                font.bold: true
+            }
+            Label {
+                Layout.fillWidth: true
+                text: blockerSummary.length > 0
+                      ? "Current dependencies: " + blockerSummary
+                      : "The exact game and dependency inventory will be scanned again before the write."
+                wrapMode: Text.Wrap
+                color: "#d29922"
+            }
+            Label {
+                Layout.fillWidth: true
+                text: "All ROMs, additional-application ROMs, media, manuals, music, videos, save files, and directories are retained. Exact XML recovery copies are kept. Files can be reviewed and removed separately later."
+                wrapMode: Text.Wrap
+                color: "#7d8590"
+            }
         }
     }
 
@@ -15910,6 +16016,15 @@ ApplicationWindow {
                     onClicked:
                         platformDependencyRemovalConfirmation.prepare(
                             controller.platform_delete_review_name,
+                            controller.delete_blocker_summary)
+                }
+                Button {
+                    text: "Review Game Removal"
+                    visible: controller.game_delete_review_id.length > 0
+                    onClicked:
+                        gameDependencyRemovalConfirmation.prepare(
+                            controller.game_delete_review_id,
+                            controller.game_delete_review_title,
                             controller.delete_blocker_summary)
                 }
                 Button {

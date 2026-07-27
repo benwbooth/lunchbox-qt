@@ -3086,6 +3086,59 @@ echo "LaunchBox transactional metadata/launch/alias/custom-field/model edits, le
 cp -R fixtures/launchbox/Data "$crud_root/Data"
 crud_platform="$crud_root/Data/Platforms/Fixture Console.xml"
 crud_playlist="$crud_root/Data/Playlists/Fixture Playlist.xml"
+crud_catalog="$crud_root/Data/Platforms.xml"
+crud_blacklist="$crud_root/Data/ImportBlacklist.xml"
+crud_list_cache="$crud_root/Data/ListCache.xml"
+sed -i.crud \
+  's#    <ID>fixture-racer</ID>#    <ID>fixture-racer</ID>\n    <CloneOf>fixture-adventure</CloneOf>#' \
+  "$crud_platform"
+sed -i.crud \
+  's#    <SortBy>Title</SortBy>#    <SortBy>Title</SortBy>\n    <LastGameId>fixture-adventure</LastGameId>#' \
+  "$crud_playlist"
+sed -i.crud \
+  's#    <Name>Fixture Console</Name>#    <Name>Fixture Console</Name>\n    <LastGameId>fixture-adventure</LastGameId>#' \
+  "$crud_catalog"
+sed -i.crud \
+  's#</LaunchBox>#  <IgnoredGameId>\n    <GameId>fixture-adventure</GameId>\n  </IgnoredGameId>\n</LaunchBox>#' \
+  "$crud_blacklist"
+rm \
+  "$crud_platform.crud" \
+  "$crud_playlist.crud" \
+  "$crud_catalog.crud" \
+  "$crud_blacklist.crud"
+
+crud_platform_before="$test_config_root/Fixture Console.before-crud.xml"
+crud_playlist_before="$test_config_root/Fixture Playlist.before-crud.xml"
+crud_catalog_before="$test_config_root/Platforms.before-crud.xml"
+crud_blacklist_before="$test_config_root/ImportBlacklist.before-crud.xml"
+crud_list_cache_before="$test_config_root/ListCache.before-crud.xml"
+cp "$crud_platform" "$crud_platform_before"
+cp "$crud_playlist" "$crud_playlist_before"
+cp "$crud_catalog" "$crud_catalog_before"
+cp "$crud_blacklist" "$crud_blacklist_before"
+cp "$crud_list_cache" "$crud_list_cache_before"
+
+crud_retained_files=(
+  "Games/Fixture Adventure/adventure.rom"
+  "Games/Fixture Adventure/manual.pdf"
+  "Images/Fixture Console/Box - Front/fixture-adventure.png"
+  "Manuals/Fixture Console/fixture-adventure.pdf"
+  "Music/Fixture Console/Fixture Adventure.m3u"
+  "Videos/Fixture Console/fixture-adventure.mp4"
+  "Saves/Fixture Adventure/slot1.sav"
+)
+for relative_path in "${crud_retained_files[@]}"; do
+  mkdir -p "$(dirname "$crud_root/$relative_path")"
+  printf 'record-only game removal must retain %s\n' "$relative_path" \
+    > "$crud_root/$relative_path"
+done
+crud_retained_manifest="$test_config_root/crud-retained.before.sha256"
+(
+  for relative_path in "${crud_retained_files[@]}"; do
+    printf '%s\0' "$crud_root/$relative_path"
+  done | sort -z | xargs -0 sha256sum
+) > "$crud_retained_manifest"
+
 crud_output=$(
   QT_QPA_PLATFORM=offscreen "$binary_dir/launchbox" \
     --library "$crud_root" --crud-smoke-test \
@@ -3094,24 +3147,46 @@ crud_output=$(
   printf '%s\n' "$crud_output" >&2
   exit 1
 }
-if ! rg -q 'CRUD_SMOKE_COMPLETE blocked=5 inserts=1 removes=1 games=3' \
+if ! rg -q 'CRUD_SMOKE_COMPLETE blocked=10 inserts=1 removes=1 games=2' \
   <<< "$crud_output"; then
   printf '%s\n' "$crud_output" >&2
-  echo "LaunchBox did not validate dependency-blocked delete and row CRUD." >&2
+  echo "LaunchBox did not validate reviewed record-only game removal and row CRUD." >&2
   exit 1
 fi
 if rg -q -F '<Title>Added Fixture</Title>' "$crud_platform"; then
   echo "CRUD smoke left its temporary added game in the platform XML." >&2
   exit 1
 fi
-if ! rg -q -F '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>' \
-  "$crud_platform"; then
-  echo "CRUD smoke lost an unknown game element." >&2
+if rg -q -F 'fixture-adventure' "$crud_platform"; then
+  echo "Reviewed game removal left an owned or dependent platform record behind." >&2
   exit 1
 fi
-if ! cmp -s "$crud_playlist" \
-  'fixtures/launchbox/Data/Playlists/Fixture Playlist.xml'; then
-  echo "Dependency-blocked delete changed its referencing playlist." >&2
+if ! rg -q -F '<FutureRootElement>preserve-me</FutureRootElement>' \
+  "$crud_platform"; then
+  echo "Reviewed game removal lost unrelated unknown platform XML." >&2
+  exit 1
+fi
+if rg -q -F 'fixture-adventure' "$crud_playlist"; then
+  echo "Reviewed game removal left its playlist membership or navigation state behind." >&2
+  exit 1
+fi
+if rg -q -F '<LastGameId>fixture-adventure</LastGameId>' "$crud_catalog"; then
+  echo "Reviewed game removal left platform navigation state behind." >&2
+  exit 1
+fi
+if rg -q -F '<GameId>fixture-adventure</GameId>' "$crud_blacklist"; then
+  echo "Reviewed game removal left its import-blacklist record behind." >&2
+  exit 1
+fi
+if rg -q -F '<PlaylistId>fixture-playlist</PlaylistId>' "$crud_list_cache"; then
+  echo "Reviewed game removal left the affected playlist cache row behind." >&2
+  exit 1
+fi
+if ! (
+  cd /
+  sha256sum --check "$crud_retained_manifest"
+) > /dev/null; then
+  echo "Reviewed game removal changed or deleted a ROM, additional-app, media, manual, music, video, or save file." >&2
   exit 1
 fi
 
@@ -3119,22 +3194,53 @@ mapfile -t crud_backups < <(
   find "$crud_root/Data/Platforms" -maxdepth 1 -type f \
     -name '*.lbport-transaction-backup-*' -print
 )
-if [[ ${#crud_backups[@]} -ne 2 ]]; then
-  echo "Successful add/remove did not retain exactly two transaction backups." >&2
+if [[ ${#crud_backups[@]} -ne 3 ]]; then
+  echo "Add/remove/reviewed-removal did not retain exactly three platform backups." >&2
   exit 1
 fi
 crud_original_backups=0
 crud_added_backups=0
+crud_pre_removal_backups=0
 for backup in "${crud_backups[@]}"; do
-  if cmp -s "$backup" 'fixtures/launchbox/Data/Platforms/Fixture Console.xml'; then
+  if cmp -s "$backup" "$crud_platform_before"; then
     ((crud_original_backups += 1))
   elif rg -q -F '<Title>Added Fixture</Title>' "$backup" \
     && rg -q -F '<ApplicationPath>Games\Added\added.rom</ApplicationPath>' "$backup"; then
     ((crud_added_backups += 1))
+  elif rg -q -F '<Title>Fixture Adventure</Title>' "$backup" \
+    && rg -q -F '<CloneOf>fixture-adventure</CloneOf>' "$backup" \
+    && rg -q -F '<FutureRootElement>preserve-me</FutureRootElement>' "$backup" \
+    && ! rg -q -F '<Title>Added Fixture</Title>' "$backup"; then
+    ((crud_pre_removal_backups += 1))
   fi
 done
-if [[ $crud_original_backups -ne 1 || $crud_added_backups -ne 1 ]]; then
-  echo "CRUD transaction backups do not prove the expected add/remove chain." >&2
+if [[ $crud_original_backups -ne 1 \
+  || $crud_added_backups -ne 1 \
+  || $crud_pre_removal_backups -ne 1 ]]; then
+  echo "CRUD backups do not prove the expected add/remove/reviewed-removal chain." >&2
+  exit 1
+fi
+
+for document in \
+  "$crud_playlist:$crud_playlist_before" \
+  "$crud_catalog:$crud_catalog_before" \
+  "$crud_blacklist:$crud_blacklist_before" \
+  "$crud_list_cache:$crud_list_cache_before"; do
+  current=${document%%:*}
+  before=${document#*:}
+  mapfile -t document_backups < <(
+    find "$(dirname "$current")" -maxdepth 1 -type f \
+      -name "$(basename "$current").lbport-transaction-backup-*" -print
+  )
+  if [[ ${#document_backups[@]} -ne 1 ]] \
+    || ! cmp -s "${document_backups[0]}" "$before"; then
+    echo "Reviewed game removal did not retain the exact pre-write backup for $(basename "$current")." >&2
+    exit 1
+  fi
+done
+
+if ! rg -q -F '<GameId>fixture-ignored-game</GameId>' "$crud_blacklist"; then
+  echo "Reviewed game removal lost an unrelated import-blacklist record." >&2
   exit 1
 fi
 if find "$crud_root" -maxdepth 1 -type f \
@@ -3143,7 +3249,7 @@ if find "$crud_root" -maxdepth 1 -type f \
   exit 1
 fi
 
-echo "LaunchBox reference-gated add/remove CRUD and targeted Qt row signals validated."
+echo "LaunchBox reviewed record-only game removal, atomic reference repair, file retention, exact backups, and targeted Qt row signals validated."
 
 cp -R fixtures/launchbox/Data "$additional_application_crud_root/Data"
 additional_application_crud_platform="$additional_application_crud_root/Data/Platforms/Fixture Console.xml"

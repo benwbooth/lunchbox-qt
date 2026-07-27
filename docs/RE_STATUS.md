@@ -115,6 +115,23 @@ retains exact backups, reloads committed models, and never resolves or deletes
 ROM, media, manual, music, video, emulator, or save paths. Evidence and
 clean-room boundaries are recorded in `analysis/platform-removal-13.27.md`.
 
+The same 13.27 resource boundary distinguishes permanently deleting a game
+from the local collection from the separate ROM, additional-application ROM,
+and associated-media removal prompts. `AllowDeletingRoms` and
+`DeleteAssociatedMediaOnGameDelete` are independent persisted settings.
+Protected game-delete bodies remain unavailable, so the native `LIB-001`
+subset uses an explicit exact-ID second review and a bounded record-only
+policy. One recoverable transaction removes the game and its owned XML rows,
+clears modeled clone, playlist/navigation, platform-navigation, blacklist, and
+affected list-cache references, keeps exact backups, and reloads the committed
+library. It never resolves a stored path or deletes a ROM, additional-app file,
+media item, manual, music track, video, save, or directory. Storage,
+controller, and rendered Qt tests prove a five-document remediation, seven
+exact recovery copies across the complete add/remove/remediate workflow,
+unrelated unknown XML retention, and byte-exact representative file retention.
+Evidence and clean-room boundaries are recorded in
+`analysis/game-removal-13.27.md`.
+
 The census now includes a value-free additional-application shape audit. All
 16,752 records have parseable nonnegative priorities ranging from 0 through 26;
 12 have an empty application path. Five game-save rows reference additional
@@ -226,8 +243,8 @@ back/spine/front regions when enabled. LaunchBox and BigBox runtime smokes
 require the fixture's game-level jewel override to beat its platform DVD
 override, require exact port-owned `260x230x20` jewel geometry and the `0.143`
 scan ratio, and render the result before accepting the interaction. Separate
-transactional smokes prove exact game/platform model edits and platform-delete
-cleanup.
+transactional smokes prove exact game/platform model edits plus reviewed game
+and platform removal cleanup.
 
 These Qt shapes are a functional cross-platform presentation, not a claim of
 original WPF mesh or camera parity. Front-spine/logo/rotation material

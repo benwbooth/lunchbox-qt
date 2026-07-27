@@ -223,6 +223,8 @@ pub mod qobject {
         #[qproperty(bool, application_shutdown_backup_ready)]
         #[qproperty(i32, delete_blocker_count)]
         #[qproperty(QString, delete_blocker_summary)]
+        #[qproperty(QString, game_delete_review_id)]
+        #[qproperty(QString, game_delete_review_title)]
         #[qproperty(QString, platform_delete_review_name)]
         #[qproperty(QString, last_added_game_id)]
         #[qproperty(QString, last_added_emulator_id)]
@@ -1230,6 +1232,9 @@ pub mod qobject {
         fn delete_game(self: Pin<&mut LibraryController>, row: i32, game_id: QString);
 
         #[qinvokable]
+        fn delete_game_with_dependencies(self: Pin<&mut LibraryController>, game_id: QString);
+
+        #[qinvokable]
         fn game_combine_candidates(self: &LibraryController, row: i32, game_id: QString)
             -> QString;
 
@@ -1676,6 +1681,12 @@ pub mod qobject {
             self: &LibraryController,
             game_id: QString,
             expected_title: QString,
+        ) -> bool;
+
+        #[qinvokable]
+        fn verify_crud_targeted_row_signals(
+            self: Pin<&mut LibraryController>,
+            added_game_id: QString,
         ) -> bool;
 
         #[qinvokable]
@@ -2537,6 +2548,8 @@ pub struct LibraryControllerRust {
     application_shutdown_backup_ready: bool,
     delete_blocker_count: i32,
     delete_blocker_summary: QString,
+    game_delete_review_id: QString,
+    game_delete_review_title: QString,
     platform_delete_review_name: QString,
     last_added_game_id: QString,
     last_added_emulator_id: QString,
@@ -2659,6 +2672,8 @@ pub struct LibraryControllerRust {
     data_change_notifications: u64,
     row_insert_notifications: u64,
     row_remove_notifications: u64,
+    crud_smoke_verified_row_insert_notifications: u64,
+    crud_smoke_verified_row_remove_notifications: u64,
     launch_notifications: u64,
     startup_screen_presentations: u64,
     startup_screen_timer_dismissals: u64,
@@ -4124,6 +4139,10 @@ struct GameDeleteSuccess {
     game: Game,
     source: PathBuf,
     backup: PathBuf,
+    associated_record_count: usize,
+    remediated_reference_count: usize,
+    modified_document_count: usize,
+    reload_library: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17696,6 +17715,130 @@ fn delete_game_from_platform(
         game,
         source,
         backup,
+        associated_record_count: 1,
+        remediated_reference_count: 0,
+        modified_document_count: 1,
+        reload_library: false,
+    })
+}
+
+fn delete_game_with_dependencies_from_library(
+    root: PathBuf,
+    source: PathBuf,
+    game_id: String,
+) -> Result<GameDeleteSuccess, GameWriteFailure> {
+    let data = LaunchBoxDataIndex::load(&root)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let mut source_document = PlatformDocument::load(&source)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let removed = source_document
+        .remove_game_with_records(&game_id)
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+    let mut remediation = removed.remediation;
+
+    let mut auxiliary_documents = Vec::new();
+    for file_name in ["Platforms.xml", "ImportBlacklist.xml"] {
+        let path = data.data_root().join(file_name);
+        if !path.is_file() {
+            continue;
+        }
+        let mut document = AuxiliaryDocument::load(&path)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let document_report = document
+            .remediate_game_removal(&removed.game.id)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        if document_report.total() > 0 {
+            remediation.merge(&document_report);
+            auxiliary_documents.push(document);
+        }
+    }
+
+    let mut affected_playlist_ids = BTreeSet::new();
+    for playlist in data.playlists() {
+        let mut document = AuxiliaryDocument::load(&playlist.source_path)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let document_report = document
+            .remediate_game_removal(&removed.game.id)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        if document_report.total() > 0 {
+            affected_playlist_ids.insert(playlist.playlist.id.clone());
+            remediation.merge(&document_report);
+            auxiliary_documents.push(document);
+        }
+    }
+
+    if !affected_playlist_ids.is_empty() {
+        if let Some(cache_path) = list_cache_document_path(&root) {
+            let mut cache = AuxiliaryDocument::load(&cache_path)
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            let mut removed_cache_items = 0usize;
+            for playlist_id in &affected_playlist_ids {
+                removed_cache_items = removed_cache_items.saturating_add(
+                    cache
+                        .remove_playlist_list_cache_items(playlist_id)
+                        .map_err(|error| GameWriteFailure::Other(error.to_string()))?,
+                );
+            }
+            if removed_cache_items > 0 {
+                remediation.list_cache_items_removed = remediation
+                    .list_cache_items_removed
+                    .saturating_add(removed_cache_items);
+                auxiliary_documents.push(cache);
+            }
+        }
+    }
+
+    let mut retained_platform_documents = Vec::new();
+    for platform in data.platforms().platforms() {
+        if platform.source_path == source {
+            continue;
+        }
+        let mut document =
+            PlatformDocument::load_for_platform(&platform.source_path, &platform.name)
+                .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let document_report = document
+            .remediate_game_removal_references(&removed.game.id)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        if document_report.total() > 0 {
+            remediation.merge(&document_report);
+            retained_platform_documents.push(document);
+        }
+    }
+
+    let mut transaction = LibraryTransaction::new(&root).map_err(classify_transaction_error)?;
+    transaction
+        .stage_platform(&source_document)
+        .map_err(classify_transaction_error)?;
+    for document in &auxiliary_documents {
+        transaction
+            .stage_auxiliary(document)
+            .map_err(classify_transaction_error)?;
+    }
+    for document in &retained_platform_documents {
+        transaction
+            .stage_platform(document)
+            .map_err(classify_transaction_error)?;
+    }
+    let report = transaction.commit().map_err(classify_transaction_error)?;
+    let modified_document_count = report.writes.len();
+    let backup = report
+        .writes
+        .iter()
+        .find(|write| write.target == source)
+        .map(|write| write.backup.clone())
+        .ok_or_else(|| {
+            GameWriteFailure::Other(
+                "game dependency-remediation transaction reported no source platform write".into(),
+            )
+        })?;
+    Ok(GameDeleteSuccess {
+        game: removed.game,
+        source,
+        backup,
+        associated_record_count: removed.inventory.total(),
+        remediated_reference_count: remediation.total(),
+        modified_document_count,
+        reload_library: true,
     })
 }
 
@@ -22991,13 +23134,18 @@ impl qobject::LibraryController {
         )));
 
         let qt_thread = self.as_ref().qt_thread();
+        let requested_game_id = game_id.clone();
         let spawn_result = std::thread::Builder::new()
             .name("launchbox-game-delete".to_string())
             .spawn(move || {
                 let result = delete_game_from_platform(root, reference_scope, source, game_id);
                 qt_thread
                     .queue(move |mut controller| {
-                        controller.as_mut().finish_game_delete(generation, result);
+                        controller.as_mut().finish_game_delete(
+                            generation,
+                            requested_game_id,
+                            result,
+                        );
                     })
                     .ok();
             });
@@ -23005,6 +23153,78 @@ impl qobject::LibraryController {
             self.as_mut().set_writing(false);
             self.as_mut()
                 .set_status_message(qstring(format!("Could not start game delete: {error}")));
+        }
+    }
+
+    pub fn delete_game_with_dependencies(mut self: Pin<&mut Self>, game_id: QString) {
+        let game_id = game_id.to_string().trim().to_string();
+        if *self.as_ref().delete_blocker_count() <= 0
+            || !self
+                .as_ref()
+                .game_delete_review_id()
+                .to_string()
+                .eq_ignore_ascii_case(&game_id)
+        {
+            self.as_mut().set_status_message(qstring(
+                "Review a current blocked game deletion before removing associated records.",
+            ));
+            return;
+        }
+        if !self.as_mut().begin_library_mutation() {
+            return;
+        }
+        let Some(root) = self.as_ref().rust().launchbox_root.clone() else {
+            self.as_mut().set_status_message(qstring(
+                "Reviewed game removal requires a loaded LaunchBox directory.",
+            ));
+            return;
+        };
+        let Some(actual_index) = self
+            .as_ref()
+            .rust()
+            .games
+            .iter()
+            .position(|game| game.id.eq_ignore_ascii_case(&game_id))
+        else {
+            self.as_mut().set_status_message(qstring(
+                "The reviewed game is no longer present; reload and try again.",
+            ));
+            return;
+        };
+        let Some(source) = self.as_ref().rust().game_sources.get(actual_index).cloned() else {
+            self.as_mut()
+                .set_status_message(qstring("The reviewed game has no loaded source document."));
+            return;
+        };
+        let exact_game_id = self.as_ref().rust().games[actual_index].id.clone();
+        let generation = self.as_ref().rust().request_generation;
+        self.as_mut().set_writing(true);
+        self.as_mut().set_status_message(qstring(format!(
+            "Removing {exact_game_id} and associated collection records while retaining all files..."
+        )));
+
+        let qt_thread = self.as_ref().qt_thread();
+        let requested_game_id = exact_game_id.clone();
+        let spawn_result = std::thread::Builder::new()
+            .name("launchbox-game-dependency-remediation".to_string())
+            .spawn(move || {
+                let result =
+                    delete_game_with_dependencies_from_library(root, source, exact_game_id);
+                qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().finish_game_delete(
+                            generation,
+                            requested_game_id,
+                            result,
+                        );
+                    })
+                    .ok();
+            });
+        if let Err(error) = spawn_result {
+            self.as_mut().set_writing(false);
+            self.as_mut().set_status_message(qstring(format!(
+                "Could not start game dependency remediation: {error}"
+            )));
         }
     }
 
@@ -23625,6 +23845,9 @@ impl qobject::LibraryController {
     pub fn dismiss_delete_blocker(mut self: Pin<&mut Self>) {
         self.as_mut().set_delete_blocker_count(0);
         self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut().set_game_delete_review_id(QString::default());
+        self.as_mut()
+            .set_game_delete_review_title(QString::default());
         self.as_mut()
             .set_platform_delete_review_name(QString::default());
     }
@@ -25243,6 +25466,29 @@ impl qobject::LibraryController {
         success
     }
 
+    pub fn verify_crud_targeted_row_signals(
+        mut self: Pin<&mut Self>,
+        added_game_id: QString,
+    ) -> bool {
+        let added_game_id = added_game_id.to_string();
+        let success = {
+            let this = self.as_ref();
+            let rust = this.rust();
+            !rust.games.iter().any(|game| game.id == added_game_id)
+                && rust.games.len() == 3
+                && rust.model_reset_notifications == 1
+                && rust.row_insert_notifications == 1
+                && rust.row_remove_notifications == 1
+                && rust.data_change_notifications == 0
+        };
+        if success {
+            let mut rust = self.as_mut().rust_mut();
+            rust.crud_smoke_verified_row_insert_notifications = rust.row_insert_notifications;
+            rust.crud_smoke_verified_row_remove_notifications = rust.row_remove_notifications;
+        }
+        success
+    }
+
     pub fn report_crud_smoke_success(
         &self,
         added_game_id: QString,
@@ -25251,20 +25497,23 @@ impl qobject::LibraryController {
         let added_game_id = added_game_id.to_string();
         let rust = self.rust();
         let success = !rust.games.iter().any(|game| game.id == added_game_id)
-            && rust.games.len() == 3
+            && !rust.games.iter().any(|game| game.id == "fixture-adventure")
+            && rust.games.len() == 2
             && rust.model_reset_notifications == 1
-            && rust.row_insert_notifications == 1
-            && rust.row_remove_notifications == 1
+            && rust.row_insert_notifications == 0
+            && rust.row_remove_notifications == 0
             && rust.data_change_notifications == 0
-            && blocked_references == 5
+            && rust.crud_smoke_verified_row_insert_notifications == 1
+            && rust.crud_smoke_verified_row_remove_notifications == 1
+            && blocked_references == 10
             && !*self.writing()
             && !*self.write_conflict()
             && *self.pending_recovery_count() == 0;
         if success {
             eprintln!(
                 "CRUD_SMOKE_COMPLETE blocked={blocked_references} inserts={} removes={} games={}",
-                rust.row_insert_notifications,
-                rust.row_remove_notifications,
+                rust.crud_smoke_verified_row_insert_notifications,
+                rust.crud_smoke_verified_row_remove_notifications,
                 rust.games.len()
             );
         }
@@ -29689,6 +29938,13 @@ impl qobject::LibraryController {
             ));
             return false;
         }
+        self.as_mut().set_delete_blocker_count(0);
+        self.as_mut().set_delete_blocker_summary(QString::default());
+        self.as_mut().set_game_delete_review_id(QString::default());
+        self.as_mut()
+            .set_game_delete_review_title(QString::default());
+        self.as_mut()
+            .set_platform_delete_review_name(QString::default());
         true
     }
 
@@ -33987,6 +34243,7 @@ impl qobject::LibraryController {
     fn finish_game_delete(
         mut self: Pin<&mut Self>,
         generation: u64,
+        requested_game_id: String,
         result: Result<GameDeleteSuccess, GameWriteFailure>,
     ) {
         self.as_mut().set_writing(false);
@@ -33995,6 +34252,27 @@ impl qobject::LibraryController {
         }
         match result {
             Ok(deleted) => {
+                self.as_mut().set_delete_blocker_count(0);
+                self.as_mut().set_delete_blocker_summary(QString::default());
+                self.as_mut().set_game_delete_review_id(QString::default());
+                self.as_mut()
+                    .set_game_delete_review_title(QString::default());
+                self.as_mut()
+                    .set_platform_delete_review_name(QString::default());
+                if deleted.reload_library {
+                    let message = format!(
+                        "Removed {} from the collection, deleted {} owned collection record(s), and remediated {} dependent record(s) across {} document(s). Exact source backup: {}. All ROMs, additional-application ROMs, media, manuals, music, videos, save files, and directories were retained.",
+                        deleted.game.title,
+                        deleted.associated_record_count,
+                        deleted.remediated_reference_count,
+                        deleted.modified_document_count,
+                        deleted.backup.display(),
+                    );
+                    self.as_mut().set_write_conflict(false);
+                    self.as_mut().rust_mut().pending_post_reload_message = Some(message);
+                    self.as_mut().reload_library();
+                    return;
+                }
                 let actual_index = {
                     let this = self.as_ref();
                     let rust = this.rust();
@@ -34081,37 +34359,61 @@ impl qobject::LibraryController {
                 self.as_mut().update_library_counts();
                 self.as_mut().set_write_conflict(false);
                 self.as_mut().set_status_message(qstring(format!(
-                    "Deleted {}. Exact backup: {}",
+                    "Deleted {} from the collection. Exact backup: {}. No ROM, media, or save files were deleted.",
                     deleted.game.title,
                     deleted.backup.display()
                 )));
             }
             Err(GameWriteFailure::Referenced(references)) => {
                 let summary = summarize_game_references(&references);
+                let review_title = self
+                    .as_ref()
+                    .rust()
+                    .games
+                    .iter()
+                    .find(|game| game.id.eq_ignore_ascii_case(&requested_game_id))
+                    .map(|game| game.title.clone())
+                    .unwrap_or_else(|| requested_game_id.clone());
                 self.as_mut()
                     .set_delete_blocker_count(saturating_i32(references.len()));
                 self.as_mut().set_delete_blocker_summary(qstring(&summary));
+                self.as_mut()
+                    .set_game_delete_review_id(qstring(&requested_game_id));
+                self.as_mut()
+                    .set_game_delete_review_title(qstring(review_title));
+                self.as_mut()
+                    .set_platform_delete_review_name(QString::default());
                 self.as_mut().set_status_message(qstring(format!(
                     "Delete blocked by {} dependent record(s): {summary}",
                     references.len()
                 )));
             }
             Err(GameWriteFailure::Conflict(message)) => {
+                self.as_mut().set_game_delete_review_id(QString::default());
+                self.as_mut()
+                    .set_game_delete_review_title(QString::default());
                 self.as_mut().set_write_conflict(true);
                 self.as_mut().set_status_message(qstring(format!(
                     "Write conflict while deleting game: {message}. Reload before retrying."
                 )));
             }
             Err(GameWriteFailure::PendingRecovery { count, message }) => {
+                self.as_mut().set_game_delete_review_id(QString::default());
+                self.as_mut()
+                    .set_game_delete_review_title(QString::default());
                 self.as_mut()
                     .set_pending_recovery_count(saturating_i32(count));
                 self.as_mut().set_status_message(qstring(format!(
                     "Interrupted transaction requires recovery: {message}"
                 )));
             }
-            Err(GameWriteFailure::Other(message)) => self
-                .as_mut()
-                .set_status_message(qstring(format!("Could not delete game: {message}"))),
+            Err(GameWriteFailure::Other(message)) => {
+                self.as_mut().set_game_delete_review_id(QString::default());
+                self.as_mut()
+                    .set_game_delete_review_title(QString::default());
+                self.as_mut()
+                    .set_status_message(qstring(format!("Could not delete game: {message}")));
+            }
         }
     }
 
@@ -40160,6 +40462,122 @@ mod tests {
             .unwrap()
             .contains("<FutureCache>keep</FutureCache>"));
         assert_eq!(fs::read(platform_path).unwrap(), original_platform);
+        assert!(pending_transaction_manifests(directory.path())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn reviewed_game_removal_is_transactional_and_retains_all_files() {
+        let directory = tempfile::tempdir().expect("temporary library");
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        let data = directory.path().join("Data");
+        let platforms = data.join("Platforms");
+        let playlists = data.join("Playlists");
+        fs::create_dir_all(&platforms).unwrap();
+        fs::create_dir_all(&playlists).unwrap();
+
+        let source = platforms.join("Fixture Console.xml");
+        let source_fixture = fs::read_to_string(fixture_root.join("Platforms/Fixture Console.xml"))
+            .unwrap()
+            .replace(
+                "<ID>fixture-racer</ID>",
+                "<ID>fixture-racer</ID><CloneOf>fixture-adventure</CloneOf>",
+            );
+        fs::write(&source, source_fixture.as_bytes()).unwrap();
+        let source_before = fs::read(&source).unwrap();
+
+        let catalog_path = data.join("Platforms.xml");
+        let catalog_fixture = fs::read_to_string(fixture_root.join("Platforms.xml"))
+            .unwrap()
+            .replace(
+                "<Name>Fixture Console</Name>",
+                "<Name>Fixture Console</Name><LastGameId>fixture-adventure</LastGameId>",
+            );
+        fs::write(&catalog_path, catalog_fixture).unwrap();
+
+        let playlist_path = playlists.join("Fixture Playlist.xml");
+        let playlist_fixture =
+            fs::read_to_string(fixture_root.join("Playlists/Fixture Playlist.xml"))
+                .unwrap()
+                .replace(
+                    "<SortBy>Title</SortBy>",
+                    "<SortBy>Title</SortBy><LastGameId>fixture-adventure</LastGameId>",
+                );
+        fs::write(&playlist_path, playlist_fixture).unwrap();
+
+        let blacklist_path = data.join("ImportBlacklist.xml");
+        let blacklist_fixture = fs::read_to_string(fixture_root.join("ImportBlacklist.xml"))
+            .unwrap()
+            .replace(
+                "</LaunchBox>",
+                "<IgnoredGameId><GameId>fixture-adventure</GameId></IgnoredGameId></LaunchBox>",
+            );
+        fs::write(&blacklist_path, blacklist_fixture).unwrap();
+        fs::copy(
+            fixture_root.join("ListCache.xml"),
+            data.join("ListCache.xml"),
+        )
+        .unwrap();
+
+        let rom_path = directory.path().join("Games/Fixture Console/adventure.rom");
+        let media_path = directory
+            .path()
+            .join("Images/Fixture Console/adventure.png");
+        let save_path = directory.path().join("Saves/Fixture Console/adventure.sav");
+        for (path, bytes) in [
+            (&rom_path, b"rom bytes".as_slice()),
+            (&media_path, b"media bytes".as_slice()),
+            (&save_path, b"save bytes".as_slice()),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+
+        let blocked = delete_game_from_platform(
+            directory.path().to_path_buf(),
+            directory.path().to_path_buf(),
+            source.clone(),
+            "fixture-adventure".into(),
+        );
+        assert!(matches!(
+            blocked,
+            Err(GameWriteFailure::Referenced(references)) if references.len() == 10
+        ));
+
+        let deleted = delete_game_with_dependencies_from_library(
+            directory.path().to_path_buf(),
+            source.clone(),
+            "fixture-adventure".into(),
+        )
+        .unwrap_or_else(|error| panic!("{}", describe_game_write_failure(&error)));
+        assert_eq!(deleted.game.title, "Fixture Adventure");
+        assert_eq!(deleted.associated_record_count, 6);
+        assert_eq!(deleted.remediated_reference_count, 6);
+        assert_eq!(deleted.modified_document_count, 5);
+        assert!(deleted.reload_library);
+        assert_eq!(fs::read(&deleted.backup).unwrap(), source_before);
+
+        let final_source = fs::read_to_string(&source).unwrap();
+        assert!(!final_source.contains("fixture-adventure"));
+        assert!(final_source.contains("<ID>fixture-racer</ID>"));
+        assert!(final_source.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+        assert!(!fs::read_to_string(&playlist_path)
+            .unwrap()
+            .contains("fixture-adventure"));
+        assert!(!fs::read_to_string(&catalog_path)
+            .unwrap()
+            .contains("<LastGameId>fixture-adventure</LastGameId>"));
+        assert!(!fs::read_to_string(&blacklist_path)
+            .unwrap()
+            .contains("fixture-adventure"));
+        assert!(!fs::read_to_string(data.join("ListCache.xml"))
+            .unwrap()
+            .contains("fixture-playlist"));
+        assert_eq!(fs::read(&rom_path).unwrap(), b"rom bytes");
+        assert_eq!(fs::read(&media_path).unwrap(), b"media bytes");
+        assert_eq!(fs::read(&save_path).unwrap(), b"save bytes");
         assert!(pending_transaction_manifests(directory.path())
             .unwrap()
             .is_empty());

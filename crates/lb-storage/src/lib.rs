@@ -371,6 +371,7 @@ pub enum GameReferenceKind {
     CustomField,
     ControllerSupport,
     GameSave,
+    ModelSettings,
     CloneOf,
     PlaylistGame,
     NavigationLastGame,
@@ -386,6 +387,7 @@ impl std::fmt::Display for GameReferenceKind {
             Self::CustomField => "custom field",
             Self::ControllerSupport => "controller support",
             Self::GameSave => "game save",
+            Self::ModelSettings => "game model settings",
             Self::CloneOf => "clone relationship",
             Self::PlaylistGame => "playlist entry",
             Self::NavigationLastGame => "navigation last-game selection",
@@ -400,6 +402,89 @@ pub struct GameReference {
     pub kind: GameReferenceKind,
     pub source_path: PathBuf,
     pub detail: String,
+}
+
+/// Exact records owned by one game and authorized for removal only after a
+/// separate, game-ID-bound collection-removal review.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GameRemovalInventory {
+    pub games: usize,
+    pub additional_applications: usize,
+    pub mounts: usize,
+    pub alternate_names: usize,
+    pub custom_fields: usize,
+    pub controller_support: usize,
+    pub game_saves: usize,
+    pub model_settings: usize,
+}
+
+impl GameRemovalInventory {
+    pub fn total(&self) -> usize {
+        self.games
+            .saturating_add(self.additional_applications)
+            .saturating_add(self.mounts)
+            .saturating_add(self.alternate_names)
+            .saturating_add(self.custom_fields)
+            .saturating_add(self.controller_support)
+            .saturating_add(self.game_saves)
+            .saturating_add(self.model_settings)
+    }
+}
+
+/// Modeled references repaired while removing one game from the collection.
+/// Stored paths and referenced filesystem objects are deliberately excluded.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GameRemovalRemediation {
+    pub clone_relationships_cleared: usize,
+    pub playlist_games_removed: usize,
+    pub navigation_games_cleared: usize,
+    pub import_blacklist_entries_removed: usize,
+    pub list_cache_items_removed: usize,
+    pub external_game_records_removed: usize,
+    pub external_model_settings_removed: usize,
+}
+
+impl GameRemovalRemediation {
+    pub fn total(&self) -> usize {
+        self.clone_relationships_cleared
+            .saturating_add(self.playlist_games_removed)
+            .saturating_add(self.navigation_games_cleared)
+            .saturating_add(self.import_blacklist_entries_removed)
+            .saturating_add(self.list_cache_items_removed)
+            .saturating_add(self.external_game_records_removed)
+            .saturating_add(self.external_model_settings_removed)
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        self.clone_relationships_cleared = self
+            .clone_relationships_cleared
+            .saturating_add(other.clone_relationships_cleared);
+        self.playlist_games_removed = self
+            .playlist_games_removed
+            .saturating_add(other.playlist_games_removed);
+        self.navigation_games_cleared = self
+            .navigation_games_cleared
+            .saturating_add(other.navigation_games_cleared);
+        self.import_blacklist_entries_removed = self
+            .import_blacklist_entries_removed
+            .saturating_add(other.import_blacklist_entries_removed);
+        self.list_cache_items_removed = self
+            .list_cache_items_removed
+            .saturating_add(other.list_cache_items_removed);
+        self.external_game_records_removed = self
+            .external_game_records_removed
+            .saturating_add(other.external_game_records_removed);
+        self.external_model_settings_removed = self
+            .external_model_settings_removed
+            .saturating_add(other.external_model_settings_removed);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemovedGameRecords {
+    pub game: Game,
+    pub inventory: GameRemovalInventory,
+    pub remediation: GameRemovalRemediation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -986,6 +1071,22 @@ fn platform_library_game_references(
             detail: save.title.clone().unwrap_or_else(|| "untitled save".into()),
         });
     }
+    for settings in platform.model_settings.iter().filter(|settings| {
+        settings
+            .game_id
+            .as_deref()
+            .is_some_and(|id| id.eq_ignore_ascii_case(game_id))
+    }) {
+        references.push(GameReference {
+            kind: GameReferenceKind::ModelSettings,
+            source_path: platform.source_path.clone(),
+            detail: settings
+                .model_type
+                .as_ref()
+                .map(|model_type| model_type.key().to_string())
+                .unwrap_or_else(|| "inherited model".into()),
+        });
+    }
     references
 }
 
@@ -1341,6 +1442,92 @@ impl AuxiliaryDocument {
                     });
                 }
                 AuxiliaryDocumentKind::InputBindings | AuxiliaryDocumentKind::ListCache => {}
+            }
+            Ok(())
+        })?;
+        Ok(report)
+    }
+
+    /// Removes or clears every modeled auxiliary-document reference to one
+    /// game that is being removed from the collection.
+    ///
+    /// Playlist cache invalidation is performed separately after the caller
+    /// knows which playlist documents actually changed. No stored path is
+    /// interpreted and no referenced filesystem object is opened.
+    pub fn remediate_game_removal(
+        &mut self,
+        game_id: &str,
+    ) -> Result<GameRemovalRemediation, StorageError> {
+        let game_id = game_id.to_string();
+        let kind = self.kind;
+        let mut report = GameRemovalRemediation::default();
+        self.mutate(|root| {
+            match kind {
+                AuxiliaryDocumentKind::Playlist => {
+                    root.children.retain_mut(|node| {
+                        let Some(element) = node.as_mut_element() else {
+                            return true;
+                        };
+                        if element.name == "Playlist" {
+                            if optional_child(element, "LastGameId")
+                                .is_some_and(|id| id.eq_ignore_ascii_case(&game_id))
+                            {
+                                set_optional_child_text(element, "LastGameId", None);
+                                report.navigation_games_cleared =
+                                    report.navigation_games_cleared.saturating_add(1);
+                            }
+                            return true;
+                        }
+                        if element.name == "PlaylistGame"
+                            && optional_child(element, "GameId")
+                                .is_some_and(|id| id.eq_ignore_ascii_case(&game_id))
+                        {
+                            report.playlist_games_removed =
+                                report.playlist_games_removed.saturating_add(1);
+                            return false;
+                        }
+                        true
+                    });
+                }
+                AuxiliaryDocumentKind::Platforms => {
+                    for element in root
+                        .children
+                        .iter_mut()
+                        .filter_map(XMLNode::as_mut_element)
+                        .filter(|element| {
+                            matches!(element.name.as_str(), "Platform" | "PlatformCategory")
+                        })
+                    {
+                        if optional_child(element, "LastGameId")
+                            .is_some_and(|id| id.eq_ignore_ascii_case(&game_id))
+                        {
+                            set_optional_child_text(element, "LastGameId", None);
+                            report.navigation_games_cleared =
+                                report.navigation_games_cleared.saturating_add(1);
+                        }
+                    }
+                }
+                AuxiliaryDocumentKind::ImportBlacklist => {
+                    root.children.retain(|node| {
+                        let matches = node.as_element().is_some_and(|element| {
+                            element.name == "IgnoredGameId"
+                                && optional_child(element, "GameId")
+                                    .is_some_and(|id| id.eq_ignore_ascii_case(&game_id))
+                        });
+                        if matches {
+                            report.import_blacklist_entries_removed =
+                                report.import_blacklist_entries_removed.saturating_add(1);
+                        }
+                        !matches
+                    });
+                }
+                AuxiliaryDocumentKind::Emulators
+                | AuxiliaryDocumentKind::Parents
+                | AuxiliaryDocumentKind::GameControllers
+                | AuxiliaryDocumentKind::Settings
+                | AuxiliaryDocumentKind::BigBoxSettings
+                | AuxiliaryDocumentKind::InputBindings
+                | AuxiliaryDocumentKind::ListCache => {}
             }
             Ok(())
         })?;
@@ -3861,6 +4048,28 @@ impl PlatformDocument {
         &mut self,
         deleted_game_ids: &[String],
     ) -> Result<PlatformRemovalRemediation, StorageError> {
+        let game_report = self.remediate_deleted_game_references_inner(deleted_game_ids)?;
+        Ok(PlatformRemovalRemediation {
+            clone_relationships_cleared: game_report.clone_relationships_cleared,
+            external_game_records_removed: game_report.external_game_records_removed,
+            game_model_settings_removed: game_report.external_model_settings_removed,
+            ..PlatformRemovalRemediation::default()
+        })
+    }
+
+    /// Clears modeled references to one game deleted from another or this
+    /// platform document. The game itself must already be absent here.
+    pub fn remediate_game_removal_references(
+        &mut self,
+        game_id: &str,
+    ) -> Result<GameRemovalRemediation, StorageError> {
+        self.remediate_deleted_game_references_inner(&[game_id.to_string()])
+    }
+
+    fn remediate_deleted_game_references_inner(
+        &mut self,
+        deleted_game_ids: &[String],
+    ) -> Result<GameRemovalRemediation, StorageError> {
         let deleted = deleted_game_ids
             .iter()
             .map(|id| id.to_lowercase())
@@ -3876,7 +4085,7 @@ impl PlatformDocument {
             });
         }
         let mut candidate = self.root.clone();
-        let mut report = PlatformRemovalRemediation::default();
+        let mut report = GameRemovalRemediation::default();
         candidate.children.retain_mut(|node| {
             let Some(element) = node.as_mut_element() else {
                 return true;
@@ -3895,8 +4104,8 @@ impl PlatformDocument {
                 && optional_child(element, "GameId")
                     .is_some_and(|id| deleted.contains(&id.to_lowercase()))
             {
-                report.game_model_settings_removed =
-                    report.game_model_settings_removed.saturating_add(1);
+                report.external_model_settings_removed =
+                    report.external_model_settings_removed.saturating_add(1);
                 return false;
             }
             let owner_field = match element.name.as_str() {
@@ -4900,6 +5109,122 @@ impl PlatformDocument {
             .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
         self.root.children.remove(element_index);
         Ok(self.library.games.remove(game_index))
+    }
+
+    /// Removes one game and every modeled record it owns after an explicit
+    /// collection-removal review. Retained games remain present; clone links
+    /// targeting the removed ID are cleared.
+    ///
+    /// This is a DOM-only operation. Application, ROM, media, manual, music,
+    /// video, save, and folder paths remain lexical values and are never
+    /// resolved or opened.
+    pub fn remove_game_with_records(
+        &mut self,
+        id: &str,
+    ) -> Result<RemovedGameRecords, StorageError> {
+        let game = self
+            .library
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(id))
+            .cloned()
+            .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+        let exact_id = game.id.clone();
+        let mut inventory = GameRemovalInventory {
+            games: 1,
+            ..GameRemovalInventory::default()
+        };
+        let mut remediation = GameRemovalRemediation::default();
+        let mut candidate = self.root.clone();
+        candidate.children.retain_mut(|node| {
+            let Some(element) = node.as_mut_element() else {
+                return true;
+            };
+            if element.name == "Game" {
+                if optional_child(element, "ID")
+                    .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+                {
+                    return false;
+                }
+                if optional_child(element, "CloneOf")
+                    .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+                {
+                    set_optional_child_text(element, "CloneOf", None);
+                    remediation.clone_relationships_cleared =
+                        remediation.clone_relationships_cleared.saturating_add(1);
+                }
+                return true;
+            }
+            if element.name == "ModelSettings"
+                && optional_child(element, "GameId")
+                    .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+            {
+                inventory.model_settings = inventory.model_settings.saturating_add(1);
+                return false;
+            }
+            let owner_field = match element.name.as_str() {
+                "AdditionalApplication" => {
+                    inventory.additional_applications =
+                        inventory.additional_applications.saturating_add(
+                            optional_child(element, "GameID")
+                                .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+                                as usize,
+                        );
+                    Some("GameID")
+                }
+                "Mount" => {
+                    inventory.mounts = inventory.mounts.saturating_add(
+                        optional_child(element, "GameID")
+                            .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+                            as usize,
+                    );
+                    Some("GameID")
+                }
+                "AlternateName" => {
+                    inventory.alternate_names = inventory.alternate_names.saturating_add(
+                        optional_child(element, "GameID")
+                            .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+                            as usize,
+                    );
+                    Some("GameID")
+                }
+                "CustomField" => {
+                    inventory.custom_fields = inventory.custom_fields.saturating_add(
+                        optional_child(element, "GameID")
+                            .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+                            as usize,
+                    );
+                    Some("GameID")
+                }
+                "GameControllerSupport" => {
+                    inventory.controller_support = inventory.controller_support.saturating_add(
+                        optional_child(element, "GameId")
+                            .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+                            as usize,
+                    );
+                    Some("GameId")
+                }
+                "GameSave" => {
+                    inventory.game_saves = inventory.game_saves.saturating_add(
+                        optional_child(element, "GameId")
+                            .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+                            as usize,
+                    );
+                    Some("GameId")
+                }
+                _ => None,
+            };
+            !owner_field.is_some_and(|field| {
+                optional_child(element, field)
+                    .is_some_and(|owner| owner.eq_ignore_ascii_case(&exact_id))
+            })
+        });
+        self.replace_platform_root(candidate)?;
+        Ok(RemovedGameRecords {
+            game,
+            inventory,
+            remediation,
+        })
     }
 
     pub fn set_game_title(&mut self, id: &str, title: &str) -> Result<(), StorageError> {
@@ -10754,6 +11079,7 @@ mod tests {
                 GameReferenceKind::AlternateName,
                 GameReferenceKind::CustomField,
                 GameReferenceKind::GameSave,
+                GameReferenceKind::ModelSettings,
                 GameReferenceKind::PlaylistGame,
             ]
         );
@@ -10762,7 +11088,7 @@ mod tests {
             PlatformDocument::load(platforms.join("Fixture Console.xml")).expect("load platform");
         assert!(matches!(
             document.remove_game("fixture-adventure"),
-            Err(StorageError::GameHasReferences { count: 4, .. })
+            Err(StorageError::GameHasReferences { count: 5, .. })
         ));
         assert!(find_game_references(directory.path(), "fixture-puzzle")
             .expect("scan unreferenced game")
@@ -10867,6 +11193,107 @@ mod tests {
         assert!(find_platform_references(directory.path(), "No References")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn game_removal_remediation_is_typed_lossless_and_record_only() {
+        let fixture = FIXTURE.replace(
+            "<ID>fixture-racer</ID>",
+            "<ID>fixture-racer</ID><CloneOf>fixture-adventure</CloneOf>",
+        );
+        let mut platform =
+            PlatformDocument::from_reader("Fixture Console.xml", fixture.as_bytes()).unwrap();
+        let removed = platform
+            .remove_game_with_records("fixture-adventure")
+            .unwrap();
+        assert_eq!(removed.game.title, "Fixture Adventure");
+        assert_eq!(
+            removed.inventory,
+            GameRemovalInventory {
+                games: 1,
+                additional_applications: 1,
+                mounts: 0,
+                alternate_names: 1,
+                custom_fields: 1,
+                controller_support: 0,
+                game_saves: 1,
+                model_settings: 1,
+            }
+        );
+        assert_eq!(removed.inventory.total(), 6);
+        assert_eq!(removed.remediation.clone_relationships_cleared, 1);
+        let platform_xml = String::from_utf8(platform.to_xml_bytes().unwrap()).unwrap();
+        assert!(!platform_xml.contains("fixture-adventure"));
+        assert!(platform_xml.contains("<ID>fixture-racer</ID>"));
+        assert!(platform_xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+
+        let playlist_fixture =
+            include_str!("../../../fixtures/launchbox/Data/Playlists/Fixture Playlist.xml")
+                .replace(
+                    "<SortBy>Title</SortBy>",
+                    "<SortBy>Title</SortBy><LastGameId>fixture-adventure</LastGameId><FuturePlaylist>keep</FuturePlaylist>",
+                );
+        let mut playlist = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Playlist,
+            "Playlists/Fixture Playlist.xml",
+            playlist_fixture.as_bytes(),
+        )
+        .unwrap();
+        let playlist_report = playlist
+            .remediate_game_removal("fixture-adventure")
+            .unwrap();
+        assert_eq!(playlist_report.playlist_games_removed, 1);
+        assert_eq!(playlist_report.navigation_games_cleared, 1);
+        let playlist_xml = String::from_utf8(playlist.to_xml_bytes().unwrap()).unwrap();
+        assert!(!playlist_xml.contains("<PlaylistGame>"));
+        assert!(!playlist_xml.contains("<LastGameId>"));
+        assert!(playlist_xml.contains("<FuturePlaylist>keep</FuturePlaylist>"));
+
+        let catalog_fixture = include_str!("../../../fixtures/launchbox/Data/Platforms.xml")
+            .replace(
+                "</PlatformCategory>",
+                "<LastGameId>fixture-adventure</LastGameId><FutureCategory>keep</FutureCategory></PlatformCategory>",
+            );
+        let mut catalog = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::Platforms,
+            "Platforms.xml",
+            catalog_fixture.as_bytes(),
+        )
+        .unwrap();
+        let catalog_report = catalog.remediate_game_removal("fixture-adventure").unwrap();
+        assert_eq!(catalog_report.navigation_games_cleared, 1);
+        let catalog_xml = String::from_utf8(catalog.to_xml_bytes().unwrap()).unwrap();
+        assert!(!catalog_xml.contains("<LastGameId>"));
+        assert!(catalog_xml.contains("<FutureCategory>keep</FutureCategory>"));
+
+        let blacklist_fixture =
+            include_str!("../../../fixtures/launchbox/Data/ImportBlacklist.xml").replace(
+                "</LaunchBox>",
+                "<IgnoredGameId><GameId>fixture-adventure</GameId></IgnoredGameId></LaunchBox>",
+            );
+        let mut blacklist = AuxiliaryDocument::from_reader(
+            AuxiliaryDocumentKind::ImportBlacklist,
+            "ImportBlacklist.xml",
+            blacklist_fixture.as_bytes(),
+        )
+        .unwrap();
+        let blacklist_report = blacklist
+            .remediate_game_removal("fixture-adventure")
+            .unwrap();
+        assert_eq!(blacklist_report.import_blacklist_entries_removed, 1);
+        let blacklist_xml = String::from_utf8(blacklist.to_xml_bytes().unwrap()).unwrap();
+        assert!(!blacklist_xml.contains("fixture-adventure"));
+        assert!(blacklist_xml.contains("fixture-ignored-game"));
+
+        let mut retained =
+            PlatformDocument::from_reader("Retained Console.xml", FIXTURE.as_bytes()).unwrap();
+        let retained_report = retained
+            .remediate_game_removal_references("fixture-prototype")
+            .unwrap();
+        assert_eq!(retained_report.clone_relationships_cleared, 1);
+        assert!(String::from_utf8(retained.to_xml_bytes().unwrap())
+            .unwrap()
+            .contains("<FutureRootElement>preserve-me</FutureRootElement>"));
     }
 
     #[test]
