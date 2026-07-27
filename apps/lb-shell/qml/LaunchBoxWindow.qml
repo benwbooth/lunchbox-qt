@@ -1960,8 +1960,14 @@ ApplicationWindow {
                 return
             }
             if (window.bulkEditSmokePhase === 2) {
-                if (!bulkEditDialog.smokeSelectPublisher(
-                            "Bulk Smoke Publisher")) {
+                if (!bulkEditDialog.smokeSelectEmulator(
+                            "fixture-emulator")) {
+                    console.error("BULK_EDIT_SMOKE_EMULATOR_CATALOG_FAILED")
+                    Qt.exit(489)
+                    return
+                }
+                if (!bulkEditDialog.smokeSelectCustomDosBoxVersion(
+                            "ThirdParty\\DOSBox\\bulk-smoke\\DOSBox.exe")) {
                     console.error("BULK_EDIT_SMOKE_FIELD_FAILED")
                     Qt.exit(489)
                     return
@@ -2004,7 +2010,8 @@ ApplicationWindow {
             if (window.bulkEditSmokePhase !== 5 || controller.writing)
                 return
             if (!controller.report_bulk_edit_smoke_success(
-                        2, "publisher", "Bulk Smoke Publisher")) {
+                        2, "customDosBoxVersion",
+                        "ThirdParty\\DOSBox\\bulk-smoke\\DOSBox.exe")) {
                 console.error(
                     "BULK_EDIT_SMOKE_RESULT_FAILED completed="
                     + controller.bulk_edit_completed_count + " status="

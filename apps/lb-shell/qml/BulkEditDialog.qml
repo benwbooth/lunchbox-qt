@@ -16,6 +16,7 @@ Dialog {
     property string customFieldName: ""
     property bool migrateMedia: true
     property var platforms: []
+    property var emulators: []
     property alias smokeCaptureTarget: surface
 
     readonly property var selectedField:
@@ -43,6 +44,7 @@ Dialog {
     function rebuildFields() {
         const result = []
         const platformResult = []
+        const emulatorResult = []
         if (controller !== null) {
             for (let index = 0;
                  index < controller.bulk_edit_field_count(); ++index) {
@@ -57,9 +59,20 @@ Dialog {
             for (let index = 0;
                  index < controller.platform_entry_count; ++index)
                 platformResult.push(controller.platform_name_at(index))
+            for (let index = 2;
+                 index < controller.emulator_entry_count(); ++index) {
+                const id = controller.emulator_id_at(index)
+                const title = controller.emulator_title_at(index)
+                emulatorResult.push({
+                    id: id,
+                    title: title,
+                    label: title + " (" + id + ")"
+                })
+            }
         }
         fields = result
         platforms = platformResult
+        emulators = emulatorResult
     }
 
     function resetEditor() {
@@ -179,6 +192,42 @@ Dialog {
         for (let index = 0; index < fields.length; ++index) {
             if (fields[index].key === "publisher") {
                 selectedFieldIndex = index
+                operation = "set"
+                textValue = value
+                page = 3
+                return true
+            }
+        }
+        return false
+    }
+
+    function smokeSelectCustomDosBoxVersion(value) {
+        for (let index = 0; index < fields.length; ++index) {
+            if (fields[index].key === "customDosBoxVersion") {
+                selectedFieldIndex = index
+                operation = "set"
+                textValue = value
+                page = 3
+                return true
+            }
+        }
+        return false
+    }
+
+    function smokeSelectEmulator(value) {
+        let emulatorIndex = -1
+        for (let index = 0; index < emulators.length; ++index) {
+            if (emulators[index].id === value) {
+                emulatorIndex = index
+                break
+            }
+        }
+        if (emulatorIndex < 0)
+            return false
+        for (let index = 0; index < fields.length; ++index) {
+            if (fields[index].key === "emulator") {
+                selectedFieldIndex = index
+                emulatorSelector.currentIndex = emulatorIndex
                 operation = "set"
                 textValue = value
                 page = 3
@@ -336,6 +385,10 @@ Dialog {
                                     && root.platforms.length > 0) {
                                 platformSelector.currentIndex = 0
                                 root.textValue = root.platforms[0]
+                            } else if (root.editor === "emulator"
+                                       && root.emulators.length > 0) {
+                                emulatorSelector.currentIndex = 0
+                                root.textValue = root.emulators[0].id
                             }
                         }
                     }
@@ -439,6 +492,7 @@ Dialog {
                                  && root.editor !== "boolean"
                                  && root.editor !== "rating"
                                  && root.editor !== "multilineText"
+                                 && root.editor !== "emulator"
                                  && root.editor !== "platform"
                         Layout.fillWidth: true
                         placeholderText:
@@ -448,6 +502,19 @@ Dialog {
                             : "Value"
                         text: root.textValue
                         onTextEdited: root.textValue = text
+                    }
+
+                    ComboBox {
+                        id: emulatorSelector
+                        objectName: "bulkEditEmulatorValue"
+                        visible: root.operation !== "clear"
+                                 && root.editor === "emulator"
+                        Layout.fillWidth: true
+                        model: root.emulators
+                        textRole: "label"
+                        onActivated: function(index) {
+                            root.textValue = root.emulators[index].id
+                        }
                     }
 
                     ComboBox {

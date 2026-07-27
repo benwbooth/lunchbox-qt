@@ -64,13 +64,13 @@ behavior, not merely UI polish.
 
 ## Current native vertical
 
-The Rust catalog currently exposes 26 typed fields:
+The Rust catalog currently exposes 27 typed fields:
 
-`Broken`, `Completed`, `Developer`, `Emulator`, `Favorite`, `Genre`, `Hide`,
-`Max Players`, `Notes`, `Platform`, `Play Mode`, `Progress`, `Publisher`,
-`Rating`, `Region`, `Release Date`, `Release Type`, `Series`, `Sort Title`,
-`Source`, `Star Rating`, `Status`, `Version`, `Video Path`, `Wikipedia URL`,
-and `Custom Field`.
+`Broken`, `Completed`, `Custom DOSBox Version EXE Path`, `Developer`,
+`Emulator`, `Favorite`, `Genre`, `Hide`, `Max Players`, `Notes`, `Platform`,
+`Play Mode`, `Progress`, `Publisher`, `Rating`, `Region`, `Release Date`,
+`Release Type`, `Series`, `Sort Title`, `Source`, `Star Rating`, `Status`,
+`Version`, `Video Path`, `Wikipedia URL`, and `Custom Field`.
 
 The editor kind and clearability come from Rust. The versioned request denies
 unknown keys and rejects values from the wrong editor family. Ratings accept
@@ -111,11 +111,26 @@ the moved games against their destination platform and publishes a new media
 revision, so both migration choices update the running Qt model without a
 library reload.
 
-Other `Video Path` and `Emulator` values remain lexical LaunchBox strings/IDs.
-Persisted path interpretation and conversion is isolated in the shared
-platform service; QML and the storage DOM do not apply Windows path rules. The
-product invokes no command interpreter and contains no Windows-, Linux-, or
-macOS-specific bulk-editor UI branch.
+`Custom DOSBox Version EXE Path` and `Video Path` remain lexical LaunchBox
+strings. Persisted path interpretation and conversion is isolated in the
+shared platform service; QML and the storage DOM do not apply Windows path
+rules.
+
+Emulator Set values come from the currently loaded typed emulator catalog.
+The background worker reloads that catalog immediately before editing,
+case-insensitively resolves the requested ID to its retained canonical
+spelling, and rejects a missing/stale ID before loading or staging platform
+documents. On a real emulator change, each additional application owned by
+that game is retargeted only when `UseEmulator=true` and its prior
+`EmulatorId` matches the parent's prior real emulator ID. Direct apps,
+different IDs, and apps owned by another game remain unchanged. Clear removes
+the matching app's `EmulatorId` while retaining `UseEmulator=true`, the
+persisted platform-default state. The transaction result republishes the
+committed application groups and a Qt revision so the running editor and
+launcher cannot retain the old emulator.
+
+The product invokes no command interpreter and contains no Windows-, Linux-,
+or macOS-specific bulk-editor UI branch.
 
 The native wizard implements all five recovered page positions: Welcome, typed
 field selection, conditional Platform media choice, confirmation, and
@@ -126,8 +141,15 @@ selection, which matches the recovered 13.27 release-note behavior.
 
 Pure tests freeze unique catalog keys, named 13.27 additions, editor/value
 validation, half-star bounds, and stable multi-value semantics. Storage tests
-apply booleans, metadata, custom fields, and a Windows-separated Video Path
-while retaining unknown game/custom-field XML and unrelated lexical paths.
+apply booleans, metadata, custom fields, a Windows-separated Video Path, and
+the Custom DOSBox path while retaining unknown game/custom-field XML and
+unrelated lexical paths.
+
+Dedicated emulator tests cover case-insensitive parent/app matching, Set and
+Clear, retained `UseEmulator`, owner scoping, direct and different-emulator
+isolation, unknown application XML, live refresh rows, catalog-ID
+canonicalization, stale-ID rejection before a write, exact recovery, and clean
+transaction state.
 
 A two-document transaction test proves successful paired commit with exact
 backups, then creates a revision conflict in the second document and proves
@@ -142,9 +164,10 @@ source/destination XML, playlist XML, an image, and a video together with exact
 recovery copies and a clean manifest, and prove the post-commit media index for
 both migration choices; a collision test byte-compares both XML documents and
 both media files unchanged. The compiled Qt scenario selects two stable IDs in
-the real audit dialog, renders the conditional Platform media page and
-Publisher confirmation page, applies one Publisher transaction, and verifies
-exactly two changed values, a retained unknown element, an unchanged
+the real audit dialog, resolves the real fixture emulator through the typed
+combo catalog, renders the conditional Platform media page and Custom DOSBox
+confirmation page, applies one Custom DOSBox transaction, and verifies exactly
+two lexical path changes, a retained unknown element, an unchanged
 Windows-separated application path, one byte-exact backup, and clean recovery
 state.
 
@@ -152,8 +175,7 @@ state.
 
 - recover the complete ordered original field catalog and every combo value;
 - model-settings and controller-support bulk surfaces;
-- Custom DOSBox Version and the remaining launch/startup/pause fields;
-- Emulator propagation to matching additional applications;
+- the remaining launch/startup/pause fields;
 - exact three-state meanings and date formatting/time-zone behavior;
 - exact original collision policy, apply-time cancellation, restart,
   progress/error wording, and batch size behavior;

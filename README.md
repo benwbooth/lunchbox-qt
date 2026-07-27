@@ -72,10 +72,12 @@ explicit video paths. XML and file moves commit together through one
 recoverable transaction, while truncated indexes, shared media, unsafe
 directories, and portable target collisions fail closed. Unknown XML remains
 intact and persisted path rules stay in the shared cross-platform resolver.
-The complete original field catalog, model/controller bulk surfaces,
-additional-application emulator propagation, exact original cancellation
-behavior, and Windows/macOS oracle gates remain open; the exact boundary is
-recorded in `analysis/game-bulk-edit-13.27.md`.
+The recovered Custom DOSBox path and matching additional-application Emulator
+propagation now commit losslessly with live Qt refresh. The complete original
+field catalog, model/controller and remaining launch/startup/pause bulk
+surfaces, exact original cancellation behavior, and Windows/macOS oracle gates
+remain open; the exact boundary is recorded in
+`analysis/game-bulk-edit-13.27.md`.
 
 Read an existing installation without modifying it:
 

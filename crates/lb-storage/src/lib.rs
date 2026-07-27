@@ -6089,6 +6089,26 @@ impl PlatformDocument {
                     set_optional_child_text(element, "Emulator", value.as_deref());
                     self.library.games[game_index].emulator_id = value;
                 }
+                self.propagate_bulk_emulator_change(
+                    id,
+                    original.emulator_id.as_deref(),
+                    self.library.games[game_index].emulator_id.clone(),
+                )?;
+            }
+            BulkGameField::CustomDosBoxVersion => {
+                let value = bulk_optional_text(edit)?;
+                let game_index = self
+                    .library
+                    .games
+                    .iter()
+                    .position(|game| game.id == id)
+                    .expect("game was located before the bulk edit");
+                let element = find_record_element_mut(&mut self.root, "Game", "ID", id)
+                    .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })?;
+                if original.custom_dos_box_version_path != value {
+                    set_optional_child_text(element, "CustomDosBoxVersionPath", value.as_deref());
+                    self.library.games[game_index].custom_dos_box_version_path = value;
+                }
             }
             BulkGameField::VideoPath => {
                 let value = bulk_optional_text(edit)?;
@@ -6198,6 +6218,59 @@ impl PlatformDocument {
             .find(|game| game.id == id)
             .cloned()
             .ok_or_else(|| StorageError::GameNotFound { id: id.to_string() })
+    }
+
+    fn propagate_bulk_emulator_change(
+        &mut self,
+        game_id: &str,
+        original_emulator_id: Option<&str>,
+        replacement_emulator_id: Option<String>,
+    ) -> Result<(), StorageError> {
+        let Some(original_emulator_id) = original_emulator_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && !is_unassigned_emulator_id(id))
+        else {
+            return Ok(());
+        };
+        if replacement_emulator_id
+            .as_deref()
+            .is_some_and(|id| id.eq_ignore_ascii_case(original_emulator_id))
+        {
+            return Ok(());
+        }
+
+        let matching_indices = self
+            .library
+            .additional_applications
+            .iter()
+            .enumerate()
+            .filter_map(|(index, application)| {
+                (application.game_id.eq_ignore_ascii_case(game_id)
+                    && application.use_emulator
+                    && application
+                        .emulator_id
+                        .as_deref()
+                        .is_some_and(|id| id.eq_ignore_ascii_case(original_emulator_id)))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in matching_indices {
+            let application_id = self.library.additional_applications[index].id.clone();
+            let element = find_record_element_mut(
+                &mut self.root,
+                "AdditionalApplication",
+                "Id",
+                &application_id,
+            )
+            .ok_or_else(|| StorageError::AdditionalApplicationNotFound {
+                id: application_id.clone(),
+            })?;
+            set_optional_child_text(element, "EmulatorId", replacement_emulator_id.as_deref());
+            self.library.additional_applications[index].emulator_id =
+                replacement_emulator_id.clone();
+        }
+        self.library.validate()?;
+        Ok(())
     }
 
     fn set_bulk_game_boolean(
@@ -14168,6 +14241,19 @@ mod tests {
             .apply_bulk_game_edit(
                 "fixture-adventure",
                 &BulkGameEdit {
+                    field: BulkGameField::CustomDosBoxVersion,
+                    operation: BulkGameEditOperation::Set,
+                    text: Some(r"ThirdParty\DOSBox\portable\DOSBox.exe".into()),
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+            )
+            .expect("bulk lexical custom DOSBox path");
+        document
+            .apply_bulk_game_edit(
+                "fixture-adventure",
+                &BulkGameEdit {
                     field: BulkGameField::CustomField,
                     operation: BulkGameEditOperation::Add,
                     text: Some("Deluxe".into()),
@@ -14198,6 +14284,9 @@ mod tests {
         assert!(xml.contains("<UseDosBox>true</UseDosBox>"));
         assert!(xml.contains("<UseScummVM>true</UseScummVM>"));
         assert!(xml.contains(r"<VideoPath>Videos\Portable\bulk-preview.mp4</VideoPath>"));
+        assert!(xml.contains(
+            r"<CustomDosBoxVersionPath>ThirdParty\DOSBox\portable\DOSBox.exe</CustomDosBoxVersionPath>"
+        ));
         assert!(xml.contains("<Name>Edition</Name>"));
         assert!(xml.contains("<Value>Deluxe</Value>"));
         assert!(
@@ -14226,6 +14315,119 @@ mod tests {
         assert!(!xml.contains("<Emulator>bulk-emulator</Emulator>"));
         assert!(xml.contains("<UseDosBox>true</UseDosBox>"));
         assert!(xml.contains("<UseScummVM>true</UseScummVM>"));
+
+        document
+            .apply_bulk_game_edit(
+                "fixture-adventure",
+                &BulkGameEdit {
+                    field: BulkGameField::CustomDosBoxVersion,
+                    operation: BulkGameEditOperation::Clear,
+                    text: None,
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+            )
+            .expect("clear bulk custom DOSBox path");
+        let xml = String::from_utf8(document.to_xml_bytes().expect("serialize")).expect("UTF-8");
+        assert!(!xml.contains("<CustomDosBoxVersionPath>"));
+    }
+
+    #[test]
+    fn bulk_emulator_change_propagates_only_to_matching_owned_emulator_apps() {
+        let fixture = FIXTURE.replace(
+            "</LaunchBox>",
+            r#"  <AdditionalApplication>
+    <ApplicationPath>Games\Fixture Adventure\matching.rom</ApplicationPath>
+    <EmulatorId>FIXTURE-EMULATOR</EmulatorId>
+    <GameID>fixture-adventure</GameID>
+    <Id>matching-emulator-app</Id>
+    <Name>Matching Emulator Version</Name>
+    <UseEmulator>true</UseEmulator>
+    <FutureMatchingApplication>keep-matching</FutureMatchingApplication>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Games\Fixture Adventure\other.rom</ApplicationPath>
+    <EmulatorId>other-emulator</EmulatorId>
+    <GameID>fixture-adventure</GameID>
+    <Id>other-emulator-app</Id>
+    <Name>Other Emulator Version</Name>
+    <UseEmulator>true</UseEmulator>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Games\Fixture Adventure\direct.rom</ApplicationPath>
+    <EmulatorId>fixture-emulator</EmulatorId>
+    <GameID>fixture-adventure</GameID>
+    <Id>direct-app</Id>
+    <Name>Direct Version</Name>
+    <UseEmulator>false</UseEmulator>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Games\Fixture Racer\owned-by-other.rom</ApplicationPath>
+    <EmulatorId>fixture-emulator</EmulatorId>
+    <GameID>fixture-racer</GameID>
+    <Id>other-game-app</Id>
+    <Name>Other Game Version</Name>
+    <UseEmulator>true</UseEmulator>
+  </AdditionalApplication>
+</LaunchBox>"#,
+        );
+        let mut document = PlatformDocument::from_reader("Fixture Console.xml", fixture.as_bytes())
+            .expect("parse emulator propagation fixture");
+        let set = BulkGameEdit {
+            field: BulkGameField::Emulator,
+            operation: BulkGameEditOperation::Set,
+            text: Some("replacement-emulator".into()),
+            boolean: None,
+            number: None,
+            custom_field_name: None,
+        };
+        document
+            .apply_bulk_game_edit("fixture-adventure", &set)
+            .expect("bulk emulator set");
+
+        let emulator_id = |id: &str| {
+            document
+                .library()
+                .additional_applications
+                .iter()
+                .find(|application| application.id == id)
+                .and_then(|application| application.emulator_id.as_deref())
+        };
+        assert_eq!(
+            emulator_id("matching-emulator-app"),
+            Some("replacement-emulator")
+        );
+        assert_eq!(emulator_id("other-emulator-app"), Some("other-emulator"));
+        assert_eq!(emulator_id("direct-app"), Some("fixture-emulator"));
+        assert_eq!(emulator_id("other-game-app"), Some("fixture-emulator"));
+
+        document
+            .apply_bulk_game_edit(
+                "fixture-adventure",
+                &BulkGameEdit {
+                    field: BulkGameField::Emulator,
+                    operation: BulkGameEditOperation::Clear,
+                    text: None,
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+            )
+            .expect("clear parent and matching additional-app emulator");
+        let matching = document
+            .library()
+            .additional_applications
+            .iter()
+            .find(|application| application.id == "matching-emulator-app")
+            .expect("matching app retained");
+        assert!(matching.use_emulator);
+        assert!(matching.emulator_id.is_none());
+        let xml = String::from_utf8(document.to_xml_bytes().expect("serialize")).expect("UTF-8");
+        assert!(
+            xml.contains("<FutureMatchingApplication>keep-matching</FutureMatchingApplication>")
+        );
+        assert!(!xml.contains("<EmulatorId>replacement-emulator</EmulatorId>"));
     }
 
     #[test]

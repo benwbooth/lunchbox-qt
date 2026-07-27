@@ -121,7 +121,7 @@ its known activation/data-manager critical-section stall before its protected
 field initializer populated the collection, so the complete original ordered
 field list is not claimed.
 
-The current native subset freezes a 26-field typed Rust catalog and validates
+The current native subset freezes a 27-field typed Rust catalog and validates
 every field/operation/value combination. It copies stable audit-selected game
 IDs and stages all changes into revision-checked recovery transactions.
 Platform changes move complete game-owned XML and playlist references between
@@ -130,9 +130,14 @@ image/video files and rewrite explicit video paths in that same transaction.
 Shared media, truncated scans, unsafe destinations, and portable collisions
 fail closed. Pure and transaction tests prove lossless transfer, exact
 backups, clean recovery, and collision immutability. The compiled wizard
-renders the Platform media and Publisher confirmation pages before a real
-two-game Publisher commit. Remaining bulk surfaces, emulator propagation,
-exact cancellation/progress/collision behavior, and supported Windows-oracle
+renders the Platform media and Custom DOSBox confirmation pages before a real
+two-game lexical-path commit. Emulator choices come from the typed catalog;
+the worker rejects stale IDs and atomically propagates Set/Clear to owned
+additional applications using the parent's prior emulator, then republishes
+the committed related rows to Qt. Dedicated tests retain direct,
+different-emulator, different-owner, and unknown XML data. Remaining
+model/controller and launch/startup/pause bulk surfaces, exact
+cancellation/progress/collision behavior, and supported Windows/macOS oracle
 comparison remain open. See `analysis/game-bulk-edit-13.27.md`.
 
 ## Older real installation schema

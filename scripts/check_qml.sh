@@ -2667,7 +2667,7 @@ bulk_edit_output=$(
   exit 1
 }
 if ! rg -q \
-  'BULK_EDIT_SMOKE_COMPLETE games=2 field=publisher value="Bulk Smoke Publisher" transaction=1' \
+  'BULK_EDIT_SMOKE_COMPLETE games=2 field=customDosBoxVersion value="ThirdParty\\DOSBox\\bulk-smoke\\DOSBox.exe" transaction=1' \
   <<< "$bulk_edit_output"; then
   printf '%s\n' "$bulk_edit_output" >&2
   echo "LaunchBox did not complete the native bulk-edit workflow." >&2
@@ -2689,7 +2689,7 @@ if [[ ! -s "$bulk_edit_platform_screenshot" ]] \
   echo "LaunchBox did not render the platform media-migration page." >&2
   exit 1
 fi
-if [[ $(rg -c '<Publisher>Bulk Smoke Publisher</Publisher>' \
+if [[ $(rg -c '<CustomDosBoxVersionPath>ThirdParty\\DOSBox\\bulk-smoke\\DOSBox.exe</CustomDosBoxVersionPath>' \
       "$bulk_edit_platform") -ne 2 ]] \
   || ! rg -q \
     '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>' \
@@ -2714,7 +2714,7 @@ if [[ ${#bulk_edit_backups[@]} -ne 1 ]] \
   exit 1
 fi
 
-echo "LaunchBox native bulk edit validated stable selected IDs, the conditional platform media-migration page, typed Publisher mutation, confirmation rendering, one recoverable transaction, unknown XML/path preservation, and an exact backup."
+echo "LaunchBox native bulk edit validated stable selected IDs, the conditional platform media-migration page, the recovered Custom DOSBox Version lexical-path field, confirmation rendering, one recoverable transaction, unknown XML/path preservation, and an exact backup."
 
 cp -a fixtures/launchbox/. "$launchbox_order_root/"
 cp -a fixtures/launchbox/. "$bigbox_order_root/"

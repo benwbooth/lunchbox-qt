@@ -257,7 +257,7 @@ titles, sorting, selection, export, and edit handoff. Exact protected grid
 behavior, authoritative MAME/storefront providers, native Windows/macOS
 interaction remain audit work.
 
-The current `LIB-015` bulk-edit vertical has a 26-field Rust-owned catalog and
+The current `LIB-015` bulk-edit vertical has a 27-field Rust-owned catalog and
 all five recovered wizard positions, including the conditional Platform media
 choice. Stable audit-selected IDs are resolved to exact platform sources
 immediately before one optimistic recoverable transaction. Ordinary fields
@@ -268,10 +268,14 @@ video-path rewrites and exact backups. Truncated scans, shared files, unsafe
 directory chains, and portable collisions refuse the complete operation.
 Multi-value operations are bounded, ratings require half-star values, unknown
 XML remains lossless, and platform path resolution is outside QML/storage.
-The complete original field/combination catalog, model/controller/Custom
-DOSBox bulk surfaces, additional-application emulator propagation, exact
-original collision/cancellation/restart/progress behavior, and Windows/macOS
-oracle interaction are the next bulk-editor boundaries. See
+The recovered Custom DOSBox path is a lexical cross-platform field. Emulator
+Set resolves only current catalog IDs and propagates Set/Clear to owned
+additional applications only when they use the parent's prior real emulator;
+the committed related rows and revision refresh the live Qt model. The
+complete original field/combination catalog, model/controller and remaining
+launch/startup/pause bulk surfaces, exact original
+collision/cancellation/restart/progress behavior, and Windows/macOS oracle
+interaction are the next bulk-editor boundaries. See
 `analysis/game-bulk-edit-13.27.md`.
 
 The repository and a narrow library-browsing vertical slice now exist. Exact

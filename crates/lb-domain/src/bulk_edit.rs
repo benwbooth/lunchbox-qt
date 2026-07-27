@@ -45,6 +45,7 @@ pub struct BulkGameFieldDefinition {
 pub enum BulkGameField {
     Broken,
     Completed,
+    CustomDosBoxVersion,
     Developer,
     Emulator,
     Favorite,
@@ -76,6 +77,7 @@ impl BulkGameField {
         match self {
             Self::Broken => "broken",
             Self::Completed => "completed",
+            Self::CustomDosBoxVersion => "customDosBoxVersion",
             Self::Developer => "developer",
             Self::Emulator => "emulator",
             Self::Favorite => "favorite",
@@ -123,6 +125,12 @@ pub const BULK_GAME_FIELDS: &[BulkGameFieldDefinition] = &[
         label: "Completed",
         editor: BulkGameEditorKind::Boolean,
         clearable: false,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::CustomDosBoxVersion,
+        label: "Custom DOSBox Version EXE Path",
+        editor: BulkGameEditorKind::LexicalPath,
+        clearable: true,
     },
     BulkGameFieldDefinition {
         field: BulkGameField::Developer,
@@ -457,6 +465,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(keys.len(), BULK_GAME_FIELDS.len());
         assert!(keys.contains("broken"));
+        assert!(keys.contains("customDosBoxVersion"));
         assert!(keys.contains("hidden"));
         assert!(keys.contains("starRating"));
         assert!(keys.contains("videoPath"));

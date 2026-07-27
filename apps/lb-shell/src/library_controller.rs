@@ -3835,6 +3835,8 @@ struct BulkGameWriteSuccess {
     backups: Vec<PathBuf>,
     media_moves: Vec<(PathBuf, PathBuf)>,
     media_refresh: Option<GameMediaIndex>,
+    additional_applications: Vec<(String, Vec<AdditionalApplication>)>,
+    propagated_additional_application_count: usize,
 }
 
 struct BigBoxGameStateWriteSuccess {
@@ -4599,6 +4601,7 @@ fn primary_launch_template(sequence: &LaunchSequence) -> Result<GameLaunchSucces
     })
 }
 
+#[derive(Debug)]
 enum GameWriteFailure {
     Conflict(String),
     PendingRecovery { count: usize, message: String },
@@ -7622,7 +7625,7 @@ fn write_big_box_playlist_membership(
 fn write_bulk_game_edit(
     root: PathBuf,
     targets: Vec<(PathBuf, String)>,
-    request: BulkGameWriteRequest,
+    mut request: BulkGameWriteRequest,
     path_resolver: HostPathResolver,
 ) -> Result<BulkGameWriteSuccess, GameWriteFailure> {
     if targets.is_empty() {
@@ -7633,12 +7636,40 @@ fn write_bulk_game_edit(
     if request.edit.field == BulkGameField::Platform {
         return write_platform_bulk_game_edit(root, targets, request, path_resolver);
     }
+    if request.edit.field == BulkGameField::Emulator
+        && request.edit.operation == BulkGameEditOperation::Set
+    {
+        let requested_id = request
+            .edit
+            .text
+            .as_deref()
+            .expect("validated emulator bulk edit")
+            .trim();
+        let data = LaunchBoxDataIndex::load(&root)
+            .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+        let emulator = data
+            .emulator_configuration()
+            .and_then(|configuration| {
+                configuration
+                    .emulators
+                    .iter()
+                    .find(|emulator| emulator.id.eq_ignore_ascii_case(requested_id))
+            })
+            .ok_or_else(|| {
+                GameWriteFailure::Other(format!(
+                    "bulk-edit emulator is not present in the current catalog: {requested_id}"
+                ))
+            })?;
+        request.edit.text = Some(emulator.id.clone());
+    }
     let mut by_source = BTreeMap::<PathBuf, Vec<String>>::new();
     for (source, id) in targets {
         by_source.entry(source).or_default().push(id);
     }
     let mut documents = Vec::with_capacity(by_source.len());
     let mut games = Vec::new();
+    let mut additional_applications = Vec::new();
+    let mut propagated_additional_application_count = 0usize;
     for (source, ids) in by_source {
         let mut document = PlatformDocument::load(&source)
             .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
@@ -7649,9 +7680,49 @@ fn write_bulk_game_edit(
                     "game {id} appears more than once in the bulk-edit target set"
                 )));
             }
+            let original_application_emulators = (request.edit.field == BulkGameField::Emulator)
+                .then(|| {
+                    document
+                        .library()
+                        .additional_applications
+                        .iter()
+                        .filter(|application| application.game_id.eq_ignore_ascii_case(&id))
+                        .map(|application| {
+                            (
+                                application.id.to_lowercase(),
+                                application.emulator_id.clone(),
+                            )
+                        })
+                        .collect::<BTreeMap<_, _>>()
+                });
             let game = document
                 .apply_bulk_game_edit(&id, &request.edit)
                 .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+            if let Some(original_application_emulators) = original_application_emulators {
+                let mut applications = document
+                    .library()
+                    .additional_applications
+                    .iter()
+                    .filter(|application| application.game_id.eq_ignore_ascii_case(&id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                applications.sort_by(|left, right| {
+                    left.priority
+                        .cmp(&right.priority)
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+                propagated_additional_application_count = propagated_additional_application_count
+                    .saturating_add(
+                        applications
+                            .iter()
+                            .filter(|application| {
+                                original_application_emulators.get(&application.id.to_lowercase())
+                                    != Some(&application.emulator_id)
+                            })
+                            .count(),
+                    );
+                additional_applications.push((id.clone(), applications));
+            }
             games.push((source.clone(), source.clone(), game));
         }
         documents.push(document);
@@ -7680,6 +7751,8 @@ fn write_bulk_game_edit(
         backups,
         media_moves: Vec::new(),
         media_refresh: None,
+        additional_applications,
+        propagated_additional_application_count,
     })
 }
 
@@ -7955,6 +8028,8 @@ fn write_platform_bulk_game_edit(
         backups,
         media_moves,
         media_refresh,
+        additional_applications: Vec::new(),
+        propagated_additional_application_count: 0,
     })
 }
 
@@ -19432,7 +19507,10 @@ impl qobject::LibraryController {
             .iter()
             .filter(|game| self.rust().bulk_edit_target_ids.contains(&game.id))
             .filter(|game| {
-                field == "publisher" && game.publisher.as_deref() == Some(expected_value.as_str())
+                (field == "publisher" && game.publisher.as_deref() == Some(expected_value.as_str()))
+                    || (field == "customDosBoxVersion"
+                        && game.custom_dos_box_version_path.as_deref()
+                            == Some(expected_value.as_str()))
             })
             .count();
         let success = !*self.writing()
@@ -32241,6 +32319,8 @@ impl qobject::LibraryController {
                     backups,
                     media_moves,
                     media_refresh,
+                    additional_applications,
+                    propagated_additional_application_count,
                 } = success;
                 let completed = saturating_i32(games.len());
                 let moved_platforms = games
@@ -32276,6 +32356,26 @@ impl qobject::LibraryController {
                     };
                     self.as_mut().rust_mut().games[actual_index] = game;
                     self.as_mut().rust_mut().game_sources[actual_index] = new_source;
+                }
+                if !additional_applications.is_empty() {
+                    for (game_id, applications) in additional_applications {
+                        if applications.is_empty() {
+                            self.as_mut()
+                                .rust_mut()
+                                .additional_applications_by_game
+                                .remove(&game_id);
+                        } else {
+                            self.as_mut()
+                                .rust_mut()
+                                .additional_applications_by_game
+                                .insert(game_id, applications);
+                        }
+                    }
+                    let revision = self
+                        .as_ref()
+                        .additional_application_revision()
+                        .wrapping_add(1);
+                    self.as_mut().set_additional_application_revision(revision);
                 }
                 if !moved_game_ids.is_empty() {
                     let media_refresh = media_refresh.unwrap_or_default();
@@ -32340,7 +32440,7 @@ impl qobject::LibraryController {
                         .join(", ")
                 };
                 let result_message = format!(
-                    "Updated {completed} games and moved {media_move_count} media file(s) in one recoverable transaction with {} exact backup(s): {backup_summary}",
+                    "Updated {completed} games, propagated {propagated_additional_application_count} matching additional-application emulator setting(s), and moved {media_move_count} media file(s) in one recoverable transaction with {} exact backup(s): {backup_summary}",
                     backups.len(),
                 );
                 self.as_mut()
@@ -42478,6 +42578,168 @@ mod tests {
         .into_edit()
         .unwrap_err()
         .contains("explicit media-migration choice"));
+    }
+
+    #[test]
+    fn emulator_bulk_worker_canonicalizes_catalog_id_and_refreshes_matching_apps() {
+        let directory = tempfile::tempdir().expect("temporary bulk-emulator library");
+        let root = directory.path();
+        let data_directory = root.join("Data");
+        let platform_directory = data_directory.join("Platforms");
+        fs::create_dir_all(&platform_directory).expect("platform directory");
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        for entry in fs::read_dir(&fixture_root).expect("fixture data directory") {
+            let entry = entry.expect("fixture data entry");
+            if entry.file_type().expect("fixture data type").is_file() {
+                fs::copy(entry.path(), data_directory.join(entry.file_name()))
+                    .expect("copy auxiliary fixture");
+            }
+        }
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        let platform_fixture =
+            fs::read_to_string(fixture_root.join("Platforms/Fixture Console.xml"))
+                .expect("platform fixture")
+                .replace(
+                    "  <AlternateName>",
+                    r#"  <AdditionalApplication>
+    <ApplicationPath>Games\Fixture Adventure\matching.rom</ApplicationPath>
+    <EmulatorId>FIXTURE-EMULATOR</EmulatorId>
+    <GameID>fixture-adventure</GameID>
+    <Id>bulk-matching-app</Id>
+    <Name>Matching Version</Name>
+    <UseEmulator>true</UseEmulator>
+    <FutureBulkApplication>keep-app-data</FutureBulkApplication>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <ApplicationPath>Games\Fixture Adventure\other.rom</ApplicationPath>
+    <EmulatorId>other-emulator</EmulatorId>
+    <GameID>fixture-adventure</GameID>
+    <Id>bulk-other-app</Id>
+    <Name>Other Version</Name>
+    <UseEmulator>true</UseEmulator>
+  </AdditionalApplication>
+  <AlternateName>"#,
+                );
+        fs::write(&platform_path, platform_fixture).expect("write platform fixture");
+
+        let emulators_path = data_directory.join("Emulators.xml");
+        let emulators = fs::read_to_string(&emulators_path).expect("emulator fixture");
+        let emulator_start = emulators.find("<Emulator>").expect("emulator start");
+        let emulator_end = emulators
+            .find("</Emulator>")
+            .expect("emulator end")
+            .saturating_add("</Emulator>".len());
+        let replacement = emulators[emulator_start..emulator_end]
+            .replace("fixture-emulator", "replacement-emulator")
+            .replace("Fixture Emulator", "Replacement Emulator");
+        let emulators = emulators.replacen(
+            "<EmulatorPlatform>",
+            &format!("{replacement}\n  <EmulatorPlatform>"),
+            1,
+        );
+        fs::write(&emulators_path, emulators).expect("write replacement emulator");
+
+        let result = write_bulk_game_edit(
+            root.to_path_buf(),
+            vec![(platform_path.clone(), "fixture-adventure".into())],
+            BulkGameWriteRequest {
+                edit: BulkGameEdit {
+                    field: BulkGameField::Emulator,
+                    operation: BulkGameEditOperation::Set,
+                    text: Some("REPLACEMENT-EMULATOR".into()),
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+                migrate_media: false,
+            },
+            HostPathResolver::default(),
+        )
+        .expect("transactional emulator propagation");
+        assert_eq!(result.propagated_additional_application_count, 1);
+        assert_eq!(result.additional_applications.len(), 1);
+        assert_eq!(
+            result.games[0].2.emulator_id.as_deref(),
+            Some("replacement-emulator")
+        );
+        let matching = result.additional_applications[0]
+            .1
+            .iter()
+            .find(|application| application.id == "bulk-matching-app")
+            .expect("matching app refresh");
+        assert!(matching.use_emulator);
+        assert_eq!(
+            matching.emulator_id.as_deref(),
+            Some("replacement-emulator")
+        );
+        let other = result.additional_applications[0]
+            .1
+            .iter()
+            .find(|application| application.id == "bulk-other-app")
+            .expect("other app refresh");
+        assert_eq!(other.emulator_id.as_deref(), Some("other-emulator"));
+        let committed = fs::read_to_string(&platform_path).expect("committed platform XML");
+        assert!(committed.contains("<Emulator>replacement-emulator</Emulator>"));
+        assert!(committed.contains("<EmulatorId>replacement-emulator</EmulatorId>"));
+        assert!(committed.contains("<FutureBulkApplication>keep-app-data</FutureBulkApplication>"));
+
+        let before_unknown = fs::read(&platform_path).expect("before unknown emulator");
+        let unknown = write_bulk_game_edit(
+            root.to_path_buf(),
+            vec![(platform_path.clone(), "fixture-adventure".into())],
+            BulkGameWriteRequest {
+                edit: BulkGameEdit {
+                    field: BulkGameField::Emulator,
+                    operation: BulkGameEditOperation::Set,
+                    text: Some("missing-emulator".into()),
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+                migrate_media: false,
+            },
+            HostPathResolver::default(),
+        );
+        assert!(matches!(
+            unknown,
+            Err(GameWriteFailure::Other(message))
+                if message.contains("not present in the current catalog")
+        ));
+        assert_eq!(
+            fs::read(&platform_path).expect("after unknown emulator"),
+            before_unknown
+        );
+
+        let cleared = write_bulk_game_edit(
+            root.to_path_buf(),
+            vec![(platform_path.clone(), "fixture-adventure".into())],
+            BulkGameWriteRequest {
+                edit: BulkGameEdit {
+                    field: BulkGameField::Emulator,
+                    operation: BulkGameEditOperation::Clear,
+                    text: None,
+                    boolean: None,
+                    number: None,
+                    custom_field_name: None,
+                },
+                migrate_media: false,
+            },
+            HostPathResolver::default(),
+        )
+        .expect("clear parent and matching app emulator");
+        assert_eq!(cleared.propagated_additional_application_count, 1);
+        assert!(cleared.games[0].2.emulator_id.is_none());
+        let matching = cleared.additional_applications[0]
+            .1
+            .iter()
+            .find(|application| application.id == "bulk-matching-app")
+            .expect("cleared matching app refresh");
+        assert!(matching.use_emulator);
+        assert!(matching.emulator_id.is_none());
+        assert!(pending_transaction_manifests(root)
+            .expect("transaction manifests")
+            .is_empty());
     }
 
     #[test]
