@@ -185,6 +185,9 @@ ApplicationWindow {
     property bool bulkEditPlatformScreenshotRequested: false
     property string bulkEditPlatformScreenshotPath:
         argumentValue("--bulk-edit-platform-screenshot")
+    property bool bulkEditModelScreenshotRequested: false
+    property string bulkEditModelScreenshotPath:
+        argumentValue("--bulk-edit-model-screenshot")
     property bool gameDetailsSmokeTest:
         Qt.application.arguments.indexOf("--game-details-smoke-test") >= 0
     property int gameDetailsSmokePhase: 0
@@ -2016,13 +2019,77 @@ ApplicationWindow {
                 window.bulkEditSmokePhase = 6
                 return
             }
-            if (window.bulkEditSmokePhase !== 6 || controller.writing)
+            if (window.bulkEditSmokePhase === 6) {
+                if (controller.writing)
+                    return
+                if (!controller.report_bulk_edit_smoke_success(
+                            2, "controllerSupport",
+                            "fixture-controller")) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_RESULT_FAILED completed="
+                        + controller.bulk_edit_completed_count + " status="
+                        + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                if (!bulkEditDialog.smokeSelectModelSettings()) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_MODEL_SETTINGS_FIELD_FAILED")
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 7
+                return
+            }
+            if (window.bulkEditSmokePhase === 7) {
+                if (window.bulkEditModelScreenshotPath.length === 0) {
+                    window.bulkEditSmokePhase = 8
+                    return
+                }
+                if (window.bulkEditModelScreenshotRequested)
+                    return
+                window.bulkEditModelScreenshotRequested = true
+                bulkEditDialog.smokeCaptureTarget.grabToImage(
+                    function(result) {
+                        if (!result.saveToFile(
+                                window.bulkEditModelScreenshotPath)) {
+                            console.error(
+                                "BULK_EDIT_MODEL_SCREENSHOT_SAVE_FAILED path="
+                                + window.bulkEditModelScreenshotPath)
+                            Qt.exit(489)
+                            return
+                        }
+                        window.bulkEditSmokePhase = 8
+                    })
+                return
+            }
+            if (window.bulkEditSmokePhase === 8) {
+                if (!bulkEditDialog.smokeConfirmModelSettings()) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_MODEL_SETTINGS_CONFIRM_FAILED")
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 9
+                return
+            }
+            if (window.bulkEditSmokePhase === 9) {
+                if (!bulkEditDialog.applyRequest()) {
+                    console.error(
+                        "BULK_EDIT_SMOKE_MODEL_SETTINGS_APPLY_FAILED status="
+                        + controller.status_message)
+                    Qt.exit(489)
+                    return
+                }
+                window.bulkEditSmokePhase = 10
+                return
+            }
+            if (window.bulkEditSmokePhase !== 10 || controller.writing)
                 return
             if (!controller.report_bulk_edit_smoke_success(
-                        2, "controllerSupport",
-                        "fixture-controller")) {
+                        2, "modelSettings", "longJewelCase")) {
                 console.error(
-                    "BULK_EDIT_SMOKE_RESULT_FAILED completed="
+                    "BULK_EDIT_SMOKE_MODEL_SETTINGS_RESULT_FAILED completed="
                     + controller.bulk_edit_completed_count + " status="
                     + controller.status_message)
                 Qt.exit(489)

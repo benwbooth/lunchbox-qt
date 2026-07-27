@@ -1,4 +1,4 @@
-use crate::GameControllerSupportLevel;
+use crate::{GameControllerSupportLevel, ModelSettings};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use thiserror::Error;
@@ -14,6 +14,7 @@ pub enum BulkGameEditorKind {
     Emulator,
     Platform,
     ControllerSupport,
+    ModelSettings,
     MultiValue,
     CustomField,
 }
@@ -30,6 +31,7 @@ impl BulkGameEditorKind {
             Self::Emulator => "emulator",
             Self::Platform => "platform",
             Self::ControllerSupport => "controllerSupport",
+            Self::ModelSettings => "modelSettings",
             Self::MultiValue => "multiValue",
             Self::CustomField => "customField",
         }
@@ -57,6 +59,7 @@ pub enum BulkGameField {
     Genre,
     Hidden,
     MaxPlayers,
+    ModelSettings,
     Notes,
     PlayMode,
     Platform,
@@ -90,6 +93,7 @@ impl BulkGameField {
             Self::Genre => "genre",
             Self::Hidden => "hidden",
             Self::MaxPlayers => "maxPlayers",
+            Self::ModelSettings => "modelSettings",
             Self::Notes => "notes",
             Self::PlayMode => "playMode",
             Self::Platform => "platform",
@@ -179,6 +183,12 @@ pub const BULK_GAME_FIELDS: &[BulkGameFieldDefinition] = &[
         label: "Max Players",
         editor: BulkGameEditorKind::Text,
         clearable: true,
+    },
+    BulkGameFieldDefinition {
+        field: BulkGameField::ModelSettings,
+        label: "3D Model Settings",
+        editor: BulkGameEditorKind::ModelSettings,
+        clearable: false,
     },
     BulkGameFieldDefinition {
         field: BulkGameField::Notes,
@@ -337,7 +347,7 @@ impl BulkGameEdit {
                 }
                 self.require_unused(false, false, true, false)?;
             }
-            BulkGameEditorKind::ControllerSupport => {
+            BulkGameEditorKind::ControllerSupport | BulkGameEditorKind::ModelSettings => {
                 if self.operation != BulkGameEditOperation::Set {
                     return Err(BulkGameEditError::SetOperationRequired);
                 }
@@ -404,6 +414,39 @@ impl BulkGameEdit {
             || self.custom_field_name.is_some() != custom_field_name
         {
             return Err(BulkGameEditError::UnexpectedValue);
+        }
+        Ok(())
+    }
+}
+
+/// One LaunchBox bulk 3D-model-settings change.
+///
+/// The recovered 13.27 surface has an "override default model settings"
+/// checkbox. An enabled checkbox supplies one identity-free whole-record
+/// template that is copied to every selected game; a disabled checkbox removes
+/// each selected game's override so normal platform/built-in inheritance
+/// resumes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BulkModelSettingsEdit {
+    pub settings: Option<ModelSettings>,
+}
+
+impl BulkModelSettingsEdit {
+    pub fn validate(&self) -> Result<(), BulkGameEditError> {
+        let Some(settings) = &self.settings else {
+            return Ok(());
+        };
+        settings
+            .validate()
+            .map_err(|error| BulkGameEditError::InvalidBulkModelSettings {
+                reason: error.to_string(),
+            })?;
+        if settings.game_id.is_some() || settings.platform_name.is_some() {
+            return Err(BulkGameEditError::BulkModelSettingsIdentityNotAllowed);
+        }
+        if settings.model_type.is_none() {
+            return Err(BulkGameEditError::BulkModelSettingsTypeRequired);
         }
         Ok(())
     }
@@ -515,6 +558,12 @@ pub enum BulkGameEditError {
     InvalidMaxPlayers,
     #[error("a custom-field name is required")]
     CustomFieldNameRequired,
+    #[error("bulk 3D model settings cannot carry a game or platform identity")]
+    BulkModelSettingsIdentityNotAllowed,
+    #[error("bulk 3D model settings require a model type")]
+    BulkModelSettingsTypeRequired,
+    #[error("invalid bulk 3D model settings: {reason}")]
+    InvalidBulkModelSettings { reason: String },
     #[error("select at least one controller to add or remove")]
     ControllerSupportChangeRequired,
     #[error("a support level is required when adding controllers")]
@@ -546,6 +595,7 @@ mod tests {
         assert!(keys.contains("controllerSupport"));
         assert!(keys.contains("customDosBoxVersion"));
         assert!(keys.contains("hidden"));
+        assert!(keys.contains("modelSettings"));
         assert!(keys.contains("starRating"));
         assert!(keys.contains("videoPath"));
         assert!(keys.contains("customField"));
@@ -647,6 +697,34 @@ mod tests {
             }
             .validate(),
             Err(BulkGameEditError::ControllerSupportChangeRequired)
+        );
+    }
+
+    #[test]
+    fn bulk_model_settings_are_identity_free_or_remove_the_override() {
+        assert_eq!(BulkModelSettingsEdit { settings: None }.validate(), Ok(()));
+
+        let valid = BulkModelSettingsEdit {
+            settings: Some(ModelSettings::long_jewel_case_defaults()),
+        };
+        assert_eq!(valid.validate(), Ok(()));
+
+        let mut identified = ModelSettings::box_defaults();
+        identified.game_id = Some("fixture-game".into());
+        assert_eq!(
+            BulkModelSettingsEdit {
+                settings: Some(identified),
+            }
+            .validate(),
+            Err(BulkGameEditError::BulkModelSettingsIdentityNotAllowed)
+        );
+
+        assert_eq!(
+            BulkModelSettingsEdit {
+                settings: Some(ModelSettings::default()),
+            }
+            .validate(),
+            Err(BulkGameEditError::BulkModelSettingsTypeRequired)
         );
     }
 }

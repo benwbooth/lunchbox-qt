@@ -64,14 +64,14 @@ behavior, not merely UI polish.
 
 ## Current native vertical
 
-The Rust catalog currently exposes 28 typed fields:
+The Rust catalog currently exposes 29 typed fields:
 
 `Broken`, `Completed`, `Controller Support`, `Custom DOSBox Version EXE
 Path`, `Developer`, `Emulator`, `Favorite`, `Genre`, `Hide`, `Max Players`,
-`Notes`, `Platform`, `Play Mode`, `Progress`, `Publisher`, `Rating`, `Region`,
-`Release Date`, `Release Type`, `Series`, `Sort Title`, `Source`, `Star
-Rating`, `Status`, `Version`, `Video Path`, `Wikipedia URL`, and `Custom
-Field`.
+`3D Model Settings`, `Notes`, `Play Mode`, `Platform`, `Progress`, `Publisher`,
+`Rating`, `Region`, `Release Date`, `Release Type`, `Series`, `Sort Title`,
+`Source`, `Star Rating`, `Status`, `Version`, `Video Path`, `Wikipedia URL`,
+and `Custom Field`.
 
 The editor kind and clearability come from Rust. The versioned request denies
 unknown keys and rejects values from the wrong editor family. Ratings accept
@@ -136,7 +136,7 @@ from the 13.27 view model and BAML. The original type exposes
 `AllSupportLevels`, and `SupportLevelValue`; its view contains separate
 multi-value remove/add controls and the exact resource instruction “Which
 support level would you like to set the added controllers at?” One typed
-version-2 request therefore carries disjoint controller-ID removal and addition
+version-3 request therefore carries disjoint controller-ID removal and addition
 sets plus one of the exact four recovered levels for additions.
 
 Immediately before any platform document is loaded, the background worker
@@ -149,6 +149,26 @@ platform documents commit together, and the committed per-game support groups
 plus revision replace the running Qt state. The native selector shows the
 catalog name, category, stable ID, and how many selected games currently carry
 each removable row.
+
+`3D Model Settings` follows a second distinct related-record surface. The
+13.27 field-page view model exposes `OverrideDefaultModelSettings`,
+`OverrideDefaultModelSettingsLabel`, `PossibleModelSettings`,
+`SelectedSettings`, and `SelectedSettingsView`; the corresponding BAML proves
+the override checkbox, `Model Type:` label, and those bindings. The native
+editor presents the complete shared model-settings contract: the exact four
+recovered Box, DVD Case, Jewel Case, and Long Jewel Case types; stored model
+key; forced case and cover colors; full-scan image/landscape choices and spine
+width; clear front-spine choice; and forced model size.
+
+One version-3 request requires an explicit override choice. Enabling it sends
+one validated identity-free whole-record template; the worker assigns each
+selected game's exact `GameId` and replaces or inserts only that game's
+`ModelSettings` record. Disabling it removes only each selected game's record,
+so platform and built-in inheritance resumes without copying inherited values
+into XML. Existing record updates retain unknown children. The worker reloads
+the committed documents and platform catalog, resolves the effective
+game/platform/built-in value for every selected ID, and republishes those
+values plus the model-settings revision to the live 3D views.
 
 The product invokes no command interpreter and contains no Windows-, Linux-,
 or macOS-specific bulk-editor UI branch.
@@ -178,6 +198,11 @@ existing-row level replacement, optional-zero encoding, retained unknown row
 XML, removal isolation, two-game live refresh, stale-ID refusal before a
 write, exact recovery, and clean transaction state.
 
+Dedicated model-settings tests cover identity-free validation, complete
+whole-record update and insertion, exact per-game identity assignment, unknown
+child retention, override-only removal, platform inheritance after removal,
+two-game live refresh, exact recovery, and clean transaction state.
+
 A two-document transaction test proves successful paired commit with exact
 backups, then creates a revision conflict in the second document and proves
 that the first document remains byte-identical. Platform-transfer storage
@@ -194,15 +219,16 @@ both media files unchanged. The compiled Qt scenario selects two stable IDs in
 the real audit dialog, resolves the real fixture emulator through the typed
 combo catalog, renders the conditional Platform media page and the Controller
 Support remove/add/level surface, then applies Required support to the real
-fixture controller. It verifies one existing level update plus one new row
-across the two games, a retained unknown element, an unchanged
-Windows-separated application path, one byte-exact backup, and clean recovery
-state.
+fixture controller. It next renders the complete 3D Model Settings surface and
+applies the exact Long Jewel Case override to both games. The scenario verifies
+one existing controller level update plus one new row, two complete
+model-settings records, retained unknown elements, an unchanged
+Windows-separated application path, the exact two-transaction recovery chain,
+live resolved model values, and clean recovery state.
 
 ## Open parity gates
 
 - recover the complete ordered original field catalog and every combo value;
-- model-settings bulk surfaces;
 - the remaining launch/startup/pause fields;
 - exact three-state meanings and date formatting/time-zone behavior;
 - exact original collision policy, apply-time cancellation, restart,

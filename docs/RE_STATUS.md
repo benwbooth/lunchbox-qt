@@ -121,7 +121,7 @@ its known activation/data-manager critical-section stall before its protected
 field initializer populated the collection, so the complete original ordered
 field list is not claimed.
 
-The current native subset freezes a 28-field typed Rust catalog and validates
+The current native subset freezes a 29-field typed Rust catalog and validates
 every field/operation/value combination. It copies stable audit-selected game
 IDs and stages all changes into revision-checked recovery transactions.
 Platform changes move complete game-owned XML and playlist references between
@@ -140,8 +140,12 @@ different-emulator, different-owner, and unknown XML data. Controller Support
 uses the separately recovered current/possible multi-selectors and four exact
 levels; it validates the fresh catalog, applies simultaneous disjoint
 removals/additions, preserves retained row XML, and republishes committed
-per-game groups. Remaining model-settings and launch/startup/pause bulk
-surfaces, exact
+per-game groups. The BAML-proven 3D Model Settings surface provides the
+override choice, four exact model types, and the complete settings record;
+enabling it assigns a validated whole-record override to each selected game,
+while disabling it removes only those overrides and republishes the resolved
+platform/built-in inheritance. Remaining launch/startup/pause bulk surfaces,
+exact
 cancellation/progress/collision behavior, and supported Windows/macOS oracle
 comparison remain open. See `analysis/game-bulk-edit-13.27.md`.
 

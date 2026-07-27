@@ -62,8 +62,9 @@ read-only, leaves source XML byte-identical, and represents unavailable
 storefront or MAME-derived values as blank rather than false.
 
 Selected audit rows now also open the first native **Bulk Edit** vertical. Its
-Rust-owned catalog exposes 26 typed metadata/state/launch fields, including
-Broken, Hide, Platform, half-star ratings, Video Path, and Custom Field.
+Rust-owned catalog exposes 29 typed metadata/state/launch fields, including
+Broken, Hide, Platform, half-star ratings, Video Path, Controller Support,
+3D Model Settings, and Custom Field.
 Set/Clear and the supported multi-value Add/Remove operations are versioned
 and validated. Platform moves complete game-owned XML plus manual-playlist
 references between existing platform documents; its conditional page can
@@ -76,10 +77,12 @@ The recovered Custom DOSBox path and matching additional-application Emulator
 propagation now commit losslessly with live Qt refresh. Controller Support
 bulk editing also exposes the recovered independent remove/add lists and exact
 four levels, validates current catalog IDs, commits related rows atomically,
-and refreshes their live Qt revision. The complete original field catalog,
-model-settings and remaining launch/startup/pause bulk surfaces, exact
-original cancellation behavior, and Windows/macOS oracle gates remain open;
-the exact boundary is recorded in
+and refreshes their live Qt revision. The complete 3D Model Settings editor
+applies one identity-free whole-record override per selected game or removes
+only those overrides to resume platform/built-in inheritance, then refreshes
+the resolved live models. The complete original field catalog, remaining
+launch/startup/pause bulk surfaces, exact original cancellation behavior, and
+Windows/macOS oracle gates remain open; the exact boundary is recorded in
 `analysis/game-bulk-edit-13.27.md`.
 
 Read an existing installation without modifying it:

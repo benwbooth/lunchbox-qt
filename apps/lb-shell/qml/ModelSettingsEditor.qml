@@ -6,6 +6,8 @@ ColumnLayout {
     id: editor
 
     property string scopeLabel: "game"
+    property string overrideLabel: ""
+    property color labelColor: "#c7d2dc"
     property alias overrideEnabled: overrideCheck.checked
     property string inheritedSource: "boxFallback"
     readonly property string modelTypeKey: modelTypeKeyField.text
@@ -129,6 +131,33 @@ ColumnLayout {
         }
     }
 
+    function isValid() {
+        if (!overrideEnabled)
+            return true
+        if (modelTypeKeyField.text.trim().length === 0)
+            return false
+        const spineWidth = Number(fullScanSpineWidthField.text)
+        if (!Number.isFinite(spineWidth)
+                || spineWidth < 0 || spineWidth > 1)
+            return false
+        const colorPattern = /^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/
+        if (caseColorCheck.checked
+                && !colorPattern.test(caseColorField.text.trim()))
+            return false
+        if (coverColorCheck.checked
+                && !colorPattern.test(coverColorField.text.trim()))
+            return false
+        if (forceSizeCheck.checked) {
+            const x = Number(modelSizeXField.text)
+            const y = Number(modelSizeYField.text)
+            const z = Number(modelSizeZField.text)
+            if (!Number.isFinite(x) || !Number.isFinite(y)
+                    || !Number.isFinite(z) || x <= 0 || y <= 0 || z <= 0)
+                return false
+        }
+        return true
+    }
+
     function setSmokeValues(typeKey, fullScan, spineWidth,
                             caseColor, coverColor, size) {
         overrideEnabled = true
@@ -157,7 +186,20 @@ ColumnLayout {
 
     CheckBox {
         id: overrideCheck
-        text: "Use custom " + editor.scopeLabel + " 3D model settings"
+        palette.windowText: editor.labelColor
+        palette.buttonText: editor.labelColor
+        palette.text: editor.labelColor
+        contentItem: Text {
+            text: overrideCheck.text
+            font: overrideCheck.font
+            color: editor.labelColor
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: overrideCheck.indicator.width
+                         + overrideCheck.spacing
+        }
+        text: editor.overrideLabel.length > 0
+              ? editor.overrideLabel
+              : "Use custom " + editor.scopeLabel + " 3D model settings"
     }
 
     Label {
@@ -179,7 +221,7 @@ ColumnLayout {
         columnSpacing: 12
         rowSpacing: 8
 
-        Label { text: "Model type" }
+        Label { text: "Model type"; color: editor.labelColor }
         ComboBox {
             id: modelTypeChoice
             Layout.fillWidth: true
@@ -199,7 +241,7 @@ ColumnLayout {
             }
         }
 
-        Label { text: "Stored model key" }
+        Label { text: "Stored model key"; color: editor.labelColor }
         TextField {
             id: modelTypeKeyField
             Layout.fillWidth: true
@@ -207,10 +249,24 @@ ColumnLayout {
             onTextEdited: editor.selectKnownType(text.trim())
         }
 
-        Label { text: "Case color" }
+        Label { text: "Case color"; color: editor.labelColor }
         RowLayout {
             Layout.fillWidth: true
-            CheckBox { id: caseColorCheck; text: "Force" }
+            CheckBox {
+                id: caseColorCheck
+                text: "Force"
+                palette.windowText: editor.labelColor
+                palette.buttonText: editor.labelColor
+                palette.text: editor.labelColor
+                contentItem: Text {
+                    text: caseColorCheck.text
+                    font: caseColorCheck.font
+                    color: editor.labelColor
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: caseColorCheck.indicator.width
+                                 + caseColorCheck.spacing
+                }
+            }
             TextField {
                 id: caseColorField
                 Layout.fillWidth: true
@@ -219,10 +275,24 @@ ColumnLayout {
             }
         }
 
-        Label { text: "Cover color" }
+        Label { text: "Cover color"; color: editor.labelColor }
         RowLayout {
             Layout.fillWidth: true
-            CheckBox { id: coverColorCheck; text: "Force" }
+            CheckBox {
+                id: coverColorCheck
+                text: "Force"
+                palette.windowText: editor.labelColor
+                palette.buttonText: editor.labelColor
+                palette.text: editor.labelColor
+                contentItem: Text {
+                    text: coverColorCheck.text
+                    font: coverColorCheck.font
+                    color: editor.labelColor
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: coverColorCheck.indicator.width
+                                 + coverColorCheck.spacing
+                }
+            }
             TextField {
                 id: coverColorField
                 Layout.fillWidth: true
@@ -231,20 +301,42 @@ ColumnLayout {
             }
         }
 
-        Label { text: "Full scan" }
+        Label { text: "Full scan"; color: editor.labelColor }
         RowLayout {
             Layout.fillWidth: true
             CheckBox {
                 id: fullScanCheck
                 text: "Use Box - Full image"
+                palette.windowText: editor.labelColor
+                palette.buttonText: editor.labelColor
+                palette.text: editor.labelColor
+                contentItem: Text {
+                    text: fullScanCheck.text
+                    font: fullScanCheck.font
+                    color: editor.labelColor
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: fullScanCheck.indicator.width
+                                 + fullScanCheck.spacing
+                }
             }
             CheckBox {
                 id: fullScanLandscapeCheck
                 text: "Landscape model"
+                palette.windowText: editor.labelColor
+                palette.buttonText: editor.labelColor
+                palette.text: editor.labelColor
+                contentItem: Text {
+                    text: fullScanLandscapeCheck.text
+                    font: fullScanLandscapeCheck.font
+                    color: editor.labelColor
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: fullScanLandscapeCheck.indicator.width
+                                 + fullScanLandscapeCheck.spacing
+                }
             }
         }
 
-        Label { text: "Full-scan spine width" }
+        Label { text: "Full-scan spine width"; color: editor.labelColor }
         TextField {
             id: fullScanSpineWidthField
             Layout.fillWidth: true
@@ -256,10 +348,24 @@ ColumnLayout {
             }
         }
 
-        Label { text: "Forced model size" }
+        Label { text: "Forced model size"; color: editor.labelColor }
         RowLayout {
             Layout.fillWidth: true
-            CheckBox { id: forceSizeCheck; text: "Force" }
+            CheckBox {
+                id: forceSizeCheck
+                text: "Force"
+                palette.windowText: editor.labelColor
+                palette.buttonText: editor.labelColor
+                palette.text: editor.labelColor
+                contentItem: Text {
+                    text: forceSizeCheck.text
+                    font: forceSizeCheck.font
+                    color: editor.labelColor
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: forceSizeCheck.indicator.width
+                                 + forceSizeCheck.spacing
+                }
+            }
             TextField {
                 id: modelSizeXField
                 Layout.fillWidth: true
@@ -283,34 +389,45 @@ ColumnLayout {
             }
         }
 
-        Label { text: "Front-spine resource" }
+        Label { text: "Front-spine resource"; color: editor.labelColor }
         TextField {
             id: frontSpineImageField
             Layout.fillWidth: true
             placeholderText: "Opaque LaunchBox resource value"
         }
 
-        Label { text: "Front-spine material" }
+        Label { text: "Front-spine material"; color: editor.labelColor }
         CheckBox {
             id: frontSpineClearCheck
             text: "Clear / translucent"
+            palette.windowText: editor.labelColor
+            palette.buttonText: editor.labelColor
+            palette.text: editor.labelColor
+            contentItem: Text {
+                text: frontSpineClearCheck.text
+                font: frontSpineClearCheck.font
+                color: editor.labelColor
+                verticalAlignment: Text.AlignVCenter
+                leftPadding: frontSpineClearCheck.indicator.width
+                             + frontSpineClearCheck.spacing
+            }
         }
 
-        Label { text: "Logo font" }
+        Label { text: "Logo font"; color: editor.labelColor }
         TextField {
             id: logoFontField
             Layout.fillWidth: true
             placeholderText: "Optional LaunchBox font name"
         }
 
-        Label { text: "Logo rotations" }
+        Label { text: "Logo rotations"; color: editor.labelColor }
         TextField {
             id: logoRotationField
             Layout.fillWidth: true
             placeholderText: "0,0,0,"
         }
 
-        Label { text: "Spine rotations" }
+        Label { text: "Spine rotations"; color: editor.labelColor }
         TextField {
             id: spineRotationField
             Layout.fillWidth: true

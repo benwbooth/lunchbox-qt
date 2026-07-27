@@ -814,6 +814,12 @@ pub mod qobject {
             -> QString;
 
         #[qinvokable]
+        fn model_settings_defaults_json_for_type(
+            self: &LibraryController,
+            model_type: QString,
+        ) -> QString;
+
+        #[qinvokable]
         fn game_media_url_at(self: &LibraryController, game_id: QString, index: i32) -> QUrl;
 
         #[qinvokable]
@@ -2177,15 +2183,15 @@ use lb_domain::{
     audit_cell, audit_tsv, built_in_model_settings, duplicate_game_ids, resolve_model_settings,
     AdditionalApplication, AdditionalApplicationEdit, AlternateName, ApplicationDataBackupPolicy,
     ArgbColor, AuditColumnKind, AuditMediaCounts, AuditSupplement, BoxSize,
-    BulkControllerSupportEdit, BulkGameEdit, BulkGameEditOperation, BulkGameField, CustomField,
-    DesktopNotificationType, DesktopTrayPolicy, Emulator, EmulatorConfiguration, EmulatorPlatform,
-    FrontendSettings, Game, GameController, GameControllerSupport, GameControllerSupportLevel,
-    GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding,
-    ListViewColumnLayout, ModelSettings, ModelSettingsSource, ModelSize, ModelType, Mount,
-    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
-    PlatformFolder, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
-    ResolvedModelSettings, BULK_GAME_FIELDS, GAME_CONTROLLER_CATEGORIES, LAUNCHBOX_AUDIT_COLUMNS,
-    UNASSIGNED_EMULATOR_ID,
+    BulkControllerSupportEdit, BulkGameEdit, BulkGameEditOperation, BulkGameField,
+    BulkModelSettingsEdit, CustomField, DesktopNotificationType, DesktopTrayPolicy, Emulator,
+    EmulatorConfiguration, EmulatorPlatform, FrontendSettings, Game, GameController,
+    GameControllerSupport, GameControllerSupportLevel, GameLaunchConfiguration, GameMetadata,
+    GameSave, GameSaveMetadataEdit, InputBinding, ListViewColumnLayout, ModelSettings,
+    ModelSettingsSource, ModelSize, ModelType, Mount, NavigationMetadata, ParentRelationship,
+    PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder, Playlist,
+    PlaylistDocument, PlaylistFilter, PlaylistGame, ResolvedModelSettings, BULK_GAME_FIELDS,
+    GAME_CONTROLLER_CATEGORIES, LAUNCHBOX_AUDIT_COLUMNS, UNASSIGNED_EMULATOR_ID,
 };
 use lb_import::{
     execute_manual_import, preview_manual_import, ImportError, ManualImportReport,
@@ -3846,6 +3852,8 @@ struct BulkGameWriteSuccess {
     propagated_additional_application_count: usize,
     controller_support: Vec<(String, Vec<GameControllerSupport>)>,
     controller_support_change_count: usize,
+    model_settings: Vec<(String, ResolvedModelSettings)>,
+    model_settings_change_count: usize,
 }
 
 struct BigBoxGameStateWriteSuccess {
@@ -4658,7 +4666,7 @@ enum GameControllerWriteFailure {
 }
 
 const GAME_EDIT_PAYLOAD_VERSION: u32 = 5;
-const BULK_GAME_EDIT_PAYLOAD_VERSION: u32 = 2;
+const BULK_GAME_EDIT_PAYLOAD_VERSION: u32 = 3;
 const ADDITIONAL_APPLICATION_EDIT_PAYLOAD_VERSION: u32 = 1;
 const GAME_SAVE_MANAGER_PAYLOAD_VERSION: u32 = 1;
 const GAME_CONTROLLER_EDIT_PAYLOAD_VERSION: u32 = 1;
@@ -4687,6 +4695,8 @@ struct BulkGameEditPayload {
     add_controller_ids: Option<Vec<String>>,
     remove_controller_ids: Option<Vec<String>>,
     support_level: Option<i32>,
+    override_default_model_settings: Option<bool>,
+    model_settings: Option<ModelSettingsEditPayload>,
 }
 
 impl BulkGameEditPayload {
@@ -4726,6 +4736,37 @@ impl BulkGameEditPayload {
             }
             None
         };
+        let model_settings = if self.field == BulkGameField::ModelSettings {
+            let override_enabled = self.override_default_model_settings.ok_or_else(|| {
+                "3D Model Settings requires an explicit override-default choice".to_string()
+            })?;
+            let settings = if override_enabled {
+                Some(
+                    self.model_settings
+                        .ok_or_else(|| {
+                            "enabled 3D Model Settings requires a complete settings record"
+                                .to_string()
+                        })?
+                        .into_settings(None, None)?,
+                )
+            } else {
+                if self.model_settings.is_some() {
+                    return Err("disabled 3D Model Settings cannot carry an override record".into());
+                }
+                None
+            };
+            let edit = BulkModelSettingsEdit { settings };
+            edit.validate().map_err(|error| error.to_string())?;
+            Some(edit)
+        } else {
+            if self.override_default_model_settings.is_some() || self.model_settings.is_some() {
+                return Err(
+                    "the model-settings override choice and record are only valid for 3D Model Settings"
+                        .into(),
+                );
+            }
+            None
+        };
         let edit = BulkGameEdit {
             field: self.field,
             operation: self.operation,
@@ -4746,6 +4787,7 @@ impl BulkGameEditPayload {
             edit,
             migrate_media: self.migrate_media.unwrap_or(false),
             controller_support,
+            model_settings,
         })
     }
 }
@@ -4755,6 +4797,7 @@ struct BulkGameWriteRequest {
     edit: BulkGameEdit,
     migrate_media: bool,
     controller_support: Option<BulkControllerSupportEdit>,
+    model_settings: Option<BulkModelSettingsEdit>,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -7683,6 +7726,11 @@ fn write_bulk_game_edit(
             "the Controller Support field requires its typed add/remove operation".into(),
         ));
     }
+    if (request.edit.field == BulkGameField::ModelSettings) != request.model_settings.is_some() {
+        return Err(GameWriteFailure::Other(
+            "the 3D Model Settings field requires its typed whole-record operation".into(),
+        ));
+    }
     if request.edit.field == BulkGameField::Platform {
         return write_platform_bulk_game_edit(root, targets, request, path_resolver);
     }
@@ -7736,6 +7784,12 @@ fn write_bulk_game_edit(
             .validate()
             .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
     }
+    let model_data = request
+        .model_settings
+        .as_ref()
+        .map(|_| LaunchBoxDataIndex::load(&root))
+        .transpose()
+        .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
     let mut by_source = BTreeMap::<PathBuf, Vec<String>>::new();
     for (source, id) in targets {
         by_source.entry(source).or_default().push(id);
@@ -7746,6 +7800,8 @@ fn write_bulk_game_edit(
     let mut propagated_additional_application_count = 0usize;
     let mut controller_support = Vec::new();
     let mut controller_support_change_count = 0usize;
+    let mut model_settings = Vec::new();
+    let mut model_settings_change_count = 0usize;
     for (source, ids) in by_source {
         let mut document = PlatformDocument::load(&source)
             .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
@@ -7779,6 +7835,19 @@ fn write_bulk_game_edit(
                     .filter(|record| record.game_id.eq_ignore_ascii_case(&id))
                     .cloned()
                     .collect::<Vec<_>>()
+            });
+            let original_model_settings = request.model_settings.as_ref().map(|_| {
+                document
+                    .library()
+                    .model_settings
+                    .iter()
+                    .find(|settings| {
+                        settings
+                            .game_id
+                            .as_deref()
+                            .is_some_and(|game_id| game_id.eq_ignore_ascii_case(&id))
+                    })
+                    .cloned()
             });
             let game = if let Some(edit) = &request.controller_support {
                 let records = document
@@ -7826,6 +7895,61 @@ fn write_bulk_game_edit(
                             "game {id} disappeared during controller-support bulk edit"
                         ))
                     })?
+            } else if let Some(edit) = &request.model_settings {
+                document
+                    .apply_bulk_game_model_settings_edit(&id, edit)
+                    .map_err(|error| GameWriteFailure::Other(error.to_string()))?;
+                let game = document
+                    .library()
+                    .games
+                    .iter()
+                    .find(|game| game.id.eq_ignore_ascii_case(&id))
+                    .cloned()
+                    .ok_or_else(|| {
+                        GameWriteFailure::Other(format!(
+                            "game {id} disappeared during 3D model-settings bulk edit"
+                        ))
+                    })?;
+                let committed_override = document
+                    .library()
+                    .model_settings
+                    .iter()
+                    .find(|settings| {
+                        settings
+                            .game_id
+                            .as_deref()
+                            .is_some_and(|game_id| game_id.eq_ignore_ascii_case(&id))
+                    })
+                    .cloned();
+                if original_model_settings
+                    .as_ref()
+                    .expect("model-settings original was captured")
+                    != &committed_override
+                {
+                    model_settings_change_count = model_settings_change_count.saturating_add(1);
+                }
+                let catalog = model_data
+                    .as_ref()
+                    .and_then(LaunchBoxDataIndex::platform_catalog);
+                let scrape_as = catalog
+                    .and_then(|catalog| {
+                        catalog
+                            .platforms
+                            .iter()
+                            .find(|platform| platform.metadata.name == game.platform)
+                    })
+                    .and_then(|platform| platform.metadata.scrape_as.as_deref());
+                let resolved = resolve_model_settings(
+                    &game.id,
+                    &game.platform,
+                    scrape_as,
+                    &document.library().model_settings,
+                    catalog
+                        .map(|catalog| catalog.model_settings.as_slice())
+                        .unwrap_or(&[]),
+                );
+                model_settings.push((id.clone(), resolved));
+                game
             } else {
                 document
                     .apply_bulk_game_edit(&id, &request.edit)
@@ -7888,6 +8012,8 @@ fn write_bulk_game_edit(
         propagated_additional_application_count,
         controller_support,
         controller_support_change_count,
+        model_settings,
+        model_settings_change_count,
     })
 }
 
@@ -8167,6 +8293,8 @@ fn write_platform_bulk_game_edit(
         propagated_additional_application_count: 0,
         controller_support: Vec::new(),
         controller_support_change_count: 0,
+        model_settings: Vec::new(),
+        model_settings_change_count: 0,
     })
 }
 
@@ -19679,6 +19807,16 @@ impl qobject::LibraryController {
                                         && record.level() == GameControllerSupportLevel::Required
                                 })
                             }))
+                    || (field == "modelSettings"
+                        && self
+                            .rust()
+                            .resolved_model_settings_by_game
+                            .get(&game.id)
+                            .is_some_and(|resolved| {
+                                resolved.source == ModelSettingsSource::GameOverride
+                                    && resolved.settings.effective_model_type().key()
+                                        == expected_value
+                            }))
             })
             .count();
         let success = !*self.writing()
@@ -21178,6 +21316,19 @@ impl qobject::LibraryController {
             .get(&game_id.to_string())
             .map(ModelSettingsPresentationPayload::from)
             .and_then(|payload| serde_json::to_string(&payload).ok())
+            .map(qstring)
+            .unwrap_or_default()
+    }
+
+    pub fn model_settings_defaults_json_for_type(&self, model_type: QString) -> QString {
+        let settings = match model_type.to_string().as_str() {
+            "box" => ModelSettings::box_defaults(),
+            "dvd" => ModelSettings::dvd_defaults(),
+            "jewelCase" => ModelSettings::jewel_case_defaults(),
+            "longJewelCase" => ModelSettings::long_jewel_case_defaults(),
+            _ => return QString::default(),
+        };
+        serde_json::to_string(&ModelSettingsEditPayload::from_settings(&settings))
             .map(qstring)
             .unwrap_or_default()
     }
@@ -32491,6 +32642,8 @@ impl qobject::LibraryController {
                     propagated_additional_application_count,
                     controller_support,
                     controller_support_change_count,
+                    model_settings,
+                    model_settings_change_count,
                 } = success;
                 let completed = saturating_i32(games.len());
                 let moved_platforms = games
@@ -32567,6 +32720,16 @@ impl qobject::LibraryController {
                         .wrapping_add(1);
                     self.as_mut().set_game_controller_support_revision(revision);
                 }
+                if !model_settings.is_empty() {
+                    for (game_id, resolved) in model_settings {
+                        self.as_mut()
+                            .rust_mut()
+                            .resolved_model_settings_by_game
+                            .insert(game_id, resolved);
+                    }
+                    let revision = self.as_ref().model_settings_revision().wrapping_add(1);
+                    self.as_mut().set_model_settings_revision(revision);
+                }
                 if !moved_game_ids.is_empty() {
                     let media_refresh = media_refresh.unwrap_or_default();
                     let mut rust = self.as_mut().rust_mut();
@@ -32630,7 +32793,7 @@ impl qobject::LibraryController {
                         .join(", ")
                 };
                 let result_message = format!(
-                    "Updated {completed} games, changed {controller_support_change_count} controller-support row(s), propagated {propagated_additional_application_count} matching additional-application emulator setting(s), and moved {media_move_count} media file(s) in one recoverable transaction with {} exact backup(s): {backup_summary}",
+                    "Updated {completed} games, changed {model_settings_change_count} 3D model override(s), changed {controller_support_change_count} controller-support row(s), propagated {propagated_additional_application_count} matching additional-application emulator setting(s), and moved {media_move_count} media file(s) in one recoverable transaction with {} exact backup(s): {backup_summary}",
                     backups.len(),
                 );
                 self.as_mut()
@@ -42700,7 +42863,7 @@ mod tests {
     fn bulk_game_edit_payload_is_versioned_and_rejects_cross_editor_values() {
         let parsed = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 2,
+                "version": 3,
                 "field": "publisher",
                 "operation": "set",
                 "text": "Bulk Publisher"
@@ -42716,7 +42879,7 @@ mod tests {
 
         let wrong_version = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 3,
+                "version": 4,
                 "field": "publisher",
                 "operation": "set",
                 "text": "Bulk Publisher"
@@ -42730,7 +42893,7 @@ mod tests {
 
         let cross_editor = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 2,
+                "version": 3,
                 "field": "broken",
                 "operation": "set",
                 "text": "true"
@@ -42744,7 +42907,7 @@ mod tests {
 
         let platform = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 2,
+                "version": 3,
                 "field": "platform",
                 "operation": "set",
                 "text": "Target Console",
@@ -42758,7 +42921,7 @@ mod tests {
         assert!(platform.migrate_media);
         assert!(serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 2,
+                "version": 3,
                 "field": "platform",
                 "operation": "set",
                 "text": "Target Console"
@@ -42771,7 +42934,7 @@ mod tests {
 
         let controller_support = serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 2,
+                "version": 3,
                 "field": "controllerSupport",
                 "operation": "set",
                 "addControllerIds": ["fixture-controller"],
@@ -42792,7 +42955,7 @@ mod tests {
         );
         assert!(serde_json::from_str::<BulkGameEditPayload>(
             r#"{
-                "version": 2,
+                "version": 3,
                 "field": "publisher",
                 "operation": "set",
                 "text": "Publisher",
@@ -42803,6 +42966,71 @@ mod tests {
         .into_edit()
         .unwrap_err()
         .contains("only valid for Controller Support"));
+
+        let model_settings = serde_json::from_str::<BulkGameEditPayload>(
+            r##"{
+                "version": 3,
+                "field": "modelSettings",
+                "operation": "set",
+                "overrideDefaultModelSettings": true,
+                "modelSettings": {
+                    "model_type": "longJewelCase",
+                    "case_color": "#ff112233",
+                    "cover_color": "#ff445566",
+                    "front_spine_image": "{Resources}\\Fixture",
+                    "front_spine_is_clear": true,
+                    "full_image_spine_width": 0.143,
+                    "full_scan_is_landscape": false,
+                    "logo_font": "Fixture Font",
+                    "logo_rotation": "0,,0,",
+                    "model_size": [5.0, 7.0, 1.0],
+                    "spine_rotation": "0,,0,",
+                    "use_full_scan_images": false
+                }
+            }"##,
+        )
+        .expect("model settings payload")
+        .into_edit()
+        .expect("validated model settings request");
+        let settings = model_settings
+            .model_settings
+            .expect("typed model-settings edit")
+            .settings
+            .expect("enabled override");
+        assert_eq!(
+            settings.model_type.as_ref().map(ModelType::key),
+            Some("longJewelCase")
+        );
+        assert_eq!(settings.game_id, None);
+        assert_eq!(settings.platform_name, None);
+
+        let inherit = serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 3,
+                "field": "modelSettings",
+                "operation": "set",
+                "overrideDefaultModelSettings": false
+            }"#,
+        )
+        .expect("model inheritance payload")
+        .into_edit()
+        .expect("validated model inheritance request");
+        assert_eq!(
+            inherit.model_settings,
+            Some(BulkModelSettingsEdit { settings: None })
+        );
+        assert!(serde_json::from_str::<BulkGameEditPayload>(
+            r#"{
+                "version": 3,
+                "field": "modelSettings",
+                "operation": "set",
+                "overrideDefaultModelSettings": true
+            }"#,
+        )
+        .unwrap()
+        .into_edit()
+        .unwrap_err()
+        .contains("complete settings record"));
     }
 
     #[test]
@@ -42879,6 +43107,7 @@ mod tests {
                 },
                 migrate_media: false,
                 controller_support: None,
+                model_settings: None,
             },
             HostPathResolver::default(),
         )
@@ -42925,6 +43154,7 @@ mod tests {
                 },
                 migrate_media: false,
                 controller_support: None,
+                model_settings: None,
             },
             HostPathResolver::default(),
         );
@@ -42952,6 +43182,7 @@ mod tests {
                 },
                 migrate_media: false,
                 controller_support: None,
+                model_settings: None,
             },
             HostPathResolver::default(),
         )
@@ -43018,6 +43249,7 @@ mod tests {
                     remove_controller_ids: Vec::new(),
                     support_level: Some(GameControllerSupportLevel::Required),
                 }),
+                model_settings: None,
             },
             HostPathResolver::default(),
         )
@@ -43063,6 +43295,7 @@ mod tests {
                     remove_controller_ids: Vec::new(),
                     support_level: Some(GameControllerSupportLevel::FullSupport),
                 }),
+                model_settings: None,
             },
             HostPathResolver::default(),
         );
@@ -43075,6 +43308,92 @@ mod tests {
             fs::read(&platform_path).expect("after unknown controller"),
             before_unknown
         );
+        assert!(pending_transaction_manifests(root)
+            .expect("transaction manifests")
+            .is_empty());
+    }
+
+    #[test]
+    fn model_settings_bulk_worker_refreshes_game_override_and_inheritance() {
+        let directory = tempfile::tempdir().expect("temporary bulk-model library");
+        let root = directory.path();
+        let data_directory = root.join("Data");
+        let platform_directory = data_directory.join("Platforms");
+        fs::create_dir_all(&platform_directory).expect("platform directory");
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/launchbox/Data");
+        for entry in fs::read_dir(&fixture_root).expect("fixture data directory") {
+            let entry = entry.expect("fixture data entry");
+            if entry.file_type().expect("fixture data type").is_file() {
+                fs::copy(entry.path(), data_directory.join(entry.file_name()))
+                    .expect("copy auxiliary fixture");
+            }
+        }
+        let platform_path = platform_directory.join("Fixture Console.xml");
+        fs::copy(
+            fixture_root.join("Platforms/Fixture Console.xml"),
+            &platform_path,
+        )
+        .expect("copy platform fixture");
+        let targets = vec![
+            (platform_path.clone(), "fixture-adventure".into()),
+            (platform_path.clone(), "fixture-racer".into()),
+        ];
+        let request = |settings| BulkGameWriteRequest {
+            edit: BulkGameEdit {
+                field: BulkGameField::ModelSettings,
+                operation: BulkGameEditOperation::Set,
+                text: None,
+                boolean: None,
+                number: None,
+                custom_field_name: None,
+            },
+            migrate_media: false,
+            controller_support: None,
+            model_settings: Some(BulkModelSettingsEdit { settings }),
+        };
+
+        let updated = write_bulk_game_edit(
+            root.to_path_buf(),
+            targets.clone(),
+            request(Some(ModelSettings::long_jewel_case_defaults())),
+            HostPathResolver::default(),
+        )
+        .expect("transactional model-settings bulk edit");
+        assert_eq!(updated.games.len(), 2);
+        assert_eq!(updated.model_settings_change_count, 2);
+        assert_eq!(updated.model_settings.len(), 2);
+        assert!(updated.model_settings.iter().all(|(_, resolved)| {
+            resolved.source == ModelSettingsSource::GameOverride
+                && resolved.settings.effective_model_type().key() == "longJewelCase"
+        }));
+        let committed = fs::read_to_string(&platform_path).expect("committed model settings");
+        assert_eq!(committed.matches("<ModelSettings>").count(), 2);
+        assert_eq!(
+            committed
+                .matches("<ModelType>longJewelCase</ModelType>")
+                .count(),
+            2
+        );
+        assert!(committed.contains(
+            "<FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>"
+        ));
+
+        let inherited = write_bulk_game_edit(
+            root.to_path_buf(),
+            targets,
+            request(None),
+            HostPathResolver::default(),
+        )
+        .expect("transactional model-settings inheritance bulk edit");
+        assert_eq!(inherited.model_settings_change_count, 2);
+        assert!(inherited.model_settings.iter().all(|(_, resolved)| {
+            resolved.source == ModelSettingsSource::PlatformOverride
+                && resolved.settings.effective_model_type().key() == "dvd"
+        }));
+        let committed = fs::read_to_string(&platform_path).expect("inherited model settings");
+        assert!(!committed.contains("<ModelSettings>"));
+        assert!(committed.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
         assert!(pending_transaction_manifests(root)
             .expect("transaction manifests")
             .is_empty());
@@ -43146,6 +43465,7 @@ mod tests {
                 },
                 migrate_media: true,
                 controller_support: None,
+                model_settings: None,
             },
             HostPathResolver::default(),
         )
@@ -43248,6 +43568,7 @@ mod tests {
                 },
                 migrate_media: false,
                 controller_support: None,
+                model_settings: None,
             },
             HostPathResolver::default(),
         )
@@ -43311,6 +43632,7 @@ mod tests {
                 },
                 migrate_media: true,
                 controller_support: None,
+                model_settings: None,
             },
             HostPathResolver::default(),
         ) {

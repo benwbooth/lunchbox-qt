@@ -125,6 +125,18 @@ Dialog {
         controllerIdsToAdd = []
         controllerIdsToRemove = []
         controllerSupportLevel = 0
+        resetModelSettingsEditor()
+    }
+
+    function resetModelSettingsEditor() {
+        if (controller === null)
+            return
+        const encoded =
+            controller.model_settings_defaults_json_for_type("box")
+        if (encoded.length === 0)
+            return
+        const defaults = JSON.parse(encoded)
+        bulkModelSettingsEditor.load(null, defaults, "boxFallback")
     }
 
     function openWizard() {
@@ -146,7 +158,7 @@ Dialog {
     function operationModel() {
         if (selectedField === null)
             return ["Set"]
-        if (editor === "controllerSupport")
+        if (editor === "controllerSupport" || editor === "modelSettings")
             return ["Set"]
         if (editor === "multiValue" || editor === "customField")
             return selectedField.clearable
@@ -165,7 +177,7 @@ Dialog {
 
     function requestObject() {
         const request = {
-            version: 2,
+            version: 3,
             field: selectedField.key,
             operation: operation
         }
@@ -174,6 +186,10 @@ Dialog {
             request.removeControllerIds = controllerIdsToRemove
             if (controllerIdsToAdd.length > 0)
                 request.supportLevel = controllerSupportLevel
+        } else if (editor === "modelSettings") {
+            request.overrideDefaultModelSettings =
+                bulkModelSettingsEditor.overrideEnabled
+            request.modelSettings = bulkModelSettingsEditor.editPayload()
         } else if (editor === "boolean")
             request.boolean = booleanValue
         else if (editor === "rating")
@@ -215,6 +231,13 @@ Dialog {
                                       controllerSupportLevel])
             return descriptions.join(" and ")
         }
+        if (editor === "modelSettings") {
+            if (!bulkModelSettingsEditor.overrideEnabled)
+                return "remove game overrides and inherit platform or built-in settings"
+            return "set one complete "
+                   + bulkModelSettingsEditor.modelTypeKey
+                   + " override on every selected game"
+        }
         if (editor === "platform")
             return "move to \"" + textValue + "\""
         const prefix = operation === "add" ? "add "
@@ -241,6 +264,8 @@ Dialog {
                        || (controllerSupportLevel >= 0
                            && controllerSupportLevel
                               < controllerSupportLevels.length))
+        if (editor === "modelSettings")
+            return bulkModelSettingsEditor.isValid()
         if (editor === "platform")
             return platforms.length > 0 && textValue.trim().length > 0
         if (editor === "customField"
@@ -373,6 +398,29 @@ Dialog {
 
     function smokeConfirmControllerSupport() {
         if (editor !== "controllerSupport" || !editorIsValid())
+            return false
+        page = 3
+        return true
+    }
+
+    function smokeSelectModelSettings() {
+        for (let index = 0; index < fields.length; ++index) {
+            if (fields[index].key === "modelSettings") {
+                selectedFieldIndex = index
+                operation = "set"
+                resetModelSettingsEditor()
+                bulkModelSettingsEditor.setSmokeValues(
+                    "longJewelCase", false, 0.143,
+                    "#ff123456", "#ffabcdef", [5, 7, 1])
+                page = 1
+                return editorIsValid()
+            }
+        }
+        return false
+    }
+
+    function smokeConfirmModelSettings() {
+        if (editor !== "modelSettings" || !editorIsValid())
             return false
         page = 3
         return true
@@ -533,6 +581,8 @@ Dialog {
                                        && root.emulators.length > 0) {
                                 emulatorSelector.currentIndex = 0
                                 root.textValue = root.emulators[0].id
+                            } else if (root.editor === "modelSettings") {
+                                root.resetModelSettingsEditor()
                             }
                         }
                     }
@@ -556,6 +606,7 @@ Dialog {
                         visible: root.editor !== "boolean"
                                  && root.editor !== "rating"
                                  && root.editor !== "controllerSupport"
+                                 && root.editor !== "modelSettings"
                                  && root.editor !== "platform"
                         text: "Operation"
                         color: "#c7d2dc"
@@ -567,6 +618,7 @@ Dialog {
                         visible: root.editor !== "boolean"
                                  && root.editor !== "rating"
                                  && root.editor !== "controllerSupport"
+                                 && root.editor !== "modelSettings"
                                  && root.editor !== "platform"
                         Layout.fillWidth: true
                         model: root.operationModel()
@@ -578,6 +630,7 @@ Dialog {
                     Label {
                         visible: root.operation !== "clear"
                                  && root.editor !== "controllerSupport"
+                                 && root.editor !== "modelSettings"
                         text: root.editor === "boolean" ? "Value"
                               : root.editor === "rating" ? "Rating"
                               : root.editor === "lexicalPath"
@@ -641,6 +694,7 @@ Dialog {
                                  && root.editor !== "multilineText"
                                  && root.editor !== "emulator"
                                  && root.editor !== "controllerSupport"
+                                 && root.editor !== "modelSettings"
                                  && root.editor !== "platform"
                         Layout.fillWidth: true
                         placeholderText:
@@ -776,6 +830,23 @@ Dialog {
                         }
                     }
 
+                    ScrollView {
+                        id: bulkModelSettingsScroll
+                        visible: root.editor === "modelSettings"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        contentWidth: availableWidth
+                        clip: true
+
+                        ModelSettingsEditor {
+                            id: bulkModelSettingsEditor
+                            objectName: "bulkEditModelSettings"
+                            width: bulkModelSettingsScroll.availableWidth
+                            scopeLabel: "selected games"
+                            overrideLabel: "Override Default Model Settings"
+                        }
+                    }
+
                     Label {
                         Layout.fillWidth: true
                         visible: root.editor === "lexicalPath"
@@ -786,7 +857,10 @@ Dialog {
                         wrapMode: Text.WordWrap
                     }
 
-                    Item { Layout.fillHeight: true }
+                    Item {
+                        visible: root.editor !== "modelSettings"
+                        Layout.fillHeight: true
+                    }
                 }
 
                 ColumnLayout {

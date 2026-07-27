@@ -2654,6 +2654,7 @@ bulk_edit_platform="$bulk_edit_root/Data/Platforms/Fixture Console.xml"
 bulk_edit_before="$bulk_edit_root/Fixture Console.before-bulk-edit.xml"
 bulk_edit_screenshot="$bulk_edit_root/bulk-edit-confirmation.png"
 bulk_edit_platform_screenshot="$bulk_edit_root/bulk-edit-platform-media.png"
+bulk_edit_model_screenshot="$bulk_edit_root/bulk-edit-model-settings.png"
 cp "$bulk_edit_platform" "$bulk_edit_before"
 bulk_edit_output=$(
   run_rendered_smoke "$binary_dir/launchbox" \
@@ -2661,6 +2662,7 @@ bulk_edit_output=$(
     --bulk-edit-smoke-test \
     --bulk-edit-screenshot "$bulk_edit_screenshot" \
     --bulk-edit-platform-screenshot "$bulk_edit_platform_screenshot" \
+    --bulk-edit-model-screenshot "$bulk_edit_model_screenshot" \
     --path-mappings-file "$empty_path_mappings" 2>&1
 ) || {
   printf '%s\n' "$bulk_edit_output" >&2
@@ -2668,9 +2670,20 @@ bulk_edit_output=$(
 }
 if ! rg -q \
   'BULK_EDIT_SMOKE_COMPLETE games=2 field=controllerSupport value="fixture-controller" transaction=1' \
+  <<< "$bulk_edit_output" \
+  || ! rg -q \
+  'BULK_EDIT_SMOKE_COMPLETE games=2 field=modelSettings value="longJewelCase" transaction=1' \
   <<< "$bulk_edit_output"; then
   printf '%s\n' "$bulk_edit_output" >&2
   echo "LaunchBox did not complete the native bulk-edit workflow." >&2
+  exit 1
+fi
+if [[ ! -s "$bulk_edit_model_screenshot" ]] \
+  || [[ $(wc -c < "$bulk_edit_model_screenshot") -lt 1024 ]] \
+  || [[ $(od -An -tx1 -N8 "$bulk_edit_model_screenshot" \
+      | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+  printf '%s\n' "$bulk_edit_output" >&2
+  echo "LaunchBox did not render a valid bulk 3D model-settings editor PNG." >&2
   exit 1
 fi
 if [[ ! -s "$bulk_edit_screenshot" ]] \
@@ -2694,6 +2707,14 @@ if [[ $(rg -c '<ControllerId>fixture-controller</ControllerId>' \
   || [[ $(rg -c '<SupportLevel>3</SupportLevel>' \
       "$bulk_edit_platform") -ne 2 ]] \
   || rg -q '<SupportLevel>2</SupportLevel>' "$bulk_edit_platform" \
+  || [[ $(rg -c '^  <ModelSettings>$' "$bulk_edit_platform") -ne 2 ]] \
+  || [[ $(rg -c '<ModelType>longJewelCase</ModelType>' \
+      "$bulk_edit_platform") -ne 2 ]] \
+  || [[ $(rg -c '<ModelSizeString>5;7;1</ModelSizeString>' \
+      "$bulk_edit_platform") -ne 2 ]] \
+  || ! rg -q \
+    '<FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>' \
+    "$bulk_edit_platform" \
   || ! rg -q \
     '<TestOnlyUnknownGameElement>keep-this-too</TestOnlyUnknownGameElement>' \
     "$bulk_edit_platform" \
@@ -2708,16 +2729,33 @@ mapfile -t bulk_edit_backups < <(
   find "$bulk_edit_root/Data/Platforms" -maxdepth 1 -type f \
     -name 'Fixture Console.xml.lbport-transaction-backup-*' -print
 )
-if [[ ${#bulk_edit_backups[@]} -ne 1 ]] \
-  || ! cmp -s "$bulk_edit_before" "${bulk_edit_backups[0]}" \
+if [[ ${#bulk_edit_backups[@]} -ne 2 ]]; then
+  printf '%s\n' "$bulk_edit_output" >&2
+  echo "Bulk edit did not retain exactly two transaction backups." >&2
+  exit 1
+fi
+bulk_edit_original_backups=0
+bulk_edit_controller_backups=0
+for backup in "${bulk_edit_backups[@]}"; do
+  if cmp -s "$bulk_edit_before" "$backup"; then
+    ((bulk_edit_original_backups += 1))
+  elif [[ $(rg -c '<ControllerId>fixture-controller</ControllerId>' \
+            "$backup") -eq 2 ]] \
+    && [[ $(rg -c '<SupportLevel>3</SupportLevel>' "$backup") -eq 2 ]] \
+    && [[ $(rg -c '^  <ModelSettings>$' "$backup") -eq 1 ]]; then
+    ((bulk_edit_controller_backups += 1))
+  fi
+done
+if [[ $bulk_edit_original_backups -ne 1 \
+  || $bulk_edit_controller_backups -ne 1 ]] \
   || find "$bulk_edit_root" -type f \
     -name '.lbport-transaction-*.json' -print -quit | rg -q .; then
   printf '%s\n' "$bulk_edit_output" >&2
-  echo "Bulk edit did not leave one exact recovery copy and a clean transaction state." >&2
+  echo "Bulk edit did not leave the expected exact recovery chain and a clean transaction state." >&2
   exit 1
 fi
 
-echo "LaunchBox native bulk edit validated stable selected IDs, the conditional platform media-migration page, the recovered Controller Support add/update surface and exact Required level, one recoverable transaction, unknown XML/path preservation, and an exact backup."
+echo "LaunchBox native bulk edit validated stable selected IDs, the conditional platform media-migration page, the recovered Controller Support and complete 3D Model Settings surfaces, two recoverable transactions, live resolved inheritance state, unknown XML/path preservation, and exact backups."
 
 cp -a fixtures/launchbox/. "$launchbox_order_root/"
 cp -a fixtures/launchbox/. "$bigbox_order_root/"

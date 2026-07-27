@@ -1,12 +1,13 @@
 use lb_domain::{
     is_unassigned_emulator_id, mutate_multi_value_text, AdditionalApplication,
     AdditionalApplicationEdit, AlternateName, ArgbColor, BulkControllerSupportEdit, BulkGameEdit,
-    BulkGameEditOperation, BulkGameField, CatalogValidationError, CustomField, Emulator,
-    EmulatorConfiguration, EmulatorPlatform, Game, GameController, GameControllerSupport,
-    GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit, InputBinding,
-    ModelSettings, ModelSettingsError, ModelSize, ModelType, Mount, NavigationMetadata,
-    ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition, PlatformFolder,
-    PlatformLibrary, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame, ValidationError,
+    BulkGameEditOperation, BulkGameField, BulkModelSettingsEdit, CatalogValidationError,
+    CustomField, Emulator, EmulatorConfiguration, EmulatorPlatform, Game, GameController,
+    GameControllerSupport, GameLaunchConfiguration, GameMetadata, GameSave, GameSaveMetadataEdit,
+    InputBinding, ModelSettings, ModelSettingsError, ModelSize, ModelType, Mount,
+    NavigationMetadata, ParentRelationship, PlatformCatalog, PlatformCategory, PlatformDefinition,
+    PlatformFolder, PlatformLibrary, Playlist, PlaylistDocument, PlaylistFilter, PlaylistGame,
+    ValidationError,
 };
 #[cfg(test)]
 use lb_domain::{
@@ -4487,6 +4488,39 @@ impl PlatformDocument {
         self.set_game_controller_support(&exact_game_id, replacement)
     }
 
+    /// Applies the recovered bulk 3D-model-settings operation to one game.
+    ///
+    /// The bulk template is identity-free. This method assigns the exact
+    /// retained game ID before flowing through `set_game_model_settings`, so
+    /// unknown children on an existing record survive. `None` removes only
+    /// that game's complete override and restores ordinary inheritance.
+    pub fn apply_bulk_game_model_settings_edit(
+        &mut self,
+        game_id: &str,
+        edit: &BulkModelSettingsEdit,
+    ) -> Result<Option<ModelSettings>, StorageError> {
+        edit.validate()
+            .map_err(|error| StorageError::InvalidGameRecordEdit {
+                record: "3D model settings",
+                game_id: game_id.to_string(),
+                reason: error.to_string(),
+            })?;
+        let exact_game_id = self
+            .library
+            .games
+            .iter()
+            .find(|game| game.id.eq_ignore_ascii_case(game_id))
+            .map(|game| game.id.clone())
+            .ok_or_else(|| StorageError::GameNotFound {
+                id: game_id.to_string(),
+            })?;
+        let settings = edit.settings.clone().map(|mut settings| {
+            settings.game_id = Some(exact_game_id.clone());
+            settings
+        });
+        self.set_game_model_settings(&exact_game_id, settings)
+    }
+
     pub fn add_game(&mut self, new_game: NewGame) -> Result<Game, StorageError> {
         if new_game.application_path.trim().is_empty() {
             return Err(StorageError::EmptyGameApplicationPath { id: new_game.id });
@@ -6215,6 +6249,14 @@ impl PlatformDocument {
                     reason:
                         "controller support changes require the typed related-record bulk operation"
                             .into(),
+                });
+            }
+            BulkGameField::ModelSettings => {
+                return Err(StorageError::InvalidGameRecordEdit {
+                    record: "Game",
+                    game_id: id.to_string(),
+                    reason: "3D model settings require the typed whole-record bulk operation"
+                        .into(),
                 });
             }
             field => {
@@ -10667,6 +10709,71 @@ mod tests {
             .expect("adventure support row");
         assert!(!adventure_row.contains("<SupportLevel>"));
         assert!(xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
+    }
+
+    #[test]
+    fn bulk_model_settings_insert_update_and_remove_whole_overrides_losslessly() {
+        let mut document =
+            PlatformDocument::from_reader("Fixture Console.xml", FIXTURE.as_bytes()).unwrap();
+        let edit = BulkModelSettingsEdit {
+            settings: Some(ModelSettings::long_jewel_case_defaults()),
+        };
+
+        let adventure = document
+            .apply_bulk_game_model_settings_edit("fixture-adventure", &edit)
+            .expect("update existing game model settings")
+            .expect("updated override");
+        assert_eq!(adventure.game_id.as_deref(), Some("fixture-adventure"));
+        assert_eq!(
+            adventure.model_type.as_ref().map(ModelType::key),
+            Some("longJewelCase")
+        );
+
+        let racer = document
+            .apply_bulk_game_model_settings_edit("FIXTURE-RACER", &edit)
+            .expect("insert missing game model settings")
+            .expect("inserted override");
+        assert_eq!(racer.game_id.as_deref(), Some("fixture-racer"));
+
+        let updated_xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert_eq!(updated_xml.matches("<ModelSettings>").count(), 2);
+        assert_eq!(
+            updated_xml
+                .matches("<ModelType>longJewelCase</ModelType>")
+                .count(),
+            2
+        );
+        assert!(updated_xml.contains(
+            "<FutureModelSettingsElement>preserve-model-data</FutureModelSettingsElement>"
+        ));
+        assert!(updated_xml.contains("<GameId>fixture-adventure</GameId>"));
+        assert!(updated_xml.contains("<GameId>fixture-racer</GameId>"));
+
+        let before_invalid = document.to_xml_bytes().unwrap();
+        let mut identified = ModelSettings::box_defaults();
+        identified.game_id = Some("wrong-owner".into());
+        assert!(document
+            .apply_bulk_game_model_settings_edit(
+                "fixture-racer",
+                &BulkModelSettingsEdit {
+                    settings: Some(identified),
+                },
+            )
+            .is_err());
+        assert_eq!(document.to_xml_bytes().unwrap(), before_invalid);
+
+        let inherit = BulkModelSettingsEdit { settings: None };
+        assert!(document
+            .apply_bulk_game_model_settings_edit("fixture-adventure", &inherit)
+            .expect("remove adventure override")
+            .is_some());
+        assert!(document
+            .apply_bulk_game_model_settings_edit("fixture-racer", &inherit)
+            .expect("remove racer override")
+            .is_some());
+        let removed_xml = String::from_utf8(document.to_xml_bytes().unwrap()).unwrap();
+        assert!(!removed_xml.contains("<ModelSettings>"));
+        assert!(removed_xml.contains("<FutureRootElement>preserve-me</FutureRootElement>"));
     }
 
     fn grouped_game_save_fixture() -> String {
