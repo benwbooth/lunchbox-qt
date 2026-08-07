@@ -20,22 +20,24 @@ Run the census after the local oracle and decompiled tree are present:
 scripts/check_recovered_csharp.sh
 ```
 
-The command is expected to fail today. The current static extraction has no
-usable implementations for many protected methods. In the 2026-08-07 census,
-the project reached the C# compiler but reported 766 errors:
+The project now reaches a clean C# build under the .NET 9 Linux SDK. The
+2026-08-07 build reports 0 errors and 929 warnings after the compiler-shape
+repairs described below.
 
-- 616 calls to anti-tamper callback members that are absent from the emitted
-  delegate types;
-- 92 `out` parameters left unset by methods whose stored IL decompiles to an
-  empty body;
-- 52 invalid reconstructions in `DetailedFormatter` (including missing locals,
-  invalid `RuntimeFieldHandle` expressions, and fields called as methods);
-- additional generic-null, fixed-pointer, and overload errors.
+The repairs are intentionally bounded:
 
-Assigning defaults or adding no-op callback methods would make the project
-appear to compile while deleting behavior. That is deliberately not done.
-The next implementation step is to recover post-protection IL at the CLR JIT
-boundary, place those bodies in a provenance-labelled source tree, and only
-then adapt the recovered managed services to a Qt bridge. The existing
-`LaunchBox.QtPort` project remains a separate Qt/QML proof of concept; it is
-not a claim that this recovered source already runs.
+- delegate fields in `DetailedFormatter` use the delegate types shown by the
+  IL rather than `object`;
+- the five `PrivateImplementationDetails` blobs used by
+  `GuideVisitorSystem` are copied from their oracle PE RVAs and recorded in
+  `RecoveredProtectionGuards.cs`;
+- generated-regex, static-class, accessibility, and fixed-buffer artifacts are
+  normalized by `compatibility-shape.patch`;
+- methods whose stored IL is empty still throw a named
+  `MissingMethodException`, and anti-tamper callback sites use the same
+  explicit guard. They do not return fabricated values.
+
+This is a compile boundary, not a claim of runtime feature parity. Any path
+that reaches a protected method fails explicitly until post-protection IL is
+recovered at the CLR JIT boundary. The existing `LaunchBox.QtPort` project
+remains a separate Qt/QML proof of concept.

@@ -9,12 +9,16 @@ trap 'rm -f "$log"' EXIT
 "$root/scripts/normalize_recovered_csharp.sh"
 
 set +e
-nix shell nixpkgs#dotnet-sdk_9 --command dotnet build "$project" -v:minimal >"$log" 2>&1
+nix shell nixpkgs#dotnet-sdk_9 --command dotnet build "$project" -t:Rebuild -v:minimal >"$log" 2>&1
 status=$?
 set -e
 
 printf '%s\n' 'Recovered C# compiler census:'
+error_count=$(rg '^/.*\([0-9]+,[0-9]+\): error ' "$log" | sort -u | wc -l || true)
+warning_count=$(rg '^/.*\([0-9]+,[0-9]+\): warning ' "$log" | sort -u | wc -l || true)
+printf 'errors=%s warnings=%s\n' "$error_count" "$warning_count"
 rg '^/.*\([0-9]+,[0-9]+\): error ' "$log" \
+  | sort -u \
   | sed -E 's/.*: error ([A-Z0-9]+):.*/\1/' \
   | sort | uniq -c | sort -nr || true
 

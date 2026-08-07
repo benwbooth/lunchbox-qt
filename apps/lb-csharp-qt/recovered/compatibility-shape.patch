@@ -1,3 +1,183 @@
+--- a/decompiled/Unbroken.LaunchBox/--z__ReadOnlySingleElementList.cs	2026-08-07 09:27:08.286300986 -0700
++++ b/decompiled/Unbroken.LaunchBox/--z__ReadOnlySingleElementList.cs	2026-08-07 10:35:32.382391871 -0700
+@@ -81,7 +81,7 @@
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		get
+ 		{
+-			return (T)null;
++			return default(T);
+ 		}
+ 	}
+ 
+@@ -108,7 +108,7 @@
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		get
+ 		{
+-			return (T)null;
++			return default(T);
+ 		}
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		set
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/Formatting/DetailedFormatter.cs	2026-08-07 09:27:10.872380552 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/Formatting/DetailedFormatter.cs	2026-08-07 10:38:16.734534444 -0700
+@@ -165,19 +165,19 @@
+ 
+ 	private static bool m_IsFormatterStack;
+ 
+-	private static object formatterStruct;
++	private static ObserverObject formatterStruct;
+ 
+-	private static object _ConcreteFormatter;
++	private static TracerQueue _ConcreteFormatter;
+ 
+-	internal static object _PassiveTracker;
++	internal static InterruptibleAllocator _PassiveTracker;
+ 
+ 	private static object _DictionaryState;
+ 
+-	private static object _EmitterInspector;
++	private static CombinedCalc _EmitterInspector;
+ 
+-	internal static object _InterruptibleProc;
++	internal static InterruptibleAllocator _InterruptibleProc;
+ 
+-	private static object commonObserver;
++	private static MixedService commonObserver;
+ 
+ 	private static object formatterTransactionObj;
+ 
+@@ -187,15 +187,15 @@
+ 
+ 	private static bool m_IsSenderFormatter;
+ 
+-	private static object m_CentralFormatter;
++	private static ConfigurableTemplate m_CentralFormatter;
+ 
+-	internal static object _SpecFormatter;
++	internal static ConfigurableTemplate _SpecFormatter;
+ 
+ 	private static int configurableFormatterAge;
+ 
+ 	private static object m_StatelessOrderItems;
+ 
+-	private static object m_FormatterGateway;
++	private static CollectionProfile m_FormatterGateway;
+ 
+ 	private static object m_AdaptableFormatters;
+ 
+@@ -215,11 +215,11 @@
+ 
+ 	private static object _ExternalFormatter;
+ 
+-	private static object _MemberEncryptor;
++	private static CreatorListener _MemberEncryptor;
+ 
+ 	private static nint scalableFormatterPtr;
+ 
+-	internal static object _FormatterAuditor;
++	internal static ConfigurableTemplate _FormatterAuditor;
+ 
+ 	private static nint m_FormatterNodePtr;
+ 
+@@ -241,7 +241,7 @@
+ 
+ 	private static Dictionary<int, int> transformableAnnotationDic;
+ 
+-	private static object m_FormatterRunner;
++	private static InterruptibleAllocator m_FormatterRunner;
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	static DetailedFormatter()
+@@ -2772,6 +2772,7 @@
+ 		nint num23 = default(nint);
+ 		int num28 = default(int);
+ 		byte[] array15 = default(byte[]);
++		byte[] array22 = default(byte[]);
+ 		int num8 = default(int);
+ 		int num47 = default(int);
+ 		uint num72 = default(uint);
+@@ -4703,7 +4704,7 @@
+ 					case 841:
+ 					{
+ 						byte[] array29 = new byte[28];
+-						ConvertResponderMember(array29, (RuntimeFieldHandle)/*OpCode not supported: LdMemberToken*/);
++						RecoveredStaticData.Initialize(array29, RecoveredStaticData.Bytes28);
+ 						list = new List<byte>(array29);
+ 						num3 = 181;
+ 						continue;
+@@ -5179,7 +5180,8 @@
+ 									try
+ 									{
+ 										byte[] array28 = array27;
+-										fixed (byte[] array22 = array28)
++										array22 = array28;
++										fixed (byte* array22Ptr = array28)
+ 										{
+ 											int num89;
+ 											if (array28 == null)
+@@ -5251,7 +5253,7 @@
+ 													continue;
+ 												case 0:
+ 												case 3:
+-													value3 = (byte*)Unsafe.AsPointer(ref array22[0]);
++														value3 = array22Ptr;
+ 													num89 = 7;
+ 													if (TransformInterruptibleMapTransaction() != null)
+ 													{
+@@ -5269,7 +5271,7 @@
+ 											}
+ 											goto end_IL_3c34;
+ 											IL_3d57:
+-											if (array22.Length != 0)
++												if (array28.Length != 0)
+ 											{
+ 												num89 = 8;
+ 												if (TransformInterruptibleMapTransaction() == null)
+@@ -6085,7 +6087,7 @@
+ 					case 603:
+ 					{
+ 						byte[] array25 = new byte[32];
+-						ConvertResponderMember(array25, (RuntimeFieldHandle)/*OpCode not supported: LdMemberToken*/);
++						RecoveredStaticData.Initialize(array25, RecoveredStaticData.Bytes32A);
+ 						list = new List<byte>(array25);
+ 						num3 = 357;
+ 						continue;
+@@ -6399,7 +6401,7 @@
+ 					case 272:
+ 					{
+ 						byte[] array24 = new byte[30];
+-						ConvertResponderMember(array24, (RuntimeFieldHandle)/*OpCode not supported: LdMemberToken*/);
++						RecoveredStaticData.Initialize(array24, RecoveredStaticData.Bytes30);
+ 						array17 = array24;
+ 						num3 = 672;
+ 						continue;
+@@ -7234,7 +7236,7 @@
+ 					case 470:
+ 					{
+ 						byte[] array18 = new byte[40];
+-						ConvertResponderMember(array18, (RuntimeFieldHandle)/*OpCode not supported: LdMemberToken*/);
++						RecoveredStaticData.Initialize(array18, RecoveredStaticData.Bytes40);
+ 						array17 = array18;
+ 						num3 = 273;
+ 						if (ConvertConfigurableCollectorSharer())
+@@ -7783,7 +7785,7 @@
+ 					case 710:
+ 					{
+ 						byte[] array26 = new byte[32];
+-						ConvertResponderMember(array26, (RuntimeFieldHandle)/*OpCode not supported: LdMemberToken*/);
++						RecoveredStaticData.Initialize(array26, RecoveredStaticData.Bytes32B);
+ 						List<byte> list2 = new List<byte>(array26);
+ 						byte[] collection4 = (byte[])ReflectViewerTracker(((IntPtr)m_FormatterNodePtr).ToInt64());
+ 						byte[] collection5 = (byte[])ReflectViewerTracker(((IntPtr)num37).ToInt64());
+@@ -8957,7 +8959,7 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	internal static nint ConvertCommonCollectorSharer(object P_0)
+ 	{
+-		return P_0();
++		return ((SequentialCreator)P_0)();
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Cloud/GamesDatabase.cs	2026-08-07 09:27:08.379303848 -0700
 +++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Cloud/GamesDatabase.cs	2026-08-07 09:18:42.715601914 -0700
 @@ -6,7 +6,7 @@
@@ -77,7 +257,7 @@
  		[MethodImpl(MethodImplOptions.NoInlining)]
  		static WatcherWriter()
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/Playstation/ParamSfoParser.cs	2026-08-07 09:27:08.396304371 -0700
-+++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/Playstation/ParamSfoParser.cs	2026-08-07 09:18:42.719602040 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/Playstation/ParamSfoParser.cs	2026-08-07 10:35:32.386391997 -0700
 @@ -8,7 +8,7 @@
  
  namespace Unbroken.LaunchBox.Integrations.Playstation;
@@ -87,8 +267,24 @@
  {
  	private sealed class ConfigurableCalculator
  	{
+@@ -650,13 +650,13 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static bool TryGetMetadata(string appPath, out string title, out string titleId)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(TryGetMetadata));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static bool TryGetMetadata(string appPath, out string title, out string titleId, out string region)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(TryGetMetadata));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/CdReader.cs	2026-08-07 09:27:08.360303263 -0700
-+++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/CdReader.cs	2026-08-07 09:18:42.719602040 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/CdReader.cs	2026-08-07 10:35:32.385391965 -0700
 @@ -3,7 +3,7 @@
  
  namespace Unbroken.LaunchBox.Integrations.RetroAchievements;
@@ -98,8 +294,24 @@
  {
  	public class CdTrack
  	{
+@@ -201,13 +201,13 @@
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		public int FindFileSector(string filename, out int sectorSize)
+ 		{
+-			return 0;
++			throw RecoveredProtectionGuards.Missing(nameof(FindFileSector));
+ 		}
+ 
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		public int FindPlaystationExecutable(string bootKey, string prefix, out string executableName, out int sectorSize)
+ 		{
+-			return 0;
++			throw RecoveredProtectionGuards.Missing(nameof(FindPlaystationExecutable));
+ 		}
+ 
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/Hasher.cs	2026-08-07 09:27:08.376303756 -0700
-+++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/Hasher.cs	2026-08-07 09:18:42.720602071 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/Hasher.cs	2026-08-07 10:35:32.387392028 -0700
 @@ -3,7 +3,7 @@
  
  namespace Unbroken.LaunchBox.Integrations.RetroAchievements;
@@ -109,8 +321,157 @@
  {
  	private enum CompletionStatus : byte
  	{
+@@ -33,127 +33,127 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool DisperseFlexibleDriverSolver(object instance, out string connection)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(DisperseFlexibleDriverSolver));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool DistributeHiddenTokenizerDecorator(object init, out string cfg)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(DistributeHiddenTokenizerDecorator));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool DisperseCombinedDistributorDecider(object def, out string token)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(DisperseCombinedDistributorDecider));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool SetupAnnotationOrder(object def, out string pol)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(SetupAnnotationOrder));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool DistributeEfficientDeciderDictionary(object item, out string connection)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(DistributeEfficientDeciderDictionary));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool ResetServerChecker(object param, out string caller)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(ResetServerChecker));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static bool HashFile(string consoleIdString, string filePath, out string output)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(HashFile));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static bool HashFileWithRaHasher(string launchboxRootPath, int consoleId, string filePath, out string output)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(HashFileWithRaHasher));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool DisperseAdjustableDictionaryTask(object init, out string cfg)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(DisperseAdjustableDictionaryTask));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool DistributeDetailedTagSender(object last, out string second)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(DistributeDetailedTagSender));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool DisperseConvertibleTaskSorter(object res, out string second)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(DisperseConvertibleTaskSorter));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool UpdateBufferStack(object ident, out string b)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(UpdateBufferStack));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool AllocateAdvancedSorterModule(object v, out string ivk)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(AllocateAdvancedSorterModule));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool AllocateDividedChainFilter(object item, out string result)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(AllocateDividedChainFilter));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool SortFieldResolver(object asset, out string visitor)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(SortFieldResolver));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool TrackResolverBuilder(object info, object b, out string pool)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(TrackResolverBuilder));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool AllocateSymbolicFormatterRole(object init, out string pred)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(AllocateSymbolicFormatterRole));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool DisperseMonoEventManager(object init, out string cfg)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(DisperseMonoEventManager));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool AllocateCommonRoleTransmitter(object init, out string vis)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(AllocateCommonRoleTransmitter));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool ManageExplorerEditor(object instance, out string second)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(ManageExplorerEditor));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool ConcatEditorTester(object value, out string pol)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(ConcatEditorTester));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/RetroAchievements.cs	2026-08-07 09:27:08.355303109 -0700
-+++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/RetroAchievements.cs	2026-08-07 09:19:31.748141362 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/RetroAchievements.cs	2026-08-07 10:35:32.382391871 -0700
 @@ -6,10 +6,11 @@
  using Unbroken.LaunchBox.Data;
  using Unbroken.LaunchBox.Plugins.Data;
@@ -124,8 +485,17 @@
  {
  	public enum AchievementHashFailureKind
  	{
+@@ -143,7 +144,7 @@
+ 		[CompilerGenerated]
+ 		public T IdleSeparatedExplorerTester()
+ 		{
+-			return (T)null;
++			return default(T);
+ 		}
+ 
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/NamingHelper.cs	2026-08-07 09:27:08.322302094 -0700
-+++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/NamingHelper.cs	2026-08-07 09:18:42.721602103 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/NamingHelper.cs	2026-08-07 10:35:32.383391902 -0700
 @@ -7,7 +7,7 @@
  
  namespace Unbroken.LaunchBox;
@@ -135,6 +505,15 @@
  {
  	private static ConcurrentDictionary<string, string> setChainDic;
  
+@@ -79,7 +79,7 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static int? ParseDiscNumberFromFileName(string path, out bool sideA, out bool sideB)
+ 	{
+-		return null;
++		throw RecoveredProtectionGuards.Missing(nameof(ParseDiscNumberFromFileName));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Rijndael.cs	2026-08-07 09:27:08.285300956 -0700
 +++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Rijndael.cs	2026-08-07 09:18:42.722602134 -0700
 @@ -4,7 +4,7 @@
@@ -147,7 +526,7 @@
  	internal static Rijndael ModifyVisibleGatewayRecommender;
  
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/EmuMovies/EmuMoviesWrapper.cs	2026-08-07 09:27:08.322302094 -0700
-+++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/EmuMovies/EmuMoviesWrapper.cs	2026-08-07 09:18:42.722602134 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/EmuMovies/EmuMoviesWrapper.cs	2026-08-07 10:35:32.384391934 -0700
 @@ -5,7 +5,7 @@
  
  namespace Unbroken.LaunchBox.Search.EmuMovies;
@@ -157,6 +536,52 @@
  {
  	public enum EmuMoviesError
  	{
+@@ -113,7 +113,7 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static IList<string> GetAllMediaTypes(string userId, string password, out EmuMoviesError error)
+ 	{
+-		return null;
++		throw RecoveredProtectionGuards.Missing(nameof(GetAllMediaTypes));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+@@ -125,31 +125,31 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static IList<EmuMoviesSearchResult> DistributeInternalConnectionAnalyzer(object def, object connection, object state, object init2, object setup3, object col4, out EmuMoviesError ivk5, out string attr6)
+ 	{
+-		return null;
++		throw RecoveredProtectionGuards.Missing(nameof(DistributeInternalConnectionAnalyzer));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static IList<EmuMoviesSearchResult> SearchBulk(string userId, string password, string platform, IList<EmuMoviesSearchValue> searchValues, IList<string> types, Func<bool> isCancelled, Action<string, string> reportIndeterminate, out EmuMoviesError error, out string errorDescription)
+ 	{
+-		return null;
++		throw RecoveredProtectionGuards.Missing(nameof(SearchBulk));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static List<EmuMoviesSearchResult> GetPlatformVideos(string userId, string password, string platform, out EmuMoviesError error, out string errorDescription)
+ 	{
+-		return null;
++		throw RecoveredProtectionGuards.Missing(nameof(GetPlatformVideos));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static IList<EmuMoviesSearchResult> Search(string userId, string password, string platform, string title, string applicationPath, string region, out EmuMoviesError error, string alternateTitle = null)
+ 	{
+-		return null;
++		throw RecoveredProtectionGuards.Missing(nameof(Search));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool AllocateConcreteFinderDic(object i, out IEnumerable<Platform> ivk)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(AllocateConcreteFinderDic));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/FbneoDb.cs	2026-08-07 09:27:08.323302125 -0700
 +++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/FbneoDb.cs	2026-08-07 09:20:27.897898614 -0700
 @@ -7,7 +7,7 @@
@@ -199,7 +624,7 @@
  	}
  
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/LocalDb.cs	2026-08-07 09:27:08.323302125 -0700
-+++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/LocalDb.cs	2026-08-07 09:18:42.724602197 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/LocalDb.cs	2026-08-07 10:35:32.384391934 -0700
 @@ -8,7 +8,7 @@
  
  namespace Unbroken.LaunchBox.Search;
@@ -209,6 +634,32 @@
  {
  	private static readonly string[] m_CalcWorkerItems;
  
+@@ -163,6 +163,7 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static void GetMameTitleAndVersion(string romFileNameNoExtension, out string title, out string version)
+ 	{
++		throw RecoveredProtectionGuards.Missing(nameof(GetMameTitleAndVersion));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+@@ -287,7 +288,7 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static Dictionary<string, List<string>> GetGameThemeVideosList(string graphingId, out string pass)
+ 	{
+-		return null;
++		throw RecoveredProtectionGuards.Missing(nameof(GetGameThemeVideosList));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+@@ -299,7 +300,7 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public static Dictionary<string, List<string>> GetPlatformVideos(string graphingId, out string pass)
+ 	{
+-		return null;
++		throw RecoveredProtectionGuards.Missing(nameof(GetPlatformVideos));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/LocalDbWrapper.cs	2026-08-07 09:27:08.342302709 -0700
 +++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/LocalDbWrapper.cs	2026-08-07 09:18:42.724602197 -0700
 @@ -5,7 +5,7 @@
@@ -220,8 +671,19 @@
  {
  	[CompilerGenerated]
  	private static Func<string, List<string>> distributorSchemaServices;
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/Models/DbGameImageCollection.cs	2026-08-07 09:27:08.290301110 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/Models/DbGameImageCollection.cs	2026-08-07 10:35:32.387392028 -0700
+@@ -28,7 +28,7 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	public bool TryGetImages(int databaseId, out List<LocalDbGameImage> images)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(TryGetImages));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/RomFile.cs	2026-08-07 09:27:08.371303602 -0700
-+++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/RomFile.cs	2026-08-07 09:20:27.896898583 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/RomFile.cs	2026-08-07 10:35:32.385391965 -0700
 @@ -7,9 +7,9 @@
  
  namespace Unbroken.LaunchBox.Search;
@@ -279,6 +741,15 @@
  
  		[MethodImpl(MethodImplOptions.NoInlining)]
  		static ExpandableMember()
+@@ -595,7 +583,7 @@
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	private static bool CombineConfigAggregator(object param, out SegmentedCalculator token)
+ 	{
+-		return true;
++		throw RecoveredProtectionGuards.Missing(nameof(CombineConfigAggregator));
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
 --- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/RomFiles.cs	2026-08-07 09:27:08.289301079 -0700
 +++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/RomFiles.cs	2026-08-07 09:18:42.724602197 -0700
 @@ -5,7 +5,7 @@

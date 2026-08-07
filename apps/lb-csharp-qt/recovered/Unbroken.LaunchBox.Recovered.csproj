@@ -20,7 +20,8 @@
 
   <ItemGroup>
     <Compile Include="../../../decompiled/Unbroken.LaunchBox/**/*.cs"
-             Exclude="../../../decompiled/Unbroken.LaunchBox/Properties/AssemblyInfo.cs;../../../decompiled/Unbroken.LaunchBox/**/obj/**/*.cs;../../../decompiled/Unbroken.LaunchBox/**/bin/**/*.cs" />
+             Exclude="../../../decompiled/Unbroken.LaunchBox/Properties/AssemblyInfo.cs;../../../decompiled/Unbroken.LaunchBox/TransformerBuilderVerifier.cs;../../../decompiled/Unbroken.LaunchBox/TransformerSynchronizerVisitor.cs;../../../decompiled/Unbroken.LaunchBox/EnumeratorPredictor.cs;../../../decompiled/Unbroken.LaunchBox/**/obj/**/*.cs;../../../decompiled/Unbroken.LaunchBox/**/bin/**/*.cs" />
+    <Compile Include="RecoveredProtectionGuards.cs" />
     <EmbeddedResource Include="../../../decompiled/Unbroken.LaunchBox/LogicalManagerTransformer.TransformerPublisherLogger" LogicalName="LogicalManagerTransformer.TransformerPublisherLogger" />
     <EmbeddedResource Include="../../../decompiled/Unbroken.LaunchBox/TransformerFieldProcessor.MatcherSystem" LogicalName="TransformerFieldProcessor.MatcherSystem" />
     <EmbeddedResource Include="../../../decompiled/Unbroken.LaunchBox/SetCompressorTransformer.TransformerRolePolicy" LogicalName="SetCompressorTransformer.TransformerRolePolicy" />
