@@ -1,0 +1,293 @@
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Cloud/GamesDatabase.cs	2026-08-07 09:27:08.379303848 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Cloud/GamesDatabase.cs	2026-08-07 09:18:42.715601914 -0700
+@@ -6,7 +6,7 @@
+ 
+ namespace Unbroken.LaunchBox.Cloud;
+ 
+-public static class GamesDatabase
++public class GamesDatabase
+ {
+ 	[DataContract]
+ 	private class ValidateTokenResult
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Data/FilterSortTypes.cs	2026-08-07 09:27:08.323302125 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Data/FilterSortTypes.cs	2026-08-07 09:18:42.716601946 -0700
+@@ -4,7 +4,7 @@
+ 
+ namespace Unbroken.LaunchBox.Data;
+ 
+-public static class FilterSortTypes
++public class FilterSortTypes
+ {
+ 	private static OrderedDictionary _ControllableGeneratorDistributorMap;
+ 
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Data/SortTypes.cs	2026-08-07 09:27:08.332302402 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Data/SortTypes.cs	2026-08-07 09:18:42.716601946 -0700
+@@ -4,7 +4,7 @@
+ 
+ namespace Unbroken.LaunchBox.Data;
+ 
+-public static class SortTypes
++public class SortTypes
+ {
+ 	private static OrderedDictionary creatorSorterMap;
+ 
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Factories/ScheduledCreator.cs	2026-08-07 09:27:08.329302310 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Factories/ScheduledCreator.cs	2026-08-07 09:19:31.747141330 -0700
+@@ -35,7 +35,7 @@
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+-	internal static ScheduledCreator ModifyGeneralFinderDic()
++	internal static object ModifyGeneralFinderDic()
+ 	{
+ 		return null;
+ 	}
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Handling/ConnectionExtractor.cs	2026-08-07 09:27:08.342302709 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Handling/ConnectionExtractor.cs	2026-08-07 09:19:31.747141330 -0700
+@@ -178,7 +178,7 @@
+ 	}
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+-	internal static ConnectionExtractor CompressServiceDefinition()
++	internal static object CompressServiceDefinition()
+ 	{
+ 		return null;
+ 	}
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/Nintendo/WiiUHelper.cs	2026-08-07 09:27:08.315301879 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/Nintendo/WiiUHelper.cs	2026-08-07 09:20:27.896898583 -0700
+@@ -5,17 +5,13 @@
+ 
+ namespace Unbroken.LaunchBox.Integrations.Nintendo;
+ 
+-public static class WiiUHelper
++public partial class WiiUHelper
+ {
+-	private static class WatcherWriter
++	private static partial class WatcherWriter
+ 	{
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		[GeneratedRegex("^\\<title_id[^\\>]*\\>(?<id>[^\\<]+)\\<\\/title_id\\>$")]
+-		[GeneratedCode("System.Text.RegularExpressions.Generator", "9.0.14.22923")]
+-		public static Regex CalculateDynamicComparatorSchema()
+-		{
+-			return null;
+-		}
++		public static partial Regex CalculateDynamicComparatorSchema();
+ 
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		static WatcherWriter()
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/Playstation/ParamSfoParser.cs	2026-08-07 09:27:08.396304371 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/Playstation/ParamSfoParser.cs	2026-08-07 09:18:42.719602040 -0700
+@@ -8,7 +8,7 @@
+ 
+ namespace Unbroken.LaunchBox.Integrations.Playstation;
+ 
+-public static class ParamSfoParser
++public class ParamSfoParser
+ {
+ 	private sealed class ConfigurableCalculator
+ 	{
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/CdReader.cs	2026-08-07 09:27:08.360303263 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/CdReader.cs	2026-08-07 09:18:42.719602040 -0700
+@@ -3,7 +3,7 @@
+ 
+ namespace Unbroken.LaunchBox.Integrations.RetroAchievements;
+ 
+-public static class CdReader
++public class CdReader
+ {
+ 	public class CdTrack
+ 	{
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/Hasher.cs	2026-08-07 09:27:08.376303756 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/Hasher.cs	2026-08-07 09:18:42.720602071 -0700
+@@ -3,7 +3,7 @@
+ 
+ namespace Unbroken.LaunchBox.Integrations.RetroAchievements;
+ 
+-public static class Hasher
++public class Hasher
+ {
+ 	private enum CompletionStatus : byte
+ 	{
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/RetroAchievements.cs	2026-08-07 09:27:08.355303109 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Integrations/RetroAchievements/RetroAchievements.cs	2026-08-07 09:19:31.748141362 -0700
+@@ -6,10 +6,11 @@
+ using Unbroken.LaunchBox.Data;
+ using Unbroken.LaunchBox.Plugins.Data;
+ using Unbroken.LaunchBox.Plugins.RetroAchievements;
++using Console = Unbroken.LaunchBox.Plugins.RetroAchievements.Console;
+ 
+ namespace Unbroken.LaunchBox.Integrations.RetroAchievements;
+ 
+-public static class RetroAchievements
++public class RetroAchievements
+ {
+ 	public enum AchievementHashFailureKind
+ 	{
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/NamingHelper.cs	2026-08-07 09:27:08.322302094 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/NamingHelper.cs	2026-08-07 09:18:42.721602103 -0700
+@@ -7,7 +7,7 @@
+ 
+ namespace Unbroken.LaunchBox;
+ 
+-public static class NamingHelper
++public class NamingHelper
+ {
+ 	private static ConcurrentDictionary<string, string> setChainDic;
+ 
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Rijndael.cs	2026-08-07 09:27:08.285300956 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Rijndael.cs	2026-08-07 09:18:42.722602134 -0700
+@@ -4,7 +4,7 @@
+ 
+ namespace Unbroken.LaunchBox;
+ 
+-public static class Rijndael
++public class Rijndael
+ {
+ 	internal static Rijndael ModifyVisibleGatewayRecommender;
+ 
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/EmuMovies/EmuMoviesWrapper.cs	2026-08-07 09:27:08.322302094 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/EmuMovies/EmuMoviesWrapper.cs	2026-08-07 09:18:42.722602134 -0700
+@@ -5,7 +5,7 @@
+ 
+ namespace Unbroken.LaunchBox.Search.EmuMovies;
+ 
+-public static class EmuMoviesWrapper
++public class EmuMoviesWrapper
+ {
+ 	public enum EmuMoviesError
+ 	{
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/FbneoDb.cs	2026-08-07 09:27:08.323302125 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/FbneoDb.cs	2026-08-07 09:20:27.897898614 -0700
+@@ -7,7 +7,7 @@
+ 
+ namespace Unbroken.LaunchBox.Search;
+ 
+-public static class FbneoDb
++public class FbneoDb
+ {
+ 	private sealed class FormatterRequest
+ 	{
+@@ -283,7 +283,7 @@
+ 
+ 	}
+ 
+-	private sealed class CombinedReporterDistributor
++	internal sealed class CombinedReporterDistributor
+ 	{
+ 		[CompilerGenerated]
+ 		private readonly string m_CustomizableUserDistributorStr;
+@@ -333,9 +333,9 @@
+ 
+ 	[StructLayout(LayoutKind.Auto)]
+ 	[CompilerGenerated]
+-	private struct _003C_003Ec__DisplayClass30_0
++	internal struct _003C_003Ec__DisplayClass30_0
+ 	{
+-		public List<CombinedReporterDistributor> _LiteralWrapperList;
++		private List<CombinedReporterDistributor> _LiteralWrapperList;
+ 	}
+ 
+ 	private static readonly string[] _StaticRequesterData;
+@@ -587,7 +587,7 @@
+ 
+ 	[MethodImpl(MethodImplOptions.NoInlining)]
+ 	[CompilerGenerated]
+-	internal static void DisperseTransferableClientAllocator(object last, params string[] tokens, ref _003C_003Ec__DisplayClass30_0 comp)
++	internal static void DisperseTransferableClientAllocator(object last, string[] tokens, ref _003C_003Ec__DisplayClass30_0 comp)
+ 	{
+ 	}
+ 
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/LocalDb.cs	2026-08-07 09:27:08.323302125 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/LocalDb.cs	2026-08-07 09:18:42.724602197 -0700
+@@ -8,7 +8,7 @@
+ 
+ namespace Unbroken.LaunchBox.Search;
+ 
+-public static class LocalDb
++public class LocalDb
+ {
+ 	private static readonly string[] m_CalcWorkerItems;
+ 
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/LocalDbWrapper.cs	2026-08-07 09:27:08.342302709 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/LocalDbWrapper.cs	2026-08-07 09:18:42.724602197 -0700
+@@ -5,7 +5,7 @@
+ 
+ namespace Unbroken.LaunchBox.Search;
+ 
+-public static class LocalDbWrapper
++public class LocalDbWrapper
+ {
+ 	[CompilerGenerated]
+ 	private static Func<string, List<string>> distributorSchemaServices;
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/RomFile.cs	2026-08-07 09:27:08.371303602 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/RomFile.cs	2026-08-07 09:20:27.896898583 -0700
+@@ -7,9 +7,9 @@
+ 
+ namespace Unbroken.LaunchBox.Search;
+ 
+-public class RomFile
++public partial class RomFile
+ {
+-	private readonly struct MemberValidator
++	internal readonly struct MemberValidator
+ 	{
+ 		[CompilerGenerated]
+ 		private readonly RomFile m_ScalableWrapper;
+@@ -185,7 +185,7 @@
+ 		}
+ 	}
+ 
+-	private struct SegmentedCalculator
++	internal struct SegmentedCalculator
+ 	{
+ 		[CompilerGenerated]
+ 		private int sorterClientFlag;
+@@ -293,31 +293,19 @@
+ 		}
+ 	}
+ 
+-	private static class ExpandableMember
++	private static partial class ExpandableMember
+ 	{
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		[GeneratedRegex("(?:(?:^|[\\s\\(\\[\\-\\.])(rev(?:ision)?|ver(?:sion)?|v))(?![A-Za-z])\\s*[._-]?\\s*(?<value>[A-Za-z0-9]+(?:\\.[A-Za-z0-9]+)*)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+-		[GeneratedCode("System.Text.RegularExpressions.Generator", "9.0.14.22923")]
+-		public static Regex CountAggregatorEngine()
+-		{
+-			return null;
+-		}
++		public static partial Regex CountAggregatorEngine();
+ 
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		[GeneratedRegex(" & .*Disk[\\s\\d]*$")]
+-		[GeneratedCode("System.Text.RegularExpressions.Generator", "9.0.14.22923")]
+-		public static Regex CombineEngineReg()
+-		{
+-			return null;
+-		}
++		public static partial Regex CombineEngineReg();
+ 
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		[GeneratedRegex("_v(?<version>\\d+\\.\\d+)")]
+-		[GeneratedCode("System.Text.RegularExpressions.Generator", "9.0.14.22923")]
+-		public static Regex AccessFilteredRunnerCollection()
+-		{
+-			return null;
+-		}
++		public static partial Regex AccessFilteredRunnerCollection();
+ 
+ 		[MethodImpl(MethodImplOptions.NoInlining)]
+ 		static ExpandableMember()
+--- a/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/RomFiles.cs	2026-08-07 09:27:08.289301079 -0700
++++ b/decompiled/Unbroken.LaunchBox/Unbroken/LaunchBox/Search/RomFiles.cs	2026-08-07 09:18:42.724602197 -0700
+@@ -5,7 +5,7 @@
+ 
+ namespace Unbroken.LaunchBox.Search;
+ 
+-public static class RomFiles
++public class RomFiles
+ {
+ 	private static Thread _DistributorSynchronizerTag;
+ 
+

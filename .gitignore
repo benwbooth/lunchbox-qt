@@ -26,3 +26,5 @@ target/
 # Generated .NET output and Qt Bridge native build tree.
 /apps/lb-csharp-qt/bin/
 /apps/lb-csharp-qt/obj/
+/apps/lb-csharp-qt/recovered/bin/
+/apps/lb-csharp-qt/recovered/obj/

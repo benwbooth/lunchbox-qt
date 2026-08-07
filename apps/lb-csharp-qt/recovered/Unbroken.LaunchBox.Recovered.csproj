@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    This project compiles the recovered C# sources themselves. The original
+    decompiler-generated project targets netcoreapp9.0 and references the
+    Windows runtime, so it cannot be built by the Linux .NET 8 SDK as emitted.
+    This compatibility project changes only the target/runtime plumbing; the
+    source glob intentionally points at the decompiled tree.
+  -->
+  <PropertyGroup>
+    <AssemblyName>Recovered.Unbroken.LaunchBox</AssemblyName>
+    <RootNamespace />
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <TargetFramework>net9.0</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../../decompiled/Unbroken.LaunchBox/**/*.cs"
+             Exclude="../../../decompiled/Unbroken.LaunchBox/Properties/AssemblyInfo.cs;../../../decompiled/Unbroken.LaunchBox/**/obj/**/*.cs;../../../decompiled/Unbroken.LaunchBox/**/bin/**/*.cs" />
+    <EmbeddedResource Include="../../../decompiled/Unbroken.LaunchBox/LogicalManagerTransformer.TransformerPublisherLogger" LogicalName="LogicalManagerTransformer.TransformerPublisherLogger" />
+    <EmbeddedResource Include="../../../decompiled/Unbroken.LaunchBox/TransformerFieldProcessor.MatcherSystem" LogicalName="TransformerFieldProcessor.MatcherSystem" />
+    <EmbeddedResource Include="../../../decompiled/Unbroken.LaunchBox/SetCompressorTransformer.TransformerRolePolicy" LogicalName="SetCompressorTransformer.TransformerRolePolicy" />
+    <EmbeddedResource Include="../../../decompiled/Unbroken.LaunchBox/DynamicTransformerTransformer.IterableTokenTransformer" LogicalName="DynamicTransformerTransformer.IterableTokenTransformer" />
+
+    <Reference Include="Unbroken">
+      <HintPath>../../../oracle/LaunchBox/Core/Unbroken.dll</HintPath>
+    </Reference>
+    <Reference Include="Unbroken.LaunchBox.Plugins">
+      <HintPath>../../../oracle/LaunchBox/Core/Unbroken.LaunchBox.Plugins.dll</HintPath>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>../../../oracle/LaunchBox/Core/Newtonsoft.Json.dll</HintPath>
+    </Reference>
+    <Reference Include="BouncyCastle.Crypto">
+      <HintPath>../../../oracle/LaunchBox/Core/BouncyCastle.Crypto.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
