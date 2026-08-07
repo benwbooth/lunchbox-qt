@@ -192,7 +192,9 @@
 
           packages = [
             cargoWrapped
+            pkgs.dotnet-sdk_8
             pkgs.git
+            pkgs.mono
             pkgs.nixfmt
             rustToolchain
           ];
@@ -208,6 +210,9 @@
           RUSTC = "${rustToolchain}/bin/rustc";
           CARGO = "${cargoWrapped}/bin/cargo";
           QMAKE = "${qtEnv}/bin/qmake";
+          DOTNET_ROOT = "${pkgs.dotnet-sdk_8}/share/dotnet";
+          DOTNET_ROOT_X64 = "${pkgs.dotnet-sdk_8}/share/dotnet";
+          QT_BRIDGE_QT_DIR = "${qtEnv}";
           QT_QPA_PLATFORM = lib.optionalString pkgs.stdenv.isLinux "wayland;xcb";
 
           shellHook = ''
